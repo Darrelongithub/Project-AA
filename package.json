@@ -16,7 +16,8 @@
     "followups": "tsx src/cli/followups.ts",
     "retain": "tsx src/cli/retain.ts",
     "backup": "tsx src/cli/backup.ts",
-    "restore": "tsx src/cli/restore.ts"
+    "restore": "tsx src/cli/restore.ts",
+    "start": "node dist/src/cli/serve.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

@@ -1,11 +1,13 @@
 node_modules/
 dist/
-data/
-logs/
+# Anchored to the repo root: unanchored "logs/" and "data/" previously
+# swallowed src/logs/index.ts (the decision-log module) from the repo.
+/data/
+/logs/
+/backups/
 .env
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
-backups/
 eng.traineddata
