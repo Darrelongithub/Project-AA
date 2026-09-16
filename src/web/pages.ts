@@ -2,12 +2,12 @@
  * Page renderers — every page is built server-side from the database.
  * Single source of truth: nothing is rendered that isn't in the DB.
  */
-import type { Repo } from "../db/repo";
+import type { ApplicantSearchQuery, Repo } from "../db/repo";
 import type { ApplicantRow, DocType, StaffUser } from "../types";
-import { LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
+import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
 import { docLabel } from "../rules";
 import {
-  avatar, categoryBadge, confidenceBadge, crest, esc, fmtDate, fmtTime, layout,
+  avatar, categoryBadge, confidenceBadge, crest, esc, flagLabel, fmtDate, fmtTime, layout,
   lifecycleBadge, lifecycleStepper, priorityBadge, slaText, triageBadge, type Theme,
 } from "./views";
 
@@ -17,17 +17,20 @@ interface Ctx {
   unread: number;
   csrf: string;
   theme?: Theme;
+  /** Institution name from Settings — drives all branding text. */
+  institution: string;
 }
 
 function head(c: Ctx, title: string, active: string, content: string): string {
-  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme });
+  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution });
 }
 
 // ── Login ──────────────────────────────────────────────────────────────────
 
-export function loginPage(error?: string, theme?: Theme): string {
+export function loginPage(error?: string, theme?: Theme, institution = "Riara University"): string {
   return layout({
-    title: "Sign in — Riara Admissions",
+    title: `Sign in — ${institution}`,
+    institution,
     publicPage: true,
     theme,
     content: `
@@ -85,7 +88,7 @@ export function dashboardPage(c: Ctx): string {
         <td class="mono"><a href="/case/${r.id}">${esc(r.ref_number)}</a></td>
         <td><div class="nameline">${avatar(r.full_name ?? r.ref_number, 28)}<span>${esc(r.full_name ?? "—")}</span></div></td>
         <td>${triageBadge(r.computed_status)} ${priorityBadge(r.priority)}</td>
-        <td class="small">${esc(r.flag_summary || "—")}</td>
+        <td class="small">${esc(r.flag_summary ? humanizeFlagSummary(r.flag_summary) : "—")}</td>
         <td class="nowrap small ${overdue ? "overdue" : "muted"}">${overdue ? "⚠️ " : ""}${esc(slaText(r.sla_due_at, r.sla_handled_at)) || "—"}</td>
       </tr>`;
     })
@@ -192,7 +195,7 @@ export function queuePage(c: Ctx, filter: string): string {
           <span style="margin-left:auto"><a class="btn small" href="/case/${r.id}">Open case →</a></span>
         </div>
         <p style="margin:10px 0 2px"><b>${esc(r.full_name ?? "—")}</b> <span class="muted small">&lt;${esc(r.email_address)}&gt; ${r.programme ? `· ${esc(r.programme)}` : ""} ${r.intake ? `· ${esc(r.intake)}` : ""}</span></p>
-        <p class="small muted" style="margin:4px 0 0">${esc(r.flag_summary || "No active flags")}</p>
+        <p class="small muted" style="margin:4px 0 0">${esc(r.flag_summary ? humanizeFlagSummary(r.flag_summary) : "No active flags")}</p>
       </div>`;
     })
     .join("");
@@ -252,12 +255,34 @@ export function applicantsPage(
     "applicants",
     `
 <h1>Applicants</h1>
-<div class="sub">${rows.length} case file(s)</div>
+<div class="sub">${rows.length} case file(s)${q.filter && q.filter !== "all" ? " · filtered" : ""}</div>
+${(() => {
+    const filters: Array<[string, string]> = [
+      ["all", "All applicants"],
+      ["awaiting_docs", "Awaiting documents"],
+      ["human_review", "Needs human review"],
+      ["complete", "Complete"],
+      ["overdue", "Overdue"],
+    ];
+    const current = q.filter && q.filter !== "all" ? q.filter : "all";
+    const link = (f: string): string => {
+      const params = new URLSearchParams();
+      if (q.search) params.set("search", q.search);
+      if (q.programme) params.set("programme", q.programme);
+      if (q.intake) params.set("intake", q.intake);
+      if (f !== "all") params.set("filter", f);
+      const qs = params.toString();
+      return `/applicants${qs ? `?${qs}` : ""}`;
+    };
+    const count = (f: string): number =>
+      repo.searchApplicants({ ...q, filter: f === "all" ? undefined : (f as NonNullable<ApplicantSearchQuery["filter"]>), limit: 100000 }).length;
+    return `<div class="tabs">${filters
+      .map(([f, label]) => `<a href="${esc(link(f))}" class="${current === f ? "on" : ""}">${label}<span class="cnt">${count(f)}</span></a>`)
+      .join("")}</div>`;
+  })()}
 <form class="card formrow" method="get" action="/applicants">
   <div style="flex:2"><label>Search</label><input type="text" name="q" placeholder="Reference, name, email, phone…" value="${esc(q.search ?? "")}"></div>
-  <div><label>Filter</label><select name="filter">
-    ${opt("all", "All", q.filter || "all")}${opt("awaiting_docs", "Awaiting documents", q.filter)}${opt("human_review", "Human review", q.filter)}${opt("complete", "Complete", q.filter)}${opt("overdue", "Overdue", q.filter)}
-  </select></div>
+  <input type="hidden" name="filter" value="${esc(q.filter ?? "")}">
   <div><label>Programme</label><select name="programme">${opt("", "All programmes", q.programme || "")}${programmes.map((p) => opt(p.code, `${p.code} — ${p.name}`, q.programme)).join("")}</select></div>
   <div><label>Intake</label><select name="intake">${opt("", "All intakes", q.intake || "")}${intakes.map((i) => opt(i, i, q.intake)).join("")}</select></div>
   <div style="flex:0"><label>&nbsp;</label><button class="btn">Apply</button></div>
@@ -309,7 +334,31 @@ function whatChanged(repo: Repo, a: ApplicantRow): string | null {
   return parts.join(" &nbsp;·&nbsp; ");
 }
 
-export function casePage(c: Ctx, a: ApplicantRow, flash?: string): string {
+/** Split the suggested reply (what staff edit/send) from internal routing boilerplate. */
+function displayDraft(body: string): { text: string; held: boolean } {
+  const m = body.match(/Suggested starting point[^\n]*:\s*\n+([\s\S]*)$/);
+  if (m) {
+    let t = m[1].trim();
+    if (t.startsWith('"') && t.endsWith('"') && t.length > 2) t = t.slice(1, -1).trim();
+    return { text: t, held: false };
+  }
+  const isInternal = body.trimStart().startsWith("INTERNAL \u2014 DO NOT AUTO-SEND");
+  return { text: isInternal ? "" : body, held: isInternal };
+}
+
+/** 195 → "3h 15m", 3000 → "2d 2h", 42 → "42m". */
+function formatDuration(minutes: number): string {
+  if (minutes < 60) return `${Math.max(1, Math.round(minutes))}m`;
+  if (minutes < 60 * 48) return `${Math.floor(minutes / 60)}h ${Math.round(minutes % 60)}m`;
+  return `${Math.floor(minutes / 1440)}d ${Math.round((minutes % 1440) / 60)}h`;
+}
+
+/** "name_mismatch,low_confidence" → "Name mismatch, Low confidence". */
+function humanizeFlagSummary(summary: string): string {
+  return summary.split(",").map((t) => t.trim()).filter(Boolean).map(flagLabel).join(", ");
+}
+
+export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { subject: string; body: string } | null): string {
   const { repo } = c;
   const requirements = repo.effectiveRequirements(a);
   const activeDocs = repo.listDocuments(a.id, { activeOnly: true });
@@ -323,6 +372,14 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string): string {
   const staff = repo.listStaff();
   const templates = repo.listTemplates();
   const outbox = repo.queuedOutbox(a.id);
+  // "INTERNAL — DO NOT AUTO-SEND" boilerplate never reaches the UI; staff see
+  // the suggested reply (if any) and whether the draft is held for approval.
+  const draftView = outbox ? displayDraft(outbox.body) : null;
+  const latestIncoming = [...emails].reverse().find((e) => e.direction === "in");
+  const autoSummary = repo
+    .allAutomationConfig()
+    .map((cfg) => `${cfg.category.replace(/_/g, " ")} → ${cfg.mode}`)
+    .join(" · ");
   const tasks = repo.listTasks(a.id);
   const changed = whatChanged(repo, a);
   const threads = repo.threadsForApplicant(a.id);
@@ -375,7 +432,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string): string {
     .join("");
 
   const flagRows = flags.length
-    ? flags.map((f) => `<li><span class="badge ${f.type === "watcher_flag" ? "b-red" : "b-orange"}">${esc(f.type)}</span> ${esc(f.detail)}</li>`).join("")
+    ? flags.map((f) => `<li><span class="badge ${f.type === "watcher_flag" ? "b-red" : "b-orange"}">${esc(flagLabel(f.type))}</span> ${esc(f.detail)}</li>`).join("")
     : `<li class="muted">No active flags.</li>`;
 
   const historyRows = history
@@ -509,23 +566,37 @@ ${changed ? `<div class="changed">📌 <b>What changed since the last triage:</b
           <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
           <button class="btn ghost" name="action" value="request_info">📧 Request missing docs</button>
         </form>
-        <form method="post" action="/case/${a.id}/send" style="display:flex;gap:6px;align-items:center">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-          <select name="template" style="max-width:240px">${tplOptions}</select>
-          <button class="btn ghost">Send template</button>
-        </form>
       </div>
     </div>
 
+    <div class="card">
+      <h2>💬 Responses</h2>
+      <p class="small muted">Pick a reply template — it is rendered with this applicant's details. Preview first; nothing is sent without your click.</p>
+      <form method="post" action="/case/${a.id}/send">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <div class="formrow" style="align-items:end">
+          <div style="flex:2"><label>Template</label><select name="template">${tplOptions}</select></div>
+          <div style="flex:0;display:flex;gap:8px">
+            <button class="btn ghost" name="preview" value="1">👁 Preview</button>
+            <button class="btn" onclick="return confirm('Send this reply now?')">✉️ Send now</button>
+          </div>
+        </div>
+        ${preview ? `<div class="resp-preview"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>` : ""}
+        <p class="small muted" style="margin-top:12px">Auto-response toggles per category live in <a href="/settings#automation">Settings → Automation</a>. Current modes: ${esc(autoSummary || "defaults")}</p>
+      </form>
+    </div>
+
     ${outbox ? `<div class="card" style="border-left:6px solid var(--orange)">
-      <h2>📝 Draft awaiting your decision</h2>
-      <p class="small muted">The system prepared this reply but did not send it — approve, edit, or discard.</p>
+      <h2>📝 Draft held for approval <span class="heldnote">⏸ not sent</span></h2>
+      <p class="small muted">${draftView && draftView.held
+        ? "The system is holding this reply pending your review — there is no suggested text yet, so write the response below."
+        : "The system prepared this reply but did not send it — approve, edit, or discard."}</p>
       <form method="post" action="/case/${a.id}/draft">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
         <label>Subject</label>
         <input type="text" name="subject" value="${esc(outbox.subject)}">
         <label>Body</label>
-        <textarea name="body" style="min-height:160px">${esc(outbox.body)}</textarea>
+        <textarea name="body" style="min-height:160px" placeholder="Write the reply to the applicant…">${esc(draftView ? draftView.text : outbox.body)}</textarea>
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
           <button class="btn" name="decision" value="send">✉️ Send</button>
           <button class="btn ghost" name="decision" value="edit">💾 Save changes</button>
@@ -539,6 +610,18 @@ ${changed ? `<div class="changed">📌 <b>What changed since the last triage:</b
       <table><tr><th>#</th><th>Type &amp; extracted fields</th><th>State</th><th>Confidence</th><th>Received</th><th></th></tr>
       ${docRows || `<tr><td colspan="6" class="muted">No documents received yet.</td></tr>`}</table>
     </div>
+
+    ${c.user.role === "admin" || c.user.role === "manager" ? `<div class="card">
+      <h2>🏷 Re-categorise latest incoming email</h2>
+      <p class="small muted">If triage put the newest email in the wrong bucket, move it after your review. The change is recorded in the audit trail${latestIncoming ? ` — currently <b>${esc(latestIncoming.category ?? "uncategorised")}</b>` : ""}.</p>
+      <form method="post" action="/case/${a.id}/category" class="formrow" style="align-items:end">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <div style="flex:2"><label>Category</label><select name="category">
+          ${Object.entries(EMAIL_CATEGORY_LABELS).map(([k, v]) => `<option value="${k}" ${latestIncoming?.category === k ? "selected" : ""}>${v}</option>`).join("")}
+        </select></div>
+        <div style="flex:0"><button class="btn ghost">Save category</button></div>
+      </form>
+    </div>` : ""}
 
     ${lastDecision ? `<div class="card"><h2>Latest triage reasoning (${esc(lastDecision.computed_status)}${lastDecision.auto_sent ? ", auto-sent" : ", queued"})</h2><pre style="white-space:pre-wrap;font-size:12.5px">${esc(lastDecision.reasoning)}</pre></div>` : ""}
   </div>
@@ -565,7 +648,7 @@ ${changed ? `<div class="changed">📌 <b>What changed since the last triage:</b
 
 // ── Settings (features 8, 35, 36, 37) ──────────────────────────────────────
 
-export function settingsPage(c: Ctx, selectedTemplate?: string): string {
+export function settingsPage(c: Ctx, selectedTemplate?: string, flash?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
   const rules = repo.listRules();
@@ -596,9 +679,11 @@ export function settingsPage(c: Ctx, selectedTemplate?: string): string {
     unread: c.unread,
     active: "settings",
     csrf: c.csrf,
+    institution: c.institution,
     content: `
 <h1>Settings</h1>
 <div class="sub">Requirements, templates and SLAs — changes apply to newly processed email immediately.</div>
+${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 
 <div class="card">
   <h2>Institution &amp; SLA</h2>
@@ -619,6 +704,36 @@ export function settingsPage(c: Ctx, selectedTemplate?: string): string {
     <p><button class="btn">Save settings</button></p>
   </form>
 </div>
+
+${(() => {
+    const gAddress = settings["gmail_address"] ?? "";
+    const gClientId = settings["gmail_client_id"] ?? "";
+    const gClientSecret = settings["gmail_client_secret"] ?? "";
+    const gRefresh = settings["gmail_refresh_token"] ?? "";
+    const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
+    return `<div class="card" id="gmail">
+  <h2>📮 Gmail connection ${connected
+    ? `<span class="badge b-green">connected — live sorting on</span>`
+    : `<span class="badge b-orange">not connected</span>`}</h2>
+  <p class="small muted">Connect the admissions mailbox so incoming mail is fetched, triaged and sorted automatically every minute. In Google Cloud Console, enable the <b>Gmail API</b>, create an <b>OAuth client ID</b> (type: Web application) and add this server's <span class="mono">/settings/gmail/callback</span> URL to its authorised redirect URIs.</p>
+  <form method="post" action="/settings/gmail/credentials">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      <div><label>Gmail address</label><input type="email" name="gmail_address" value="${esc(gAddress)}" placeholder="admissions@institution.ac.ke"></div>
+      <div><label>OAuth client ID</label><input type="text" name="gmail_client_id" value="${esc(gClientId)}" placeholder="…apps.googleusercontent.com"></div>
+      <div><label>OAuth client secret</label><input type="text" name="gmail_client_secret" value="${esc(gClientSecret)}" placeholder="GOCSPX-…"></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="btn ghost">Save credentials</button>
+      ${gClientId && gClientSecret ? `<a class="btn" href="/settings/gmail/connect">🔐 Connect with Google…</a>` : ""}
+      ${connected ? `<form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>` : ""}
+    </div>
+  </form>
+  <p class="small muted" style="margin-top:10px">${connected
+    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically — no restart needed.`
+    : "Mail is not being fetched yet. Emails can still be replayed through the simulator/demo."}</p>
+</div>`;
+  })()}
 
 <div class="card">
   <h2>Automation mode (draft-first)</h2>
@@ -743,6 +858,7 @@ export function staffPage(c: Ctx): string {
     user: c.user,
     unread: c.unread,
     active: "staff",
+    institution: c.institution,
     csrf: c.csrf,
     content: `
 <h1>Staff accounts</h1>
@@ -786,11 +902,57 @@ export function notificationsPage(c: Ctx): string {
   );
 }
 
+// ── Team performance (staff listener) ──────────────────────────────────────
+
+export function teamPage(c: Ctx): string {
+  const rows = c.repo.staffStats();
+  const totals = rows.reduce(
+    (acc, r) => ({
+      received: acc.received + r.emailsReceived,
+      sent: acc.sent + r.emailsSent,
+      completed: acc.completed + r.admissionsCompleted,
+    }),
+    { received: 0, sent: 0, completed: 0 }
+  );
+  const trs = rows
+    .map((r) => `<tr>
+      <td>${avatar(r.display_name, 30)} <b>${esc(r.display_name)}</b><br><span class="muted small">@${esc(r.username)} · ${esc(r.role)}${r.active ? "" : " · disabled"}</span></td>
+      <td>${r.assignedCases}</td>
+      <td>${r.emailsReceived}</td>
+      <td>${r.emailsSent}</td>
+      <td>${r.avgResponseMinutes === null ? `<span class="muted">—</span>` : esc(formatDuration(r.avgResponseMinutes))}</td>
+      <td>${r.admissionsCompleted}</td>
+    </tr>`)
+    .join("");
+
+  return head(
+    c,
+    "Team",
+    "team",
+    `
+<h1>Team performance</h1>
+<div class="sub">Listener workload and responsiveness — computed live from the mail log, audit trail and status history.</div>
+<div class="cols" style="grid-template-columns:repeat(3,1fr)">
+  <div class="card stat"><div class="n">${totals.received}</div><div class="l">Incoming emails (assigned cases)</div></div>
+  <div class="card stat"><div class="n">${totals.sent}</div><div class="l">Replies sent by staff</div></div>
+  <div class="card stat"><div class="n">${totals.completed}</div><div class="l">Admissions completed</div></div>
+</div>
+<div class="card nopad">
+<table>
+  <tr><th>Staff member</th><th>Assigned cases</th><th>Emails received</th><th>Replies sent</th><th>Avg response time</th><th>Admissions completed</th></tr>
+  ${trs || `<tr><td colspan="6" class="muted">No staff yet.</td></tr>`}
+</table>
+</div>
+<p class="small muted">“Emails received” counts incoming mail on cases currently assigned to the person. “Replies sent” counts messages they personally approved or sent. Response time is measured on their assigned cases from an incoming email to the next outgoing reply.</p>`
+  );
+}
+
 // ── Public self-service status page (features 20, 21) ──────────────────────
 
-export function publicStatusForm(error?: string, theme?: Theme): string {
+export function publicStatusForm(error?: string, theme?: Theme, institution = "Riara University"): string {
   return layout({
-    title: "Check your application status — Riara University",
+    title: `Check your application status — ${institution}`,
+    institution,
     publicPage: true,
     theme,
     content: `
@@ -810,7 +972,7 @@ export function publicStatusForm(error?: string, theme?: Theme): string {
   });
 }
 
-export function publicStatusResult(repo: Repo, a: ApplicantRow, theme?: Theme): string {
+export function publicStatusResult(repo: Repo, a: ApplicantRow, theme?: Theme, institution = "Riara University"): string {
   // The applicant must see the SAME checklist the case file uses — the frozen
   // requirement snapshot, not whatever the live rules say today.
   const requirements = repo.effectiveRequirements(a);
@@ -830,6 +992,7 @@ export function publicStatusResult(repo: Repo, a: ApplicantRow, theme?: Theme): 
     title: `${a.ref_number} — status`,
     publicPage: true,
     theme,
+    institution,
     content: `
 <div class="card" style="max-width:640px;margin:40px auto">
   <div class="nameline" style="margin-bottom:6px">${avatar(a.full_name ?? a.ref_number, 44)}<h1 class="mono" style="margin:0">${esc(a.ref_number)}</h1></div>
@@ -909,7 +1072,7 @@ export function replayPage(c: Ctx, a: ApplicantRow): string {
 
   const flagList = flags.length
     ? `<div class="card"><h2>Active flags</h2><ul style="margin:0;padding-left:18px">${flags
-        .map((f) => `<li><span class="badge b-orange">${esc(f.type)}</span> ${esc(f.detail)}</li>`)
+        .map((f) => `<li><span class="badge b-orange">${esc(flagLabel(f.type))}</span> ${esc(f.detail)}</li>`)
         .join("")}</ul></div>`
     : "";
 

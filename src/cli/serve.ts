@@ -22,20 +22,39 @@ class GmailSender implements EmailSender {
   }
 }
 
+/** Forwards to a swappable inner sender so Gmail can connect without a restart. */
+class DelegatingSender implements EmailSender {
+  constructor(public inner: EmailSender) {}
+  async send(to: string, subject: string, body: string, threadId: string): Promise<void> {
+    await this.inner.send(to, subject, body, threadId);
+  }
+}
+
+/** Gmail credentials entered in Settings → GmailClient config (or null). */
+function gmailFromSettings(repo: Repo): { address: string; clientId: string; clientSecret: string; refreshToken: string } | null {
+  const address = repo.getSetting("gmail_address", "");
+  const clientId = repo.getSetting("gmail_client_id", "");
+  const clientSecret = repo.getSetting("gmail_client_secret", "");
+  const refreshToken = repo.getSetting("gmail_refresh_token", "");
+  return address && clientId && clientSecret && refreshToken
+    ? { address, clientId, clientSecret, refreshToken }
+    : null;
+}
+
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const repo = new Repo(openDb(cfg.dbPath));
   seedDefaults(repo, { live: cfg.mode === "live" });
 
-  let sender: EmailSender = new MockSender();
   let gmail: GmailClient | null = null;
   if (cfg.mode === "live" && cfg.gmail) {
     gmail = new GmailClient(cfg.gmail);
-    sender = new GmailSender(gmail);
     log("serve: live mode — Gmail ingestion enabled");
   } else {
+    // Gmail can still be connected later from Settings → Gmail connection.
     log("serve: mock mode (no Gmail/Gemini). Run `npm run demo` first for sample data.");
   }
+  const sender = new DelegatingSender(gmail ? new GmailSender(gmail) : new MockSender());
 
   const adapters = buildAdapters(cfg, sender);
   const ctx: PipelineContext = { repo, adapters, jsonlPath: cfg.logToFile ? "./logs/decisions.jsonl" : undefined };
@@ -67,19 +86,26 @@ async function main(): Promise<void> {
     );
   }, 2 * 60_000);
 
-  // Live inbox polling.
-  if (gmail) {
-    const opts = { autoMissingDocsEmails: cfg.autoMissingDocsEmails, autoStatusAnswers: cfg.autoStatusAnswers };
-    const poll = async () => {
-      try {
-        await ingestNewEmails(gmail, ctx, cfg.ingestLookbackDays, opts);
-      } catch (e) {
-        log(`ingest poll failed: ${(e as Error).message}`, "error");
+  // Live inbox polling. Runs always: if Gmail gets connected from Settings
+  // while the server is up, the next tick picks it up — no restart needed.
+  const opts = { autoMissingDocsEmails: cfg.autoMissingDocsEmails, autoStatusAnswers: cfg.autoStatusAnswers };
+  const poll = async () => {
+    try {
+      if (!gmail) {
+        const fromSettings = gmailFromSettings(repo);
+        if (fromSettings) {
+          gmail = new GmailClient(fromSettings);
+          sender.inner = new GmailSender(gmail);
+          log(`serve: Gmail connected via Settings (${fromSettings.address}) — live sorting enabled`);
+        }
       }
-    };
-    await poll();
-    setInterval(poll, 60_000);
-  }
+      if (gmail) await ingestNewEmails(gmail, ctx, cfg.ingestLookbackDays, opts);
+    } catch (e) {
+      log(`ingest poll failed: ${(e as Error).message}`, "error");
+    }
+  };
+  await poll();
+  setInterval(poll, 60_000);
 }
 
 main().catch((e) => {

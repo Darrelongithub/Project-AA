@@ -28,6 +28,29 @@ import type {
 
 const nowIso = () => new Date().toISOString();
 
+/** Query shape for {@link Repo.searchApplicants} — shared with the web layer. */
+export interface ApplicantSearchQuery {
+  q?: string;
+  filter?: "all" | "awaiting_docs" | "human_review" | "complete" | "overdue";
+  programme?: string;
+  intake?: string;
+  limit?: number;
+}
+
+/** Per-staff workload + responsiveness metrics for the Team page. */
+export interface StaffStatsRow {
+  id: number;
+  username: string;
+  display_name: string;
+  role: string;
+  active: number;
+  assignedCases: number;
+  emailsReceived: number;
+  emailsSent: number;
+  avgResponseMinutes: number | null;
+  admissionsCompleted: number;
+}
+
 export class Repo {
   constructor(public db: Database) {}
 
@@ -758,7 +781,14 @@ export class Repo {
          JOIN (SELECT applicant_id, MAX(id) AS max_id FROM decision_logs GROUP BY applicant_id) latest
            ON latest.max_id = d.id
          JOIN applicants a ON a.id = d.applicant_id
-         WHERE d.auto_sent = 0 AND a.lifecycle NOT IN ('completed','verification')
+         WHERE a.lifecycle NOT IN ('completed','verification')
+           AND (
+             d.auto_sent = 0
+             -- A case whose latest decision auto-sent still needs a human
+             -- when a blocking flag is active or a draft is held for approval.
+             OR EXISTS (SELECT 1 FROM flags f WHERE f.applicant_id = a.id AND f.active = 1 AND f.type != 'duplicate_submission')
+             OR EXISTS (SELECT 1 FROM outbox o WHERE o.applicant_id = a.id AND o.mode = 'queued')
+           )
          ORDER BY
            CASE a.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
            d.id`
@@ -787,13 +817,7 @@ export class Repo {
 
   // ── Search & filters (features 18, 19) ───────────────────────────────────
 
-  searchApplicants(opts: {
-    q?: string;
-    filter?: "all" | "awaiting_docs" | "human_review" | "complete" | "overdue";
-    programme?: string;
-    intake?: string;
-    limit?: number;
-  }): ApplicantRow[] {
+  searchApplicants(opts: ApplicantSearchQuery): ApplicantRow[] {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts.q) {
@@ -957,6 +981,76 @@ export class Repo {
 
   allAutomationConfig(): Array<{ category: string; mode: string }> {
     return this.db.prepare("SELECT category, mode FROM automation_config ORDER BY category").all() as never[];
+  }
+
+  /**
+   * Re-categorise the latest incoming email of a case (used when triage put
+   * an email in the wrong bucket). Returns false when the case has no
+   * incoming email yet. The caller is responsible for the audit entry.
+   */
+  updateLatestEmailCategory(applicantId: number, category: EmailCategory): boolean {
+    const info = this.db
+      .prepare(
+        `UPDATE emails SET category = ?
+         WHERE id = (SELECT id FROM emails WHERE applicant_id = ? AND direction = 'in' ORDER BY at DESC, id DESC LIMIT 1)`
+      )
+      .run(category, applicantId);
+    return info.changes > 0;
+  }
+
+  /**
+   * Listener stats: one row per staff member.
+   * - emailsReceived: incoming mail on cases currently assigned to them
+   * - emailsSent: replies they personally approved/sent (audit trail)
+   * - avgResponseMinutes: mean gap between an incoming email and the next
+   *   outgoing reply on their assigned cases
+   * - admissionsCompleted: distinct cases they moved to "completed"
+   */
+  staffStats(): StaffStatsRow[] {
+    const staff = this.listStaff();
+    const qAssigned = this.db.prepare("SELECT COUNT(*) AS c FROM applicants WHERE assigned_to = ?");
+    const qReceived = this.db.prepare(
+      `SELECT COUNT(*) AS c FROM emails e
+       JOIN applicants a ON a.id = e.applicant_id
+       WHERE e.direction = 'in' AND a.assigned_to = ?`
+    );
+    const qSent = this.db.prepare(
+      `SELECT COUNT(*) AS c FROM audit_log
+       WHERE actor = ? AND event IN ('email_sent_manual','human_override')`
+    );
+    const qCompleted = this.db.prepare(
+      `SELECT COUNT(DISTINCT applicant_id) AS c FROM status_history
+       WHERE actor = ? AND to_status = 'completed'`
+    );
+    const qAvg = this.db.prepare(
+      `SELECT AVG((julianday(o.at) - julianday(i.at)) * 1440.0) AS mins
+       FROM emails i
+       JOIN applicants a ON a.id = i.applicant_id
+       JOIN emails o ON o.applicant_id = i.applicant_id AND o.direction = 'out'
+         AND o.at = (SELECT MIN(o2.at) FROM emails o2
+                     WHERE o2.applicant_id = i.applicant_id
+                       AND o2.direction = 'out' AND o2.at > i.at)
+       WHERE i.direction = 'in' AND a.assigned_to = ?`
+    );
+    return staff.map((s) => {
+      const assigned = (qAssigned.get(s.id) as { c: number }).c;
+      const received = (qReceived.get(s.id) as { c: number }).c;
+      const sent = (qSent.get(s.username) as { c: number }).c;
+      const completed = (qCompleted.get(s.username) as { c: number }).c;
+      const avg = qAvg.get(s.id) as { mins: number | null };
+      return {
+        id: s.id,
+        username: s.username,
+        display_name: s.display_name,
+        role: s.role,
+        active: s.active,
+        assignedCases: assigned,
+        emailsReceived: received,
+        emailsSent: sent,
+        avgResponseMinutes: avg.mins === null || avg.mins === undefined ? null : Math.round(avg.mins),
+        admissionsCompleted: completed,
+      };
+    });
   }
 
   // ── Intakes with deadlines (features 20, 21) ─────────────────────────────

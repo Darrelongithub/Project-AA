@@ -6,6 +6,7 @@
  * full dark mode, sidebar app shell, splash entry, command palette, toasts.
  */
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type EmailCategory, type LifecycleStage, type Priority, type StaffUser } from "../types";
+import { EMBLEM_DATA_URI } from "./emblem";
 
 export type Theme = "light" | "dark";
 
@@ -106,23 +107,25 @@ export function avatar(name: string | null | undefined, size = 34): string {
   return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px;background:linear-gradient(135deg,${c1},${c2})">${esc(initials)}</span>`;
 }
 
-/** The Riara crest — shield, torch flame and the two nurturing twigs. */
+/** The official Riara emblem, on a white chip so it sits well on any surface. */
 export function crest(size = 40): string {
-  return `<svg class="crest" width="${size}" height="${size}" viewBox="0 0 64 64" fill="none" aria-hidden="true">
-  <defs>
-    <linearGradient id="cg1" x1="0" y1="0" x2="64" y2="64">
-      <stop offset="0" stop-color="#8B5CF6"/><stop offset="1" stop-color="#5B21B6"/>
-    </linearGradient>
-    <linearGradient id="cg2" x1="32" y1="8" x2="32" y2="30">
-      <stop offset="0" stop-color="#FDE68A"/><stop offset="1" stop-color="#F59E0B"/>
-    </linearGradient>
-  </defs>
-  <path d="M32 3 56 11v20c0 15-10 26-24 30C18 57 8 46 8 31V11L32 3Z" fill="url(#cg1)"/>
-  <path d="M32 3 56 11v20c0 15-10 26-24 30C18 57 8 46 8 31V11L32 3Z" stroke="#D9C6FF" stroke-opacity=".55" stroke-width="1.6"/>
-  <path d="M32 12c3.4 3.6 6.4 6.7 6.4 10.6 0 3.8-2.6 6.6-6.4 6.6s-6.4-2.8-6.4-6.6c0-3.9 3-7 6.4-10.6Z" fill="url(#cg2)"/>
-  <path d="M32 40v12" stroke="#F5F0FF" stroke-width="2.6" stroke-linecap="round"/>
-  <path d="M32 46c-4.8-.4-8.6-3-10.4-7 5-.6 9 .8 10.4 7ZM32 46c4.8-.4 8.6-3 10.4-7-5-.6-9 .8-10.4 7Z" fill="#C4B5FD"/>
-</svg>`;
+  return `<span class="crest" style="width:${Math.round(size * 0.78)}px;height:${size}px"><img src="${EMBLEM_DATA_URI}" alt="emblem" style="width:100%;height:100%;object-fit:contain;border-radius:8px"></span>`;
+}
+
+/** Human-readable flag names: "name_mismatch" → "Name mismatch". */
+export function flagLabel(t: string): string {
+  const special: Record<string, string> = {
+    name_mismatch: "Name mismatch",
+    grade_below_requirement: "Grade below requirement",
+    low_confidence: "Low confidence",
+    watcher_flag: "Watcher flag",
+    duplicate_submission: "Duplicate submission",
+    identity_check: "Identity check",
+    late_submission: "Late submission",
+    anomaly: "Anomaly",
+  };
+  if (special[t]) return special[t];
+  return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 const ICONS: Record<string, string> = {
@@ -135,6 +138,7 @@ const ICONS: Record<string, string> = {
   search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`,
   moon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>`,
   sun: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>`,
+  chart: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15v3M12 10v8M17 6v12"/></svg>`,
 };
 
 export function icon(name: keyof typeof ICONS, size = 17): string {
@@ -145,14 +149,15 @@ const CSS = `
 :root {
   --bg: #F6F4FB; --card: #FFFFFF; --card2: #FBFAFE;
   --ink: #201A33; --muted: #6E6787; --line: #E8E3F4; --line2: #F0ECF9;
-  --purple: #6D28D9; --purple2: #8B5CF6; --purple3: #A78BFA;
-  --purple-bg: #F2EDFC; --purple-line: #E0D4F8;
+  --purple: #5B3BD6; --purple2: #7C5CF0; --purple3: #A794FB;
+  --purple-bg: #F1EDFC; --purple-line: #DCD2F7;
+  --magenta: #A2157F; --magenta-bg: #FBEAF5; --magenta-line: #EFC4E2;
   --gold: #B98A2F; --gold-bg: #F8F0DD;
-  --green: #15803D; --green-bg: #E7F6EC; --green-line: #C4E8D0;
+  --green: #2E8B3A; --green-bg: #E7F6EC; --green-line: #C4E8D0;
   --orange: #B45309; --orange-bg: #FDF1E2; --orange-line: #F3D9B4;
   --red: #BE123C; --red-bg: #FDE8ED; --red-line: #F5C2D0;
   --blue: #1D4ED8; --blue-bg: #E7EEFD; --blue-line: #C6D6F8;
-  --side1: #231B3D; --side2: #140F26; --side-ink: #CBC2E6; --side-active: #FFFFFF;
+  --side1: #2A1B66; --side2: #150C38; --side-ink: #CBC2E6; --side-active: #FFFFFF;
   --shadow: 0 1px 2px rgba(41,23,86,.05), 0 8px 24px -12px rgba(76,29,149,.14);
   --shadow-lg: 0 2px 6px rgba(41,23,86,.06), 0 24px 48px -18px rgba(76,29,149,.22);
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
@@ -161,8 +166,9 @@ const CSS = `
 [data-theme="dark"] {
   --bg: #0F0C1A; --card: #191429; --card2: #1F1934;
   --ink: #EFEBFA; --muted: #9C94BC; --line: #2C2447; --line2: #251D3D;
-  --purple: #A78BFA; --purple2: #8B5CF6; --purple3: #C4B5FD;
+  --purple: #A794FB; --purple2: #8F73F5; --purple3: #C4B5FD;
   --purple-bg: #2A2050; --purple-line: #3D2F6E;
+  --magenta: #E06BC0; --magenta-bg: #3A1531; --magenta-line: #6B2458;
   --gold: #D9B25F; --gold-bg: #332A17;
   --green: #4ADE80; --green-bg: #13291C; --green-line: #1E4A2E;
   --orange: #FBBF24; --orange-bg: #33260F; --orange-line: #584315;
@@ -176,15 +182,15 @@ const CSS = `
 html { scroll-behavior: smooth; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
-  font-family: var(--sans); font-size: 14.5px; line-height: 1.55;
+  font-family: var(--sans); font-size: 15px; line-height: 1.62;
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }
 a { color: var(--purple); text-decoration: none; }
 a:hover { text-decoration: underline; }
-h1 { font-size: 24px; font-weight: 800; letter-spacing: -.02em; margin: 0 0 4px; }
-h2 { font-size: 15px; font-weight: 750; letter-spacing: -.01em; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+h1 { font-size: 26px; font-weight: 800; letter-spacing: -.02em; margin: 0 0 8px; }
+h2 { font-size: 15.5px; font-weight: 750; letter-spacing: -.01em; margin: 0 0 16px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 h2 .small { font-weight: 500; }
-.sub { color: var(--muted); font-size: 13.5px; margin: 0 0 18px; }
+.sub { color: var(--muted); font-size: 13.5px; margin: 0 0 24px; }
 
 /* ── App shell ─────────────────────────────────────────────────────────── */
 .app { display: grid; grid-template-columns: 248px 1fr; min-height: 100vh; }
@@ -199,7 +205,7 @@ h2 .small { font-weight: 500; }
 .brand small { color: #9E93C6; font-size: 10.5px; text-transform: uppercase; letter-spacing: .16em; }
 nav.side { margin: 16px 0; display: flex; flex-direction: column; gap: 2px; flex: 1; }
 nav.side a {
-  display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 10px;
+  display: flex; align-items: center; gap: 11px; padding: 10px 14px; border-radius: 10px;
   color: var(--side-ink); font-weight: 600; font-size: 13.5px; text-decoration: none;
   transition: background .15s, color .15s;
 }
@@ -216,7 +222,7 @@ nav.side .icn svg { width: 17px; height: 17px; }
 .main { min-width: 0; display: flex; flex-direction: column; }
 .topbar {
   position: sticky; top: 0; z-index: 40; display: flex; align-items: center; gap: 12px;
-  padding: 12px 28px; background: color-mix(in srgb, var(--bg) 82%, transparent);
+  padding: 14px 34px; background: color-mix(in srgb, var(--bg) 82%, transparent);
   backdrop-filter: blur(12px); border-bottom: 1px solid var(--line);
 }
 .searchbtn {
@@ -232,11 +238,11 @@ nav.side .icn svg { width: 17px; height: 17px; }
 .iconbtn:hover { color: var(--purple); border-color: var(--purple3); text-decoration: none; }
 .iconbtn .icn svg { width: 17px; height: 17px; }
 .iconbtn .pip { position: absolute; top: 7px; right: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px var(--card); }
-.wrap { padding: 28px; max-width: 1240px; width: 100%; margin: 0 auto; animation: rise .35s ease both; }
+.wrap { padding: 34px 36px; max-width: 1280px; width: 100%; margin: 0 auto; animation: rise .35s ease both; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* ── Cards & stats ─────────────────────────────────────────────────────── */
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; box-shadow: var(--shadow); margin-bottom: 18px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 24px 26px; box-shadow: var(--shadow); margin-bottom: 22px; }
 .card.nopad { padding: 0; overflow: hidden; }
 .grid.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
 .stat { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); position: relative; overflow: hidden; }
@@ -246,7 +252,7 @@ nav.side .icn svg { width: 17px; height: 17px; }
 .stat.alert .n { color: var(--red); }
 .stat.alert::before { background: linear-gradient(180deg, var(--red), transparent); }
 
-.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 .cols > .card { margin-bottom: 18px; }
 @media (max-width: 1000px) { .cols { grid-template-columns: 1fr; } .app { grid-template-columns: 1fr; } .sidebar { position: static; height: auto; } .searchbtn { min-width: 0; } }
 
@@ -263,8 +269,8 @@ nav.side .icn svg { width: 17px; height: 17px; }
 
 /* ── Tables ────────────────────────────────────────────────────────────── */
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); font-weight: 700; padding: 8px 10px; border-bottom: 1px solid var(--line); }
-td { padding: 9px 10px; border-bottom: 1px solid var(--line2); vertical-align: middle; }
+th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); font-weight: 700; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+td { padding: 12px 14px; border-bottom: 1px solid var(--line2); vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
 tbody tr, table tr { transition: background .12s; }
 table tr:hover td { background: var(--card2); }
@@ -398,6 +404,21 @@ textarea { resize: vertical; }
 details > summary { list-style: none; } details > summary::-webkit-details-marker { display: none; }
 ::selection { background: color-mix(in srgb, var(--purple2) 30%, transparent); }
 @media (max-width: 760px) { .wrap { padding: 16px; } .topbar { padding: 10px 16px; } .kv { grid-template-columns: 120px 1fr; } }
+/* ── Brand chip + tab pills ────────────────────────────────────────────── */
+.crest { display: inline-flex; background: #fff; border-radius: 10px; padding: 3px; box-shadow: 0 1px 4px rgba(20,8,60,.25); flex: none; }
+.publicbar .crest { box-shadow: 0 1px 4px rgba(20,8,60,.14); }
+.tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 22px; }
+.tabs a {
+  padding: 9px 18px; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--card); color: var(--muted); font-weight: 650; font-size: 13px;
+  text-decoration: none; box-shadow: var(--shadow); transition: all .15s;
+}
+.tabs a:hover { color: var(--purple); border-color: var(--purple3); text-decoration: none; }
+.tabs a.on { background: linear-gradient(120deg, var(--purple), var(--purple2)); color: #fff; border-color: transparent; box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--purple) 70%, transparent); }
+.tabs a .cnt { opacity: .75; font-weight: 700; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.b-magenta { background: var(--magenta-bg); color: var(--magenta); border: 1px solid var(--magenta-line); }
+.resp-preview { background: var(--card2); border: 1px dashed var(--line); border-radius: 12px; padding: 14px 16px; font-size: 13px; white-space: pre-wrap; max-height: 260px; overflow: auto; margin: 12px 0; }
+.heldnote { display: inline-flex; align-items: center; gap: 6px; background: var(--orange-bg); color: var(--orange); border: 1px solid var(--orange-line); border-radius: 8px; padding: 3px 10px; font-size: 12px; font-weight: 650; }
 @media print {
   .sidebar, .topbar, .no-print, .flash, .palette, #splash { display: none !important; }
   .app { display: block; } body { background: #fff; }
@@ -503,9 +524,12 @@ export function layout(opts: {
   publicPage?: boolean;
   csrf?: string;
   theme?: Theme;
+  /** Institution name from Settings — drives all branding text. */
+  institution?: string;
 }): string {
   const theme: Theme = opts.theme === "dark" ? "dark" : "light";
   const otherTheme = theme === "dark" ? "light" : "dark";
+  const inst = opts.institution ?? "Riara University";
 
   const themeBtn = `<form method="post" action="/theme" style="display:inline">
       <button class="iconbtn" title="Switch to ${otherTheme} mode">${icon(theme === "dark" ? "sun" : "moon")}</button>
@@ -517,13 +541,14 @@ export function layout(opts: {
       { href: "/", label: "Command Center", icon: "grid", active: "dashboard" },
       { href: "/queue", label: "Review Queue", icon: "inbox", active: "queue" },
       { href: "/applicants", label: "Applicants", icon: "users", active: "applicants" },
+      ...(opts.user.role === "admin" || opts.user.role === "manager" ? [{ href: "/team", label: "Team", icon: "chart", active: "team" }] : []),
       ...(opts.user.role !== "officer" ? [{ href: "/settings", label: "Settings", icon: "gear", active: "settings" }] : []),
       ...(opts.user.role === "admin" ? [{ href: "/staff", label: "Staff", icon: "shield", active: "staff" }] : []),
     ];
     shell = `
 <div class="app">
   <aside class="sidebar">
-    <div class="brand">${crest(40)}<div><b>Riara University</b><small>Admissions Intake</small></div></div>
+    <div class="brand">${crest(46)}<div><b>${inst}</b><small>Admissions Intake</small></div></div>
     <nav class="side">
       ${nav
         .map((n) => `<a href="${n.href}" class="${opts.active === n.active ? "active" : ""}">${icon(n.icon as never)}${n.label}</a>`)
@@ -555,13 +580,13 @@ ${opts.content}
   <div class="palette-box">
     <input id="palette-q" type="text" placeholder="Jump to a case, applicant or page…" autocomplete="off" spellcheck="false">
     <div id="palette-res"></div>
-    <div class="palette-keys"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span><span style="margin-left:auto">Riara Admissions · Nurturing Innovators</span></div>
+    <div class="palette-keys"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span><span style="margin-left:auto">${inst === "Riara University" ? `${inst} · Nurturing Innovators` : `${inst} · Admissions Intake`}</span></div>
   </div>
 </div>`;
   } else {
     shell = `
 <div class="publicbar">
-  <div class="brand">${crest(34)}<div><b>Riara University</b><small>Admissions Intake</small></div></div>
+  <div class="brand">${crest(38)}<div><b>${inst}</b><small>Admissions Intake</small></div></div>
   <nav>
     <a href="/status">Status lookup</a>
     <a href="/portal">Applicant portal</a>
@@ -584,7 +609,7 @@ ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
 <style>${CSS}</style>
 </head>
 <body>
-<div id="splash" aria-hidden="true">${crest(56)}<div class="s-name">Riara University</div><div class="s-sub">Admissions Intake</div><div class="s-bar"><span></span></div></div>
+<div id="splash" aria-hidden="true">${crest(62)}<div class="s-name">${inst}</div><div class="s-sub">Admissions Intake</div><div class="s-bar"><span></span></div></div>
 ${shell}
 <script>${PALETTE_JS}${TOAST_JS}</script>
 </body>

@@ -11,11 +11,12 @@ import { LIFECYCLE_LABELS } from "../types";
 import { docLabel } from "../rules";
 import { avatar, crest, esc, fmtDate, layout, lifecycleBadge, lifecycleStepper, type Theme } from "./views";
 
-export function portalStartPage(error?: string, theme?: Theme): string {
+export function portalStartPage(error?: string, theme?: Theme, institution = "Riara University"): string {
   return layout({
-    title: "Applicant portal — Riara University",
+    title: `Applicant portal — ${institution}`,
     publicPage: true,
     theme,
+    institution,
     content: `
 <div class="loginbox card">
   ${crest(56)}
@@ -34,11 +35,12 @@ export function portalStartPage(error?: string, theme?: Theme): string {
   });
 }
 
-export function portalOtpPage(ref: string, demoCode: string | null, error?: string, theme?: Theme): string {
+export function portalOtpPage(ref: string, demoCode: string | null, error?: string, theme?: Theme, institution = "Riara University"): string {
   return layout({
-    title: "Enter your access code — Riara University",
+    title: `Enter your access code — ${institution}`,
     publicPage: true,
     theme,
+    institution,
     content: `
 <div class="loginbox card">
   ${crest(56)}
@@ -57,7 +59,7 @@ export function portalOtpPage(ref: string, demoCode: string | null, error?: stri
   });
 }
 
-export function portalHomePage(repo: Repo, a: ApplicantRow, flash?: string, theme?: Theme): string {
+export function portalHomePage(repo: Repo, a: ApplicantRow, flash?: string, theme?: Theme, institution = "Riara University"): string {
   const requirements = repo.effectiveRequirements(a).filter((r) => r.required);
   const activeDocs = repo.listDocuments(a.id, { activeOnly: true });
   const missing = requirements.filter((r) => !activeDocs.some((d) => d.document_type === r.document_type));
@@ -79,6 +81,7 @@ export function portalHomePage(repo: Repo, a: ApplicantRow, flash?: string, them
     title: `${a.ref_number} — my application`,
     publicPage: true,
     theme,
+    institution,
     content: `
 <div class="card" style="max-width:760px;margin:24px auto">
   <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">

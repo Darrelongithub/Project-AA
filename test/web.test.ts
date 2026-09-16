@@ -309,7 +309,9 @@ describe("web console v3", () => {
     expect(repo.queuedOutbox(a.id)).toBeTruthy();
 
     const page = await (await fetch(`${base}/case/${a.id}`, { headers: { cookie } })).text();
-    expect(page).toContain("Draft awaiting your decision");
+    expect(page).toContain("Draft held for approval");
+    // Internal routing boilerplate must never be visible in the draft UI.
+    expect(page).not.toContain("INTERNAL — DO NOT AUTO-SEND");
 
     const send = await fetch(`${base}/case/${a.id}/draft`, {
       method: "POST",
@@ -413,5 +415,142 @@ describe("web console v3", () => {
     const res = await fetch(`${base}/portal/home`, { redirect: "manual" });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/portal");
+  });
+});
+
+describe("production-readiness pass", () => {
+  it("applicants page shows symmetrical filter tabs with live counts", async () => {
+    const { cookie } = await login();
+    const page = await (await fetch(`${base}/applicants`, { headers: { cookie } })).text();
+    expect(page).toContain('class="tabs"');
+    for (const label of ["All applicants", "Awaiting documents", "Needs human review", "Complete", "Overdue"]) {
+      expect(page).toContain(label);
+    }
+    // Tabs are real links to filtered views and keep working with counts.
+    expect(page).toContain("/applicants?filter=human_review");
+    const filtered = await (await fetch(`${base}/applicants?filter=human_review`, { headers: { cookie } })).text();
+    expect(filtered).toContain('class="tabs"');
+    expect(filtered).toContain("filtered");
+  });
+
+  it("case draft UI hides INTERNAL boilerplate and refuses to send it", async () => {
+    const { cookie, csrf } = await login();
+    const a = repo.findByRef(ref)!;
+    repo.addOutbox({
+      applicant_id: a.id, to_address: a.email_address,
+      subject: "SUGGESTED REPLY (human review required)",
+      body: "INTERNAL — DO NOT AUTO-SEND.\nThis case requires human review before any reply goes out. See flags and reasoning.",
+      mode: "queued",
+    });
+    const page = await (await fetch(`${base}/case/${a.id}`, { headers: { cookie } })).text();
+    expect(page).toContain("Draft held for approval");
+    expect(page).not.toContain("INTERNAL — DO NOT AUTO-SEND");
+
+    // Sending the untouched internal draft is blocked.
+    const blocked = await fetch(`${base}/case/${a.id}/draft`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${csrf}&decision=send&subject=${encodeURIComponent("SUGGESTED REPLY")}&body=${encodeURIComponent("INTERNAL — DO NOT AUTO-SEND.\nThis case requires human review before any reply goes out.")}`,
+      redirect: "manual",
+    });
+    expect(blocked.status).toBe(302);
+    expect(decodeURIComponent(blocked.headers.get("location") || "")).toContain("internal routing notes");
+    expect(repo.queuedOutbox(a.id)).toBeTruthy();
+
+    // A cleaned body sends fine.
+    const ok = await fetch(`${base}/case/${a.id}/draft`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${csrf}&decision=send&subject=${encodeURIComponent("Your application")}&body=${encodeURIComponent("Thank you — we have received your documents.")}`,
+      redirect: "manual",
+    });
+    expect(ok.status).toBe(302);
+    expect(repo.queuedOutbox(a.id)).toBeUndefined();
+  });
+
+  it("case page offers a Responses card with template preview", async () => {
+    const { cookie, csrf } = await login();
+    const a = repo.findByRef(ref)!;
+    const page = await (await fetch(`${base}/case/${a.id}`, { headers: { cookie } })).text();
+    expect(page).toContain("Responses");
+    expect(page).toContain('name="template"');
+    expect(page).toContain('name="preview"');
+
+    const preview = await fetch(`${base}/case/${a.id}/send`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${csrf}&template=missing_documents&preview=1`,
+      redirect: "manual",
+    });
+    expect(preview.status).toBe(200);
+    const html = await preview.text();
+    expect(html).toContain("Preview only — nothing has been sent.");
+    expect(html).toContain('class="resp-preview"');
+  });
+
+  it("managers can re-categorise the latest incoming email after review", async () => {
+    const { cookie, csrf } = await login();
+    const a = repo.findByRef(ref)!;
+    const res = await fetch(`${base}/case/${a.id}/category`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${csrf}&category=fee_enquiry`,
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    const latestIn = repo.emailsForApplicant(a.id).filter((e) => e.direction === "in").pop();
+    expect(latestIn?.category).toBe("fee_enquiry");
+    expect(repo.auditForApplicant(a.id).some((e) => e.event === "category_changed")).toBe(true);
+  });
+
+  it("review queue never drops a case with a held draft or active flag, even after auto-send", async () => {
+    const a = repo.findByRef(ref)!;
+    const before = repo.queueView().some((q) => q.id === a.id);
+    repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject: "held", body: "x", mode: "queued" });
+    expect(repo.queueView().some((q) => q.id === a.id)).toBe(true);
+    repo.queuedOutbox(a.id) && repo.deleteOutbox(repo.queuedOutbox(a.id)!.id);
+    repo.syncFlags(a.id, [{ type: "watcher_flag", detail: "sanity check for test" }]);
+    expect(repo.queueView().some((q) => q.id === a.id)).toBe(true);
+    repo.syncFlags(a.id, []); // clear derived flags
+    expect(repo.queueView().some((q) => q.id === a.id)).toBe(before);
+  });
+
+  it("team page shows per-staff listener stats", async () => {
+    const { cookie } = await login();
+    const stats = repo.staffStats();
+    expect(stats.length).toBeGreaterThan(0);
+    expect(stats.some((s) => s.username === "admin")).toBe(true);
+    const page = await (await fetch(`${base}/team`, { headers: { cookie } })).text();
+    expect(page).toContain("Team performance");
+    expect(page).toContain("Avg response time");
+    expect(page).toContain("Admissions completed");
+  });
+
+  it("flag names are human-readable on the case page", async () => {
+    const { cookie } = await login();
+    const a = repo.findByRef(ref)!;
+    repo.syncFlags(a.id, [{ type: "name_mismatch", detail: "test rendering" }]);
+    const page = await (await fetch(`${base}/case/${a.id}`, { headers: { cookie } })).text();
+    expect(page).toContain("Name mismatch");
+    expect(page).not.toContain(">name_mismatch<");
+    repo.syncFlags(a.id, []);
+  });
+
+  it("institution name comes from Settings everywhere", async () => {
+    const { cookie } = await login();
+    repo.setSetting("institution_name", "Test College");
+    const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    expect(home).toContain("Test College");
+    const loginHtml = await (await fetch(`${base}/login`)).text();
+    expect(loginHtml).toContain("Test College");
+    repo.setSetting("institution_name", "Riara University");
+  });
+
+  it("settings page offers the Gmail connection card", async () => {
+    const { cookie } = await login();
+    const page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    expect(page).toContain("Gmail connection");
+    expect(page).toContain("not connected");
+    expect(page).toContain('action="/settings/gmail/credentials"');
   });
 });

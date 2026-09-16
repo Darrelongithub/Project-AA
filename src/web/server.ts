@@ -6,16 +6,17 @@
  *
  * Server-rendered, self-contained, DB-backed sessions + CSRF.
  */
+import * as crypto from "crypto";
 import express, { type Express, type Request, type Response } from "express";
 import type { Repo } from "../db/repo";
 import type { PipelineContext } from "../pipeline/adapters";
 import type { LifecycleStage } from "../types";
-import { DOC_TYPES, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type DocType } from "../types";
+import { DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type DocType, type EmailCategory } from "../types";
 import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import {
   applicantsPage, casePage, dashboardPage, loginPage, notificationsPage,
-  publicStatusForm, publicStatusResult, queuePage, replayPage, settingsPage, staffPage,
+  publicStatusForm, publicStatusResult, queuePage, replayPage, settingsPage, staffPage, teamPage,
 } from "./pages";
 import { portalHomePage, portalOtpPage, portalStartPage } from "./portal";
 import { avatar } from "./views";
@@ -49,6 +50,8 @@ function makeRateLimiter(limit: number, windowMs: number) {
 export function createApp(deps: WebDeps): Express {
   const { repo, ctx } = deps;
   const app = express();
+  /** Institution name for all branding — editable in Settings → General. */
+  const instName = (): string => repo.getSetting("institution_name", "Riara University");
   app.disable("x-powered-by");
   // Behind any reverse proxy (the preview environment included) req.ip is the
   // proxy's address unless this is set — which makes every per-IP rate
@@ -64,6 +67,7 @@ export function createApp(deps: WebDeps): Express {
     unread: repo.unreadCount(req.staff!.id),
     csrf: req.csrfToken ?? "",
     theme: req.theme,
+    institution: instName(),
   });
 
   const backToCase = (id: string | number, msg: string) => `/case/${id}?msg=${encodeURIComponent(msg)}`;
@@ -79,7 +83,7 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Auth ─────────────────────────────────────────────────────────────────
 
-  app.get("/login", (req, res) => res.send(loginPage(undefined, req.theme)));
+  app.get("/login", (req, res) => res.send(loginPage(undefined, req.theme, instName())));
 
   /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
   app.post("/theme", (req, res) => {
@@ -225,6 +229,11 @@ export function createApp(deps: WebDeps): Express {
     if (decision !== "send") {
       return res.redirect(backToCase(id, "Unknown draft action — nothing sent."));
     }
+    // Never let internal routing boilerplate ("INTERNAL — DO NOT AUTO-SEND…")
+    // leave the building — the officer must replace it with a real reply first.
+    if (body.trimStart().startsWith("INTERNAL \u2014 DO NOT AUTO-SEND")) {
+      return res.redirect(backToCase(id, "That draft still contains internal routing notes — edit the body before sending."));
+    }
     try {
       await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id);
       repo.insertEmail({
@@ -308,12 +317,16 @@ export function createApp(deps: WebDeps): Express {
     const missing = requirements.filter((r) => !present.includes(r.document_type));
     const rendered = renderTemplate(tpl.subject, tpl.body, {
       ref: a.ref_number,
-      institution: repo.getSetting("institution_name", "Admissions"),
+      institution: instName(),
       name: a.full_name ?? undefined,
       missingLabels: missing.map((m) => docLabel(m.document_type)),
       checklist: checklistText({ requirements, presentTypes: present }),
       statusLabel: LIFECYCLE_LABELS[a.lifecycle],
     });
+    // "Preview" in the Responses card: show the rendered reply in-page, send nothing.
+    if (req.body.preview !== undefined) {
+      return res.send(casePage(c(req), a, "Preview only — nothing has been sent.", rendered));
+    }
     try {
       await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id);
     } catch (e) {
@@ -367,6 +380,29 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(backToCase(id, `Priority set to ${p}.`));
   });
 
+  /**
+   * Re-categorise the latest incoming email after review (managers/admins).
+   * Audit-logged; the next sync routes its documents with the new category.
+   */
+  app.post("/case/:id/category", requireLogin, requireRole("admin", "manager"), csrfCheck, (req, res) => {
+    const id = Number(req.params.id);
+    const a = repo.getApplicant(id);
+    if (!a) return res.status(404).send("Case not found.");
+    const cat = String(req.body.category ?? "");
+    if (!(cat in EMAIL_CATEGORY_LABELS)) {
+      return res.redirect(backToCase(id, "Unknown category — nothing changed."));
+    }
+    if (!repo.updateLatestEmailCategory(id, cat as EmailCategory)) {
+      return res.redirect(backToCase(id, "No incoming email to re-categorise yet."));
+    }
+    staffAction(req, id, "category_changed", `latest incoming email → ${cat}`);
+    res.redirect(backToCase(id, `Latest email re-categorised as ${EMAIL_CATEGORY_LABELS[cat as EmailCategory]}.`));
+  });
+
+  // ── Team performance (staff listener) ────────────────────────────────────
+
+  app.get("/team", requireLogin, requireRole("admin", "manager"), (req, res) => res.send(teamPage(c(req))));
+
   // ── Notifications ────────────────────────────────────────────────────────
 
   app.get("/notifications", requireLogin, (req, res) => {
@@ -378,8 +414,85 @@ export function createApp(deps: WebDeps): Express {
 
   // 'it' role: cases + configuration, but not staff management.
   app.get("/settings", requireLogin, requireRole("admin", "manager", "it"), (req, res) =>
-    res.send(settingsPage(c(req), req.query.template ? String(req.query.template) : undefined))
+    res.send(
+      settingsPage(
+        c(req),
+        req.query.template ? String(req.query.template) : undefined,
+        req.query.msg ? String(req.query.msg) : undefined
+      ))
   );
+
+  // ── Gmail connect (OAuth code flow; tokens stored in Settings) ───────────
+
+  const settingsBack = (msg: string) => `/settings?msg=${encodeURIComponent(msg)}`;
+
+  app.post("/settings/gmail/credentials", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+    repo.setSetting("gmail_address", String(req.body.gmail_address ?? "").trim());
+    repo.setSetting("gmail_client_id", String(req.body.gmail_client_id ?? "").trim());
+    repo.setSetting("gmail_client_secret", String(req.body.gmail_client_secret ?? "").trim());
+    repo.audit(null, req.staff!.username, "gmail_credentials_saved", "stored OAuth credentials in settings");
+    res.redirect(settingsBack("Gmail credentials saved — now press “Connect with Google”."));
+  });
+
+  app.get("/settings/gmail/connect", requireLogin, requireRole("admin", "manager", "it"), (req, res) => {
+    const clientId = repo.getSetting("gmail_client_id", "");
+    if (!clientId) return res.redirect(settingsBack("Save the OAuth client ID and secret first."));
+    const state = crypto.randomBytes(16).toString("hex");
+    repo.setSetting("gmail_oauth_state", state);
+    const redirectUri = `${req.protocol}://${req.get("host")}/settings/gmail/callback`;
+    const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", "https://www.googleapis.com/auth/gmail.modify");
+    url.searchParams.set("access_type", "offline");
+    url.searchParams.set("prompt", "consent");
+    url.searchParams.set("state", state);
+    res.redirect(url.toString());
+  });
+
+  app.get("/settings/gmail/callback", requireLogin, requireRole("admin", "manager", "it"), async (req, res) => {
+    const state = String(req.query.state ?? "");
+    if (!state || state !== repo.getSetting("gmail_oauth_state", "")) {
+      return res.redirect(settingsBack("OAuth state mismatch — try connecting again."));
+    }
+    repo.setSetting("gmail_oauth_state", "");
+    if (req.query.error) {
+      return res.redirect(settingsBack(`Google returned an error: ${String(req.query.error)}`));
+    }
+    const code = String(req.query.code ?? "");
+    const clientId = repo.getSetting("gmail_client_id", "");
+    const clientSecret = repo.getSetting("gmail_client_secret", "");
+    const redirectUri = `${req.protocol}://${req.get("host")}/settings/gmail/callback`;
+    try {
+      const resp = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          code, client_id: clientId, client_secret: clientSecret,
+          redirect_uri: redirectUri, grant_type: "authorization_code",
+        }).toString(),
+      });
+      const json = (await resp.json()) as { refresh_token?: string; error_description?: string };
+      if (!json.refresh_token) {
+        return res.redirect(settingsBack(
+          `Google did not return a refresh token${json.error_description ? ` (${json.error_description})` : ""}. Press “Connect with Google” again and approve access.`
+        ));
+      }
+      repo.setSetting("gmail_refresh_token", json.refresh_token);
+      repo.audit(null, req.staff!.username, "gmail_connected", repo.getSetting("gmail_address", ""));
+      res.redirect(settingsBack("Gmail connected — live sorting starts within a minute."));
+    } catch (e) {
+      repo.audit(null, req.staff!.username, "gmail_connect_failed", (e as Error).message);
+      res.redirect(settingsBack(`Token exchange failed: ${(e as Error).message}`));
+    }
+  });
+
+  app.post("/settings/gmail/disconnect", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+    repo.setSetting("gmail_refresh_token", "");
+    repo.audit(null, req.staff!.username, "gmail_disconnected", "");
+    res.redirect(settingsBack("Gmail disconnected — live fetching stopped."));
+  });
 
   app.post("/settings/general", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
     for (const key of [
@@ -563,16 +676,16 @@ export function createApp(deps: WebDeps): Express {
     return token ? { token, applicant: repo.getPortalSession(token) } : { token: "", applicant: undefined };
   };
 
-  app.get("/portal", (req, res) => res.send(portalStartPage(undefined, req.theme)));
+  app.get("/portal", (req, res) => res.send(portalStartPage(undefined, req.theme, instName())));
 
   app.post("/portal/start", async (req, res) => {
     const ip = req.ip ?? "?";
-    if (!portalRateOk(ip)) return res.status(429).send(portalStartPage("Too many attempts — please wait a minute.", req.theme));
+    if (!portalRateOk(ip)) return res.status(429).send(portalStartPage("Too many attempts — please wait a minute.", req.theme, instName()));
     const a = repo.findByRef(String(req.body.ref ?? "").trim());
     const email = String(req.body.email ?? "").trim().toLowerCase();
     // Do not reveal whether the reference exists; but when it matches, send the OTP.
     if (!a || a.email_address !== email) {
-      return res.send(portalStartPage("If that reference and email match an application, a code has been sent.", req.theme));
+      return res.send(portalStartPage("If that reference and email match an application, a code has been sent.", req.theme, instName()));
     }
     const code = repo.createOtp(a.id);
     const delivery = repo.getSetting("portal_otp_delivery", "screen");
@@ -584,23 +697,23 @@ export function createApp(deps: WebDeps): Express {
           `Hello ${a.full_name ?? ""},\n\nYour one-time access code is: ${code}\n\nIt expires in 10 minutes. If you did not request it, you can ignore this message.\n\n${repo.getSetting("institution_name", "Admissions")}`,
           a.thread_id
         );
-        return res.send(portalOtpPage(a.ref_number, null, undefined, req.theme));
+        return res.send(portalOtpPage(a.ref_number, null, undefined, req.theme, instName()));
       } catch (e) {
         repo.audit(a.id, "system", "send_failed", `portal OTP email: ${(e as Error).message}`);
         // Fall back to on-screen delivery so the applicant is never locked out.
-        return res.send(portalOtpPage(a.ref_number, code, "Email delivery failed — showing the code here instead.", req.theme));
+        return res.send(portalOtpPage(a.ref_number, code, "Email delivery failed — showing the code here instead.", req.theme, instName()));
       }
     }
     // Demo/mock mode: show the code on screen.
-    res.send(portalOtpPage(a.ref_number, code, undefined, req.theme));
+    res.send(portalOtpPage(a.ref_number, code, undefined, req.theme, instName()));
   });
 
   app.post("/portal/verify", (req, res) => {
     const ip = req.ip ?? "?";
-    if (!portalRateOk(ip)) return res.status(429).send(portalStartPage("Too many attempts — please wait a minute.", req.theme));
+    if (!portalRateOk(ip)) return res.status(429).send(portalStartPage("Too many attempts — please wait a minute.", req.theme, instName()));
     const a = repo.findByRef(String(req.body.ref ?? "").trim());
     if (!a || !repo.consumeOtp(a.id, String(req.body.code ?? ""))) {
-      return res.send(portalOtpPage(String(req.body.ref ?? ""), null, "That code is not valid (codes expire after 10 minutes).", req.theme));
+      return res.send(portalOtpPage(String(req.body.ref ?? ""), null, "That code is not valid (codes expire after 10 minutes).", req.theme, instName()));
     }
     const token = repo.createPortalSession(a.id);
     repo.audit(a.id, "portal", "portal_login", "applicant signed in via one-time code");
@@ -611,7 +724,7 @@ export function createApp(deps: WebDeps): Express {
   app.get("/portal/home", (req, res) => {
     const { applicant } = portalApplicant(req);
     if (!applicant) return res.redirect("/portal");
-    res.send(portalHomePage(repo, applicant, req.query.msg ? String(req.query.msg) : undefined, req.theme));
+    res.send(portalHomePage(repo, applicant, req.query.msg ? String(req.query.msg) : undefined, req.theme, instName()));
   });
 
   app.post("/portal/logout", (req, res) => {
@@ -668,7 +781,7 @@ export function createApp(deps: WebDeps): Express {
 
   const rateOk = makeRateLimiter(10, 60_000);
 
-  app.get("/status", (req, res) => res.send(publicStatusForm(undefined, req.theme)));
+  app.get("/status", (req, res) => res.send(publicStatusForm(undefined, req.theme, instName())));
 
   app.post("/status", (req, res) => {
     const ip = req.ip ?? "?";
@@ -679,7 +792,7 @@ export function createApp(deps: WebDeps): Express {
     if (!a || a.email_address !== email) {
       return res.send(publicStatusForm("No application matches that reference number and email.", req.theme));
     }
-    res.send(publicStatusResult(repo, a, req.theme));
+    res.send(publicStatusResult(repo, a, req.theme, instName()));
   });
 
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
