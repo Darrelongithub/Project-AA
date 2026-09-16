@@ -51,7 +51,7 @@ async function main(): Promise<void> {
     gmail = new GmailClient(cfg.gmail);
     log("serve: live mode — Gmail ingestion enabled");
   } else {
-    // Gmail can still be connected later from Settings → Gmail connection.
+    // Gmail can still be connected later from Configuration → Gmail connection.
     log("serve: mock mode (no Gmail/Gemini). Run `npm run demo` first for sample data.");
   }
   const sender = new DelegatingSender(gmail ? new GmailSender(gmail) : new MockSender());
@@ -63,7 +63,7 @@ async function main(): Promise<void> {
   const port = cfg.port;
   app.listen(port, "0.0.0.0", () => {
     log(`serve: listening on http://0.0.0.0:${port}`);
-    log(`serve: staff console → /login (accounts are seeded in demo mode only)`);
+    log(`serve: staff console → /login (admin is created on first boot; demo staff come from \`npm run demo\`)`);
     log(`serve: applicants who email just their reference number receive a status reply`);
   });
 

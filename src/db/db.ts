@@ -283,6 +283,8 @@ function migrate(db: Database.Database): void {
   // base + ladder[n] days so "3,7,10" means Day 3, Day 7, Day 10.
   addColumn("applicants", "followup_base_at", "TEXT");
   addColumn("emails", "channel", "TEXT NOT NULL DEFAULT 'email'");
+  // Courses get an owner: the staff member responsible for handling them.
+  addColumn("programmes", "owner_id", "INTEGER REFERENCES staff_users(id)");
   addColumn("intakes", "deadline", "TEXT");
   // Wrong OTP guesses are counted; the code burns after too many failures.
   addColumn("portal_otps", "attempts", "INTEGER NOT NULL DEFAULT 0");

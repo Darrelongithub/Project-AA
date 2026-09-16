@@ -8,6 +8,7 @@
  */
 import * as crypto from "crypto";
 import { LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
+import { FONT_INSTRUMENT_SERIF_ITALIC_WOFF2, FONT_INSTRUMENT_SERIF_WOFF2, FONT_MANROPE_WOFF2 } from "./fonts";
 import express, { type Express, type Request, type Response } from "express";
 import type { Repo } from "../db/repo";
 import type { PipelineContext } from "../pipeline/adapters";
@@ -16,8 +17,8 @@ import { DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, ty
 import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import {
-  applicantsPage, casePage, dashboardPage, loginPage, notificationsPage,
-  queuePage, replayPage, settingsPage, staffPage, teamPage,
+  applicantsPage, casePage, configPage, dashboardPage, loginPage,
+  queuePage, replayPage, settingsPage, staffPage,
 } from "./pages";
 import { avatar, esc, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
@@ -50,8 +51,9 @@ function makeRateLimiter(limit: number, windowMs: number) {
 export function createApp(deps: WebDeps): Express {
   const { repo, ctx } = deps;
   const app = express();
-  /** Institution name for all branding — editable in Settings → General. */
-  const instName = (): string => repo.getSetting("institution_name", "Riara University");
+  /** Institution name for all branding. Fixed to the brand; the institution-name
+   * setting was removed from the UI at the user's request. */
+  const instName = (): string => "Riara University";
 
   app.disable("x-powered-by");
   // Behind any reverse proxy (the preview environment included) req.ip is the
@@ -99,6 +101,20 @@ export function createApp(deps: WebDeps): Express {
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.send(Buffer.from(LOGO_WHITE_BASE64, "base64"));
   });
+
+  // Self-hosted typefaces (no CDN): Manrope for UI, Instrument Serif display.
+  const fontRoutes: Array<[string, string]> = [
+    ["/assets/fonts/manrope.woff2", FONT_MANROPE_WOFF2],
+    ["/assets/fonts/instrument-serif.woff2", FONT_INSTRUMENT_SERIF_WOFF2],
+    ["/assets/fonts/instrument-serif-italic.woff2", FONT_INSTRUMENT_SERIF_ITALIC_WOFF2],
+  ];
+  for (const [path, b64] of fontRoutes) {
+    app.get(path, (_req, res) => {
+      res.setHeader("Content-Type", "font/woff2");
+      res.setHeader("Cache-Control", "public, max-age=604800");
+      res.send(Buffer.from(b64, "base64"));
+    });
+  }
 
   app.get("/login", (req, res) => res.send(loginPage(undefined, req.theme, instName())));
 
@@ -431,30 +447,57 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Team performance (staff listener) ────────────────────────────────────
 
-  app.get("/team", requireLogin, requireRole("admin", "manager"), (req, res) => res.send(teamPage(c(req))));
+  app.get("/team", requireLogin, (_req, res) => res.redirect("/staff"));
 
   // ── Notifications ────────────────────────────────────────────────────────
 
   app.get("/notifications", requireLogin, (req, res) => {
-    res.send(notificationsPage(c(req)));
+    // Alerts now live on the Overview page; opening the old link still clears them.
     repo.markNotificationsRead(req.staff!.id);
+    res.redirect("/#alerts");
+  });
+
+  app.post("/notifications/read-all", requireLogin, csrfCheck, (req, res) => {
+    repo.markNotificationsRead(req.staff!.id);
+    res.redirect("/#alerts");
   });
 
   // ── Settings (manager+) ──────────────────────────────────────────────────
 
   // 'it' role: cases + configuration, but not staff management.
   app.get("/settings", requireLogin, requireRole("admin", "manager", "it"), (req, res) =>
+    res.send(settingsPage(c(req), req.query.msg ? String(req.query.msg) : undefined))
+  );
+
+  // Configuration: courses, requirements, Gmail, intakes, templates, exports.
+  app.get("/config", requireLogin, requireRole("admin", "manager", "it"), (req, res) =>
     res.send(
-      settingsPage(
+      configPage(
         c(req),
         req.query.template ? String(req.query.template) : undefined,
         req.query.msg ? String(req.query.msg) : undefined
       ))
   );
 
+  // Assign who handles a course (shown on the administration overview).
+  app.post("/config/course-owner", requireLogin, requireRole("admin", "manager"), csrfCheck, (req, res) => {
+    const programme = String(req.body.programme ?? "").trim();
+    const ownerRaw = String(req.body.owner ?? "").trim();
+    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#courses`;
+    if (!programme) return res.redirect(back("No course selected."));
+    const ownerId = ownerRaw ? Number(ownerRaw) : null;
+    if (ownerId !== null && (!Number.isInteger(ownerId) || !repo.getStaff(ownerId))) {
+      return res.redirect(back("Unknown staff member."));
+    }
+    repo.assignProgrammeOwner(programme, ownerId);
+    const who = ownerId !== null ? repo.getStaff(ownerId)?.display_name ?? `#${ownerId}` : "nobody (unassigned)";
+    repo.audit(null, req.staff!.username, "course_owner_changed", `${programme} → ${who}`);
+    res.redirect(back(`Course ${programme} now handled by ${who}.`));
+  });
+
   // ── Gmail connect (OAuth code flow; tokens stored in Settings) ───────────
 
-  const settingsBack = (msg: string) => `/settings?msg=${encodeURIComponent(msg)}`;
+  const settingsBack = (msg: string) => `/config?msg=${encodeURIComponent(msg)}#gmail`;
 
   app.post("/settings/gmail/credentials", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
     repo.setSetting("gmail_address", String(req.body.gmail_address ?? "").trim());
@@ -527,18 +570,18 @@ export function createApp(deps: WebDeps): Express {
   });
 
   app.post("/settings/general", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
-    // Blank identity fields keep their current value (an empty institution name
-    // or ref prefix would break branding / ref generation); numbers are validated.
+    // Blank identity fields keep their current value (an empty ref prefix
+    // would break ref generation); numbers are validated.
     const ignored: string[] = [];
     const numOk = (v: string) => /^\d+(\.\d+)?$/.test(v) && Number(v) > 0;
     const ladderOk = (v: string) => v.split(",").every((p) => /^\d+$/.test(p.trim()) && Number(p.trim()) > 0);
     for (const key of [
-      "institution_name", "ref_prefix", "sla_target_hours", "escalation_hours", "from_name",
+      "ref_prefix", "sla_target_hours", "escalation_hours", "from_name",
       "unanswered_target_hours", "followup_ladder_days", "retention_days",
     ]) {
       if (typeof req.body[key] !== "string") continue;
       const v = String(req.body[key]).trim();
-      if ((key === "institution_name" || key === "ref_prefix") && !v) {
+      if (key === "ref_prefix" && !v) {
         ignored.push(key.replace(/_/g, " "));
         continue;
       }
@@ -585,12 +628,12 @@ export function createApp(deps: WebDeps): Express {
       // throws → 500. Validate first.
       const parsed = deadline ? new Date(`${deadline}T23:59:59Z`) : null;
       if (deadline && (parsed === null || isNaN(parsed.getTime()))) {
-        return res.redirect("/settings?msg=invalid-deadline");
+        return res.redirect("/config?msg=invalid-deadline#intakes");
       }
       repo.setIntakeDeadline(name, parsed ? parsed.toISOString() : null);
       repo.audit(null, req.staff!.username, "intake_deadline_changed", `${name} → ${deadline || "none"}`);
     }
-    res.redirect("/settings");
+    res.redirect("/config#intakes");
   });
 
   app.post("/settings/rules/add", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
@@ -598,13 +641,13 @@ export function createApp(deps: WebDeps): Express {
     // Anything outside the known document types would store a rule that can
     // never match — silently. Reject it instead of pretending.
     if (!DOC_TYPES.includes(docType as DocType) || docType === "unknown") {
-      return res.redirect("/settings?msg=" + encodeURIComponent("Unknown document type — rule not saved."));
+      return res.redirect("/config?msg=" + encodeURIComponent("Unknown document type — rule not saved.") + "#courses");
     }
     const minPoints = req.body.min_grade_points !== undefined && req.body.min_grade_points !== ""
       ? Number(req.body.min_grade_points)
       : null;
     if (minPoints !== null && (!Number.isFinite(minPoints) || minPoints < 0 || minPoints > 500)) {
-      return res.redirect("/settings?msg=" + encodeURIComponent("Minimum points must be a number between 0 and 500 — rule not saved."));
+      return res.redirect("/config?msg=" + encodeURIComponent("Minimum points must be a number between 0 and 500 — rule not saved.") + "#courses");
     }
     repo.upsertRule({
       programme: req.body.programme ? String(req.body.programme) : null,
@@ -614,13 +657,13 @@ export function createApp(deps: WebDeps): Express {
       minGradePoints: minPoints,
     });
     repo.audit(null, req.staff!.username, "requirements_changed", `rule added/updated for ${docType}`);
-    res.redirect("/settings");
+    res.redirect("/config#courses");
   });
 
   app.post("/settings/rules/delete", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
     repo.deleteRule(Number(req.body.id));
     repo.audit(null, req.staff!.username, "requirements_changed", `rule #${req.body.id} removed`);
-    res.redirect("/settings");
+    res.redirect("/config#courses");
   });
 
   app.post("/settings/lists/add", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
@@ -628,13 +671,13 @@ export function createApp(deps: WebDeps): Express {
     if (req.body.prog_code && req.body.prog_name) { repo.addProgramme(String(req.body.prog_code), String(req.body.prog_name)); added.push("programme"); }
     if (req.body.intake) { repo.addIntake(String(req.body.intake)); added.push("intake"); }
     repo.audit(null, req.staff!.username, "lists_changed", "programmes/intakes updated");
-    res.redirect("/settings?msg=" + encodeURIComponent(added.length ? `Added ${added.join(" and ")}.` : "Nothing to add — fill in a programme code and name, or an intake."));
+    res.redirect("/config?msg=" + encodeURIComponent(added.length ? `Added ${added.join(" and ")}.` : "Nothing to add — fill in a programme code and name, or an intake.") + "#courses");
   });
 
   app.post("/settings/template", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
     const key = String(req.body.key ?? "");
     const existing = repo.getTemplate(key);
-    const back = (m: string) => `/settings?template=${encodeURIComponent(key)}&msg=${encodeURIComponent(m)}`;
+    const back = (m: string) => `/config?template=${encodeURIComponent(key)}&msg=${encodeURIComponent(m)}#templates`;
     if (!existing) return res.redirect(back("Unknown template — nothing saved."));
     const name = String(req.body.name ?? "").trim();
     const subject = String(req.body.subject ?? "").trim();
@@ -647,7 +690,7 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Staff management (admin) ─────────────────────────────────────────────
 
-  app.get("/staff", requireLogin, requireRole("admin"), (req, res) =>
+  app.get("/staff", requireLogin, requireRole("admin", "manager"), (req, res) =>
     res.send(staffPage(c(req), req.query.msg ? String(req.query.msg) : undefined))
   );
 

@@ -8,7 +8,7 @@ import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../typ
 import { docLabel } from "../rules";
 import { verifyPassword } from "../util/password";
 import {
-  avatar, categoryBadge, confidenceBadge, crest, esc, flagLabel, fmtDate, fmtTime, layout,
+  avatar, categoryBadge, confidenceBadge, crest, esc, flagLabel, flowLine, fmtDate, fmtTime, layout,
   lifecycleBadge, lifecycleStepper, priorityBadge, slaText, triageBadge, type Theme,
 } from "./views";
 
@@ -55,96 +55,116 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
 }
 
 
-// ── Admin oversight (role-appropriate landing view) ────────────────────────
-// Administrators get operational oversight — team, automation, integrations,
-// audit — not the per-applicant casework queue officers work from.
+// ── Overview landing views ─────────────────────────────────────────────────
+// Admins land on administration: courses, ownership, activity, system status.
+// Managers/officers land on their casework command center, alerts included.
+
+function firstName(display: string, username: string): string {
+  const w = (display || "").trim().split(/\s+/)[0] || username;
+  return w === "System" ? username : w;
+}
+
+function greeting(): string {
+  const hour = new Date().getHours();
+  return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+}
 
 function adminDashboard(c: Ctx): string {
   const { repo } = c;
   const s = repo.dashboardStats();
+  const audit = repo.recentAudit(12);
   const team = repo.staffStats();
-  const audit = repo.recentAudit(10);
-  const accuracy = repo.accuracyStats();
-  const globalMode = repo.getSetting("automation_mode", "auto");
+  const programmes = repo.listProgrammes() as Array<{ code: string; name: string; owner_id: number | null; owner_name: string | null }>;
+  const rules = repo.listRules();
+  const all = repo.allApplicants();
   const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
-  const lastErr = repo.getSetting("gmail_last_error", "");
-  const activeStaff = team.filter((t) => t.active).length;
+  const globalMode = repo.getSetting("automation_mode", "auto");
 
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const applications = Number(s.applications);
+  const completed = Number(s.completed);
+  const completion = applications > 0 ? Math.round((completed / applications) * 100) : null;
 
-  const stat = (n: number | string, l: string) =>
-    `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`;
-
-  const teamRows = team
-    .map((t) => `<tr>
-      <td><b>${esc(t.display_name)}</b> <span class="muted small">@${esc(t.username)}</span></td>
-      <td><span class="badge b-gray">${esc(t.role)}</span></td>
-      <td>${t.assignedCases}</td>
-      <td>${t.emailsSent}</td>
-      <td>${t.avgResponseMinutes === null ? `<span class="muted">no data</span>` : esc(formatDuration(t.avgResponseMinutes))}</td>
-      <td>${t.admissionsCompleted}</td>
-    </tr>`)
+  const courseRows = programmes
+    .map((p) => {
+      const specific = rules.filter((r) => r.programme === p.code);
+      const effective = specific.length ? specific : rules.filter((r) => r.programme === null && r.intake === null);
+      const required = effective.filter((r) => r.required).length;
+      const mins = effective.map((r) => r.minGradePoints).filter((n): n is number => n !== null);
+      const reqText = required ? `${required} required doc${required === 1 ? "" : "s"}${mins.length ? ` · min ${Math.max(...mins)} pts` : ""}` : `<span class="muted">base rules apply</span>`;
+      const n = all.filter((a) => a.programme === p.code).length;
+      return `<tr>
+        <td><b>${esc(p.code)}</b> <span class="muted small">${esc(p.name)}</span></td>
+        <td>${p.owner_name ? esc(p.owner_name) : `<span class="muted">unassigned · <a href="/config#courses">assign</a></span>`}</td>
+        <td class="small">${reqText}</td>
+        <td>${n}</td>
+      </tr>`;
+    })
     .join("");
 
-  const auditRows = audit
-    .map((e) => `<tr>
-      <td class="small muted nowrap">${esc(fmtDate(e.at))}</td>
-      <td class="small mono">${esc(e.actor)}</td>
-      <td class="small">${esc(e.event)}</td>
-      <td class="small muted">${esc(e.detail.slice(0, 90))}</td>
-    </tr>`)
+  const activityRows = audit
+    .map((e) => `<div class="feed-row">
+      <span class="feed-when">${esc(fmtDate(e.at))}</span>
+      <span class="feed-actor mono">${esc(e.actor)}</span>
+      <span class="feed-event">${esc(e.event)}</span>
+      <span class="feed-detail muted">${esc(e.detail.slice(0, 110))}</span>
+    </div>`)
     .join("");
 
   return head(
     c,
-    `Administration — ${c.institution}`,
+    `Overview — ${c.institution}`,
     "dashboard",
     `
-<h1>${greeting}, ${esc(c.user.display_name)}</h1>
-<div class="sub">${esc(c.institution)} · administration overview — <a href="/applicants">applicant cases</a> and the <a href="/queue">review queue</a> remain available from the menu.</div>
-
-<div class="grid stats">
-  ${stat(s.applications, "Applicants on record")}
-  ${stat(s.completed, "Admissions completed")}
-  ${stat(`${activeStaff}/${team.length}`, "Staff active")}
-  ${stat(`${accuracy.autoSends + accuracy.humanSends}`, "Replies sent to date")}
-</div>
-
-<div class="cols">
-  <div class="card nopad">
-    <h2 style="padding:18px 20px 0">Team <a class="small" href="/team">full report →</a></h2>
-    <table style="margin-top:10px"><tr><th>Member</th><th>Role</th><th>Cases</th><th>Replies</th><th>Avg response</th><th>Completed</th></tr>
-    ${teamRows}</table>
+<div class="hero">
+  <div>
+    <div class="kicker">Administration</div>
+    <h1>${greeting()}, ${esc(firstName(c.user.display_name, c.user.username))}.</h1>
+    <p class="lede">Everything worth knowing is right here.</p>
   </div>
-  <div class="card">
+  ${completion !== null ? `<div class="herostat"><div class="n">${completion}%</div><div class="l">of ${applications} files complete</div></div>` : ""}
+</div>
+${flowLine()}
+
+<section class="card nopad">
+  <div class="card-head"><h2>Courses &amp; ownership</h2><a class="small" href="/config#courses">manage →</a></div>
+  ${programmes.length
+    ? `<table>
+        <tr><th>Course</th><th>Handled by</th><th>Requirements</th><th>Applicants</th></tr>
+        ${courseRows}
+      </table>`
+    : `<div class="empty">${flowLine(150, 26)}<p>No courses configured yet.</p><a class="btn small" href="/config#courses">Add courses</a></div>`}
+</section>
+
+<div class="cols wide">
+  <section class="card nopad">
+    <div class="card-head"><h2>Recent activity</h2></div>
+    ${audit.length
+      ? `<div class="feed">${activityRows}</div>`
+      : `<div class="empty"><p>No activity yet — it appears here as your team works.</p></div>`}
+  </section>
+  <section class="card">
     <h2>System</h2>
-    <p class="small"><b>Gmail:</b> ${gmailConnected
-      ? `connected${lastSync ? ` — last sync ${esc(fmtDate(lastSync))}` : " — first sync pending"}`
-      : "not connected"} ${lastErr ? `<span style="color:var(--red)">(${esc(lastErr.slice(0, 80))})</span>` : ""} · <a href="/settings#gmail">manage</a></p>
-    <p class="small"><b>Automation:</b> global mode <b>${esc(globalMode === "draft" ? "draft-first (held for approval)" : "auto")}</b> · <a href="/settings#automation">manage</a></p>
-    <p class="small"><b>Staff accounts:</b> <a href="/staff">${team.length} total, ${activeStaff} active</a>${team.some((t) => t.active && (() => { const k: Record<string, string> = { admin: "admin123", manager: "manager123", jane: "jane123", otis: "otis123", kofi: "kofi123" }; const f = repo.getStaffByUsername(t.username); return Boolean(k[t.username] && f && verifyPassword(k[t.username], f.password_hash)); })()) ? ` · <span class="badge b-red">default passwords in use</span>` : ""}</p>
-    <p class="small"><b>Send errors:</b> ${accuracy.sendErrors} logged</p>
-    <p class="small"><b>Intakes:</b> ${repo.listIntakeRows().map((i) => `${esc(i.name)}${i.deadline ? ` (${esc(i.deadline)})` : ""}`).join(" · ") || "none"} · <a href="/settings#intakes">manage</a></p>
-  </div>
-</div>
-
-<div class="card nopad">
-  <h2 style="padding:18px 20px 0">Recent activity <span class="muted small">(audit trail)</span></h2>
-  <table style="margin-top:10px"><tr><th>When</th><th>Actor</th><th>Event</th><th>Detail</th></tr>
-  ${auditRows || `<tr><td colspan="4" class="muted">No activity yet.</td></tr>`}</table>
+    <div class="kv">
+      <div><span>Gmail</span><b>${gmailConnected ? `connected${lastSync ? ` · synced ${esc(fmtDate(lastSync))}` : ""}` : "not connected"} <a class="small" href="/config#gmail">manage</a></b></div>
+      <div><span>Automation</span><b>${globalMode === "draft" ? "draft-first" : "auto"} · <a class="small" href="/settings#automation">change</a></b></div>
+      <div><span>Team</span><b>${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">staff</a></b></div>
+      <div><span>Replies to date</span><b>${Number(s.autoHandled) + team.reduce((n, t) => n + t.emailsSent, 0)}</b></div>
+    </div>
+  </section>
 </div>`
   );
 }
 
-// ── Admissions Command Center (v3 homepage) ────────────────────────────────
-// Not an inbox clone: greeting → what needs attention → today's counters →
-// bottlenecks → automation accuracy.
-
 export function dashboardPage(c: Ctx): string {
-  const { repo } = c;
   if (c.user.role === "admin") return adminDashboard(c);
+  return officerDashboard(c);
+}
+
+// ── Admissions command center (managers & officers), alerts merged in ──────
+
+function officerDashboard(c: Ctx): string {
+  const { repo } = c;
   const s = repo.dashboardStats();
   const today = repo.todayStats();
   const accuracy = repo.accuracyStats();
@@ -152,10 +172,8 @@ export function dashboardPage(c: Ctx): string {
   const unanswered = repo.unansweredCases();
   const target = Number(repo.getSetting("unanswered_target_hours", "4"));
   const categories = repo.categoryCounts();
-  const inst = repo.getSetting("institution_name", "");
+  const alerts = repo.notificationsFor(c.user.id, 6);
 
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const activeCount = Number(s.applications) - Number(s.completed);
 
   const attention = [
@@ -165,16 +183,17 @@ export function dashboardPage(c: Ctx): string {
     { label: "files incomplete (documents missing)", n: Number(s.incomplete), href: "/applicants?filter=awaiting_docs", tone: "blue" },
     { label: "replies auto-processed to date", n: Number(s.autoHandled), href: "/queue", tone: "green" },
   ];
-  const banner = attention
-    .map((b) => `<a class="attn b-${b.tone}" href="${b.href}"><span class="n">${b.n}</span> ${esc(b.label)}</a>`)
+  const attentionRows = attention
+    .map((b) => `<a class="attn-row" href="${b.href}"><span class="n t-${b.tone}">${b.n}</span><span class="l">${esc(b.label)}</span><span class="arrow">→</span></a>`)
     .join("");
 
-  const needsAttention = queue.slice(0, 8)
+  const needsAttention = queue
+    .slice(0, 8)
     .map((r) => {
       const overdue = r.sla_due_at && !r.sla_handled_at && r.sla_due_at < new Date().toISOString();
       return `<tr>
         <td class="mono"><a href="/case/${r.id}">${esc(r.ref_number)}</a></td>
-        <td><div class="nameline">${avatar(r.full_name ?? r.ref_number, 28)}<span>${esc(r.full_name ?? "—")}</span></div></td>
+        <td><div class="nameline">${avatar(r.full_name ?? r.ref_number, 26)}<span>${esc(r.full_name ?? "—")}</span></div></td>
         <td>${triageBadge(r.computed_status)} ${priorityBadge(r.priority)}</td>
         <td class="small">${esc(r.flag_summary ? humanizeFlagSummary(r.flag_summary) : "—")}</td>
         <td class="nowrap small ${overdue ? "overdue" : "muted"}">${esc(slaText(r.sla_due_at, r.sla_handled_at)) || "—"}</td>
@@ -182,7 +201,8 @@ export function dashboardPage(c: Ctx): string {
     })
     .join("");
 
-  const unansweredRows = unanswered.slice(0, 8)
+  const unansweredRows = unanswered
+    .slice(0, 8)
     .map((u) => `<tr>
       <td class="mono"><a href="/case/${u.applicant.id}">${esc(u.applicant.ref_number)}</a></td>
       <td>${esc(u.applicant.full_name ?? "—")}</td>
@@ -190,9 +210,9 @@ export function dashboardPage(c: Ctx): string {
     </tr>`)
     .join("");
 
-  // Bottleneck: where are applicants getting stuck (by enquiry category).
   const totalCat = categories.reduce((n, r) => n + r.n, 0) || 1;
-  const catRows = categories.slice(0, 6)
+  const catRows = categories
+    .slice(0, 6)
     .map((r) => {
       const pct = Math.round((r.n / totalCat) * 100);
       return `<tr>
@@ -205,67 +225,103 @@ export function dashboardPage(c: Ctx): string {
 
   const reviewed = accuracy.greenCases + accuracy.watcherCatches + accuracy.humanOverrides + accuracy.sendErrors;
   const accuracyPct = reviewed > 0 ? Math.round((accuracy.greenCases / reviewed) * 100) : 100;
-  const stat = (n: number | string, l: string, alert = false) =>
-    `<div class="stat ${alert ? "alert" : ""}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`;
-  // Honest metrics: show "no data" instead of a misleading 0, and keep large
-  // values readable (35h 12m rather than 2112.4 min).
   const avgAuto = Number(s.avgResponseMin) > 0 ? formatDuration(Number(s.avgResponseMin)) : "no data";
   const avgReview = Number(s.avgReviewHours) > 0
     ? (Number(s.avgReviewHours) < 48 ? `${s.avgReviewHours} hrs` : formatDuration(Number(s.avgReviewHours) * 60))
     : "no data";
 
+  const alertRows = alerts
+    .map((n) => `<div class="feed-row ${n.read ? "read" : ""}">
+      <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : "b-blue"}">${esc(n.kind)}</span>
+      <span class="feed-msg">${esc(n.message.replace(/^\u26a0\ufe0f\s*/, ""))}</span>
+      ${n.applicant_id ? `<a class="small nowrap" href="/case/${n.applicant_id}">open →</a>` : ""}
+      <span class="feed-when right">${esc(fmtDate(n.at))}</span>
+    </div>`)
+    .join("");
+
+  const heroStat =
+    Number(s.humanReview) > 0
+      ? { n: String(s.humanReview), l: "cases waiting for review" }
+      : reviewed > 0
+        ? { n: `${accuracyPct}%`, l: "automation stood uncorrected" }
+        : null;
+
   return head(
     c,
-    `Command Center — ${inst}`,
+    `Overview — ${c.institution}`,
     "dashboard",
     `
-<h1>${greeting}, ${esc(c.user.display_name)}</h1>
-<div class="sub">${esc(inst)} · ${activeCount} active applicant${activeCount === 1 ? "" : "s"}</div>
-
-<div class="card attn-banner">
-  <h2>Needs attention</h2>
-  <div class="attn-grid">${banner}</div>
-</div>
-
-<div class="grid stats">
-  ${stat(today.emailsToday, "Emails today")}
-  ${stat(today.docsToday, "Documents today")}
-  ${stat(today.completedToday, "Cases completed today")}
-  ${stat(avgAuto, "Avg auto-response (last 7 days)")}
-  ${stat(avgReview, "Avg review time")}
-</div>
-
-<div class="cols">
-  <div class="card">
-    <h2>What needs my attention <a class="small" href="/queue">full queue →</a></h2>
-    ${queue.length ? `<table><tr><th>Ref</th><th>Applicant</th><th>Verdict</th><th>Flags</th><th>SLA</th></tr>${needsAttention}</table>` : `<p class="muted">Queue is empty.</p>`}
+<div class="hero">
+  <div>
+    <div class="kicker">${esc(c.institution)} · ${activeCount} active applicant${activeCount === 1 ? "" : "s"}</div>
+    <h1>${greeting()}, ${esc(firstName(c.user.display_name, c.user.username))}.</h1>
+    <p class="lede">Here is what needs you today.</p>
   </div>
-  <div class="card">
-    <h2>Unanswered emails <span class="muted small">(target ${target}h)</span></h2>
-    ${unanswered.length ? `<table><tr><th>Ref</th><th>Applicant</th><th>Waiting</th></tr>${unansweredRows}</table>` : `<p class="muted">Every applicant email has a reply.</p>`}
-  </div>
+  ${heroStat ? `<div class="herostat"><div class="n">${heroStat.n}</div><div class="l">${heroStat.l}</div></div>` : ""}
 </div>
+${flowLine()}
 
-<div class="cols">
-  <div class="card">
-    <h2>Where applicants get stuck</h2>
-    <p class="small muted">Share of incoming email by category — the big bars are your bottlenecks.</p>
-    ${catRows ? `<table>${catRows}</table>` : `<p class="muted">No emails yet.</p>`}
-  </div>
-  <div class="card">
-    <h2>Automation accuracy</h2>
-    ${reviewed > 0
-      ? `<p><span class="n" style="font-size:26px;font-weight:800">${accuracyPct}%</span> <span class="muted small">of automation decisions stood uncorrected</span></p>`
-      : `<p class="muted">No automation decisions recorded yet — accuracy appears here once the engine has processed mail.</p>`}
-    <div class="grid stats">
-      ${stat(accuracy.greenCases, "Clean Greens")}
-      ${stat(accuracy.watcherCatches, "Watcher catches")}
-      ${stat(accuracy.humanOverrides, "Human overrides")}
-      ${stat(accuracy.sendErrors, "Send errors", accuracy.sendErrors > 0)}
+<div class="cols wide">
+  <section class="card nopad">
+    <div class="card-head"><h2>Needs attention</h2><a class="small" href="/queue">full queue →</a></div>
+    <div>${attentionRows}</div>
+  </section>
+  <section class="card">
+    <h2>Today</h2>
+    <div class="kv">
+      <div><span>Emails today</span><b>${today.emailsToday}</b></div>
+      <div><span>Documents today</span><b>${today.docsToday}</b></div>
+      <div><span>Cases completed today</span><b>${today.completedToday}</b></div>
+      <div><span>Avg auto-response (7 days)</span><b>${esc(avgAuto)}</b></div>
+      <div><span>Avg review time</span><b>${esc(avgReview)}</b></div>
     </div>
-    <p class="small muted">${accuracy.autoSends} automated sends vs ${accuracy.humanSends} human sends · ${accuracy.reopened} cases reopened</p>
+  </section>
+</div>
+
+<div class="cols wide">
+  <section class="card nopad">
+    <div class="card-head"><h2>What needs my attention</h2></div>
+    ${queue.length
+      ? `<table><tr><th>Ref</th><th>Applicant</th><th>Verdict</th><th>Flags</th><th>SLA</th></tr>${needsAttention}</table>`
+      : `<div class="empty"><p>Queue is empty — every case is handled.</p></div>`}
+  </section>
+  <section class="card nopad" id="alerts">
+    <div class="card-head"><h2>Alerts${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
+      ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark all read</button></form>` : ""}
+    </div>
+    ${alerts.length
+      ? `<div class="feed">${alertRows}</div>`
+      : `<div class="empty"><p>No alerts. Escalations and new review cases appear here.</p></div>`}
+  </section>
+</div>
+
+<div class="cols wide">
+  <section class="card nopad">
+    <div class="card-head"><h2>Unanswered emails <span class="muted small">(target ${target}h)</span></h2></div>
+    ${unanswered.length
+      ? `<table><tr><th>Ref</th><th>Applicant</th><th>Waiting</th></tr>${unansweredRows}</table>`
+      : `<div class="empty"><p>Every applicant email has a reply.</p></div>`}
+  </section>
+  <section class="card">
+    <h2>Where applicants get stuck</h2>
+    <p class="small muted" style="margin-top:-6px">Share of incoming email by category — the long bars are your bottlenecks.</p>
+    ${catRows ? `<table>${catRows}</table>` : `<p class="muted">No emails yet.</p>`}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Automation accuracy</h2>
+  ${reviewed > 0
+    ? `<p style="margin:2px 0 12px"><span style="font-family:var(--display);font-size:30px">${accuracyPct}%</span> <span class="muted small">of automation decisions stood uncorrected</span></p>`
+    : `<p class="muted">No automation decisions recorded yet — accuracy appears here once the engine has processed mail.</p>`}
+  <div class="kv">
+    <div><span>Clean Greens</span><b>${accuracy.greenCases}</b></div>
+    <div><span>Watcher catches</span><b>${accuracy.watcherCatches}</b></div>
+    <div><span>Human overrides</span><b>${accuracy.humanOverrides}</b></div>
+    <div><span>Send errors</span><b ${accuracy.sendErrors > 0 ? 'style="color:var(--red)"' : ""}>${accuracy.sendErrors}</b></div>
   </div>
-</div>`
+  <p class="small muted" style="margin-bottom:0">${accuracy.autoSends} automated sends vs ${accuracy.humanSends} human sends · ${accuracy.reopened} cases reopened</p>
+</section>`
   );
 }
 
@@ -609,7 +665,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
     <div class="card">
       <h2>Document checklist</h2>
       <div class="checklist">${checklist}</div>
-      <p class="small muted">${a.requirements_snapshot ? "Judged by the requirement set frozen at first triage (rule changes don't move goalposts)." : `Resolved for ${esc(a.programme ?? "all programmes")} / ${esc(a.intake ?? "all intakes")}`} — edit rules in Settings.</p>
+      <p class="small muted">${a.requirements_snapshot ? "Judged by the requirement set frozen at first triage (rule changes don't move goalposts)." : `Resolved for ${esc(a.programme ?? "all programmes")} / ${esc(a.intake ?? "all intakes")}`} — edit rules in Configuration.</p>
     </div>
 
     <div class="card">
@@ -742,99 +798,26 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
   );
 }
 
-// ── Settings (features 8, 35, 36, 37) ──────────────────────────────────────
+// ── Settings (app behaviour) & Configuration (admissions setup) ────────────
 
-export function settingsPage(c: Ctx, selectedTemplate?: string, flash?: string): string {
+export function settingsPage(c: Ctx, flash?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
-  const rules = repo.listRules();
-  const programmes = repo.listProgrammes();
-  const intakes = repo.listIntakes();
-  const templates = repo.listTemplates();
-
-  const ruleRows = rules
-    .map((r) => `<tr>
-      <td>${r.programme ? esc(r.programme) : "<i>all</i>"}</td>
-      <td>${r.intake ? esc(r.intake) : "<i>all</i>"}</td>
-      <td>${esc(docLabel(r.document_type))}</td>
-      <td>${r.required ? "✓ required" : "optional"}</td>
-      <td>${r.minGradePoints ?? "—"}</td>
-      <td><form method="post" action="/settings/rules/delete"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${r.id}"><button class="btn small ghost">Remove</button></form></td>
-    </tr>`)
-    .join("");
-
-  const tplOptions = templates.map((t) => `<option value="${esc(t.key)}">${esc(t.name)} (${esc(t.key)})</option>`).join("");
-  const first = templates[0];
-
   const settingInput = (key: string, label: string) =>
     `<div><label>${esc(label)}</label><input type="text" name="${esc(key)}" value="${esc(settings[key] ?? "")}"></div>`;
 
-  return layout({
-    title: "Settings",
-    user: c.user,
-    unread: c.unread,
-    active: "settings",
-    csrf: c.csrf,
-    institution: c.institution,
-    content: `
+  return head(
+    c,
+    "Settings",
+    "settings",
+    `
 <h1>Settings</h1>
-<div class="sub">Requirements, templates and SLAs — changes apply to newly processed email immediately.</div>
+<div class="sub">How the console behaves — automation, response targets, retention.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
-
-<div class="card" id="general">
-  <h2>Institution &amp; SLA</h2>
-  <form method="post" action="/settings/general">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-    <div class="formrow">
-      ${settingInput("institution_name", "Institution name")}
-      ${settingInput("ref_prefix", "Reference prefix")}
-      ${settingInput("sla_target_hours", "Response target (hours)")}
-      ${settingInput("escalation_hours", "Escalate after (hours)")}
-      ${settingInput("from_name", "From name")}
-    </div>
-    <div class="formrow">
-      ${settingInput("unanswered_target_hours", "Unanswered-email target (hours)")}
-      ${settingInput("followup_ladder_days", "Follow-up ladder (days, e.g. 3,7,10)")}
-      ${settingInput("retention_days", "Retention of completed cases (days)")}
-    </div>
-    <p><button class="btn">Save settings</button></p>
-  </form>
-</div>
-
-${(() => {
-    const gAddress = settings["gmail_address"] ?? "";
-    const gClientId = settings["gmail_client_id"] ?? "";
-    const gClientSecret = settings["gmail_client_secret"] ?? "";
-    const gRefresh = settings["gmail_refresh_token"] ?? "";
-    const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
-    return `<div class="card" id="gmail">
-  <h2>Gmail connection ${connected
-    ? `<span class="badge b-green">connected — live sorting on</span>`
-    : `<span class="badge b-orange">not connected</span>`}</h2>
-  <p class="small muted">Connect the admissions mailbox so incoming mail is fetched, triaged and sorted automatically every minute. In Google Cloud Console, enable the <b>Gmail API</b>, create an <b>OAuth client ID</b> (type: Web application) and add this server's <span class="mono">/settings/gmail/callback</span> URL to its authorised redirect URIs.</p>
-  <form method="post" action="/settings/gmail/credentials">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-    <div class="formrow">
-      <div><label>Gmail address</label><input type="email" name="gmail_address" value="${esc(gAddress)}" placeholder="admissions@institution.ac.ke"></div>
-      <div><label>OAuth client ID</label><input type="text" name="gmail_client_id" value="${esc(gClientId)}" placeholder="…apps.googleusercontent.com"></div>
-      <div><label>OAuth client secret</label><input type="password" name="gmail_client_secret" value="" placeholder="${gClientSecret ? "saved — enter a new value to replace" : "GOCSPX-…"}" autocomplete="new-password"></div>
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="btn ghost">Save credentials</button>
-      ${gClientId && gClientSecret ? `<a class="btn" href="/settings/gmail/connect">Connect with Google…</a>` : ""}
-      ${connected ? `<form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>` : ""}
-    </div>
-  </form>
-  <p class="small muted" style="margin-top:10px">${connected
-    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically — no restart needed.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
-    : "Mail is not being fetched yet. Emails can still be replayed through the simulator/demo."}</p>
-  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}</p>` : ""}
-</div>`;
-  })()}
 
 <div class="card" id="automation">
   <h2>Automation mode (draft-first)</h2>
-  <p class="small muted">Recommended rollout: keep the global mode on <b>draft</b> (every automated reply waits for a human), then switch automation on category by category as you trust it. Factual replies only — receipts, missing-doc lists, status answers.</p>
+  <p class="small muted" style="margin-top:-6px">Recommended rollout: keep the global mode on <b>draft</b> (every automated reply waits for a human), then switch automation on category by category as you trust it. Factual replies only — receipts, missing-doc lists, status answers.</p>
   <form method="post" action="/settings/automation/global" class="formrow" style="align-items:end">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div><label>Global mode</label><select name="mode">
@@ -843,7 +826,7 @@ ${(() => {
     </select></div>
     <div style="flex:0"><button class="btn">Apply global mode</button></div>
   </form>
-  <table style="margin-top:10px"><tr><th>Email category</th><th>Mode</th><th></th></tr>
+  <table style="margin-top:14px"><tr><th>Email category</th><th>Mode</th><th></th></tr>
     ${(["application", "document_submission", "missing_document", "fee_enquiry", "admission_enquiry", "follow_up", "complaint", "other"] as string[])
       .map((cat) => {
         const mode = c.repo.automationMode(cat);
@@ -860,16 +843,143 @@ ${(() => {
   <p class="small muted">Note: with global mode set to draft, per-category switches take effect once global returns to auto.</p>
 </div>
 
+<div class="card" id="targets">
+  <h2>Response targets &amp; retention</h2>
+  <form method="post" action="/settings/general">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      ${settingInput("ref_prefix", "Reference prefix")}
+      ${settingInput("sla_target_hours", "Response target (hours)")}
+      ${settingInput("escalation_hours", "Escalate after (hours)")}
+      ${settingInput("from_name", "From name")}
+    </div>
+    <div class="formrow">
+      ${settingInput("unanswered_target_hours", "Unanswered-email target (hours)")}
+      ${settingInput("followup_ladder_days", "Follow-up ladder (days, e.g. 3,7,10)")}
+      ${settingInput("retention_days", "Retention of completed cases (days)")}
+    </div>
+    <p><button class="btn">Save settings</button></p>
+  </form>
+</div>`
+  );
+}
+
+export function configPage(c: Ctx, selectedTemplate?: string, flash?: string): string {
+  const { repo } = c;
+  const settings = repo.allSettings();
+  const rules = repo.listRules();
+  const programmes = repo.listProgrammes() as Array<{ code: string; name: string; owner_id: number | null; owner_name: string | null }>;
+  const intakes = repo.listIntakes();
+  const templates = repo.listTemplates();
+  const staff = repo.listStaff().filter((m) => m.active);
+
+  const ruleRows = rules
+    .map((r) => `<tr>
+      <td>${r.programme ? esc(r.programme) : "<i>all</i>"}</td>
+      <td>${r.intake ? esc(r.intake) : "<i>all</i>"}</td>
+      <td>${esc(docLabel(r.document_type))}</td>
+      <td>${r.required ? "required" : "optional"}</td>
+      <td>${r.minGradePoints ?? "—"}</td>
+      <td><form method="post" action="/settings/rules/delete"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${r.id}"><button class="btn small ghost">Remove</button></form></td>
+    </tr>`)
+    .join("");
+
+  const courseRows = programmes
+    .map((p) => `<tr>
+      <td><b>${esc(p.code)}</b></td>
+      <td class="small">${esc(p.name)}</td>
+      <td><form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <input type="hidden" name="programme" value="${esc(p.code)}">
+        <select name="owner" style="width:auto;min-width:190px">
+          <option value="">Unassigned</option>
+          ${staff.map((m) => `<option value="${m.id}" ${p.owner_id === m.id ? "selected" : ""}>${esc(m.display_name)} (${esc(m.role)})</option>`).join("")}
+        </select>
+        <button class="btn small ghost">Assign</button>
+      </form></td>
+    </tr>`)
+    .join("");
+
+  const first = templates[0];
+
+  const gAddress = settings["gmail_address"] ?? "";
+  const gClientId = settings["gmail_client_id"] ?? "";
+  const gClientSecret = settings["gmail_client_secret"] ?? "";
+  const gRefresh = settings["gmail_refresh_token"] ?? "";
+  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
+
+  return head(
+    c,
+    "Configuration",
+    "config",
+    `
+<h1>Configuration</h1>
+<div class="sub">Courses, requirements, templates and integrations — changes apply to newly processed email immediately.</div>
+${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+
+<div class="card nopad" id="courses">
+  <div class="card-head"><h2>Courses &amp; ownership</h2></div>
+  <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone. Assign the responsible officer per course — they appear on the administration overview.</p>
+  ${programmes.length
+    ? `<table><tr><th>Code</th><th>Course</th><th>Handled by</th></tr>${courseRows}</table>`
+    : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
+  <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
+    <h2>Requirement rules</h2>
+    <p class="small muted" style="margin-top:-6px">Most specific rule wins: programme+intake → programme → intake → base (all).</p>
+    <table><tr><th>Programme</th><th>Intake</th><th>Document</th><th>Required?</th><th>Min points</th><th></th></tr>${ruleRows}</table>
+    <form method="post" action="/settings/rules/add" class="formrow" style="margin-top:14px">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <div><label>Programme</label><select name="programme"><option value="">All programmes</option>${programmes.map((p) => `<option value="${esc(p.code)}">${esc(p.code)}</option>`).join("")}</select></div>
+      <div><label>Intake</label><select name="intake"><option value="">All intakes</option>${intakes.map((i) => `<option value="${esc(i)}">${esc(i)}</option>`).join("")}</select></div>
+      <div><label>Document</label><select name="document_type">${(["academic_cert", "kcpe_cert", "id", "birth_cert", "application_form"] as DocType[]).map((d) => `<option value="${d}">${esc(docLabel(d))}</option>`).join("")}</select></div>
+      <div><label>Required</label><select name="required"><option value="1">required</option><option value="0">optional</option></select></div>
+      <div><label>Min points</label><input type="number" name="min_grade_points" placeholder="optional"></div>
+      <div style="flex:0"><label>&nbsp;</label><button class="btn">Add rule</button></div>
+    </form>
+    <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <div><label>New programme code</label><input type="text" name="prog_code" placeholder="e.g. MED"></div>
+      <div style="flex:2"><label>Programme name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
+      <div><label>New intake</label><input type="text" name="intake" placeholder="e.g. May 2027"></div>
+      <div style="flex:0"><label>&nbsp;</label><button class="btn ghost">Add</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="card" id="gmail">
+  <h2>Gmail connection ${connected
+    ? `<span class="badge b-green">connected — live sorting on</span>`
+    : `<span class="badge b-orange">not connected</span>`}</h2>
+  <p class="small muted" style="margin-top:-6px">Connect the admissions mailbox so incoming mail is fetched, triaged and sorted automatically every minute. In Google Cloud Console, enable the <b>Gmail API</b>, create an <b>OAuth client ID</b> (type: Web application) and add this server's <span class="mono">/settings/gmail/callback</span> URL to its authorised redirect URIs.</p>
+  <form method="post" action="/settings/gmail/credentials">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      <div><label>Gmail address</label><input type="email" name="gmail_address" value="${esc(gAddress)}" placeholder="admissions@institution.ac.ke"></div>
+      <div><label>OAuth client ID</label><input type="text" name="gmail_client_id" value="${esc(gClientId)}" placeholder="…apps.googleusercontent.com"></div>
+      <div><label>OAuth client secret</label><input type="password" name="gmail_client_secret" value="" placeholder="${gClientSecret ? "saved — enter a new value to replace" : "GOCSPX-…"}" autocomplete="new-password"></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="btn ghost">Save credentials</button>
+      ${gClientId && gClientSecret ? `<a class="btn" href="/settings/gmail/connect">Connect with Google…</a>` : ""}
+      ${connected ? `<form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>` : ""}
+    </div>
+  </form>
+  <p class="small muted" style="margin-top:10px">${connected
+    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically — no restart needed.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
+    : "Mail is not being fetched yet. Emails can still be replayed through the simulator."}</p>
+  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}</p>` : ""}
+</div>
+
 <div class="card" id="intakes">
   <h2>Intake deadlines</h2>
-  <p class="small muted">Submissions arriving after the deadline are flagged <b>late_submission</b> for a human — the system never auto-rejects on deadline alone.</p>
+  <p class="small muted" style="margin-top:-6px">Submissions arriving after the deadline are flagged <b>late_submission</b> for a human — the system never auto-rejects on deadline alone.</p>
   <table><tr><th>Intake</th><th>Deadline</th><th></th></tr>
     ${c.repo.listIntakeRows().map((i) => `<tr>
       <td>${esc(i.name)}</td>
       <td><form method="post" action="/settings/intake-deadline" style="display:flex;gap:6px;margin:0">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
         <input type="hidden" name="name" value="${esc(i.name)}">
-        <input type="date" name="deadline" value="${esc(i.deadline ? i.deadline.slice(0, 10) : "")}">
+        <input type="date" name="deadline" value="${esc(i.deadline ? i.deadline.slice(0, 10) : "")}" style="width:auto">
         <button class="btn small ghost">Save</button>
       </form></td>
       <td class="small muted">${i.deadline ? "" : "no deadline set"}</td>
@@ -877,32 +987,10 @@ ${(() => {
   </table>
 </div>
 
-<div class="card">
-  <h2>Requirement rules</h2>
-  <p class="small muted">Most specific rule wins: programme+intake → programme → intake → base (all). Edit per programme/intake for different courses or admission rounds.</p>
-  <table><tr><th>Programme</th><th>Intake</th><th>Document</th><th>Required?</th><th>Min points</th><th></th></tr>${ruleRows}</table>
-  <form method="post" action="/settings/rules/add" class="formrow" style="margin-top:14px">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-    <div><label>Programme</label><select name="programme"><option value="">All programmes</option>${programmes.map((p) => `<option value="${esc(p.code)}">${esc(p.code)}</option>`).join("")}</select></div>
-    <div><label>Intake</label><select name="intake"><option value="">All intakes</option>${intakes.map((i) => `<option value="${esc(i)}">${esc(i)}</option>`).join("")}</select></div>
-    <div><label>Document</label><select name="document_type">${(["academic_cert", "kcpe_cert", "id", "birth_cert", "application_form"] as DocType[]).map((d) => `<option value="${d}">${esc(docLabel(d))}</option>`).join("")}</select></div>
-    <div><label>Required</label><select name="required"><option value="1">required</option><option value="0">optional</option></select></div>
-    <div><label>Min points</label><input type="number" name="min_grade_points" placeholder="optional"></div>
-    <div style="flex:0"><label>&nbsp;</label><button class="btn">Add rule</button></div>
-  </form>
-  <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-    <div><label>New programme code</label><input type="text" name="prog_code" placeholder="e.g. MED"></div>
-    <div style="flex:2"><label>Programme name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
-    <div><label>New intake</label><input type="text" name="intake" placeholder="e.g. May 2027"></div>
-    <div style="flex:0"><label>&nbsp;</label><button class="btn ghost">Add</button></div>
-  </form>
-</div>
-
-<div class="card">
+<div class="card" id="templates">
   <h2>Email templates</h2>
-  <p class="small muted">Placeholders: <span class="mono">{ref} {name} {first_name} {missing_docs} {missing_docs_section} {checklist} {status} {institution}</span></p>
-  <form method="get" action="/settings" class="formrow">
+  <p class="small muted" style="margin-top:-6px">Placeholders: <span class="mono">{ref} {name} {first_name} {missing_docs} {missing_docs_section} {checklist} {status} {institution}</span></p>
+  <form method="get" action="/config" class="formrow">
     <div style="flex:2"><label>Template</label><select name="template" onchange="this.form.submit()">${templates
       .map((t) => `<option value="${esc(t.key)}" ${selectedTemplate === t.key ? "selected" : ""}>${esc(t.name)} (${esc(t.key)})</option>`)
       .join("")}</select></div>
@@ -910,15 +998,15 @@ ${(() => {
   ${templateEditor(c, (selectedTemplate ? c.repo.getTemplate(selectedTemplate) : undefined) ?? first)}
 </div>
 
-<div class="card">
+<div class="card" id="export">
   <h2>Export (CSV)</h2>
-  <p>
-    <a class="btn ghost small" href="/export/applicants.csv">⬇ Applicants</a>
-    <a class="btn ghost small" href="/export/queue.csv">⬇ Review queue</a>
-    <a class="btn ghost small" href="/export/audit.csv">⬇ Audit log</a>
+  <p style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 0">
+    <a class="btn ghost small" href="/export/applicants.csv">Applicants</a>
+    <a class="btn ghost small" href="/export/queue.csv">Review queue</a>
+    <a class="btn ghost small" href="/export/audit.csv">Audit log</a>
   </p>
-</div>`,
-  });
+</div>`
+  );
 }
 
 function templateEditor(c: Pick<Ctx, "csrf">, t: { key: string; name: string; subject: string; body: string } | undefined): string {
@@ -933,9 +1021,12 @@ function templateEditor(c: Pick<Ctx, "csrf">, t: { key: string; name: string; su
   </form>`;
 }
 
-// ── Staff management (feature 31) ──────────────────────────────────────────
+// ── Staff (team performance + account management, merged) ──────────────────
 
 export function staffPage(c: Ctx, flash?: string): string {
+  const { repo } = c;
+  const isAdmin = c.user.role === "admin";
+
   // Seed/demo passwords that must not survive in real use.
   const KNOWN_DEFAULTS: Record<string, string> = {
     admin: "admin123", manager: "manager123", jane: "jane123", otis: "otis123", kofi: "kofi123",
@@ -943,41 +1034,50 @@ export function staffPage(c: Ctx, flash?: string): string {
   const onDefaultPassword = (username: string): boolean => {
     const known = KNOWN_DEFAULTS[username];
     if (!known) return false;
-    const full = c.repo.getStaffByUsername(username);
+    const full = repo.getStaffByUsername(username);
     return Boolean(full && verifyPassword(known, full.password_hash));
   };
-  const rows = c.repo
-    .listStaff()
-    .map((s) => `<tr>
-      <td class="mono">${esc(s.username)}${onDefaultPassword(s.username) ? ` <span class="badge b-red" title="This account still uses its seeded demo password">default password</span>` : ""}</td>
-      <td>${esc(s.display_name)}</td>
-      <td><span class="badge b-gray">${esc(s.role)}</span></td>
-      <td>${s.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-red">disabled</span>`}</td>
-      <td>
-        <form method="post" action="/staff/toggle" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${s.id}"><button class="btn small ghost">${s.active ? "Disable" : "Enable"}</button></form>
-        <form method="post" action="/staff/password" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${s.id}"><input type="password" name="password" placeholder="new password" style="width:150px;display:inline-block"><button class="btn small ghost">Reset</button></form>
-      </td>
+
+  const stats = repo.staffStats();
+  const totals = stats.reduce(
+    (acc, r) => ({ received: acc.received + r.emailsReceived, sent: acc.sent + r.emailsSent, completed: acc.completed + r.admissionsCompleted }),
+    { received: 0, sent: 0, completed: 0 }
+  );
+  const perfRows = stats
+    .map((r) => `<tr>
+      <td>${avatar(r.display_name, 28)} <b>${esc(r.display_name)}</b><br><span class="muted small">@${esc(r.username)} · ${esc(r.role)}${r.active ? "" : " · disabled"}</span></td>
+      <td>${r.assignedCases}</td>
+      <td>${r.emailsReceived}</td>
+      <td>${r.emailsSent}</td>
+      <td>${r.avgResponseMinutes === null ? `<span class="muted">—</span>` : esc(formatDuration(r.avgResponseMinutes))}</td>
+      <td>${r.admissionsCompleted}</td>
     </tr>`)
     .join("");
 
-  return layout({
-    title: "Staff",
-    user: c.user,
-    unread: c.unread,
-    active: "staff",
-    institution: c.institution,
-    csrf: c.csrf,
-    content: `
-<h1>Staff accounts</h1>
-<div class="sub">Roles: <b>admin</b> (everything) · <b>manager</b> (cases + configuration) · <b>officer</b> (cases only) · <b>it</b> (cases + automation/settings, no staff management)</div>
-${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
-${c.repo.listStaff().some((s) => { const k: Record<string,string> = { admin: "admin123", manager: "manager123", jane: "jane123", otis: "otis123", kofi: "kofi123" }; const f = c.repo.getStaffByUsername(s.username); return Boolean(k[s.username] && f && verifyPassword(k[s.username], f.password_hash)); })
+  const accountsSection = isAdmin
+    ? `
+${repo.listStaff().some((st) => onDefaultPassword(st.username))
   ? `<div class="flash err" style="position:static;margin-bottom:16px">One or more accounts still use their seeded demo passwords. Reset them below before going live.</div>`
   : ""}
-<div class="card">
-<table><tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Actions</th></tr>${rows}</table>
-</div>
-<div class="card">
+<section class="card nopad">
+  <div class="card-head"><h2>Accounts</h2></div>
+  <table>
+    <tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Actions</th></tr>
+    ${repo.listStaff()
+      .map((st) => `<tr>
+        <td class="mono">${esc(st.username)}${onDefaultPassword(st.username) ? ` <span class="badge b-red" title="This account still uses its seeded demo password">default password</span>` : ""}</td>
+        <td>${esc(st.display_name)}</td>
+        <td><span class="badge b-gray">${esc(st.role)}</span></td>
+        <td>${st.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-red">disabled</span>`}</td>
+        <td>
+          <form method="post" action="/staff/toggle" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><button class="btn small ghost">${st.active ? "Disable" : "Enable"}</button></form>
+          <form method="post" action="/staff/password" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><input type="password" name="password" placeholder="new password" style="width:150px;display:inline-block"><button class="btn small ghost">Reset</button></form>
+        </td>
+      </tr>`)
+      .join("")}
+  </table>
+</section>
+<section class="card">
   <h2>Add staff member</h2>
   <form method="post" action="/staff/add" class="formrow">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -987,74 +1087,39 @@ ${c.repo.listStaff().some((s) => { const k: Record<string,string> = { admin: "ad
     <div><label>Role</label><select name="role"><option value="officer">officer</option><option value="it">it</option><option value="manager">manager</option><option value="admin">admin</option></select></div>
     <div style="flex:0"><label>&nbsp;</label><button class="btn">Create</button></div>
   </form>
-</div>`,
-  });
-}
-
-// ── Notifications (feature 39) ─────────────────────────────────────────────
-
-export function notificationsPage(c: Ctx): string {
-  const items = c.repo
-    .notificationsFor(c.user.id)
-    .map((n) => `<div class="card" style="${n.read ? "opacity:.65" : ""}">
-      <div style="display:flex;gap:8px;align-items:center">
-        <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : "b-blue"}">${esc(n.kind)}</span>
-        ${n.applicant_id ? `<a class="small" href="/case/${n.applicant_id}">open case →</a>` : ""}
-        <span class="small muted" style="margin-left:auto">${esc(fmtDate(n.at))}</span>
-      </div>
-      <p style="margin:8px 0 0">${esc(n.message.replace(/^\u26a0\ufe0f\s*/, ""))}</p>
-    </div>`)
-    .join("");
-  return head(
-    c,
-    "Alerts",
-    "notifications",
-    `<h1>Alerts &amp; notifications</h1><div class="sub">Escalations, new review cases and assignments.</div>${items || `<div class="card muted">No notifications.</div>`}`
-  );
-}
-
-// ── Team performance (staff listener) ──────────────────────────────────────
-
-export function teamPage(c: Ctx): string {
-  const rows = c.repo.staffStats();
-  const totals = rows.reduce(
-    (acc, r) => ({
-      received: acc.received + r.emailsReceived,
-      sent: acc.sent + r.emailsSent,
-      completed: acc.completed + r.admissionsCompleted,
-    }),
-    { received: 0, sent: 0, completed: 0 }
-  );
-  const trs = rows
-    .map((r) => `<tr>
-      <td>${avatar(r.display_name, 30)} <b>${esc(r.display_name)}</b><br><span class="muted small">@${esc(r.username)} · ${esc(r.role)}${r.active ? "" : " · disabled"}</span></td>
-      <td>${r.assignedCases}</td>
-      <td>${r.emailsReceived}</td>
-      <td>${r.emailsSent}</td>
-      <td>${r.avgResponseMinutes === null ? `<span class="muted">—</span>` : esc(formatDuration(r.avgResponseMinutes))}</td>
-      <td>${r.admissionsCompleted}</td>
-    </tr>`)
-    .join("");
+  <p class="small muted" style="margin-bottom:0">Roles: <b>admin</b> (everything) · <b>manager</b> (cases + configuration) · <b>officer</b> (cases only) · <b>it</b> (cases + automation/settings, no staff management)</p>
+</section>`
+    : `<p class="small muted">Account management is limited to administrators — you are seeing the team report only.</p>`;
 
   return head(
     c,
-    "Team",
-    "team",
+    "Staff",
+    "staff",
     `
-<h1>Team performance</h1>
-<div class="sub">Listener workload and responsiveness — computed live from the mail log, audit trail and status history.</div>
-<div class="cols" style="grid-template-columns:repeat(3,1fr)">
-  <div class="card stat"><div class="n">${totals.received}</div><div class="l">Incoming emails (assigned cases)</div></div>
-  <div class="card stat"><div class="n">${totals.sent}</div><div class="l">Replies sent by staff</div></div>
-  <div class="card stat"><div class="n">${totals.completed}</div><div class="l">Admissions completed</div></div>
+<h1>Staff</h1>
+<div class="sub">Who handles what — workload, responsiveness and accounts.</div>
+${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+
+<div class="cols wide">
+  <section class="card nopad">
+    <div class="card-head"><h2>Performance</h2></div>
+    <table>
+      <tr><th>Staff member</th><th>Assigned cases</th><th>Emails received</th><th>Replies sent</th><th>Avg response</th><th>Completed</th></tr>
+      ${perfRows || `<tr><td colspan="6" class="muted">No staff yet.</td></tr>`}
+    </table>
+  </section>
+  <section class="card">
+    <h2>Totals</h2>
+    <div class="kv">
+      <div><span>Incoming emails (assigned cases)</span><b>${totals.received}</b></div>
+      <div><span>Replies sent by staff</span><b>${totals.sent}</b></div>
+      <div><span>Admissions completed</span><b>${totals.completed}</b></div>
+    </div>
+    <p class="small muted" style="margin-bottom:0">“Emails received” counts incoming mail on cases currently assigned to the person. Response time is measured from an incoming email to the next outgoing reply on their cases.</p>
+  </section>
 </div>
-<div class="card nopad">
-<table>
-  <tr><th>Staff member</th><th>Assigned cases</th><th>Emails received</th><th>Replies sent</th><th>Avg response time</th><th>Admissions completed</th></tr>
-  ${trs || `<tr><td colspan="6" class="muted">No staff yet.</td></tr>`}
-</table>
-</div>
-<p class="small muted">“Emails received” counts incoming mail on cases currently assigned to the person. “Replies sent” counts messages they personally approved or sent. Response time is measured on their assigned cases from an incoming email to the next outgoing reply.</p>`
+
+${accountsSection}`
   );
 }
 

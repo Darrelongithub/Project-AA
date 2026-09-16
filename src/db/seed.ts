@@ -159,7 +159,9 @@ export function seedDefaults(repo: Repo, opts: { createDemoUsers?: boolean; live
     } else {
       repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
     }
-    if (opts.createDemoUsers !== false && !opts.live) {
+    // Demo staff accounts belong to the DEMO DATASET only (npm run demo).
+    // A fresh production database gets the admin account alone.
+    if (opts.createDemoUsers === true && !opts.live) {
       repo.createStaff("manager", "Mary Mwangi (Manager)", hashPassword("manager123"), "manager");
       repo.createStaff("jane", "Jane Wairimu (Officer)", hashPassword("jane123"), "officer");
       repo.createStaff("otis", "Otis Onyango (Officer)", hashPassword("otis123"), "officer");

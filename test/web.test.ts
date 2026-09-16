@@ -26,7 +26,7 @@ let ctx: PipelineContext;
 
 beforeAll(async () => {
   repo = new Repo(openDb(":memory:"));
-  seedDefaults(repo);
+  seedDefaults(repo, { createDemoUsers: true });
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
 
   sender = new MockSender();
@@ -106,10 +106,13 @@ describe("web console", () => {
     const res = await fetch(`${base}/`, { headers: { cookie } });
     const html = await res.text();
     expect(res.status).toBe(200);
-    expect(html).toContain("administration overview");
-    expect(html).toContain("Team");
-    expect(html).toContain("Gmail");
+    expect(html).toContain("Courses &amp; ownership");
+    expect(html).toContain("Recent activity");
+    expect(html).toContain("System");
     expect(html).not.toContain("What needs my attention");
+    // Admin navigation is separated from casework.
+    expect(html).not.toContain('href="/queue" class="active"');
+    expect(html).toContain("Configuration");
   });
 
   it("officer lands on the casework dashboard", async () => {
@@ -194,15 +197,22 @@ describe("web console", () => {
     expect(portal.status).toBe(404);
   });
 
-  it("v4 UI: splash, sidebar shell, command palette and dark-mode toggle", async () => {
+  it("v4 UI: splash, header shell, command palette and dark-mode toggle", async () => {
     const { cookie, csrf } = await login();
     const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     expect(home).toContain('id="splash"');
-    expect(home).toContain('class="sidebar"');
+    expect(home).toContain('class="sitehead"');
+    expect(home).not.toContain('class="sidebar"');
     expect(home).toContain('id="palette"');
     expect(home).toContain("Riara University");
     expect(home).toContain("Nurturing Innovations");
     expect(home).toContain('data-theme="light"');
+    // Bundled typefaces are self-hosted, not a CDN.
+    expect(home).toContain("/assets/fonts/manrope.woff2");
+    expect(home).toContain("/assets/fonts/instrument-serif.woff2");
+    const font = await fetch(`${base}/assets/fonts/manrope.woff2`);
+    expect(font.status).toBe(200);
+    expect(font.headers.get("content-type")).toBe("font/woff2");
 
     // Toggle to dark — cookie-driven, works on the next render.
     const tog = await fetch(`${base}/theme`, {
@@ -445,15 +455,18 @@ describe("production-readiness pass", () => {
     expect(repo.queueView().some((q) => q.id === a.id)).toBe(before);
   });
 
-  it("team page shows per-staff listener stats", async () => {
+  it("staff page merges team performance with account management", async () => {
     const { cookie } = await login();
     const stats = repo.staffStats();
     expect(stats.length).toBeGreaterThan(0);
     expect(stats.some((s) => s.username === "admin")).toBe(true);
-    const page = await (await fetch(`${base}/team`, { headers: { cookie } })).text();
-    expect(page).toContain("Team performance");
-    expect(page).toContain("Avg response time");
-    expect(page).toContain("Admissions completed");
+    const page = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
+    expect(page).toContain("Performance");
+    expect(page).toContain("Avg response");
+    expect(page).toContain("Accounts");
+    const redirected = await fetch(`${base}/team`, { headers: { cookie }, redirect: "manual" });
+    expect(redirected.status).toBe(302);
+    expect(redirected.headers.get("location")).toBe("/staff");
   });
 
   it("flag names are human-readable on the case page", async () => {
@@ -466,22 +479,45 @@ describe("production-readiness pass", () => {
     repo.syncFlags(a.id, []);
   });
 
-  it("institution name comes from Settings everywhere", async () => {
+  it("branding is fixed to Riara University — no institution-name setting", async () => {
     const { cookie } = await login();
+    // Even if a stale value sits in the DB, the UI never shows or edits it.
     repo.setSetting("institution_name", "Test College");
     const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-    expect(home).toContain("Test College");
+    expect(home).not.toContain("Test College");
+    const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    expect(settings).not.toContain("Institution name");
+    expect(settings).not.toContain('name="institution_name"');
     const loginHtml = await (await fetch(`${base}/login`)).text();
-    expect(loginHtml).toContain("Test College");
-    repo.setSetting("institution_name", "Riara University");
+    expect(loginHtml).toContain("Riara University");
   });
 
-  it("settings page offers the Gmail connection card", async () => {
+  it("configuration page offers the Gmail connection card", async () => {
     const { cookie } = await login();
-    const page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    const page = await (await fetch(`${base}/config`, { headers: { cookie } })).text();
     expect(page).toContain("Gmail connection");
     expect(page).toContain("not connected");
     expect(page).toContain('action="/settings/gmail/credentials"');
+    // Settings is app behaviour only.
+    const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    expect(settings).toContain("Automation mode");
+    expect(settings).not.toContain("Gmail connection");
+  });
+
+  it("courses show who handles them, and owners can be assigned", async () => {
+    const { cookie, csrf } = await login();
+    const page = await (await fetch(`${base}/config#courses`, { headers: { cookie } })).text();
+    expect(page).toContain("Courses &amp; ownership");
+    expect(page).toContain('action="/config/course-owner"');
+    const member = repo.listStaff().find((m) => m.username === "jane")!;
+    const res = await fetch(`${base}/config/course-owner`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${csrf}&programme=BBIT&owner=${member.id}`, redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(decodeURIComponent(res.headers.get("location") || "")).toContain("now handled by");
+    const overview = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    expect(overview).toContain("Jane Wairimu");
   });
 });
 
@@ -556,9 +592,11 @@ describe("QA audit regressions", () => {
       redirect: "manual",
     });
     expect(save.status).toBe(302);
-    const page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    const page = await (await fetch(`${base}/config`, { headers: { cookie } })).text();
     expect(page).not.toContain("TOP-SECRET-VALUE");
     expect(page).toContain("saved — enter a new value to replace");
+    const settingsPage = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    expect(settingsPage).not.toContain("TOP-SECRET-VALUE");
     // clean up
     repo.setSetting("gmail_address", ""); repo.setSetting("gmail_client_id", ""); repo.setSetting("gmail_client_secret", "");
   });

@@ -197,13 +197,24 @@ export class Repo {
   // ── Programmes & intakes ─────────────────────────────────────────────────
 
   listProgrammes(): Array<{ code: string; name: string }> {
-    return this.db.prepare("SELECT code, name FROM programmes ORDER BY code").all() as never[];
+    return this.db
+      .prepare(
+        `SELECT p.code, p.name, p.owner_id, s.display_name AS owner_name
+         FROM programmes p LEFT JOIN staff_users s ON s.id = p.owner_id
+         ORDER BY p.code`
+      )
+      .all() as never[];
   }
 
   addProgramme(code: string, name: string): void {
     this.db
       .prepare("INSERT INTO programmes (code, name) VALUES (?, ?) ON CONFLICT(code) DO UPDATE SET name = excluded.name")
       .run(code.toUpperCase(), name);
+  }
+
+  /** Assign (or unassign, with null) the staff member who handles a course. */
+  assignProgrammeOwner(code: string, staffId: number | null): void {
+    this.db.prepare("UPDATE programmes SET owner_id = ? WHERE code = ?").run(staffId, code);
   }
 
   listIntakes(): string[] {

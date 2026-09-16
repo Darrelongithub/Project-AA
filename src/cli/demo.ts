@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   }
 
   const repo = new Repo(openDb(dbPath));
-  seedDefaults(repo);
+  seedDefaults(repo, { createDemoUsers: true });
 
   console.log(`demo: running simulation against ${dbPath} …`);
   const result = await runSimulation({ dbPath, disableOcr: process.env.DISABLE_OCR === "1" });
@@ -74,6 +74,17 @@ async function main(): Promise<void> {
   // "Demo workspace" banner ONLY while this flag is set — a database you
   // start fresh (production) never shows it.
   repo.setSetting("demo_dataset", "1");
+
+  // Course ownership: who handles what. Officers get courses; one is left
+  // unassigned on purpose so the assignment flow is visible.
+  const ownerFor: Record<string, string> = { BCS: "jane", NUR: "otis", LAW: "manager" };
+  for (const [code, username] of Object.entries(ownerFor)) {
+    const member = repo.getStaffByUsername(username);
+    if (member) {
+      repo.assignProgrammeOwner(code, member.id);
+      repo.audit(null, "admin", "course_owner_changed", `${code} → ${member.display_name} (demo seeding)`);
+    }
+  }
 
   console.log("\ndemo: done. Now run:\n\n  npm run serve\n");
   console.log("then open the printed URL and sign in as admin/admin123.");
