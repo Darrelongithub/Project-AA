@@ -101,11 +101,27 @@ describe("web console", () => {
     expect(res.status).toBe(401);
   });
 
-  it("logs in and renders the Admissions Command Center", async () => {
+  it("admin lands on the oversight dashboard (not applicant casework)", async () => {
     const { cookie } = await login();
     const res = await fetch(`${base}/`, { headers: { cookie } });
     const html = await res.text();
     expect(res.status).toBe(200);
+    expect(html).toContain("administration overview");
+    expect(html).toContain("Team");
+    expect(html).toContain("Gmail");
+    expect(html).not.toContain("What needs my attention");
+  });
+
+  it("officer lands on the casework dashboard", async () => {
+    const res0 = await fetch(`${base}/login`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "username=jane&password=jane123",
+      redirect: "manual",
+    });
+    expect(res0.status).toBe(302);
+    const cookie = (res0.headers.get("set-cookie") || "").split(";")[0];
+    const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     expect(html).toContain("Needs attention");
     expect(html).toContain("Emails today");
     expect(html).toContain("Automation accuracy");
@@ -578,10 +594,22 @@ describe("QA audit regressions", () => {
   it("dashboard shows 'no data' instead of fake zeros and the demo banner is truthful", async () => {
     const { cookie } = await login();
     const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-    // Mock sender, no Gmail token in settings → the demo banner must be shown.
-    expect(home).toContain("Demo mode — outgoing mail is simulated");
+    // A fresh (non-demo) database must NOT show the demo banner — the banner
+    // is gated on the demo_dataset flag that only the demo seeder sets.
+    expect(home).not.toContain("Demo workspace");
     // No misleading raw zero values.
     expect(home).not.toContain(">0 min<");
     expect(home).not.toContain(">0 hrs<");
   });
+
+  it("shows the demo banner only when the demo dataset flag is set", async () => {
+    const { cookie } = await login();
+    repo.setSetting("demo_dataset", "1");
+    const withFlag = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    expect(withFlag).toContain("Demo workspace — sample applicants and demo staff accounts are loaded");
+    repo.setSetting("demo_dataset", "0");
+    const cleared = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    expect(cleared).not.toContain("Demo workspace");
+  });
+
 });

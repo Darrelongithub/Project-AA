@@ -70,14 +70,14 @@ async function main(): Promise<void> {
     repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
   }
 
-  const portalCandidate = repo.allApplicants().find((a) => a.lifecycle === "documents_received" && a.triage === "Red");
+  // Marks this database as the demo dataset. The web console shows the
+  // "Demo workspace" banner ONLY while this flag is set — a database you
+  // start fresh (production) never shows it.
+  repo.setSetting("demo_dataset", "1");
 
   console.log("\ndemo: done. Now run:\n\n  npm run serve\n");
-  console.log("then open the printed URL and sign in as admin/admin123 (or jane/jane123, kofi/kofi123 for IT).");
-  console.log(`Applicant status page: /status — try ${queued[0]?.ref_number ?? "a reference"} with its email.`);
-  if (portalCandidate) {
-    console.log(`Applicant portal: /portal — try ${portalCandidate.ref_number} with ${portalCandidate.email_address} (demo mode shows the code on screen).`);
-  }
+  console.log("then open the printed URL and sign in as admin/admin123.");
+  console.log(`Try applicant ${queued[0]?.ref_number ?? "a reference"} from the Applicants page.`);
   console.log("");
   process.exit(0);
 }

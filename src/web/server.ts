@@ -7,7 +7,7 @@
  * Server-rendered, self-contained, DB-backed sessions + CSRF.
  */
 import * as crypto from "crypto";
-import { LOGO_BASE64 } from "./logo";
+import { LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
 import express, { type Express, type Request, type Response } from "express";
 import type { Repo } from "../db/repo";
 import type { PipelineContext } from "../pipeline/adapters";
@@ -28,8 +28,6 @@ import { hashPassword } from "../util/password";
 export interface WebDeps {
   repo: Repo;
   ctx: PipelineContext; // reuse the pipeline's sender/vision adapters
-  /** Gmail was configured at boot (live mode) — mail is real, not simulated. */
-  mailConnectedAtBoot?: boolean;
 }
 
 /**
@@ -55,13 +53,6 @@ export function createApp(deps: WebDeps): Express {
   /** Institution name for all branding — editable in Settings → General. */
   const instName = (): string => repo.getSetting("institution_name", "Riara University");
 
-  /**
-   * Is mail REAL right now? Either Gmail was configured at boot, or an OAuth
-   * refresh token has since been saved from Settings → Gmail connection.
-   * Used to show the demo-mode banner truthfully.
-   */
-  const mailLive = (): boolean =>
-    Boolean(deps.mailConnectedAtBoot) || Boolean(repo.getSetting("gmail_refresh_token", ""));
   app.disable("x-powered-by");
   // Behind any reverse proxy (the preview environment included) req.ip is the
   // proxy's address unless this is set — which makes every per-IP rate
@@ -78,7 +69,8 @@ export function createApp(deps: WebDeps): Express {
     csrf: req.csrfToken ?? "",
     theme: req.theme,
     institution: instName(),
-    mailMock: !mailLive(),
+    /** True when the seeded demo dataset is present — the banner's only gate. */
+    demo: repo.getSetting("demo_dataset", "") === "1",
   });
 
   const backToCase = (id: string | number, msg: string) => `/case/${id}?msg=${encodeURIComponent(msg)}`;
@@ -94,11 +86,18 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Auth ─────────────────────────────────────────────────────────────────
 
-  // Official logo served once and cached; every page references this path.
+  // Official logo, served once and cached; every page references these paths.
+  // Colour on transparent for light surfaces, monochrome white for the dark
+  // sidebar — both real PNGs so the mark blends with its background.
   app.get("/assets/logo", (_req, res) => {
-    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.send(Buffer.from(LOGO_BASE64, "base64"));
+  });
+  app.get("/assets/logo-white", (_req, res) => {
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(Buffer.from(LOGO_WHITE_BASE64, "base64"));
   });
 
   app.get("/login", (req, res) => res.send(loginPage(undefined, req.theme, instName())));

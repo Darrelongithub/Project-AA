@@ -58,7 +58,7 @@ async function main(): Promise<void> {
 
   const adapters = buildAdapters(cfg, sender);
   const ctx: PipelineContext = { repo, adapters, jsonlPath: cfg.logToFile ? "./logs/decisions.jsonl" : undefined };
-  const app = createApp({ repo, ctx, mailConnectedAtBoot: cfg.mode === "live" && Boolean(cfg.gmail) });
+  const app = createApp({ repo, ctx });
 
   const port = cfg.port;
   app.listen(port, "0.0.0.0", () => {

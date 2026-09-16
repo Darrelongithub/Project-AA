@@ -20,12 +20,12 @@ interface Ctx {
   theme?: Theme;
   /** Institution name from Settings — drives all branding text. */
   institution: string;
-  /** True when outgoing mail is simulated — banner shown to staff. */
-  mailMock: boolean;
+  /** True when the seeded demo dataset is present — banner shown to staff. */
+  demo: boolean;
 }
 
 function head(c: Ctx, title: string, active: string, content: string): string {
-  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution, mailMock: c.mailMock });
+  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution, demo: c.demo });
 }
 
 // ── Login ──────────────────────────────────────────────────────────────────
@@ -54,12 +54,97 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
   });
 }
 
+
+// ── Admin oversight (role-appropriate landing view) ────────────────────────
+// Administrators get operational oversight — team, automation, integrations,
+// audit — not the per-applicant casework queue officers work from.
+
+function adminDashboard(c: Ctx): string {
+  const { repo } = c;
+  const s = repo.dashboardStats();
+  const team = repo.staffStats();
+  const audit = repo.recentAudit(10);
+  const accuracy = repo.accuracyStats();
+  const globalMode = repo.getSetting("automation_mode", "auto");
+  const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
+  const lastSync = repo.getSetting("gmail_last_sync_at", "");
+  const lastErr = repo.getSetting("gmail_last_error", "");
+  const activeStaff = team.filter((t) => t.active).length;
+
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+
+  const stat = (n: number | string, l: string) =>
+    `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`;
+
+  const teamRows = team
+    .map((t) => `<tr>
+      <td><b>${esc(t.display_name)}</b> <span class="muted small">@${esc(t.username)}</span></td>
+      <td><span class="badge b-gray">${esc(t.role)}</span></td>
+      <td>${t.assignedCases}</td>
+      <td>${t.emailsSent}</td>
+      <td>${t.avgResponseMinutes === null ? `<span class="muted">no data</span>` : esc(formatDuration(t.avgResponseMinutes))}</td>
+      <td>${t.admissionsCompleted}</td>
+    </tr>`)
+    .join("");
+
+  const auditRows = audit
+    .map((e) => `<tr>
+      <td class="small muted nowrap">${esc(fmtDate(e.at))}</td>
+      <td class="small mono">${esc(e.actor)}</td>
+      <td class="small">${esc(e.event)}</td>
+      <td class="small muted">${esc(e.detail.slice(0, 90))}</td>
+    </tr>`)
+    .join("");
+
+  return head(
+    c,
+    `Administration — ${c.institution}`,
+    "dashboard",
+    `
+<h1>${greeting}, ${esc(c.user.display_name)}</h1>
+<div class="sub">${esc(c.institution)} · administration overview — <a href="/applicants">applicant cases</a> and the <a href="/queue">review queue</a> remain available from the menu.</div>
+
+<div class="grid stats">
+  ${stat(s.applications, "Applicants on record")}
+  ${stat(s.completed, "Admissions completed")}
+  ${stat(`${activeStaff}/${team.length}`, "Staff active")}
+  ${stat(`${accuracy.autoSends + accuracy.humanSends}`, "Replies sent to date")}
+</div>
+
+<div class="cols">
+  <div class="card nopad">
+    <h2 style="padding:18px 20px 0">Team <a class="small" href="/team">full report →</a></h2>
+    <table style="margin-top:10px"><tr><th>Member</th><th>Role</th><th>Cases</th><th>Replies</th><th>Avg response</th><th>Completed</th></tr>
+    ${teamRows}</table>
+  </div>
+  <div class="card">
+    <h2>System</h2>
+    <p class="small"><b>Gmail:</b> ${gmailConnected
+      ? `connected${lastSync ? ` — last sync ${esc(fmtDate(lastSync))}` : " — first sync pending"}`
+      : "not connected"} ${lastErr ? `<span style="color:var(--red)">(${esc(lastErr.slice(0, 80))})</span>` : ""} · <a href="/settings#gmail">manage</a></p>
+    <p class="small"><b>Automation:</b> global mode <b>${esc(globalMode === "draft" ? "draft-first (held for approval)" : "auto")}</b> · <a href="/settings#automation">manage</a></p>
+    <p class="small"><b>Staff accounts:</b> <a href="/staff">${team.length} total, ${activeStaff} active</a>${team.some((t) => t.active && (() => { const k: Record<string, string> = { admin: "admin123", manager: "manager123", jane: "jane123", otis: "otis123", kofi: "kofi123" }; const f = repo.getStaffByUsername(t.username); return Boolean(k[t.username] && f && verifyPassword(k[t.username], f.password_hash)); })()) ? ` · <span class="badge b-red">default passwords in use</span>` : ""}</p>
+    <p class="small"><b>Send errors:</b> ${accuracy.sendErrors} logged</p>
+    <p class="small"><b>Intakes:</b> ${repo.listIntakeRows().map((i) => `${esc(i.name)}${i.deadline ? ` (${esc(i.deadline)})` : ""}`).join(" · ") || "none"} · <a href="/settings#intakes">manage</a></p>
+  </div>
+</div>
+
+<div class="card nopad">
+  <h2 style="padding:18px 20px 0">Recent activity <span class="muted small">(audit trail)</span></h2>
+  <table style="margin-top:10px"><tr><th>When</th><th>Actor</th><th>Event</th><th>Detail</th></tr>
+  ${auditRows || `<tr><td colspan="4" class="muted">No activity yet.</td></tr>`}</table>
+</div>`
+  );
+}
+
 // ── Admissions Command Center (v3 homepage) ────────────────────────────────
 // Not an inbox clone: greeting → what needs attention → today's counters →
 // bottlenecks → automation accuracy.
 
 export function dashboardPage(c: Ctx): string {
   const { repo } = c;
+  if (c.user.role === "admin") return adminDashboard(c);
   const s = repo.dashboardStats();
   const today = repo.todayStats();
   const accuracy = repo.accuracyStats();
@@ -696,7 +781,7 @@ export function settingsPage(c: Ctx, selectedTemplate?: string, flash?: string):
 <div class="sub">Requirements, templates and SLAs — changes apply to newly processed email immediately.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 
-<div class="card">
+<div class="card" id="general">
   <h2>Institution &amp; SLA</h2>
   <form method="post" action="/settings/general">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -747,7 +832,7 @@ ${(() => {
 </div>`;
   })()}
 
-<div class="card">
+<div class="card" id="automation">
   <h2>Automation mode (draft-first)</h2>
   <p class="small muted">Recommended rollout: keep the global mode on <b>draft</b> (every automated reply waits for a human), then switch automation on category by category as you trust it. Factual replies only — receipts, missing-doc lists, status answers.</p>
   <form method="post" action="/settings/automation/global" class="formrow" style="align-items:end">
@@ -775,7 +860,7 @@ ${(() => {
   <p class="small muted">Note: with global mode set to draft, per-category switches take effect once global returns to auto.</p>
 </div>
 
-<div class="card">
+<div class="card" id="intakes">
   <h2>Intake deadlines</h2>
   <p class="small muted">Submissions arriving after the deadline are flagged <b>late_submission</b> for a human — the system never auto-rejects on deadline alone.</p>
   <table><tr><th>Intake</th><th>Deadline</th><th></th></tr>

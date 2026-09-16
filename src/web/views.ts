@@ -6,7 +6,7 @@
  * full dark mode, sidebar app shell, splash entry, command palette, toasts.
  */
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type EmailCategory, type LifecycleStage, type Priority, type StaffUser } from "../types";
-import { LOGO_BASE64 } from "./logo";
+import { LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
 
 export type Theme = "light" | "dark";
 
@@ -109,9 +109,11 @@ export function avatar(name: string | null | undefined, size = 34): string {
 
 /** The official full Riara University logo, on a white chip; the image itself
  * is served once at /assets/logo and cached, pages only reference the path. */
-export function crest(size = 40): string {
-  void LOGO_BASE64; // served via /assets/logo route; kept as the source of truth
-  return `<span class="crest" style="height:${size}px"><img src="/assets/logo" alt="Riara University" style="height:100%;width:auto;display:block"></span>`;
+export function crest(size = 40, variant: "auto" | "white" = "auto"): string {
+  if (variant === "white") {
+    return `<span class="crest" style="height:${size}px"><img src="/assets/logo-white" alt="Riara University"></span>`;
+  }
+  return `<span class="crest" style="height:${size}px"><img class="logo-c" src="/assets/logo" alt="Riara University"><img class="logo-w" src="/assets/logo-white" alt=""></span>`;
 }
 
 /** Human-readable flag names: "name_mismatch" → "Name mismatch". */
@@ -151,15 +153,15 @@ const CSS = `
 :root {
   --bg: #F6F4FB; --card: #FFFFFF; --card2: #FBFAFE;
   --ink: #201A33; --muted: #6E6787; --line: #E8E3F4; --line2: #F0ECF9;
-  --purple: #5B3BD6; --purple2: #7C5CF0; --purple3: #A794FB;
-  --purple-bg: #F1EDFC; --purple-line: #DCD2F7;
-  --magenta: #A2157F; --magenta-bg: #FBEAF5; --magenta-line: #EFC4E2;
+  --purple: #402A96; --purple2: #5C43C6; --purple3: #8F7BE0;
+  --purple-bg: #F0EDFB; --purple-line: #D8D0F2;
+  --magenta: #A02080; --magenta-bg: #FAEBF5; --magenta-line: #EBC3DF;
   --gold: #B98A2F; --gold-bg: #F8F0DD;
   --green: #2E8B3A; --green-bg: #E7F6EC; --green-line: #C4E8D0;
   --orange: #B45309; --orange-bg: #FDF1E2; --orange-line: #F3D9B4;
   --red: #BE123C; --red-bg: #FDE8ED; --red-line: #F5C2D0;
   --blue: #1D4ED8; --blue-bg: #E7EEFD; --blue-line: #C6D6F8;
-  --side1: #2A1B66; --side2: #150C38; --side-ink: #CBC2E6; --side-active: #FFFFFF;
+  --side1: #251568; --side2: #10082E; --side-ink: #CBC2E6; --side-active: #FFFFFF;
   --shadow: 0 1px 2px rgba(41,23,86,.05), 0 8px 24px -12px rgba(76,29,149,.14);
   --shadow-lg: 0 2px 6px rgba(41,23,86,.06), 0 24px 48px -18px rgba(76,29,149,.22);
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
@@ -168,15 +170,15 @@ const CSS = `
 [data-theme="dark"] {
   --bg: #0F0C1A; --card: #191429; --card2: #1F1934;
   --ink: #EFEBFA; --muted: #9C94BC; --line: #2C2447; --line2: #251D3D;
-  --purple: #A794FB; --purple2: #8F73F5; --purple3: #C4B5FD;
-  --purple-bg: #2A2050; --purple-line: #3D2F6E;
+  --purple: #A79BF2; --purple2: #8F7BE0; --purple3: #C6BCF8;
+  --purple-bg: #2A2058; --purple-line: #3E3175;
   --magenta: #E06BC0; --magenta-bg: #3A1531; --magenta-line: #6B2458;
   --gold: #D9B25F; --gold-bg: #332A17;
   --green: #4ADE80; --green-bg: #13291C; --green-line: #1E4A2E;
   --orange: #FBBF24; --orange-bg: #33260F; --orange-line: #584315;
   --red: #FB7185; --red-bg: #351420; --red-line: #5B2136;
   --blue: #60A5FA; --blue-bg: #14243D; --blue-line: #1E3E6B;
-  --side1: #1B1430; --side2: #0C0917; --side-ink: #A79CCB;
+  --side1: #1B1050; --side2: #0A0522; --side-ink: #A79CCB;
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 30px -12px rgba(0,0,0,.5);
   --shadow-lg: 0 2px 6px rgba(0,0,0,.5), 0 28px 60px -18px rgba(0,0,0,.65);
 }
@@ -208,9 +210,7 @@ h2 .small { font-weight: 500; }
   background: linear-gradient(175deg, var(--side1), var(--side2) 70%);
   padding: 20px 14px 14px; overflow-y: auto;
 }
-.brand { display: flex; gap: 11px; align-items: center; padding: 4px 8px 18px; border-bottom: 1px solid rgba(255,255,255,.09); }
-.brand .crest { filter: drop-shadow(0 3px 8px rgba(139,92,246,.45)); flex: none; }
-.brand b { color: #fff; font-size: 14.5px; letter-spacing: .01em; display: block; line-height: 1.25; }
+.brand { display: flex; gap: 12px; align-items: center; padding: 2px 6px 18px; }
 .brand small { color: #9E93C6; font-size: 10.5px; text-transform: uppercase; letter-spacing: .16em; }
 nav.side { margin: 16px 0; display: flex; flex-direction: column; gap: 2px; flex: 1; }
 nav.side a {
@@ -361,7 +361,7 @@ textarea { resize: vertical; }
 
 /* ── Portal & auth ─────────────────────────────────────────────────────── */
 .loginbox { max-width: 420px; margin: 10vh auto; }
-.loginbox .crest { display: block; margin: 0 auto 14px; filter: drop-shadow(0 8px 20px rgba(109,40,217,.35)); }
+.loginbox .crest { display: flex; justify-content: center; margin: 0 auto 14px; }
 .publicbar { display: flex; align-items: center; gap: 14px; padding: 16px 28px; border-bottom: 1px solid var(--line); background: var(--card); }
 .publicbar .brand { border: none; padding: 0; }
 .publicbar .brand b { color: var(--ink); } .publicbar .brand small { color: var(--muted); }
@@ -418,8 +418,11 @@ details > summary { list-style: none; } details > summary::-webkit-details-marke
 .mailmock { background: var(--gold-bg); color: var(--gold); border-bottom: 1px solid var(--gold); font-size: 12.5px; font-weight: 600; padding: 7px 34px; text-align: center; }
 
 /* ── Brand chip + tab pills ────────────────────────────────────────────── */
-.crest { display: inline-flex; align-items: center; background: #fff; border-radius: 10px; padding: 4px 7px; box-shadow: 0 1px 4px rgba(20,8,60,.25); flex: none; }
-.publicbar .crest { box-shadow: 0 1px 4px rgba(20,8,60,.14); }
+.crest { display: inline-flex; align-items: center; flex: none; }
+.crest img { height: 100%; width: auto; display: block; }
+.crest .logo-w { display: none; }
+[data-theme="dark"] .crest .logo-c { display: none; }
+[data-theme="dark"] .crest .logo-w { display: block; }
 .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 22px; }
 .tabs a {
   padding: 9px 18px; border-radius: 999px; border: 1px solid var(--line);
@@ -538,8 +541,8 @@ export function layout(opts: {
   theme?: Theme;
   /** Institution name from Settings — drives all branding text. */
   institution?: string;
-  /** True when outgoing mail is simulated (no Gmail connected) — shown to staff. */
-  mailMock?: boolean;
+  /** True when the database contains the seeded demo dataset — shown to staff. */
+  demo?: boolean;
 }): string {
   const theme: Theme = opts.theme === "dark" ? "dark" : "light";
   const otherTheme = theme === "dark" ? "light" : "dark";
@@ -562,7 +565,7 @@ export function layout(opts: {
     shell = `
 <div class="app">
   <aside class="sidebar">
-    <div class="brand">${crest(44)}<div><b class="sr-only">${esc(inst)}</b><small>Automated admissions</small></div></div>
+    <div class="brand">${crest(38, "white")}<div><b class="sr-only">${esc(inst)}</b><small>Automated admissions</small></div></div>
     <nav class="side">
       ${nav
         .map((n) => `<a href="${n.href}" class="${opts.active === n.active ? "active" : ""}">${icon(n.icon as never)}${n.label}</a>`)
@@ -578,7 +581,7 @@ export function layout(opts: {
     </div>
   </aside>
   <div class="main">
-    ${opts.user && opts.mailMock ? `<div class="mailmock">Demo mode — outgoing mail is simulated, not delivered. Connect Gmail in Settings to fetch and send real mail.</div>` : ""}
+    ${opts.user && opts.demo ? `<div class="mailmock">Demo workspace — sample applicants and demo staff accounts are loaded. Connect Gmail in Settings for real mail.</div>` : ""}
     <header class="topbar">
       <button class="searchbtn" id="searchbtn">${icon("search")}<span>Search applicants, refs, pages…</span><span class="kbd">Ctrl K</span></button>
       <div class="top-right">
