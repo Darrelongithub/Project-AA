@@ -171,26 +171,11 @@ describe("web console", () => {
     expect(settings.status).toBe(403);
   });
 
-  it("public status page verifies ref + email (feature 20, 21)", async () => {
-    const landing = await fetch(`${base}/status`);
-    expect(landing.status).toBe(200);
-
-    const wrong = await fetch(`${base}/status`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: `ref=${ref}&email=wrong@example.org`,
-    });
-    expect(await wrong.text()).toContain("No application matches");
-
-    const right = await fetch(`${base}/status`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: `ref=${ref}&email=${applicantEmail}`,
-    });
-    const html = await right.text();
-    expect(html).toContain(ref);
-    expect(html).toContain("document checklist");
-    expect(html).toContain("✓");
+  it("public status lookup is retired — status now travels by email", async () => {
+    const landing = await fetch(`${base}/status`, { redirect: "manual" });
+    expect(landing.status).toBe(404);
+    const portal = await fetch(`${base}/portal`, { redirect: "manual" });
+    expect(portal.status).toBe(404);
   });
 
   it("v4 UI: splash, sidebar shell, command palette and dark-mode toggle", async () => {
@@ -200,7 +185,7 @@ describe("web console", () => {
     expect(home).toContain('class="sidebar"');
     expect(home).toContain('id="palette"');
     expect(home).toContain("Riara University");
-    expect(home).toContain("Nurturing Innovators");
+    expect(home).toContain("Nurturing Innovations");
     expect(home).toContain('data-theme="light"');
 
     // Toggle to dark — cookie-driven, works on the next render.
@@ -344,77 +329,6 @@ describe("web console v3", () => {
     });
     expect(dl.status).toBe(302);
     expect(repo.intakeDeadline("January 2027")).toContain("2027-01-15");
-  });
-
-  it("portal: OTP sign-in then upload flows through the pipeline as channel=portal (features 12, 35, 40)", async () => {
-    // An incomplete applicant who needs to upload something.
-    const res = await processEmail(
-      {
-        id: "web-portal-1", threadId: "web-portal-t", from: "portaluser@example.org", fromName: "Portal User",
-        subject: "Application documents", body: "Attached.",
-        receivedAt: new Date().toISOString(),
-        attachments: [
-          { filename: "p-academic.pdf", mimeType: "application/pdf", content: await makeTextPdf(docLines("academic_cert", { name: "PORTAL USER APPLICANT" })) },
-        ],
-      },
-      ctx
-    );
-    const a = repo.getApplicant(res.applicantId)!;
-
-    // Wrong email → generic message, no code shown.
-    const nomatch = await fetch(`${base}/portal/start`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: `ref=${a.ref_number}&email=intruder@example.org`,
-    });
-    const nomatchHtml = await nomatch.text();
-    expect(nomatchHtml).not.toContain('<div class="otpbox">');
-
-    // Right credentials → demo mode shows the code.
-    const start = await fetch(`${base}/portal/start`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: `ref=${a.ref_number}&email=portaluser@example.org`,
-    });
-    const startHtml = await start.text();
-    const code = (startHtml.match(/<div class="otpbox">(\d{6})<\/div>/) || [])[1];
-    expect(code).toBeTruthy();
-
-    const verify = await fetch(`${base}/portal/verify`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: `ref=${a.ref_number}&code=${code}`,
-      redirect: "manual",
-    });
-    expect(verify.status).toBe(302);
-    const psid = (verify.headers.get("set-cookie") || "").split(";")[0];
-    expect(psid).toContain("psid=");
-
-    const home = await fetch(`${base}/portal/home`, { headers: { cookie: psid } });
-    const homeHtml = await home.text();
-    expect(homeHtml).toContain(a.ref_number);
-    expect(homeHtml).toContain("Upload a missing document");
-
-    // Upload the missing KCPE certificate via the portal.
-    const pdf = await makeTextPdf(docLines("kcpe_cert", { name: "PORTAL USER APPLICANT", kcpePoints: 300, year: "2017" }));
-    const up = await fetch(`${base}/portal/upload`, {
-      method: "POST",
-      headers: { cookie: psid, "content-type": "application/json" },
-      body: JSON.stringify({ filename: "my-kcpe.pdf", mimeType: "application/pdf", data: pdf.toString("base64") }),
-    });
-    expect(await up.json()).toEqual({ ok: true });
-
-    const emails = repo.emailsForApplicant(a.id);
-    expect(emails.some((e) => e.channel === "portal" && e.direction === "in")).toBe(true);
-    expect(repo.auditForApplicant(a.id).some((e) => e.event === "portal_upload")).toBe(true);
-    // The pipeline triaged it: KCPE is now on file.
-    expect(repo.listDocuments(a.id).some((d) => d.document_type === "kcpe_cert")).toBe(true);
-  });
-
-  it("portal home requires a session", async () => {
-    const res = await fetch(`${base}/portal/home`, { redirect: "manual" });
-    expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe("/portal");
   });
 });
 
@@ -631,6 +545,34 @@ describe("QA audit regressions", () => {
     expect(page).toContain("saved — enter a new value to replace");
     // clean up
     repo.setSetting("gmail_address", ""); repo.setSetting("gmail_client_id", ""); repo.setSetting("gmail_client_secret", "");
+  });
+
+  it("an email containing only the applicant's reference number gets a factual status reply", async () => {
+    const a = repo.findByRef(ref)!;
+    const outBefore = repo.emailsForApplicant(a.id).filter((e) => e.direction === "out").length;
+    const res = await processEmail(
+      {
+        id: "ref-only-1", threadId: "ref-only-t", from: applicantEmail, fromName: "Web Test",
+        subject: "status", body: ref, receivedAt: new Date().toISOString(), attachments: [],
+      },
+      ctx
+    );
+    expect(res.autoSent).toBe(true);
+    expect(res.autoKind).toBe("status_answer");
+    const outs = repo.emailsForApplicant(a.id).filter((e) => e.direction === "out");
+    expect(outs.length).toBe(outBefore + 1);
+    expect(outs[0].body.toLowerCase()).toContain(ref.toLowerCase());
+  });
+
+  it("a stranger quoting someone else's reference number gets NO automatic status", async () => {
+    const res = await processEmail(
+      {
+        id: "ref-only-2", threadId: "ref-only-t2", from: "stranger@example.org", fromName: "Stranger",
+        subject: "status please", body: ref, receivedAt: new Date().toISOString(), attachments: [],
+      },
+      ctx
+    );
+    expect(res.autoSent).toBe(false);
   });
 
   it("dashboard shows 'no data' instead of fake zeros and the demo banner is truthful", async () => {

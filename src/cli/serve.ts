@@ -63,8 +63,8 @@ async function main(): Promise<void> {
   const port = cfg.port;
   app.listen(port, "0.0.0.0", () => {
     log(`serve: listening on http://0.0.0.0:${port}`);
-    log(`serve: staff login → admin/admin123 (change in Staff settings!)`);
-    log(`serve: applicant status page → /status`);
+    log(`serve: staff console → /login (accounts are seeded in demo mode only)`);
+    log(`serve: applicants who email just their reference number receive a status reply`);
   });
 
   // Escalation sweep every 5 minutes (feature 29). The window is re-read

@@ -7,6 +7,7 @@
  * Server-rendered, self-contained, DB-backed sessions + CSRF.
  */
 import * as crypto from "crypto";
+import { LOGO_BASE64 } from "./logo";
 import express, { type Express, type Request, type Response } from "express";
 import type { Repo } from "../db/repo";
 import type { PipelineContext } from "../pipeline/adapters";
@@ -16,9 +17,8 @@ import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import {
   applicantsPage, casePage, dashboardPage, loginPage, notificationsPage,
-  publicStatusForm, publicStatusResult, queuePage, replayPage, settingsPage, staffPage, teamPage,
+  queuePage, replayPage, settingsPage, staffPage, teamPage,
 } from "./pages";
-import { portalHomePage, portalOtpPage, portalStartPage } from "./portal";
 import { avatar, esc, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
 import { processEmail } from "../pipeline";
@@ -68,7 +68,7 @@ export function createApp(deps: WebDeps): Express {
   // limiter a single global counter for ALL users. Opt in via TRUST_PROXY=1.
   if (process.env.TRUST_PROXY === "1") app.set("trust proxy", 1);
   app.use(express.urlencoded({ extended: true, limit: "2mb" }));
-  app.use(express.json({ limit: "12mb" })); // portal uploads arrive as base64 JSON
+  app.use(express.json({ limit: "1mb" }));
   app.use(authMiddleware(repo));
 
   const c = (req: Request) => ({
@@ -94,6 +94,13 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Auth ─────────────────────────────────────────────────────────────────
 
+  // Official logo served once and cached; every page references this path.
+  app.get("/assets/logo", (_req, res) => {
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(Buffer.from(LOGO_BASE64, "base64"));
+  });
+
   app.get("/login", (req, res) => res.send(loginPage(undefined, req.theme, instName())));
 
   /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
@@ -116,7 +123,7 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(target);
   });
 
-  // Failed-logins-only limiter: the portal and status pages already had per-IP
+  // Failed-logins-only limiter: only FAILURES count, so legitimate users are
   // limits, but staff login had none — unlimited scrypt brute force. Only
   // FAILURES count, so legitimate users are never locked out by normal use;
   // 10 failures per IP per minute blocks further attempts.
@@ -700,135 +707,6 @@ export function createApp(deps: WebDeps): Express {
     csv(res, "audit.csv", ["at", "actor", "event", "detail", "applicant_id"], rows.map((r) => [r.at, r.actor, r.event, r.detail, r.applicant_id]));
   });
 
-  // ── Applicant portal (v3 features 12, 35, 40) ────────────────────────────
-  // Auth model: ref + applicant email + one-time code. The ref identifies the
-  // case — the OTP proves identity. Sessions are short-lived cookies.
-
-  const portalRateOk = makeRateLimiter(6, 60_000);
-  const portalCookie = (token: string) => `psid=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 60}`;
-  const portalApplicant = (req: Request) => {
-    const token = parseCookies(req.headers.cookie)["psid"];
-    return token ? { token, applicant: repo.getPortalSession(token) } : { token: "", applicant: undefined };
-  };
-
-  app.get("/portal", (req, res) => res.send(portalStartPage(undefined, req.theme, instName())));
-
-  app.post("/portal/start", async (req, res) => {
-    const ip = req.ip ?? "?";
-    if (!portalRateOk(ip)) return res.status(429).send(portalStartPage("Too many attempts — please wait a minute.", req.theme, instName()));
-    const a = repo.findByRef(String(req.body.ref ?? "").trim());
-    const email = String(req.body.email ?? "").trim().toLowerCase();
-    // Do not reveal whether the reference exists; but when it matches, send the OTP.
-    if (!a || a.email_address !== email) {
-      return res.send(portalStartPage("If that reference and email match an application, a code has been sent.", req.theme, instName()));
-    }
-    const code = repo.createOtp(a.id);
-    const delivery = repo.getSetting("portal_otp_delivery", "screen");
-    if (delivery === "email") {
-      try {
-        await ctx.adapters.sender.send(
-          a.email_address,
-          `[${a.ref_number}] Your admissions portal access code`,
-          `Hello ${a.full_name ?? ""},\n\nYour one-time access code is: ${code}\n\nIt expires in 10 minutes. If you did not request it, you can ignore this message.\n\n${repo.getSetting("institution_name", "Admissions")}`,
-          a.thread_id
-        );
-        return res.send(portalOtpPage(a.ref_number, null, undefined, req.theme, instName()));
-      } catch (e) {
-        repo.audit(a.id, "system", "send_failed", `portal OTP email: ${(e as Error).message}`);
-        // Fall back to on-screen delivery so the applicant is never locked out.
-        return res.send(portalOtpPage(a.ref_number, code, "Email delivery failed — showing the code here instead.", req.theme, instName()));
-      }
-    }
-    // Demo/mock mode: show the code on screen.
-    res.send(portalOtpPage(a.ref_number, code, undefined, req.theme, instName()));
-  });
-
-  app.post("/portal/verify", (req, res) => {
-    const ip = req.ip ?? "?";
-    if (!portalRateOk(ip)) return res.status(429).send(portalStartPage("Too many attempts — please wait a minute.", req.theme, instName()));
-    const a = repo.findByRef(String(req.body.ref ?? "").trim());
-    if (!a || !repo.consumeOtp(a.id, String(req.body.code ?? ""))) {
-      return res.send(portalOtpPage(String(req.body.ref ?? ""), null, "That code is not valid (codes expire after 10 minutes).", req.theme, instName()));
-    }
-    const token = repo.createPortalSession(a.id);
-    repo.audit(a.id, "portal", "portal_login", "applicant signed in via one-time code");
-    res.setHeader("Set-Cookie", portalCookie(token));
-    res.redirect("/portal/home");
-  });
-
-  app.get("/portal/home", (req, res) => {
-    const { applicant } = portalApplicant(req);
-    if (!applicant) return res.redirect("/portal");
-    res.send(portalHomePage(repo, applicant, req.query.msg ? String(req.query.msg) : undefined, req.theme, instName()));
-  });
-
-  app.post("/portal/logout", (req, res) => {
-    const { token } = portalApplicant(req);
-    if (token) repo.deletePortalSession(token);
-    res.setHeader("Set-Cookie", "psid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
-    res.redirect("/portal");
-  });
-
-  /**
-   * Portal upload → synthetic incoming message on channel 'portal' → the SAME
-   * pipeline triages it. Nothing special-cased: the case file stays whole.
-   */
-  app.post("/portal/upload", async (req, res) => {
-    const { applicant } = portalApplicant(req);
-    if (!applicant) return res.status(401).json({ ok: false, error: "not signed in" });
-    const { filename, mimeType, data } = req.body ?? {};
-    if (!filename || typeof data !== "string" || !data.length) {
-      return res.status(400).json({ ok: false, error: "missing file" });
-    }
-    const content = Buffer.from(data, "base64");
-    if (content.length > 10 * 1024 * 1024) {
-      return res.status(413).json({ ok: false, error: "file too large (10 MB max)" });
-    }
-    const allowed = ["application/pdf", "image/png", "image/jpeg"];
-    if (!allowed.includes(String(mimeType ?? ""))) {
-      return res.status(400).json({ ok: false, error: "please upload a PDF, PNG or JPG" });
-    }
-    const id = `portal-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-    try {
-      await processEmail(
-        {
-          id,
-          threadId: applicant.thread_id,
-          from: applicant.email_address,
-          fromName: applicant.full_name ?? undefined,
-          subject: `Portal upload: ${filename}`,
-          body: `Applicant uploaded ${filename} through the portal.`,
-          receivedAt: new Date().toISOString(),
-          attachments: [{ filename: String(filename), mimeType: String(mimeType), content }],
-          channel: "portal",
-        },
-        ctx
-      );
-      repo.audit(applicant.id, "portal", "portal_upload", filename);
-      res.json({ ok: true });
-    } catch (e) {
-      log(`portal upload failed: ${(e as Error).message}`, "error");
-      res.status(500).json({ ok: false, error: "upload processing failed" });
-    }
-  });
-
-  // ── Public self-service status page (features 20, 21) ────────────────────
-
-  const rateOk = makeRateLimiter(10, 60_000);
-
-  app.get("/status", (req, res) => res.send(publicStatusForm(undefined, req.theme, instName())));
-
-  app.post("/status", (req, res) => {
-    const ip = req.ip ?? "?";
-    if (!rateOk(ip)) return res.status(429).send(publicStatusForm("Too many attempts — please wait a minute.", req.theme));
-    const ref = String(req.body.ref ?? "").trim();
-    const email = String(req.body.email ?? "").trim().toLowerCase();
-    const a = repo.findByRef(ref);
-    if (!a || a.email_address !== email) {
-      return res.send(publicStatusForm("No application matches that reference number and email.", req.theme));
-    }
-    res.send(publicStatusResult(repo, a, req.theme, instName()));
-  });
 
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
 

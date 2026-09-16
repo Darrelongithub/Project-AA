@@ -299,7 +299,18 @@ export async function processEmail(
 
   const gateDecision = gate(finalStatus, { ran: rulesOut.status === "Green", flagged: watcherFlagged });
 
-  if (gateDecision.action === "auto_send") {
+  const refOnlyOwnCase =
+    email.attachments.length === 0 &&
+    /^[A-Z]{1,6}-\d{4}-\d{1,8}$/i.test(email.body.trim()) &&
+    email.body.trim().toUpperCase() === applicantNow.ref_number.toUpperCase() &&
+    email.from.trim().toLowerCase() === applicantNow.email_address;
+
+  // The applicant emailed just their reference number ("RU-2026-000003") —
+  // answer with the factual status of their own case. Only when the sender IS
+  // the case owner; a stranger quoting someone's ref goes to a human.
+  if (opts.autoStatusAnswers && refOnlyOwnCase) {
+    autoKind = "status_answer";
+  } else if (gateDecision.action === "auto_send") {
     autoKind = "ack";
   } else if (
     opts.autoStatusAnswers &&

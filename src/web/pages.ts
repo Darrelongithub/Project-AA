@@ -40,7 +40,7 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
 <div class="loginbox card">
   ${crest(64)}
   <h1 class="center">Welcome back</h1>
-  <p class="sub center">Riara University · Admissions Intake Console</p>
+  <p class="sub center">${esc(institution)} · Automated admissions console</p>
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
   <form method="post" action="/login">
     <label>Username</label>
@@ -49,7 +49,7 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
     <input type="password" name="password" autocomplete="current-password" placeholder="••••••••">
     <p style="margin-top:18px"><button class="btn" style="width:100%">Sign in to the console</button></p>
   </form>
-  <p class="small muted center">First run seeds <span class="mono">admin/admin123</span> plus demo manager, IT &amp; officer accounts — change these in Staff settings.</p>
+  <p class="small muted center">Accounts are provisioned by your administrator.</p>
 </div>`,
   });
 }
@@ -971,67 +971,6 @@ export function teamPage(c: Ctx): string {
 </div>
 <p class="small muted">“Emails received” counts incoming mail on cases currently assigned to the person. “Replies sent” counts messages they personally approved or sent. Response time is measured on their assigned cases from an incoming email to the next outgoing reply.</p>`
   );
-}
-
-// ── Public self-service status page (features 20, 21) ──────────────────────
-
-export function publicStatusForm(error?: string, theme?: Theme, institution = "Riara University"): string {
-  return layout({
-    title: `Check your application status — ${institution}`,
-    institution,
-    publicPage: true,
-    theme,
-    content: `
-<div class="loginbox card">
-  ${crest(56)}
-  <h1 class="center">Have we received your documents?</h1>
-  <p class="sub center">Enter your reference number and the email address you applied with to see your live document checklist.</p>
-  ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
-  <form method="post" action="/status">
-    <label>Reference number</label>
-    <input type="text" name="ref" placeholder="e.g. RU-2026-000001" autofocus>
-    <label>Email address</label>
-    <input type="email" name="email" placeholder="you@example.org">
-    <p style="margin-top:16px"><button class="btn" style="width:100%">Check status</button></p>
-  </form>
-</div>`,
-  });
-}
-
-export function publicStatusResult(repo: Repo, a: ApplicantRow, theme?: Theme, institution = "Riara University"): string {
-  // The applicant must see the SAME checklist the case file uses — the frozen
-  // requirement snapshot, not whatever the live rules say today.
-  const requirements = repo.effectiveRequirements(a);
-  const activeDocs = repo.listDocuments(a.id, { activeOnly: true });
-  const checklist = requirements
-    .filter((r) => r.required)
-    .map((r) => {
-      const doc = activeDocs.find((d) => d.document_type === r.document_type);
-      return doc
-        ? `<div><span class="ok">✓</span> ${esc(docLabel(r.document_type))} <span class="muted small">received ${esc(fmtDate(doc.received_at))}</span></div>`
-        : `<div><span class="no">✗</span> ${esc(docLabel(r.document_type))} <span class="muted small">not received</span></div>`;
-    })
-    .join("");
-  const missing = requirements.filter((r) => r.required && !activeDocs.some((d) => d.document_type === r.document_type));
-
-  return layout({
-    title: `${a.ref_number} — status`,
-    publicPage: true,
-    theme,
-    institution,
-    content: `
-<div class="card" style="max-width:640px;margin:40px auto">
-  <div class="nameline" style="margin-bottom:6px">${avatar(a.full_name ?? a.ref_number, 44)}<h1 class="mono" style="margin:0">${esc(a.ref_number)}</h1></div>
-  <div class="sub">${esc(a.full_name ?? "")} · last updated ${esc(fmtDate(a.updated_at))}</div>
-  <p>${lifecycleBadge(a.lifecycle)}</p>
-  ${lifecycleStepper(a.lifecycle)}
-  <h2>Your document checklist</h2>
-  <div class="checklist">${checklist}</div>
-  ${missing.length ? `<p class="small" style="margin-top:12px">Please send the outstanding document(s) as PDF attachments in reply to any email in your application thread.</p>` : `<p class="small" style="margin-top:12px">Your file is complete — thank you!</p>`}
-  <p class="small muted">This page only confirms document receipt. Admission decisions are made by the admissions committee and communicated officially.</p>
-  <p><a class="btn ghost small" href="/status">← Check another reference</a></p>
-</div>`,
-  });
 }
 
 // ── Decision replay (v3 feature 32): step-by-step "why was this flagged?" ──

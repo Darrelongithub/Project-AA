@@ -6,7 +6,7 @@
  * full dark mode, sidebar app shell, splash entry, command palette, toasts.
  */
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type EmailCategory, type LifecycleStage, type Priority, type StaffUser } from "../types";
-import { EMBLEM_DATA_URI } from "./emblem";
+import { LOGO_BASE64 } from "./logo";
 
 export type Theme = "light" | "dark";
 
@@ -107,9 +107,11 @@ export function avatar(name: string | null | undefined, size = 34): string {
   return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px;background:linear-gradient(135deg,${c1},${c2})">${esc(initials)}</span>`;
 }
 
-/** The official Riara emblem, on a white chip so it sits well on any surface. */
+/** The official full Riara University logo, on a white chip; the image itself
+ * is served once at /assets/logo and cached, pages only reference the path. */
 export function crest(size = 40): string {
-  return `<span class="crest" style="width:${Math.round(size * 0.78)}px;height:${size}px"><img src="${EMBLEM_DATA_URI}" alt="emblem" style="width:100%;height:100%;object-fit:contain;border-radius:8px"></span>`;
+  void LOGO_BASE64; // served via /assets/logo route; kept as the source of truth
+  return `<span class="crest" style="height:${size}px"><img src="/assets/logo" alt="Riara University" style="height:100%;width:auto;display:block"></span>`;
 }
 
 /** Human-readable flag names: "name_mismatch" → "Name mismatch". */
@@ -179,6 +181,7 @@ const CSS = `
   --shadow-lg: 0 2px 6px rgba(0,0,0,.5), 0 28px 60px -18px rgba(0,0,0,.65);
 }
 * { box-sizing: border-box; }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; clip: rect(0 0 0 0); overflow: hidden; }
 /* Visible keyboard focus on every interactive control (accessibility). */
 a:focus-visible, button:focus-visible, .btn:focus-visible, .iconbtn:focus-visible,
 .tabs a:focus-visible, .searchbtn:focus-visible, summary:focus-visible {
@@ -412,7 +415,7 @@ details > summary { list-style: none; } details > summary::-webkit-details-marke
 .mailmock { background: var(--gold-bg); color: var(--gold); border-bottom: 1px solid var(--gold); font-size: 12.5px; font-weight: 600; padding: 7px 34px; text-align: center; }
 
 /* ── Brand chip + tab pills ────────────────────────────────────────────── */
-.crest { display: inline-flex; background: #fff; border-radius: 10px; padding: 3px; box-shadow: 0 1px 4px rgba(20,8,60,.25); flex: none; }
+.crest { display: inline-flex; align-items: center; background: #fff; border-radius: 10px; padding: 4px 7px; box-shadow: 0 1px 4px rgba(20,8,60,.25); flex: none; }
 .publicbar .crest { box-shadow: 0 1px 4px rgba(20,8,60,.14); }
 .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 22px; }
 .tabs a {
@@ -446,8 +449,7 @@ const PALETTE_JS = `
     { label: 'Human review queue', hint: 'queue', href: '/queue', keys: 'queue review human' },
     { label: 'Applicants', hint: 'search', href: '/applicants', keys: 'applicants cases search list' },
     { label: 'Settings & automation', hint: 'config', href: '/settings', keys: 'settings automation templates rules' },
-    { label: 'Alerts & notifications', hint: 'alerts', href: '/notifications', keys: 'alerts notifications bell' },
-    { label: 'Applicant portal', hint: 'public', href: '/portal', keys: 'portal applicant upload otp' }
+    { label: 'Alerts & notifications', hint: 'alerts', href: '/notifications', keys: 'alerts notifications bell' }
   ];
 
   function close() { pal.classList.remove('open'); q.value = ''; render([]); }
@@ -557,7 +559,7 @@ export function layout(opts: {
     shell = `
 <div class="app">
   <aside class="sidebar">
-    <div class="brand">${crest(46)}<div><b>${inst}</b><small>Admissions Intake</small></div></div>
+    <div class="brand">${crest(44)}<div><b class="sr-only">${esc(inst)}</b><small>Automated admissions</small></div></div>
     <nav class="side">
       ${nav
         .map((n) => `<a href="${n.href}" class="${opts.active === n.active ? "active" : ""}">${icon(n.icon as never)}${n.label}</a>`)
@@ -590,17 +592,14 @@ ${opts.content}
   <div class="palette-box">
     <input id="palette-q" type="text" placeholder="Jump to a case, applicant or page…" autocomplete="off" spellcheck="false">
     <div id="palette-res"></div>
-    <div class="palette-keys"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span><span style="margin-left:auto">${inst === "Riara University" ? `${inst} · Nurturing Innovators` : `${inst} · Admissions Intake`}</span></div>
+    <div class="palette-keys"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span><span style="margin-left:auto">${inst === "Riara University" ? `${inst} · Nurturing Innovations` : `${inst} · Automated admissions`}</span></div>
   </div>
 </div>`;
   } else {
     shell = `
 <div class="publicbar">
-  <div class="brand">${crest(38)}<div><b>${inst}</b><small>Admissions Intake</small></div></div>
+  <div class="brand">${crest(40)}<div><b class="sr-only">${esc(inst)}</b><small>Automated admissions</small></div></div>
   <nav>
-    <a href="/status">Status lookup</a>
-    <a href="/portal">Applicant portal</a>
-    <a href="/login">Staff sign in</a>
     ${themeBtn}
   </nav>
 </div>
@@ -619,7 +618,7 @@ ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
 <style>${CSS}</style>
 </head>
 <body>
-<div id="splash" aria-hidden="true">${crest(62)}<div class="s-name">${inst}</div><div class="s-sub">Admissions Intake</div><div class="s-bar"><span></span></div></div>
+<div id="splash" aria-hidden="true">${crest(64)}<div class="s-sub">Nurturing Innovations · Automated admissions</div><div class="s-bar"><span></span></div></div>
 ${shell}
 <script>${PALETTE_JS}${TOAST_JS}</script>
 </body>
