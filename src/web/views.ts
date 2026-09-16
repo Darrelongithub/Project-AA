@@ -487,13 +487,7 @@ const PALETTE_JS = `
   var res = document.getElementById('palette-res');
   var sel = 0; var items = []; var timer = null;
 
-  var LINKS = [
-    { label: 'Command Center', hint: 'home', href: '/', keys: 'dashboard home overview' },
-    { label: 'Human review queue', hint: 'queue', href: '/queue', keys: 'queue review human' },
-    { label: 'Applicants', hint: 'search', href: '/applicants', keys: 'applicants cases search list' },
-    { label: 'Settings & automation', hint: 'config', href: '/settings', keys: 'settings automation templates rules' },
-    { label: 'Alerts & notifications', hint: 'alerts', href: '/notifications', keys: 'alerts notifications bell' }
-  ];
+  var LINKS = __PALETTE_LINKS__;
 
   function close() { pal.classList.remove('open'); q.value = ''; render([]); }
   function open() { pal.classList.add('open'); sel = 0; setTimeout(function(){ q.focus(); }, 10); run(); }
@@ -589,6 +583,29 @@ export function layout(opts: {
       <button class="iconbtn" title="Switch to ${otherTheme} mode">${icon(theme === "dark" ? "sun" : "moon")}</button>
     </form>`;
 
+  // Ctrl+K palette links follow the same role separation as the navigation.
+  const paletteLinks: Array<{ label: string; hint: string; href: string; keys: string }> = [];
+  if (opts.user) {
+    paletteLinks.push({ label: "Overview", hint: "home", href: "/", keys: "dashboard home overview" });
+    if (opts.user.role !== "admin") {
+      paletteLinks.push(
+        { label: "Review queue", hint: "queue", href: "/queue", keys: "queue review human" },
+        { label: "Applicants", hint: "search", href: "/applicants", keys: "applicants cases search list" }
+      );
+    }
+    if (opts.user.role === "admin" || opts.user.role === "manager") {
+      paletteLinks.push({ label: "Staff", hint: "team", href: "/staff", keys: "staff team accounts performance" });
+    }
+    if (opts.user.role !== "officer") {
+      paletteLinks.push(
+        { label: "Configuration", hint: "setup", href: "/config", keys: "courses requirements gmail templates intakes" },
+        { label: "Settings", hint: "app", href: "/settings", keys: "settings automation targets retention" }
+      );
+    }
+    paletteLinks.push({ label: "Alerts", hint: "alerts", href: "/#alerts", keys: "alerts notifications bell" });
+  }
+  const paletteJs = PALETTE_JS.replace("__PALETTE_LINKS__", JSON.stringify(paletteLinks));
+
   let shell: string;
   if (opts.user) {
     const role = opts.user.role;
@@ -659,6 +676,7 @@ ${opts.content}
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/assets/favicon">
 ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
 <title>${esc(opts.title)}</title>
 <style>${CSS}</style>
@@ -666,7 +684,7 @@ ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
 <body>
 <div id="splash" aria-hidden="true">${crest(54)}${flowLine(160, 30)}<div class="s-sub">Nurturing Innovations</div></div>
 ${shell}
-<script>${PALETTE_JS}${TOAST_JS}</script>
+<script>${paletteJs}${TOAST_JS}</script>
 </body>
 </html>`;
 }

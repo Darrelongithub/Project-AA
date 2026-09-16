@@ -75,6 +75,13 @@ async function main(): Promise<void> {
   // start fresh (production) never shows it.
   repo.setSetting("demo_dataset", "1");
 
+  // The demo admin gets a real name so the Overview greeting reads like the
+  // product it is — "Good evening, Darrel." (production admins set their own).
+  const demoAdmin = repo.getStaffByUsername("admin");
+  if (demoAdmin && demoAdmin.display_name === "System Administrator") {
+    repo.setStaffDisplayName(demoAdmin.id, "Darrel");
+  }
+
   // Course ownership: who handles what. Officers get courses; one is left
   // unassigned on purpose so the assignment flow is visible.
   const ownerFor: Record<string, string> = { BCS: "jane", NUR: "otis", LAW: "manager" };
@@ -87,8 +94,8 @@ async function main(): Promise<void> {
   }
 
   console.log("\ndemo: done. Now run:\n\n  npm run serve\n");
-  console.log("then open the printed URL and sign in as admin/admin123.");
-  console.log(`Try applicant ${queued[0]?.ref_number ?? "a reference"} from the Applicants page.`);
+  console.log("then open the printed URL and sign in as admin/admin123 (administration)");
+  console.log("or jane/jane123 (officer casework) to see the two separated workspaces.");
   console.log("");
   process.exit(0);
 }

@@ -102,6 +102,13 @@ export function createApp(deps: WebDeps): Express {
     res.send(Buffer.from(LOGO_WHITE_BASE64, "base64"));
   });
 
+  // Browser-tab mark: the official logo, same transparent PNG.
+  app.get("/assets/favicon", (_req, res) => {
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "public, max-age=604800");
+    res.send(Buffer.from(LOGO_BASE64, "base64"));
+  });
+
   // Self-hosted typefaces (no CDN): Manrope for UI, Instrument Serif display.
   const fontRoutes: Array<[string, string]> = [
     ["/assets/fonts/manrope.woff2", FONT_MANROPE_WOFF2],
@@ -183,11 +190,22 @@ export function createApp(deps: WebDeps): Express {
 
   app.get("/", requireLogin, (req, res) => res.send(dashboardPage(c(req))));
 
-  app.get("/queue", requireLogin, (req, res) =>
-    res.send(queuePage(c(req), String(req.query.filter ?? "all")))
-  );
+  // Admins are separated from casework — even direct URLs bounce to Overview.
+  const noCaseworkForAdmins = (req: Request, res: Response): boolean => {
+    if (req.staff?.role === "admin") {
+      res.redirect("/");
+      return true;
+    }
+    return false;
+  };
 
-  app.get("/applicants", requireLogin, (req, res) =>
+  app.get("/queue", requireLogin, (req, res) => {
+    if (noCaseworkForAdmins(req, res)) return;
+    res.send(queuePage(c(req), String(req.query.filter ?? "all")));
+  });
+
+  app.get("/applicants", requireLogin, (req, res) => {
+    if (noCaseworkForAdmins(req, res)) return;
     res.send(
       applicantsPage(c(req), {
         search: req.query.q ? String(req.query.q) : undefined,
@@ -195,8 +213,8 @@ export function createApp(deps: WebDeps): Express {
         programme: req.query.programme ? String(req.query.programme) : undefined,
         intake: req.query.intake ? String(req.query.intake) : undefined,
       })
-    )
-  );
+    );
+  });
 
   // ── Case file ────────────────────────────────────────────────────────────
 
@@ -782,6 +800,11 @@ export function createApp(deps: WebDeps): Express {
 
   /** Command-palette search API (v4). */
   app.get("/api/search", requireLogin, (req, res) => {
+    // Casework search is separated from administration.
+    if (req.staff?.role === "admin") {
+      res.json({ applicants: [] });
+      return;
+    }
     const q = String(req.query.q ?? "").trim();
     if (!q) return res.json({ applicants: [] });
     res.json({

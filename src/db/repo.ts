@@ -528,6 +528,11 @@ export class Repo {
       .run(username, displayName, passwordHash, role);
   }
 
+  /** Rename an account (e.g. giving the demo admin a human name). */
+  setStaffDisplayName(id: number, displayName: string): void {
+    this.db.prepare("UPDATE staff_users SET display_name = ? WHERE id = ?").run(displayName, id);
+  }
+
   getStaffByUsername(username: string): (StaffUser & { password_hash: string }) | undefined {
     return this.db
       .prepare("SELECT id, username, display_name, password_hash, role, active FROM staff_users WHERE username = ?")

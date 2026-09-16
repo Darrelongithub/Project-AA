@@ -79,7 +79,22 @@ async function login(): Promise<{ cookie: string; csrf: string }> {
   expect(res.status).toBe(302);
   const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
   // Read the CSRF token from the meta tag present on every staff page.
-  const home = await fetch(`${base}/applicants`, { headers: { cookie } });
+  const home = await fetch(`${base}/`, { headers: { cookie } });
+  const html = await home.text();
+  const csrf = (html.match(/<meta name="csrf" content="([a-f0-9]+)">/) || [])[1] || "";
+  return { cookie, csrf };
+}
+
+async function loginAs(username: string, password: string): Promise<{ cookie: string; csrf: string }> {
+  const res = await fetch(`${base}/login`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
+    redirect: "manual",
+  });
+  expect(res.status).toBe(302);
+  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
+  const home = await fetch(`${base}/`, { headers: { cookie } });
   const html = await home.text();
   const csrf = (html.match(/<meta name="csrf" content="([a-f0-9]+)">/) || [])[1] || "";
   return { cookie, csrf };
@@ -132,7 +147,7 @@ describe("web console", () => {
   });
 
   it("search finds the applicant by reference number", async () => {
-    const { cookie } = await login();
+    const { cookie } = await loginAs("jane", "jane123");
     const res = await fetch(`${base}/applicants?q=${encodeURIComponent(ref)}`, { headers: { cookie } });
     const html = await res.text();
     expect(html).toContain(ref);
@@ -230,7 +245,7 @@ describe("web console", () => {
   });
 
   it("v4 UI: command-palette search API returns applicants with avatars", async () => {
-    const { cookie } = await login();
+    const { cookie } = await loginAs("jane", "jane123");
     const res = await fetch(`${base}/api/search?q=webtest`, { headers: { cookie } });
     expect(res.status).toBe(200);
     const j = (await res.json()) as { applicants: Array<{ ref_number: string; avatar: string }> };
@@ -241,6 +256,22 @@ describe("web console", () => {
     // Requires auth.
     const anon = await fetch(`${base}/api/search?q=x`, { redirect: "manual" });
     expect(anon.status).toBe(302);
+  });
+
+  it("casework is separated from administration at the route level", async () => {
+    const { cookie } = await login();
+    for (const path of ["/queue", "/applicants"]) {
+      const res = await fetch(`${base}${path}`, { headers: { cookie }, redirect: "manual" });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
+    }
+    const search = await fetch(`${base}/api/search?q=webtest`, { headers: { cookie } });
+    const j = (await search.json()) as { applicants: unknown[] };
+    expect(j.applicants.length).toBe(0);
+    // Officers still reach the casework pages.
+    const { cookie: janeCookie } = await loginAs("jane", "jane123");
+    const ok = await fetch(`${base}/queue`, { headers: { cookie: janeCookie } });
+    expect(ok.status).toBe(200);
   });
   it("exports applicants CSV (manager+)", async () => {
     const { cookie } = await login();
@@ -360,7 +391,7 @@ describe("web console v3", () => {
 
 describe("production-readiness pass", () => {
   it("applicants page shows symmetrical filter tabs with live counts", async () => {
-    const { cookie } = await login();
+    const { cookie } = await loginAs("jane", "jane123");
     const page = await (await fetch(`${base}/applicants`, { headers: { cookie } })).text();
     expect(page).toContain('class="tabs"');
     for (const label of ["All applicants", "Awaiting documents", "Needs human review", "Complete", "Overdue"]) {

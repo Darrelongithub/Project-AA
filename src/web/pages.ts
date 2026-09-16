@@ -38,9 +38,9 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
     theme,
     content: `
 <div class="loginbox card">
-  ${crest(64)}
-  <h1 class="center">Welcome back</h1>
-  <p class="sub center">${esc(institution)} · Automated admissions console</p>
+  ${crest(58)}
+  <h1 class="center">Sign in</h1>
+  <p class="sub center">${esc(institution)} · Automated admissions</p>
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
   <form method="post" action="/login">
     <label>Username</label>
@@ -59,9 +59,10 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
 // Admins land on administration: courses, ownership, activity, system status.
 // Managers/officers land on their casework command center, alerts included.
 
-function firstName(display: string, username: string): string {
-  const w = (display || "").trim().split(/\s+/)[0] || username;
-  return w === "System" ? username : w;
+/** First name for the greeting — empty when the account has no personal name. */
+function firstName(display: string): string {
+  const w = (display || "").trim().split(/\s+/)[0] || "";
+  return w === "System" ? "" : w;
 }
 
 function greeting(): string {
@@ -119,7 +120,7 @@ function adminDashboard(c: Ctx): string {
 <div class="hero">
   <div>
     <div class="kicker">Administration</div>
-    <h1>${greeting()}, ${esc(firstName(c.user.display_name, c.user.username))}.</h1>
+    <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}.</h1>
     <p class="lede">Everything worth knowing is right here.</p>
   </div>
   ${completion !== null ? `<div class="herostat"><div class="n">${completion}%</div><div class="l">of ${applications} files complete</div></div>` : ""}
@@ -254,7 +255,7 @@ function officerDashboard(c: Ctx): string {
 <div class="hero">
   <div>
     <div class="kicker">${esc(c.institution)} · ${activeCount} active applicant${activeCount === 1 ? "" : "s"}</div>
-    <h1>${greeting()}, ${esc(firstName(c.user.display_name, c.user.username))}.</h1>
+    <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}.</h1>
     <p class="lede">Here is what needs you today.</p>
   </div>
   ${heroStat ? `<div class="herostat"><div class="n">${heroStat.n}</div><div class="l">${heroStat.l}</div></div>` : ""}
@@ -1065,7 +1066,7 @@ ${repo.listStaff().some((st) => onDefaultPassword(st.username))
     <tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Actions</th></tr>
     ${repo.listStaff()
       .map((st) => `<tr>
-        <td class="mono">${esc(st.username)}${onDefaultPassword(st.username) ? ` <span class="badge b-red" title="This account still uses its seeded demo password">default password</span>` : ""}</td>
+        <td class="mono">${esc(st.username)}${c.demo && KNOWN_DEFAULTS[st.username] ? ` <span class="badge b-purple" title="Part of the seeded demo dataset">demo</span>` : ""}${onDefaultPassword(st.username) ? ` <span class="badge b-red" title="This account still uses its seeded demo password">default password</span>` : ""}</td>
         <td>${esc(st.display_name)}</td>
         <td><span class="badge b-gray">${esc(st.role)}</span></td>
         <td>${st.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-red">disabled</span>`}</td>
