@@ -1,0 +1,41 @@
+{
+  "name": "email-sorter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Document-intake email triage: deterministic rules engine (Green/Orange/Red), tiered PDF extraction (pdf-parse -> Tesseract -> Gemini), human queue for anything uncertain. Never makes the final admission decision.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "simulate": "tsx src/cli/simulate.ts",
+    "ingest": "tsx src/cli/ingest.ts",
+    "queue": "tsx src/cli/queue.ts",
+    "serve": "tsx src/cli/serve.ts",
+    "demo": "tsx src/cli/demo.ts",
+    "escalate": "tsx src/cli/escalate.ts",
+    "followups": "tsx src/cli/followups.ts",
+    "retain": "tsx src/cli/retain.ts",
+    "backup": "tsx src/cli/backup.ts",
+    "restore": "tsx src/cli/restore.ts"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.22.3",
+    "googleapis": "^144.0.0",
+    "pdfjs-dist": "^3.11.174",
+    "pdfkit": "^0.15.0",
+    "sharp": "^0.35.4",
+    "tesseract.js": "^5.1.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/express": "^4.17.25",
+    "@types/node": "^20.14.0",
+    "@types/pdfkit": "^0.13.4",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.1"
+  }
+}

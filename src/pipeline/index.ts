@@ -1,0 +1,544 @@
+/**
+ * The v2 pipeline per incoming email:
+ *
+ *   1. ingestion delivers the email (caller)
+ *   2. categorize (deterministic) + resolve/create applicant + ref number
+ *   3. store the incoming email in the case history + audit
+ *   4. extraction: pdf text → Tesseract → Gemini (fixed chain), with
+ *      duplicate detection by content hash
+ *   5. matching: persist docs, supersede corrections
+ *   6. rules: PURE Green/Orange/Red decision (no AI, ever)
+ *   7. watcher: Green-only sanity check; can only downgrade
+ *   8. gate v2: ack / missing-docs notice / status answer / human queue
+ *   9. drafting (DB templates, ref-numbered subjects)
+ *  10. lifecycle transitions + status history + SLA + notifications
+ *  11. DecisionLog + audit, always
+ *
+ * Automation here is strictly FACTUAL: receipts, missing-doc lists, status
+ * answers. Anything ambiguous queues for a human. Never a decision.
+ */
+import type { Repo } from "../db/repo";
+import type {
+  Classification,
+  DerivedFlag,
+  EmailCategory,
+  IncomingEmail,
+  LifecycleStage,
+  ProcessResult,
+  WatcherInput,
+} from "../types";
+import { recordDocuments } from "../matching";
+import { resolveIdentity } from "../matching/identity";
+import { extractAttachment } from "../extraction/extract";
+import { decide, docLabel, normalizeName } from "../rules";
+import { gate } from "../gate";
+import { categorizeEmail, priorityForCategory } from "../categorize";
+import { extractPhone, inferIntake, inferProgramme } from "../enrich";
+import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
+import { writeDecisionLog } from "../logs";
+import { LIFECYCLE_LABELS } from "../types";
+import { log } from "../util/log";
+import type { PipelineContext } from "./adapters";
+
+export interface PipelineOptions {
+  autoMissingDocsEmails: boolean;
+  autoStatusAnswers: boolean;
+}
+
+const DEFAULT_OPTS: PipelineOptions = { autoMissingDocsEmails: true, autoStatusAnswers: true };
+
+export async function processEmail(
+  email: IncomingEmail,
+  ctx: PipelineContext,
+  opts: PipelineOptions = DEFAULT_OPTS
+): Promise<ProcessResult> {
+  const { repo, adapters } = ctx;
+
+  if (repo.isProcessed(email.id)) {
+    log(`pipeline: skipping ${email.id} (already processed)`);
+    return {
+      skipped: true,
+      applicantId: -1,
+      finalStatus: "Red",
+      lifecycle: "application_received",
+      autoSent: false,
+      autoKind: null,
+      category: "other",
+      reasoning: "skipped: email already processed",
+      flags: [],
+      missing: [],
+    };
+  }
+
+  // ── Categorize (feature 26) ──────────────────────────────────────────────
+  const category: EmailCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
+
+  // ── Resolve/create applicant with reference number (features 1, 2) ──────
+  // v3 identity matching: quoted reference number → known sender (any thread)
+  // → new applicant. Low-confidence matches get an identity_check flag.
+  const refPrefix = repo.getSetting("ref_prefix", "RU");
+  const identity = resolveIdentity(repo, email, { refPrefix });
+  const applicant = identity.applicant;
+  const preFlags: DerivedFlag[] = [];
+  if (identity.concern) {
+    preFlags.push({ type: "identity_check", detail: identity.concern });
+    repo.audit(applicant.id, "system", "identity_concern", identity.concern);
+    log(`pipeline: ${applicant.ref_number} matched via ${identity.matchedBy} WITH concern — human must verify`, "warn");
+  }
+  if (!identity.isNew && identity.matchedBy !== "created") {
+    repo.audit(applicant.id, "system", "identity_matched", `email attached to existing case via ${identity.matchedBy} signal`);
+  }
+
+  // ── Case reopen (v3 feature 34): a completed/verification applicant emails
+  //    again with substance → reopen the SAME case, never create a duplicate.
+  const reopenable = applicant.lifecycle === "completed" || applicant.lifecycle === "verification";
+  const actionable =
+    email.attachments.length > 0 ||
+    ["application", "document_submission", "complaint", "missing_document"].includes(category);
+  if (reopenable && actionable) {
+    repo.setLifecycle(applicant.id, "awaiting_review", "system", "case reopened: applicant emailed again after completion");
+    repo.audit(applicant.id, "system", "case_reopened", `new ${category} email after ${applicant.lifecycle}`);
+    log(`pipeline: ${applicant.ref_number} reopened (${category})`);
+  }
+
+  if (!applicant.full_name && email.fromName) {
+    repo.updateApplicant(applicant.id, { full_name: email.fromName });
+  }
+  log(`pipeline: email ${email.id} from ${email.from} → ${applicant.ref_number} (${category})`);
+
+  // ── Store incoming email in the case history (feature 4) ────────────────
+  repo.insertEmail({
+    applicant_id: applicant.id,
+    message_id: email.id,
+    thread_id: email.threadId,
+    direction: "in",
+    from_addr: email.from,
+    to_addr: "",
+    subject: email.subject,
+    body: email.body,
+    category,
+    auto: 0,
+    channel: email.channel ?? "email",
+    at: email.receivedAt,
+  });
+  repo.audit(applicant.id, "system", "email_received", `"${email.subject}" [${category}] via ${email.channel ?? "email"}`);
+
+  // Priority from category (feature 27): complaints jump to high.
+  const catPriority = priorityForCategory(category);
+  if (catPriority === "high" && applicant.priority === "normal") {
+    repo.updateApplicant(applicant.id, { priority: "high" });
+    repo.audit(applicant.id, "system", "priority_raised", "complaint received → high priority");
+  }
+
+  // Enrich phone from the email body.
+  const freshApplicant = repo.getApplicant(applicant.id)!;
+  if (!freshApplicant.phone) {
+    const phone = extractPhone(email.body);
+    if (phone) {
+      repo.updateApplicant(applicant.id, { phone });
+      repo.audit(applicant.id, "system", "phone_captured", phone);
+    }
+  }
+
+  // ── Extraction with duplicate detection (features 5, 6, 22) ─────────────
+  const extractions = [];
+  const duplicateFlags: DerivedFlag[] = [];
+  for (const att of email.attachments) {
+    const res = await extractAttachment(att, { vision: adapters.vision, ocr: adapters.ocr });
+    const dup = repo.findDuplicate(applicant.id, res.sha256);
+    if (dup) {
+      repo.insertDocument({
+        applicant_id: applicant.id,
+        document_type: res.document_type === "unknown" ? dup.document_type : res.document_type,
+        source_email_id: email.id,
+        extraction_method: res.method,
+        extracted_text: res.text,
+        extracted_fields: res.fields,
+        confidence: res.confidence,
+        received_at: email.receivedAt,
+        sha256: res.sha256,
+        is_duplicate: true,
+        duplicate_of: dup.id,
+      });
+      repo.audit(
+        applicant.id,
+        "system",
+        "duplicate_detected",
+        `${att.filename} is identical to document #${dup.id} (${dup.document_type}) already on file`
+      );
+      duplicateFlags.push({
+        type: "duplicate_submission",
+        detail: `${att.filename} is a byte-identical resubmission of an existing ${dup.document_type} — deduplicated`,
+      });
+      log(`pipeline: ${att.filename} recognised as duplicate of doc #${dup.id}`);
+      continue;
+    }
+    extractions.push(res);
+  }
+
+  // ── Persist docs + supersede corrections (features 4, 9) ────────────────
+  recordDocuments(repo, applicant.id, email, extractions);
+  let activeDocs = repo.listDocuments(applicant.id, { activeOnly: true });
+
+  // ── Enrich programme/intake from email + document text (feature 2) ──────
+  {
+    const current = repo.getApplicant(applicant.id)!;
+    const patch: { programme?: string; intake?: string; full_name?: string } = {};
+
+    // Prefer the name printed on official documents over the email From name.
+    const docName = activeDocs
+      .map((d) => normalizeName(d.extracted_fields?.name as string | undefined))
+      .sort((a, b) => b.length - a.length)[0];
+    if (docName && docName.length >= 5 && (!current.full_name || docName.length >= (current.full_name || "").length)) {
+      patch.full_name = docName
+        .toLowerCase()
+        .split(" ")
+        .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+        .join(" ");
+    }
+
+    if (!current.programme || !current.intake) {
+      const corpus = [email.subject, email.body, ...activeDocs.map((d) => d.extracted_text.slice(0, 800))].join("\n");
+      const programmes = repo.listProgrammes();
+      const intakes = repo.listIntakes();
+      if (!current.programme) {
+        const p = inferProgramme(corpus, programmes);
+        if (p) patch.programme = p;
+      }
+      if (!current.intake) {
+        const i = inferIntake(corpus, intakes);
+        if (i) patch.intake = i;
+      }
+    }
+    if (Object.keys(patch).length) {
+      repo.updateApplicant(applicant.id, patch);
+      repo.audit(
+        applicant.id,
+        "system",
+        "case_enriched",
+        Object.entries(patch).map(([k, v]) => `${k}=${v}`).join(", ")
+      );
+    }
+  }
+
+  // ── Requirements for THIS applicant (features 8, 36, 37, v3-19) ──────────
+  // First triage freezes a snapshot of the requirement set; later rule
+  // changes never retroactively move an applicant's goalposts.
+  const applicantNow = repo.getApplicant(applicant.id)!;
+  repo.freezeRequirementsSnapshot(applicantNow);
+  const requirements = repo.effectiveRequirements(repo.getApplicant(applicant.id)!);
+
+  // ── Intake deadline (v3 features 20, 21): late arrival → flag, never an
+  //    automatic rejection. ─────────────────────────────────────────────────
+  const deadline = repo.intakeDeadline(applicantNow.intake);
+  if (deadline && new Date(email.receivedAt).getTime() > new Date(deadline).getTime()) {
+    preFlags.push({
+      type: "late_submission",
+      detail: `received ${email.receivedAt.slice(0, 10)} after the ${applicantNow.intake} intake deadline of ${deadline} — human decides whether to accept`,
+    });
+    repo.audit(applicant.id, "system", "late_submission", `after ${applicantNow.intake} deadline ${deadline}`);
+  }
+
+  // ── Rules: pure deterministic decision (feature 10) ─────────────────────
+  const rulesOut = decide({ requirements, docs: activeDocs, flags: preFlags });
+
+  // ── Watcher: Green only, can only downgrade (feature: watcher) ──────────
+  let finalStatus: Classification = rulesOut.status;
+  let watcherFlagged = false;
+  let reasoning = rulesOut.reasoning;
+  const watcherFlags: DerivedFlag[] = [];
+
+  if (rulesOut.status === "Green") {
+    const watcherInput: WatcherInput = {
+      applicantEmail: applicantNow.email_address,
+      subject: email.subject,
+      docs: activeDocs.map((d) => ({
+        document_type: d.document_type,
+        extraction_method: d.extraction_method,
+        confidence: d.confidence,
+        name: (d.extracted_fields?.name as string | undefined) ?? null,
+        gradePoints: (d.extracted_fields?.gradePoints as number | undefined) ?? null,
+        textExcerpt: d.extracted_text.slice(0, 600),
+      })),
+    };
+    const watch = await adapters.watcher(watcherInput);
+    if (watch.flagged) {
+      watcherFlagged = true;
+      finalStatus = "Red";
+      reasoning += `\nWatcher (${watch.source}) FLAGGED the Green verdict — downgrading to Red:\n${watch.concerns
+        .map((c) => `  - ${c}`)
+        .join("\n")}`;
+      for (const c of watch.concerns) watcherFlags.push({ type: "watcher_flag", detail: c });
+      repo.audit(applicant.id, "system", "watcher_downgrade", watch.concerns.join("; "));
+      log(`pipeline: watcher downgraded ${applicantNow.ref_number} Green → Red`, "warn");
+    } else {
+      reasoning += `\nWatcher (${watch.source}) found nothing off. Green stands.`;
+    }
+  }
+
+  // Persist flags (blocking + informational duplicates).
+  const blockingFlags = [...preFlags, ...rulesOut.derivedFlags, ...watcherFlags];
+  repo.syncFlags(applicant.id, [...blockingFlags, ...duplicateFlags]);
+  repo.audit(applicant.id, "system", "requirements_checked", `verdict=${finalStatus}; missing=${rulesOut.missing.join(",") || "none"}`);
+
+  // ── Gate v2 (features 11, 13, 21) ────────────────────────────────────────
+  const activeBlockingFlags = repo
+    .activeFlags(applicant.id)
+    .filter((f) => f.type !== "duplicate_submission");
+  const allDocsHigh = activeDocs.every((d) => d.confidence === "high");
+  const cleanMissingCase =
+    finalStatus === "Red" &&
+    rulesOut.missing.length > 0 &&
+    activeBlockingFlags.length === 0 &&
+    allDocsHigh &&
+    !watcherFlagged;
+
+  let autoKind: ProcessResult["autoKind"] = null;
+  let draft: Draft | null = null;
+  let queueForHuman = false;
+
+  const gateDecision = gate(finalStatus, { ran: rulesOut.status === "Green", flagged: watcherFlagged });
+
+  if (gateDecision.action === "auto_send") {
+    autoKind = "ack";
+  } else if (
+    opts.autoStatusAnswers &&
+    email.attachments.length === 0 &&
+    activeDocs.length > 0 &&
+    (category === "missing_document" || category === "follow_up")
+  ) {
+    // "Have you received my documents?" → answer from reality (feature 21).
+    autoKind = "status_answer";
+    if (finalStatus !== "Green" && !cleanMissingCase) {
+      queueForHuman = true;
+      // The applicant still gets the factual status answer, AND staff see the
+      // case — make that deliberate double-track visible in the audit trail.
+      repo.audit(
+        applicant.id,
+        "system",
+        "status_answer_and_queued",
+        "factual status answer auto-sent while the underlying case also needs human review"
+      );
+    }
+  } else if (opts.autoMissingDocsEmails && cleanMissingCase) {
+    autoKind = activeDocs.length === 0 ? "docs_request" : "missing_docs";
+  } else {
+    queueForHuman = true;
+  }
+
+  // ── Draft-first mode (v3 feature 17): a global or per-category setting can
+  //    hold ANY automated reply for human approval. The reply is still
+  //    drafted normally — it just gets queued instead of sent. ─────────────
+  const heldForApproval = autoKind !== null && repo.automationMode(category) === "draft";
+  if (heldForApproval) {
+    repo.audit(
+      applicant.id,
+      "system",
+      "automation_held",
+      `category '${category}' is in draft-for-approval mode — reply held for a human`
+    );
+    queueForHuman = true;
+  }
+
+  // ── Drafting (features 14, 35) ──────────────────────────────────────────
+  const institution = repo.getSetting("institution_name", "the Admissions Office");
+  const requiredReqs = requirements.filter((r) => r.required);
+  const presentTypes = activeDocs.map((d) => d.document_type);
+  const missingLabels = rulesOut.missing.map((m) => docLabel(m));
+  const knownName =
+    activeDocs
+      .map((d) => normalizeName(d.extracted_fields?.name as string | undefined))
+      .find((n) => n.length >= 3) || freshApplicant.full_name || email.fromName;
+  const lifecycleAfter: LifecycleStage = heldForApproval
+    ? activeDocs.length > 0
+      ? "documents_received"
+      : "application_received"
+    : autoKind === "ack"
+      ? "documents_checked"
+      : queueForHuman && finalStatus !== "Green"
+        ? "awaiting_review"
+        : activeDocs.length > 0
+          ? "documents_received"
+          : "application_received";
+
+  const draftCtx: DraftContext = {
+    ref: applicantNow.ref_number,
+    institution,
+    name: knownName ?? undefined,
+    missingLabels,
+    checklist: checklistText({ requirements: requiredReqs, presentTypes }),
+    statusLabel: LIFECYCLE_LABELS[lifecycleAfter],
+  };
+
+  const templateKey =
+    autoKind === "ack"
+      ? "ack_received"
+      : autoKind === "docs_request"
+        ? "docs_request"
+        : autoKind === "missing_docs"
+          ? "missing_documents"
+          : autoKind === "status_answer"
+            ? "status_answer"
+            : null;
+
+  if (templateKey) {
+    const tpl = repo.getTemplate(templateKey);
+    if (tpl) {
+      const rendered = renderTemplate(tpl.subject, tpl.body, draftCtx);
+      draft = { subject: rendered.subject, body: rendered.body, audience: "auto", templateKey };
+    }
+  }
+  // Held replies keep their rendered content but are queued for a person.
+  if (heldForApproval && draft) draft.audience = "human";
+
+  if (!draft && queueForHuman) {
+    draft = pickQueuedDraft({
+      finalStatus,
+      watcherFlagged,
+      flags: activeBlockingFlags.map((f) => ({ type: f.type, detail: f.detail })),
+      applicantName: knownName ?? undefined,
+      ref: applicantNow.ref_number,
+    });
+  }
+
+  // ── Send or queue ────────────────────────────────────────────────────────
+  // Send failures are never fatal: the reply becomes a queued draft and a
+  // human handles it (v3 reliability requirement).
+  let autoSent = false;
+  const wantsAutoSend = autoKind !== null && draft?.audience === "auto";
+  if (wantsAutoSend && draft) {
+    try {
+      await adapters.sender.send(applicantNow.email_address, draft.subject, draft.body, email.threadId);
+      repo.insertEmail({
+        applicant_id: applicant.id,
+        message_id: `${email.id}:auto-reply`,
+        thread_id: email.threadId,
+        direction: "out",
+        from_addr: "",
+        to_addr: applicantNow.email_address,
+        subject: draft.subject,
+        body: draft.body,
+        category: null,
+        auto: 1,
+        at: new Date().toISOString(),
+      });
+      repo.addOutbox({
+        applicant_id: applicant.id,
+        to_address: applicantNow.email_address,
+        subject: draft.subject,
+        body: draft.body,
+        mode: "auto",
+      });
+      repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind}: "${draft.subject}"`);
+      log(`pipeline: auto-sent [${autoKind}] to ${applicantNow.email_address}`);
+      autoSent = true;
+    } catch (e) {
+      repo.audit(applicant.id, "system", "send_failed", `auto-send [${autoKind}] failed: ${(e as Error).message}`);
+      repo.addOutbox({
+        applicant_id: applicant.id,
+        to_address: applicantNow.email_address,
+        subject: draft.subject,
+        body: draft.body,
+        mode: "queued",
+      });
+      repo.notify("review_needed", `${applicantNow.ref_number}: automated send failed — reply needs manual attention`, applicant.id);
+      log(`pipeline: auto-send failed for ${applicantNow.ref_number} → queued for human`, "warn");
+      queueForHuman = true;
+      autoKind = null;
+    }
+  } else if (draft) {
+    repo.addOutbox({
+      applicant_id: applicant.id,
+      to_address: applicantNow.email_address,
+      subject: draft.subject,
+      body: draft.body,
+      mode: "queued",
+    });
+  }
+
+  // ── Follow-up ladder (v3 feature 13) ─────────────────────────────────────
+  // Missing-docs notices schedule the first reminder; a Green verdict cancels
+  // any pending ladder for this applicant.
+  const ladderDaysStr = repo.getSetting("followup_ladder_days", "3,7,10");
+  const ladder = ladderDaysStr
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (finalStatus === "Green") {
+    repo.setFollowup(applicant.id, 0, null, null);
+  } else if (autoSent && (autoKind === "missing_docs" || autoKind === "docs_request") && ladder.length > 0) {
+    // Base date anchors the ladder: rung N fires at base + ladder[N] days.
+    const baseAt = new Date().toISOString();
+    const nextAt = new Date(Date.now() + ladder[0] * 24 * 3600_000).toISOString();
+    repo.setFollowup(applicant.id, 0, nextAt, baseAt);
+    repo.audit(applicant.id, "system", "followup_scheduled", `reminder ladder armed (${ladderDaysStr})`);
+  }
+
+  if (queueForHuman) {
+    // SLA clock starts (feature 28); staff action stops it.
+    const slaHours = Number(repo.getSetting("sla_target_hours", "4"));
+    const due = new Date(Date.now() + slaHours * 3600_000).toISOString();
+    const cur = repo.getApplicant(applicant.id)!;
+    if (!cur.sla_handled_at) repo.updateApplicant(applicant.id, { sla_due_at: due });
+    const reason = heldForApproval
+      ? "automated reply held for approval (draft-first mode)"
+      : finalStatus === "Orange"
+        ? "flagged for human review"
+        : watcherFlagged
+          ? "watcher flagged the record"
+          : `missing/unclear documents (${rulesOut.missing.map((m) => docLabel(m)).join(", ") || "review needed"})`;
+    repo.notify("review_needed", `${cur.ref_number} needs review — ${reason}`, applicant.id);
+    repo.audit(applicant.id, "system", "human_review_triggered", reason);
+    log(`pipeline: ${applicantNow.ref_number} queued for human (${reason})`);
+  }
+
+  // ── Lifecycle transition + status history (features 15, 16) ─────────────
+  const lifecycleNow = repo.getApplicant(applicant.id)!.lifecycle;
+  if (lifecycleNow !== lifecycleAfter) {
+    const why =
+      autoKind === "ack"
+        ? "all required documents verified automatically"
+        : lifecycleAfter === "awaiting_review"
+          ? "queued for human review"
+          : lifecycleAfter === "documents_received"
+            ? "documents received; file not yet complete"
+            : "application received";
+    repo.setLifecycle(applicant.id, lifecycleAfter, "system", why);
+  }
+
+  // Triage verdict snapshot.
+  repo.updateApplicant(applicant.id, { triage: finalStatus });
+
+  // ── DecisionLog + audit, always (feature 17) ────────────────────────────
+  writeDecisionLog(
+    repo,
+    {
+      applicant_id: applicant.id,
+      triggering_email_id: email.id,
+      computed_status: finalStatus,
+      reasoning,
+      auto_sent: autoSent,
+    },
+    { jsonlPath: ctx.jsonlPath }
+  );
+  repo.markProcessed(email.id, email.threadId);
+
+  const finalRow = repo.getApplicant(applicant.id)!;
+  return {
+    applicantId: applicant.id,
+    refNumber: applicantNow.ref_number,
+    finalStatus,
+    lifecycle: finalRow.lifecycle,
+    autoSent,
+    autoKind: autoSent ? autoKind : null,
+    category,
+    reasoning,
+    flags: repo
+      .activeFlags(applicant.id)
+      .filter((f) => f.type !== "duplicate_submission")
+      .map((f) => ({ type: f.type, detail: f.detail })),
+    missing: rulesOut.missing,
+  };
+}
+
+

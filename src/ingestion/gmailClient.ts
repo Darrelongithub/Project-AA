@@ -1,0 +1,147 @@
+/**
+ * /ingestion — live Gmail access via the Gmail API (googleapis).
+ *
+ * Auth: OAuth2 "installed app" style — client id/secret + a refresh token
+ * for the test inbox. Only what the pipeline needs is implemented:
+ *   - list recent inbox message ids
+ *   - fetch one message with attachments
+ *   - send a plain-text reply inside a thread
+ */
+import type { IncomingEmail } from "../types";
+
+/**
+ * Header-safe `To`/`Subject` values for raw MIME construction. CR/LF in a
+ * staff-editable subject would otherwise inject arbitrary headers (Cc/Bcc…);
+ * non-ASCII subjects must be RFC 2047 encoded or the headers are invalid.
+ */
+export function sanitizeHeaders(to: string, subject: string): { to: string; subject: string } {
+  const cleanTo = to.replace(/[\r\n]+/g, " ").trim();
+  let cleanSubject = subject.replace(/[\r\n]+/g, " ").trim();
+  if (/[^\x20-\x7e]/.test(cleanSubject)) {
+    cleanSubject = `=?UTF-8?B?${Buffer.from(cleanSubject, "utf8").toString("base64")}?=`;
+  }
+  return { to: cleanTo, subject: cleanSubject };
+}
+
+interface MimePartNode {
+  mimeType: string;
+  headers?: Array<{ name: string; value: string }>;
+  filename?: string;
+  body?: { data?: string; attachmentId?: string; size?: number };
+  parts?: MimePartNode[];
+}
+
+export class GmailClient {
+  private gmail: any;
+  readonly address: string;
+
+  constructor(cfg: {
+    address: string;
+    clientId: string;
+    clientSecret: string;
+    refreshToken: string;
+  }) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { google } = require("googleapis");
+    const oauth2 = new google.auth.OAuth2(cfg.clientId, cfg.clientSecret);
+    oauth2.setCredentials({ refresh_token: cfg.refreshToken });
+    this.gmail = google.gmail({ version: "v1", auth: oauth2 });
+    this.address = cfg.address;
+  }
+
+  async listRecentMessageIds(lookbackDays: number, maxResults = 50): Promise<string[]> {
+    const res = await this.gmail.users.messages.list({
+      userId: "me",
+      q: `in:inbox newer_than:${lookbackDays}d`,
+      maxResults,
+    });
+    return ((res.data.messages || []) as Array<{ id: string }>).map((m) => m.id);
+  }
+
+  async fetchEmail(id: string): Promise<IncomingEmail> {
+    const res = await this.gmail.users.messages.get({ userId: "me", id, format: "full" });
+    const msg = res.data;
+    const headers: Record<string, string> = {};
+    for (const h of msg.payload.headers || []) headers[h.name.toLowerCase()] = h.value;
+
+    const fromHeader = headers["from"] || "";
+    const fromMatch = fromHeader.match(/<([^<>]+)>/) || fromHeader.match(/([^\s<>]+@[^\s<>]+)/);
+    const from = fromMatch ? fromMatch[1] : fromHeader;
+    const nameMatch = fromHeader.match(/^"?\s*([^"<]+?)\s*"?\s*</);
+
+    const bodyParts: string[] = [];
+    const attachments: Array<{ filename: string; mimeType: string; attachmentId: string }> = [];
+
+    const walk = (part: MimePartNode) => {
+      if (part.filename && part.filename.length > 0 && part.body?.attachmentId) {
+        attachments.push({ filename: part.filename, mimeType: part.mimeType, attachmentId: part.body.attachmentId });
+        return;
+      }
+      if (part.mimeType === "text/plain" && part.body?.data) {
+        bodyParts.push(Buffer.from(part.body.data, "base64").toString("utf8"));
+      }
+      for (const child of part.parts || []) walk(child);
+    };
+    walk(msg.payload);
+
+    // If there was no text/plain part, degrade to stripped HTML.
+    let body = bodyParts.join("\n");
+    if (!body.trim()) {
+      const htmlParts: string[] = [];
+      const walkHtml = (part: MimePartNode) => {
+        if (part.mimeType === "text/html" && part.body?.data) {
+          htmlParts.push(Buffer.from(part.body.data, "base64").toString("utf8"));
+        }
+        for (const child of part.parts || []) walkHtml(child);
+      };
+      walkHtml(msg.payload);
+      body = htmlParts.join("\n").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+    }
+
+    const attachmentBuffers = await Promise.all(
+      attachments.map(async (a) => {
+        const attRes = await this.gmail.users.messages.attachments.get({
+          userId: "me",
+          messageId: id,
+          id: a.attachmentId,
+        });
+        return {
+          filename: a.filename,
+          mimeType: a.mimeType,
+          content: Buffer.from(attRes.data.data, "base64"),
+        };
+      })
+    );
+
+    return {
+      id,
+      threadId: msg.threadId,
+      from,
+      fromName: nameMatch ? nameMatch[1].trim() : undefined,
+      subject: headers["subject"] || "(no subject)",
+      body,
+      receivedAt: new Date(Number(msg.internalDate)).toISOString(),
+      attachments: attachmentBuffers,
+    };
+  }
+
+  async sendReply(to: string, subject: string, body: string, threadId: string): Promise<void> {
+    const { to: cleanTo, subject: cleanSubject } = sanitizeHeaders(to, subject);
+    const raw = [
+      `To: ${cleanTo}`,
+      `Subject: ${cleanSubject}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "",
+      body,
+    ].join("\r\n");
+    const encoded = Buffer.from(raw, "utf8")
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    await this.gmail.users.messages.send({
+      userId: "me",
+      requestBody: { raw: encoded, threadId },
+    });
+  }
+}
