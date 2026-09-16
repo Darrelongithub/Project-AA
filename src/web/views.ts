@@ -181,6 +181,7 @@ const CSS = `
   --shadow-lg: 0 2px 6px rgba(0,0,0,.5), 0 28px 60px -18px rgba(0,0,0,.65);
 }
 * { box-sizing: border-box; }
+button:disabled, .btn[disabled] { opacity: .55; cursor: not-allowed; transform: none; filter: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; clip: rect(0 0 0 0); overflow: hidden; }
 /* Visible keyboard focus on every interactive control (accessibility). */
 a:focus-visible, button:focus-visible, .btn:focus-visible, .iconbtn:focus-visible,
@@ -406,12 +407,14 @@ textarea { resize: vertical; }
 /* ── Misc ──────────────────────────────────────────────────────────────── */
 .mono { font-family: var(--mono); font-size: .95em; }
 .muted { color: var(--muted); } .small { font-size: 12.5px; } .right { text-align: right; } .nowrap { white-space: nowrap; }
+td, dd { overflow-wrap: break-word; }
 .overdue { color: var(--red); font-weight: 700; }
 .center { text-align: center; }
 .icn { display: inline-flex; } .icn svg { width: 100%; height: 100%; }
 details > summary { list-style: none; } details > summary::-webkit-details-marker { display: none; }
 ::selection { background: color-mix(in srgb, var(--purple2) 30%, transparent); }
 @media (max-width: 760px) { .wrap { padding: 16px; } .topbar { padding: 10px 16px; } .kv { grid-template-columns: 120px 1fr; } }
+@media (max-width: 900px) { .card table { display: block; overflow-x: auto; } }
 .mailmock { background: var(--gold-bg); color: var(--gold); border-bottom: 1px solid var(--gold); font-size: 12.5px; font-weight: 600; padding: 7px 34px; text-align: center; }
 
 /* ── Brand chip + tab pills ────────────────────────────────────────────── */
@@ -575,7 +578,7 @@ export function layout(opts: {
     </div>
   </aside>
   <div class="main">
-    ${opts.user && opts.mailMock ? `<div class="mailmock">🧪 Demo mode — outgoing mail is simulated, not delivered. Connect Gmail in Settings to fetch and send real mail.</div>` : ""}
+    ${opts.user && opts.mailMock ? `<div class="mailmock">Demo mode — outgoing mail is simulated, not delivered. Connect Gmail in Settings to fetch and send real mail.</div>` : ""}
     <header class="topbar">
       <button class="searchbtn" id="searchbtn">${icon("search")}<span>Search applicants, refs, pages…</span><span class="kbd">Ctrl K</span></button>
       <div class="top-right">

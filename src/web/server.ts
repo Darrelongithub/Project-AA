@@ -528,14 +528,37 @@ export function createApp(deps: WebDeps): Express {
   });
 
   app.post("/settings/general", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+    // Blank identity fields keep their current value (an empty institution name
+    // or ref prefix would break branding / ref generation); numbers are validated.
+    const ignored: string[] = [];
+    const numOk = (v: string) => /^\d+(\.\d+)?$/.test(v) && Number(v) > 0;
+    const ladderOk = (v: string) => v.split(",").every((p) => /^\d+$/.test(p.trim()) && Number(p.trim()) > 0);
     for (const key of [
       "institution_name", "ref_prefix", "sla_target_hours", "escalation_hours", "from_name",
       "unanswered_target_hours", "followup_ladder_days", "retention_days",
     ]) {
-      if (typeof req.body[key] === "string") repo.setSetting(key, String(req.body[key]).trim());
+      if (typeof req.body[key] !== "string") continue;
+      const v = String(req.body[key]).trim();
+      if ((key === "institution_name" || key === "ref_prefix") && !v) {
+        ignored.push(key.replace(/_/g, " "));
+        continue;
+      }
+      if (["sla_target_hours", "escalation_hours", "unanswered_target_hours", "retention_days"].includes(key) && !numOk(v)) {
+        ignored.push(key.replace(/_/g, " "));
+        continue;
+      }
+      if (key === "followup_ladder_days" && !ladderOk(v)) {
+        ignored.push(key.replace(/_/g, " "));
+        continue;
+      }
+      repo.setSetting(key, v);
     }
     repo.audit(null, req.staff!.username, "settings_changed", "general settings updated");
-    res.redirect("/settings");
+    res.redirect(
+      `/settings?msg=${encodeURIComponent(
+        ignored.length ? `Saved. Kept current value for: ${ignored.join(", ")} (blank or invalid input).` : "Settings saved."
+      )}`
+    );
   });
 
   app.post("/settings/automation/global", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
@@ -576,13 +599,13 @@ export function createApp(deps: WebDeps): Express {
     // Anything outside the known document types would store a rule that can
     // never match — silently. Reject it instead of pretending.
     if (!DOC_TYPES.includes(docType as DocType) || docType === "unknown") {
-      return res.redirect("/settings");
+      return res.redirect("/settings?msg=" + encodeURIComponent("Unknown document type — rule not saved."));
     }
     const minPoints = req.body.min_grade_points !== undefined && req.body.min_grade_points !== ""
       ? Number(req.body.min_grade_points)
       : null;
     if (minPoints !== null && (!Number.isFinite(minPoints) || minPoints < 0 || minPoints > 500)) {
-      return res.redirect("/settings");
+      return res.redirect("/settings?msg=" + encodeURIComponent("Minimum points must be a number between 0 and 500 — rule not saved."));
     }
     repo.upsertRule({
       programme: req.body.programme ? String(req.body.programme) : null,
@@ -602,20 +625,25 @@ export function createApp(deps: WebDeps): Express {
   });
 
   app.post("/settings/lists/add", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
-    if (req.body.prog_code && req.body.prog_name) repo.addProgramme(String(req.body.prog_code), String(req.body.prog_name));
-    if (req.body.intake) repo.addIntake(String(req.body.intake));
+    const added: string[] = [];
+    if (req.body.prog_code && req.body.prog_name) { repo.addProgramme(String(req.body.prog_code), String(req.body.prog_name)); added.push("programme"); }
+    if (req.body.intake) { repo.addIntake(String(req.body.intake)); added.push("intake"); }
     repo.audit(null, req.staff!.username, "lists_changed", "programmes/intakes updated");
-    res.redirect("/settings");
+    res.redirect("/settings?msg=" + encodeURIComponent(added.length ? `Added ${added.join(" and ")}.` : "Nothing to add — fill in a programme code and name, or an intake."));
   });
 
   app.post("/settings/template", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
     const key = String(req.body.key ?? "");
     const existing = repo.getTemplate(key);
-    if (existing) {
-      repo.upsertTemplate(key, String(req.body.name ?? existing.name), String(req.body.subject ?? existing.subject), String(req.body.body ?? existing.body));
-      repo.audit(null, req.staff!.username, "template_changed", key);
-    }
-    res.redirect(`/settings?template=${encodeURIComponent(key)}`);
+    const back = (m: string) => `/settings?template=${encodeURIComponent(key)}&msg=${encodeURIComponent(m)}`;
+    if (!existing) return res.redirect(back("Unknown template — nothing saved."));
+    const name = String(req.body.name ?? "").trim();
+    const subject = String(req.body.subject ?? "").trim();
+    const body = String(req.body.body ?? "").trim();
+    if (!name || !subject || !body) return res.redirect(back("Template needs a name, a subject and a body — nothing saved."));
+    repo.upsertTemplate(key, name, subject, body);
+    repo.audit(null, req.staff!.username, "template_changed", key);
+    res.redirect(back(`Template “${name}” saved.`));
   });
 
   // ── Staff management (admin) ─────────────────────────────────────────────
@@ -776,7 +804,7 @@ export function runEscalationSweep(repo: Repo, escalationHours: number): number 
   let n = 0;
   for (const a of overdue) {
     repo.escalate(a.id);
-    repo.notify("escalation", `⚠️ Case ${a.ref_number} has exceeded its response target.`, a.id);
+    repo.notify("escalation", `Case ${a.ref_number} has exceeded its response target.`, a.id);
     repo.audit(a.id, "system", "escalated", `exceeded response target (escalation window ${escalationHours}h)`);
     n++;
     log(`escalation: ${a.ref_number} exceeded response target → urgent`, "warn");
