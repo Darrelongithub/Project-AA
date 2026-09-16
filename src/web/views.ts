@@ -179,6 +179,11 @@ const CSS = `
   --shadow-lg: 0 2px 6px rgba(0,0,0,.5), 0 28px 60px -18px rgba(0,0,0,.65);
 }
 * { box-sizing: border-box; }
+/* Visible keyboard focus on every interactive control (accessibility). */
+a:focus-visible, button:focus-visible, .btn:focus-visible, .iconbtn:focus-visible,
+.tabs a:focus-visible, .searchbtn:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--purple2); outline-offset: 2px; border-radius: 6px;
+}
 html { scroll-behavior: smooth; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
@@ -404,6 +409,8 @@ textarea { resize: vertical; }
 details > summary { list-style: none; } details > summary::-webkit-details-marker { display: none; }
 ::selection { background: color-mix(in srgb, var(--purple2) 30%, transparent); }
 @media (max-width: 760px) { .wrap { padding: 16px; } .topbar { padding: 10px 16px; } .kv { grid-template-columns: 120px 1fr; } }
+.mailmock { background: var(--gold-bg); color: var(--gold); border-bottom: 1px solid var(--gold); font-size: 12.5px; font-weight: 600; padding: 7px 34px; text-align: center; }
+
 /* ── Brand chip + tab pills ────────────────────────────────────────────── */
 .crest { display: inline-flex; background: #fff; border-radius: 10px; padding: 3px; box-shadow: 0 1px 4px rgba(20,8,60,.25); flex: none; }
 .publicbar .crest { box-shadow: 0 1px 4px rgba(20,8,60,.14); }
@@ -526,6 +533,8 @@ export function layout(opts: {
   theme?: Theme;
   /** Institution name from Settings — drives all branding text. */
   institution?: string;
+  /** True when outgoing mail is simulated (no Gmail connected) — shown to staff. */
+  mailMock?: boolean;
 }): string {
   const theme: Theme = opts.theme === "dark" ? "dark" : "light";
   const otherTheme = theme === "dark" ? "light" : "dark";
@@ -564,6 +573,7 @@ export function layout(opts: {
     </div>
   </aside>
   <div class="main">
+    ${opts.user && opts.mailMock ? `<div class="mailmock">🧪 Demo mode — outgoing mail is simulated, not delivered. Connect Gmail in Settings to fetch and send real mail.</div>` : ""}
     <header class="topbar">
       <button class="searchbtn" id="searchbtn">${icon("search")}<span>Search applicants, refs, pages…</span><span class="kbd">Ctrl K</span></button>
       <div class="top-right">

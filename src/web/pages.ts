@@ -6,6 +6,7 @@ import type { ApplicantSearchQuery, Repo } from "../db/repo";
 import type { ApplicantRow, DocType, StaffUser } from "../types";
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
 import { docLabel } from "../rules";
+import { verifyPassword } from "../util/password";
 import {
   avatar, categoryBadge, confidenceBadge, crest, esc, flagLabel, fmtDate, fmtTime, layout,
   lifecycleBadge, lifecycleStepper, priorityBadge, slaText, triageBadge, type Theme,
@@ -19,10 +20,12 @@ interface Ctx {
   theme?: Theme;
   /** Institution name from Settings — drives all branding text. */
   institution: string;
+  /** True when outgoing mail is simulated — banner shown to staff. */
+  mailMock: boolean;
 }
 
 function head(c: Ctx, title: string, active: string, content: string): string {
-  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution });
+  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution, mailMock: c.mailMock });
 }
 
 // ── Login ──────────────────────────────────────────────────────────────────
@@ -119,6 +122,12 @@ export function dashboardPage(c: Ctx): string {
   const accuracyPct = reviewed > 0 ? Math.round((accuracy.greenCases / reviewed) * 100) : 100;
   const stat = (n: number | string, l: string, alert = false) =>
     `<div class="stat ${alert ? "alert" : ""}"><div class="n">${esc(n)}</div><div class="l">${esc(l)}</div></div>`;
+  // Honest metrics: show "no data" instead of a misleading 0, and keep large
+  // values readable (35h 12m rather than 2112.4 min).
+  const avgAuto = Number(s.avgResponseMin) > 0 ? formatDuration(Number(s.avgResponseMin)) : "no data";
+  const avgReview = Number(s.avgReviewHours) > 0
+    ? (Number(s.avgReviewHours) < 48 ? `${s.avgReviewHours} hrs` : formatDuration(Number(s.avgReviewHours) * 60))
+    : "no data";
 
   return head(
     c,
@@ -137,8 +146,8 @@ export function dashboardPage(c: Ctx): string {
   ${stat(today.emailsToday, "Emails today")}
   ${stat(today.docsToday, "Documents today")}
   ${stat(today.completedToday, "Cases completed today")}
-  ${stat(`${s.avgResponseMin} min`, "Avg auto-response")}
-  ${stat(`${s.avgReviewHours} hrs`, "Avg review time")}
+  ${stat(avgAuto, "Avg auto-response (last 7 days)")}
+  ${stat(avgReview, "Avg review time")}
 </div>
 
 <div class="cols">
@@ -160,7 +169,9 @@ export function dashboardPage(c: Ctx): string {
   </div>
   <div class="card">
     <h2>Automation accuracy</h2>
-    <p><span class="n" style="font-size:26px;font-weight:800">${accuracyPct}%</span> <span class="muted small">of automation decisions stood uncorrected</span></p>
+    ${reviewed > 0
+      ? `<p><span class="n" style="font-size:26px;font-weight:800">${accuracyPct}%</span> <span class="muted small">of automation decisions stood uncorrected</span></p>`
+      : `<p class="muted">No automation decisions recorded yet — accuracy appears here once the engine has processed mail.</p>`}
     <div class="grid stats">
       ${stat(accuracy.greenCases, "Clean Greens")}
       ${stat(accuracy.watcherCatches, "Watcher catches")}
@@ -721,7 +732,7 @@ ${(() => {
     <div class="formrow">
       <div><label>Gmail address</label><input type="email" name="gmail_address" value="${esc(gAddress)}" placeholder="admissions@institution.ac.ke"></div>
       <div><label>OAuth client ID</label><input type="text" name="gmail_client_id" value="${esc(gClientId)}" placeholder="…apps.googleusercontent.com"></div>
-      <div><label>OAuth client secret</label><input type="text" name="gmail_client_secret" value="${esc(gClientSecret)}" placeholder="GOCSPX-…"></div>
+      <div><label>OAuth client secret</label><input type="password" name="gmail_client_secret" value="" placeholder="${gClientSecret ? "saved — enter a new value to replace" : "GOCSPX-…"}" autocomplete="new-password"></div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="btn ghost">Save credentials</button>
@@ -730,8 +741,9 @@ ${(() => {
     </div>
   </form>
   <p class="small muted" style="margin-top:10px">${connected
-    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically — no restart needed.`
+    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically — no restart needed.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
     : "Mail is not being fetched yet. Emails can still be replayed through the simulator/demo."}</p>
+  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">⚠ Last sync failed: ${esc(settings["gmail_last_error"])}</p>` : ""}
 </div>`;
   })()}
 
@@ -838,11 +850,21 @@ function templateEditor(c: Pick<Ctx, "csrf">, t: { key: string; name: string; su
 
 // ── Staff management (feature 31) ──────────────────────────────────────────
 
-export function staffPage(c: Ctx): string {
+export function staffPage(c: Ctx, flash?: string): string {
+  // Seed/demo passwords that must not survive in real use.
+  const KNOWN_DEFAULTS: Record<string, string> = {
+    admin: "admin123", manager: "manager123", jane: "jane123", otis: "otis123", kofi: "kofi123",
+  };
+  const onDefaultPassword = (username: string): boolean => {
+    const known = KNOWN_DEFAULTS[username];
+    if (!known) return false;
+    const full = c.repo.getStaffByUsername(username);
+    return Boolean(full && verifyPassword(known, full.password_hash));
+  };
   const rows = c.repo
     .listStaff()
     .map((s) => `<tr>
-      <td class="mono">${esc(s.username)}</td>
+      <td class="mono">${esc(s.username)}${onDefaultPassword(s.username) ? ` <span class="badge b-red" title="This account still uses its seeded demo password">default password</span>` : ""}</td>
       <td>${esc(s.display_name)}</td>
       <td><span class="badge b-gray">${esc(s.role)}</span></td>
       <td>${s.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-red">disabled</span>`}</td>
@@ -863,6 +885,10 @@ export function staffPage(c: Ctx): string {
     content: `
 <h1>Staff accounts</h1>
 <div class="sub">Roles: <b>admin</b> (everything) · <b>manager</b> (cases + configuration) · <b>officer</b> (cases only) · <b>it</b> (cases + automation/settings, no staff management)</div>
+${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+${c.repo.listStaff().some((s) => { const k: Record<string,string> = { admin: "admin123", manager: "manager123", jane: "jane123", otis: "otis123", kofi: "kofi123" }; const f = c.repo.getStaffByUsername(s.username); return Boolean(k[s.username] && f && verifyPassword(k[s.username], f.password_hash)); })
+  ? `<div class="flash err" style="position:static;margin-bottom:16px">⚠️ One or more accounts still use their seeded demo passwords. Reset them below before going live.</div>`
+  : ""}
 <div class="card">
 <table><tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Actions</th></tr>${rows}</table>
 </div>

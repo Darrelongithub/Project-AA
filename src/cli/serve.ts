@@ -58,7 +58,7 @@ async function main(): Promise<void> {
 
   const adapters = buildAdapters(cfg, sender);
   const ctx: PipelineContext = { repo, adapters, jsonlPath: cfg.logToFile ? "./logs/decisions.jsonl" : undefined };
-  const app = createApp({ repo, ctx });
+  const app = createApp({ repo, ctx, mailConnectedAtBoot: cfg.mode === "live" && Boolean(cfg.gmail) });
 
   const port = cfg.port;
   app.listen(port, "0.0.0.0", () => {
@@ -99,9 +99,16 @@ async function main(): Promise<void> {
           log(`serve: Gmail connected via Settings (${fromSettings.address}) — live sorting enabled`);
         }
       }
-      if (gmail) await ingestNewEmails(gmail, ctx, cfg.ingestLookbackDays, opts);
+      if (gmail) {
+        await ingestNewEmails(gmail, ctx, cfg.ingestLookbackDays, opts);
+        // Truthful connection state for Settings → Gmail connection.
+        repo.setSetting("gmail_last_sync_at", new Date().toISOString());
+        repo.setSetting("gmail_last_error", "");
+      }
     } catch (e) {
-      log(`ingest poll failed: ${(e as Error).message}`, "error");
+      const msg = (e as Error).message;
+      log(`ingest poll failed: ${msg}`, "error");
+      try { repo.setSetting("gmail_last_error", msg.slice(0, 300)); } catch { /* settings write is best-effort */ }
     }
   };
   await poll();

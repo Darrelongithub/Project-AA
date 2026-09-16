@@ -554,3 +554,92 @@ describe("production-readiness pass", () => {
     expect(page).toContain('action="/settings/gmail/credentials"');
   });
 });
+
+describe("QA audit regressions", () => {
+  it("unknown URLs get a branded 404, not a raw Express error", async () => {
+    const { cookie } = await login();
+    const res = await fetch(`${base}/no-such-page`, { headers: { cookie } });
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain("Page not found");
+    expect(html).not.toContain("Cannot GET");
+  });
+
+  it("empty notes and tasks report honestly and persist nothing", async () => {
+    const { cookie, csrf } = await login();
+    const a = repo.findByRef(ref)!;
+    const notesBefore = repo.notesForApplicant(a.id).length;
+    const tasksBefore = repo.listTasks(a.id).length;
+    const noteRes = await fetch(`${base}/case/${a.id}/note`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${csrf}&body=`,
+      redirect: "manual",
+    });
+    expect(decodeURIComponent(noteRes.headers.get("location") || "")).toContain("nothing saved");
+    const taskRes = await fetch(`${base}/case/${a.id}/task/add`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${csrf}&title=`,
+      redirect: "manual",
+    });
+    expect(decodeURIComponent(taskRes.headers.get("location") || "")).toContain("nothing added");
+    expect(repo.notesForApplicant(a.id).length).toBe(notesBefore);
+    expect(repo.listTasks(a.id).length).toBe(tasksBefore);
+  });
+
+  it("a double-clicked template send goes out exactly once", async () => {
+    const { cookie, csrf } = await login();
+    const a = repo.findByRef(ref)!;
+    const outBefore = repo.emailsForApplicant(a.id).filter((e) => e.direction === "out").length;
+    const body = `_csrf=${csrf}&template=missing_documents`;
+    const first = await fetch(`${base}/case/${a.id}/send`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body, redirect: "manual",
+    });
+    expect(decodeURIComponent(first.headers.get("location") || "")).toContain("Sent");
+    const second = await fetch(`${base}/case/${a.id}/send`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body, redirect: "manual",
+    });
+    expect(decodeURIComponent(second.headers.get("location") || "")).toContain("Duplicate send ignored");
+    const outAfter = repo.emailsForApplicant(a.id).filter((e) => e.direction === "out").length;
+    expect(outAfter).toBe(outBefore + 1);
+  });
+
+  it("staff creation validates input instead of silently doing nothing", async () => {
+    const { cookie, csrf } = await login();
+    const post = (formBody: string) => fetch(`${base}/staff/add`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${csrf}&${formBody}`, redirect: "manual",
+    });
+    const short = await post("username=newperson&display_name=New&password=short&role=officer");
+    expect(decodeURIComponent(short.headers.get("location") || "")).toContain("at least 8 characters");
+    const dupe = await post("username=admin&display_name=Imposter&password=longenough1&role=officer");
+    expect(decodeURIComponent(dupe.headers.get("location") || "")).toContain("already taken");
+    expect(repo.getStaffByUsername("newperson")).toBeUndefined();
+  });
+
+  it("Gmail client secret is never echoed back into the settings page", async () => {
+    const { cookie, csrf } = await login();
+    const save = await fetch(`${base}/settings/gmail/credentials`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${csrf}&gmail_address=x@y.z&gmail_client_id=cid&gmail_client_secret=TOP-SECRET-VALUE`,
+      redirect: "manual",
+    });
+    expect(save.status).toBe(302);
+    const page = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    expect(page).not.toContain("TOP-SECRET-VALUE");
+    expect(page).toContain("saved — enter a new value to replace");
+    // clean up
+    repo.setSetting("gmail_address", ""); repo.setSetting("gmail_client_id", ""); repo.setSetting("gmail_client_secret", "");
+  });
+
+  it("dashboard shows 'no data' instead of fake zeros and the demo banner is truthful", async () => {
+    const { cookie } = await login();
+    const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    // Mock sender, no Gmail token in settings → the demo banner must be shown.
+    expect(home).toContain("Demo mode — outgoing mail is simulated");
+    // No misleading raw zero values.
+    expect(home).not.toContain(">0 min<");
+    expect(home).not.toContain(">0 hrs<");
+  });
+});

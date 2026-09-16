@@ -19,7 +19,7 @@ import {
   publicStatusForm, publicStatusResult, queuePage, replayPage, settingsPage, staffPage, teamPage,
 } from "./pages";
 import { portalHomePage, portalOtpPage, portalStartPage } from "./portal";
-import { avatar } from "./views";
+import { avatar, esc, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
 import { processEmail } from "../pipeline";
 import { log } from "../util/log";
@@ -28,6 +28,8 @@ import { hashPassword } from "../util/password";
 export interface WebDeps {
   repo: Repo;
   ctx: PipelineContext; // reuse the pipeline's sender/vision adapters
+  /** Gmail was configured at boot (live mode) — mail is real, not simulated. */
+  mailConnectedAtBoot?: boolean;
 }
 
 /**
@@ -52,6 +54,14 @@ export function createApp(deps: WebDeps): Express {
   const app = express();
   /** Institution name for all branding — editable in Settings → General. */
   const instName = (): string => repo.getSetting("institution_name", "Riara University");
+
+  /**
+   * Is mail REAL right now? Either Gmail was configured at boot, or an OAuth
+   * refresh token has since been saved from Settings → Gmail connection.
+   * Used to show the demo-mode banner truthfully.
+   */
+  const mailLive = (): boolean =>
+    Boolean(deps.mailConnectedAtBoot) || Boolean(repo.getSetting("gmail_refresh_token", ""));
   app.disable("x-powered-by");
   // Behind any reverse proxy (the preview environment included) req.ip is the
   // proxy's address unless this is set — which makes every per-IP rate
@@ -68,6 +78,7 @@ export function createApp(deps: WebDeps): Express {
     csrf: req.csrfToken ?? "",
     theme: req.theme,
     institution: instName(),
+    mailMock: !mailLive(),
   });
 
   const backToCase = (id: string | number, msg: string) => `/case/${id}?msg=${encodeURIComponent(msg)}`;
@@ -184,10 +195,9 @@ export function createApp(deps: WebDeps): Express {
   app.post("/case/:id/task/add", requireLogin, csrfCheck, (req, res) => {
     const id = Number(req.params.id);
     const title = String(req.body.title ?? "").trim();
-    if (title) {
-      repo.addTask(id, title, req.staff!.id);
-      staffAction(req, id, "task_added", title);
-    }
+    if (!title) return res.redirect(backToCase(id, "Task title was empty — nothing added."));
+    repo.addTask(id, title, req.staff!.id);
+    staffAction(req, id, "task_added", title);
     res.redirect(backToCase(id, "Task added."));
   });
 
@@ -305,12 +315,27 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(backToCase(id, "No action taken."));
   });
 
+  // Rapid double-click protection for template sends: the same officer sending
+  // the same template to the same case within 5s is treated as one action.
+  const recentSends = new Map<string, number>();
+  const sendGuardOk = (key: string): boolean => {
+    const now = Date.now();
+    if (recentSends.size > 2000) recentSends.clear();
+    const last = recentSends.get(key) ?? 0;
+    if (now - last < 5000) return false;
+    recentSends.set(key, now);
+    return true;
+  };
+
   app.post("/case/:id/send", requireLogin, csrfCheck, async (req, res) => {
     const id = Number(req.params.id);
     const a = repo.getApplicant(id);
     if (!a) return res.status(404).send("Case not found.");
     const tpl = repo.getTemplate(String(req.body.template ?? ""));
     if (!tpl) return res.redirect(backToCase(id, "Unknown template."));
+    if (req.body.preview === undefined && !sendGuardOk(`${req.staff!.id}:${id}:${tpl.key}`)) {
+      return res.redirect(backToCase(id, "Duplicate send ignored — that reply was just sent."));
+    }
     const activeDocs = repo.listDocuments(id, { activeOnly: true });
     const requirements = repo.effectiveRequirements(a).filter((r) => r.required);
     const present = activeDocs.map((d) => d.document_type);
@@ -345,10 +370,9 @@ export function createApp(deps: WebDeps): Express {
   app.post("/case/:id/note", requireLogin, csrfCheck, (req, res) => {
     const id = Number(req.params.id);
     const body = String(req.body.body ?? "").trim();
-    if (body) {
-      repo.addNote(id, req.staff!.id, body);
-      staffAction(req, id, "note_added", body.slice(0, 120));
-    }
+    if (!body) return res.redirect(backToCase(id, "Note was empty — nothing saved."));
+    repo.addNote(id, req.staff!.id, body);
+    staffAction(req, id, "note_added", body.slice(0, 120));
     res.redirect(backToCase(id, "Note saved."));
   });
 
@@ -429,7 +453,9 @@ export function createApp(deps: WebDeps): Express {
   app.post("/settings/gmail/credentials", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
     repo.setSetting("gmail_address", String(req.body.gmail_address ?? "").trim());
     repo.setSetting("gmail_client_id", String(req.body.gmail_client_id ?? "").trim());
-    repo.setSetting("gmail_client_secret", String(req.body.gmail_client_secret ?? "").trim());
+    // Secret is write-only in the UI: kept if the field is left blank.
+    const secret = String(req.body.gmail_client_secret ?? "").trim();
+    if (secret) repo.setSetting("gmail_client_secret", secret);
     repo.audit(null, req.staff!.username, "gmail_credentials_saved", "stored OAuth credentials in settings");
     res.redirect(settingsBack("Gmail credentials saved — now press “Connect with Google”."));
   });
@@ -587,16 +613,22 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Staff management (admin) ─────────────────────────────────────────────
 
-  app.get("/staff", requireLogin, requireRole("admin"), (req, res) => res.send(staffPage(c(req))));
+  app.get("/staff", requireLogin, requireRole("admin"), (req, res) =>
+    res.send(staffPage(c(req), req.query.msg ? String(req.query.msg) : undefined))
+  );
 
   app.post("/staff/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const username = String(req.body.username ?? "").trim();
+    const password = String(req.body.password ?? "");
     const role = ["admin", "manager", "officer", "it"].includes(String(req.body.role)) ? String(req.body.role) : "officer";
-    if (username && req.body.password && !repo.getStaffByUsername(username)) {
-      repo.createStaff(username, String(req.body.display_name ?? username), hashPassword(String(req.body.password)), role);
-      repo.audit(null, req.staff!.username, "staff_created", `${username} (${role})`);
-    }
-    res.redirect("/staff");
+    const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
+    if (!username) return res.redirect(staffMsg("Username is required."));
+    if (!/^[a-z0-9_.-]{2,32}$/i.test(username)) return res.redirect(staffMsg("Username may contain letters, digits, dots, dashes and underscores (2–32 chars)."));
+    if (!password || password.length < 8) return res.redirect(staffMsg(`Password for “${username}” must be at least 8 characters.`));
+    if (repo.getStaffByUsername(username)) return res.redirect(staffMsg(`Username “${username}” is already taken.`));
+    repo.createStaff(username, String(req.body.display_name ?? username), hashPassword(password), role);
+    repo.audit(null, req.staff!.username, "staff_created", `${username} (${role})`);
+    res.redirect(staffMsg(`Staff account “${username}” created (${role}).`));
   });
 
   app.post("/staff/toggle", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
@@ -610,11 +642,14 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/staff/password", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const id = Number(req.body.id);
-    if (repo.getStaff(id) && req.body.password) {
-      repo.setStaffPassword(id, hashPassword(String(req.body.password)));
-      repo.audit(null, req.staff!.username, "staff_password_reset", `user #${id}`);
-    }
-    res.redirect("/staff");
+    const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
+    const password = String(req.body.password ?? "");
+    const target = repo.getStaff(id);
+    if (!target) return res.redirect(staffMsg("Unknown staff member."));
+    if (password.length < 8) return res.redirect(staffMsg(`Password for “${target.username}” must be at least 8 characters.`));
+    repo.setStaffPassword(id, hashPassword(password));
+    repo.audit(null, req.staff!.username, "staff_password_reset", `user #${id}`);
+    res.redirect(staffMsg(`Password reset for “${target.username}”.`));
   });
 
   // ── Exports (feature 38) ─────────────────────────────────────────────────
@@ -811,6 +846,47 @@ export function createApp(deps: WebDeps): Express {
         avatar: avatar(a.full_name ?? a.ref_number, 26),
       })),
     });
+  });
+
+  // Branded 404 instead of Express's raw "Cannot GET …" page.
+  app.use((req, res) => {
+    if (req.path.startsWith("/api/") || req.path.startsWith("/portal/upload")) {
+      return res.status(404).json({ ok: false, error: "not found" });
+    }
+    res.status(404).send(layout({
+      title: "Page not found",
+      institution: instName(),
+      publicPage: !req.staff,
+      user: req.staff,
+      unread: req.staff ? repo.unreadCount(req.staff.id) : undefined,
+      csrf: req.staff ? req.csrfToken : undefined,
+      content: `<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
+        <h1>Page not found</h1>
+        <p class="sub">That address does not exist${req.staff ? " in the console" : ""}.</p>
+        <p><a class="btn" href="${req.staff ? "/" : "/login"}">${req.staff ? "← Back to the Command Center" : "← Back to sign in"}</a></p>
+      </div>`,
+    }));
+  });
+
+  // Last-resort error handler: log the detail, show a calm page — never a stack trace.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  app.use((err: unknown, req: Request, res: Response, _next: unknown) => {
+    log(`unhandled error on ${req.method} ${req.path}: ${(err as Error)?.stack ?? err}`, "error");
+    if (res.headersSent) return;
+    if (req.path.startsWith("/api/") || req.path.startsWith("/portal/upload")) {
+      return res.status(500).json({ ok: false, error: "internal error" });
+    }
+    res.status(500).send(layout({
+      title: "Something went wrong",
+      institution: instName(),
+      publicPage: !req.staff,
+      user: req.staff,
+      content: `<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
+        <h1>Something went wrong</h1>
+        <p class="sub">The error has been logged. Try again — if it persists, tell your system administrator.</p>
+        <p><a class="btn" href="/">← Back to the start</a></p>
+      </div>`,
+    }));
   });
 
   return app;
