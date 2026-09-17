@@ -141,7 +141,7 @@ export async function runSimulation(
       missing: last!.missing,
       category: last!.category,
       priority: applicant.priority,
-      refOk: /^[A-Z]{2}-\d{4}-\d{6}$/.test(applicant.ref_number),
+      refOk: /^[A-Z]{1,4}-\d{4}-\d{6}$/.test(applicant.ref_number),
       subjectRefOk: lastOutbox ? lastOutbox.subject.startsWith(`[${applicant.ref_number}]`) : false,
     };
 

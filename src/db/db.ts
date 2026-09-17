@@ -42,7 +42,8 @@ CREATE INDEX IF NOT EXISTS idx_applicants_lifecycle ON applicants(lifecycle);
 
 CREATE TABLE IF NOT EXISTS programmes (
   code TEXT PRIMARY KEY,
-  name TEXT NOT NULL
+  name TEXT NOT NULL,
+  owner_id INTEGER REFERENCES staff_users(id)
 );
 
 CREATE TABLE IF NOT EXISTS intakes (
@@ -79,6 +80,7 @@ CREATE TABLE IF NOT EXISTS portal_otps (
   applicant_id INTEGER NOT NULL REFERENCES applicants(id),
   code         TEXT NOT NULL,
   expires_at   TEXT NOT NULL,
+  attempts     INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS portal_sessions (

@@ -323,6 +323,7 @@ table tr { transition: background .12s; }
 .b-gray { background: var(--card2); color: var(--muted); border-color: var(--line); }
 .b-magenta { background: var(--magenta-bg); color: var(--magenta); border-color: var(--magenta-line); }
 .b-purple { background: var(--lav); color: var(--purple); border-color: var(--lav-line); }
+.bdot { font-size: 9px; line-height: 1; display: inline-block; transform: translateY(-.5px); }
 .avatar { border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; flex: none; letter-spacing: .02em; }
 .nameline { display: flex; align-items: center; gap: 9px; }
 .pill { background: var(--purple2); color: #fff; border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 800; margin-left: 8px; }
@@ -471,6 +472,12 @@ details > summary { list-style: none; } details > summary::-webkit-details-marke
 [data-theme="dark"] .crest .logo-c { display: none; }
 [data-theme="dark"] .crest .logo-w { display: block; }
 @media (max-width: 900px) { .card table { display: block; overflow-x: auto; } }
+@media (prefers-reduced-motion: reduce) {
+  /* Honour the OS setting: no splash theatre, no animated entrances. */
+  *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; transition-duration: .01ms !important; }
+  html { scroll-behavior: auto; }
+  #splash { display: none !important; }
+}
 @media print {
   .sitehead, .no-print, .flash, .palette, #splash, .demobar { display: none !important; }
   body { background: #fff; }
