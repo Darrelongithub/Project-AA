@@ -82,6 +82,45 @@ export function lifecycleStepper(current: LifecycleStage): string {
   return `<div class="stepper">${steps.join('<div class="step-line"></div>')}</div>`;
 }
 
+/** Classy purple gauge: a 280° arc ring, the count centre-stage. Clicking it
+ * opens that pipeline level in Admissions — the number is always a door. */
+export function gauge(opts: { n: number; label: string; href: string; tone?: "purple" | "green" | "orange" | "blue" | "red"; caption?: string }): string {
+  const tone = opts.tone ?? "purple";
+  const n = Math.max(0, opts.n);
+  // Ring progress: relative to a soft ceiling so small numbers still read;
+  // the exact count always shows as a numeral, so the ring is a mood, not a lie.
+  const ceiling = Math.max(10, Math.ceil(n * 1.35));
+  const frac = n === 0 ? 0 : Math.max(0.06, Math.min(n / ceiling, 1));
+  const R = 46;
+  const CIRC = 2 * Math.PI * R;
+  const ARC = 0.78 * CIRC; // 280° of the circle is the dial
+  const filled = frac * ARC;
+  return `<a class="gauge g-${tone}" href="${esc(opts.href)}" title="Open ${esc(opts.label)}">
+    <span class="g-ring">
+      <svg viewBox="0 0 110 110" width="118" height="118" aria-hidden="true">
+        <circle class="g-track" cx="55" cy="55" r="${R}"/>
+        <circle class="g-arc" cx="55" cy="55" r="${R}" stroke-dasharray="${ARC.toFixed(1)} ${CIRC.toFixed(1)}" stroke-dashoffset="${(ARC - filled).toFixed(1)}"/>
+      </svg>
+      <span class="g-n">${n}</span>
+    </span>
+    <span class="g-l">${esc(opts.label)}</span>
+    ${opts.caption ? `<span class="g-c">${esc(opts.caption)}</span>` : ""}
+  </a>`;
+}
+
+/** A row of gauges. */
+export function gaugeRow(gauges: Array<Parameters<typeof gauge>[0]>): string {
+  return `<div class="gauges">${gauges.map((g) => gauge(g)).join("")}</div>`;
+}
+
+/** The staff clock — big, top of the dashboard, ticking locally. */
+export function heroClock(): string {
+  return `<div class="clock" id="clock" aria-label="Current time">
+    <span class="clock-time" id="clock-time">--:--:--</span>
+    <span class="clock-date" id="clock-date"></span>
+  </div>`;
+}
+
 /** Deterministic gradient initials avatar. */
 export function avatar(name: string | null | undefined, size = 34): string {
   const n = String(name ?? "").trim() || "?";
@@ -158,9 +197,9 @@ const CSS = `
 @font-face { font-family: "Instrument Serif"; font-style: normal; font-weight: 400; font-display: swap; src: url("/assets/fonts/instrument-serif.woff2") format("woff2"); }
 @font-face { font-family: "Instrument Serif"; font-style: italic; font-weight: 400; font-display: swap; src: url("/assets/fonts/instrument-serif-italic.woff2") format("woff2"); }
 :root {
-  /* Warm editorial light theme — purple is an accent, not wallpaper. */
-  --bg: #F8F7F4; --card: #FFFFFF; --card2: #F4F2EC;
-  --ink: #17151A; --muted: #6C6773; --line: #E6E1D8; --line2: #EFECE4;
+  /* Warm editorial light theme — purple leads. */
+  --bg: #F8F6FC; --card: #FFFFFF; --card2: #F5F2EE;
+  --ink: #17151A; --muted: #6C6773; --line: #E6E0EE; --line2: #F0EBF4;
   --purple: #4B1FA6; --purple-hover: #3E1A8A; --purple2: #7C3AED; --purple3: #A78BFA;
   --lav: #EDE7F7; --lav-line: #DDD2F2;
   --magenta: #A02080; --magenta-bg: #F7EBF3; --magenta-line: #E8C9DF;
@@ -176,8 +215,8 @@ const CSS = `
   --display: "Instrument Serif", Georgia, "Times New Roman", serif;
 }
 [data-theme="dark"] {
-  --bg: #131117; --card: #1C1922; --card2: #23202B;
-  --ink: #F3F1EA; --muted: #9C97A6; --line: #2C2836; --line2: #262230;
+  --bg: #131017; --card: #1C1824; --card2: #241F2E;
+  --ink: #F3F1EA; --muted: #9C97A6; --line: #2E2839; --line2: #282233;
   --purple: #7C4DD8; --purple-hover: #8B5CF6; --purple2: #A78BFA; --purple3: #C4B5FD;
   --lav: #262138; --lav-line: #3A3155;
   --magenta: #E06BC0; --magenta-bg: #331430; --magenta-line: #5C2450;
@@ -200,21 +239,21 @@ html { scroll-behavior: smooth; }
 body {
   margin: 0; color: var(--ink);
   background:
-    radial-gradient(1100px 360px at 88% -140px, color-mix(in srgb, var(--purple3) 20%, transparent), transparent 62%),
-    radial-gradient(900px 320px at -8% -160px, color-mix(in srgb, var(--lav) 60%, transparent), transparent 58%),
+    radial-gradient(1100px 360px at 88% -140px, color-mix(in srgb, var(--purple3) 30%, transparent), transparent 62%),
+    radial-gradient(900px 320px at -8% -160px, color-mix(in srgb, var(--purple3) 16%, transparent), transparent 58%),
     var(--bg);
   background-attachment: fixed;
   font-family: var(--sans); font-size: 14.5px; line-height: 1.62;
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }
-a { color: var(--purple); text-decoration: none; }
+a { color: var(--purple2); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* Typography — serif does the editorial work, sans stays functional. */
 h1 { font-family: var(--display); font-weight: 400; font-size: 38px; letter-spacing: -.01em; line-height: 1.12; margin: 0 0 10px; }
-h2 { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .12em; color: var(--purple); margin: 0 0 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+h2 { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .12em; color: var(--purple2); margin: 0 0 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 h2 .small { font-weight: 600; text-transform: none; letter-spacing: 0; }
-.kicker { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .18em; color: var(--purple); margin-bottom: 10px; }
+.kicker { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .18em; color: var(--purple2); margin-bottom: 10px; }
 .lede { color: var(--muted); font-size: 15px; margin: 6px 0 0; max-width: 52ch; }
 .sub { color: var(--muted); font-size: 13.5px; margin: 0 0 26px; }
 
@@ -234,7 +273,7 @@ h2 .small { font-weight: 600; text-transform: none; letter-spacing: 0; }
 .app { min-height: 100vh; display: flex; flex-direction: column; }
 .sitehead { position: sticky; top: 0; z-index: 40; background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: blur(10px); border-bottom: 1px solid var(--lav-line); }
 .sitehead::before { content: ""; display: block; height: 3px; background: linear-gradient(90deg, var(--purple) 0%, var(--purple2) 55%, var(--magenta) 100%); }
-.head-in { max-width: 1220px; margin: 0 auto; padding: 0 32px; display: flex; align-items: center; gap: 26px; height: 64px; }
+.head-in { max-width: 1480px; margin: 0 auto; padding: 0 36px; display: flex; align-items: center; gap: 26px; height: 64px; }
 .head-brand { display: inline-flex; align-items: center; flex: none; line-height: 0; }
 .head-brand .crest, .head-brand .crest img { display: inline-flex; align-items: center; vertical-align: middle; }
 .head-nav { display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; }
@@ -245,7 +284,8 @@ h2 .small { font-weight: 600; text-transform: none; letter-spacing: 0; }
 }
 .head-nav a:hover { color: var(--ink); text-decoration: none; }
 .head-nav a.active { color: var(--ink); }
-.head-nav a.active::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; background: var(--purple); border-radius: 2px; }
+.head-nav a.active::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; background: linear-gradient(90deg, var(--purple), var(--purple2)); border-radius: 2px; }
+.head-nav a.active { color: var(--purple2); }
 .head-right { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
 .userchip { display: flex; gap: 9px; align-items: center; padding-left: 12px; border-left: 1px solid var(--line); }
 .userchip b { font-size: 13px; display: block; line-height: 1.25; }
@@ -262,20 +302,22 @@ h2 .small { font-weight: 600; text-transform: none; letter-spacing: 0; }
 .iconbtn:hover { color: var(--purple); border-color: var(--purple3); text-decoration: none; }
 .iconbtn .icn svg { width: 16px; height: 16px; }
 .iconbtn .pip { position: absolute; top: 6px; right: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--purple2); box-shadow: 0 0 0 2px var(--card); }
-.wrap { padding: 40px 32px 72px; max-width: 1220px; width: 100%; margin: 0 auto; animation: rise .35s ease both; }
+.wrap { padding: 44px 36px 88px; max-width: 1480px; width: 100%; margin: 0 auto; animation: rise .35s ease both; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .demobar { background: var(--lav); color: var(--purple); border-bottom: 1px solid var(--lav-line); font-size: 12.5px; font-weight: 600; padding: 7px 32px; text-align: center; }
 @media (max-width: 900px) { .head-in { padding: 0 16px; gap: 14px; } .searchbtn { min-width: 0; } .searchbtn span:not(.kbd) { display: none; } .wrap { padding: 24px 16px 56px; } }
 
 /* ── Cards ─────────────────────────────────────────────────────────────── */
-.card { background: var(--card); border: 1px solid color-mix(in srgb, var(--lav-line) 55%, var(--line)); border-radius: 10px; padding: 24px 26px; margin-bottom: 22px; box-shadow: var(--shadow); }
+.card { background: var(--card); border: 1px solid color-mix(in srgb, var(--lav-line) 55%, var(--line)); border-radius: 12px; padding: 28px 32px; margin-bottom: 28px; box-shadow: var(--shadow); }
 .card.nopad { padding: 0; overflow: hidden; }
 .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 20px 24px 0; }
 .card-head h2 { margin: 0; }
 .card .kv { margin: 4px 0 0; }
-.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
 .cols.wide { grid-template-columns: 3fr 2fr; }
-.cols > .card { margin-bottom: 18px; }
+.cols > .card { margin-bottom: 24px; }
+.cols3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 28px; align-items: start; }
+@media (max-width: 1000px) { .cols3 { grid-template-columns: 1fr; } }
 @media (max-width: 1000px) { .cols, .cols.wide { grid-template-columns: 1fr; } }
 
 /* Key–value rows: the quiet replacement for stat-card grids. */
@@ -370,7 +412,51 @@ input[type="checkbox"] { width: auto; }
 .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 22px; }
 .tabs a { padding: 7px 16px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--muted); font-weight: 700; font-size: 12.5px; text-decoration: none; transition: all .15s; }
 .tabs a:hover { color: var(--purple); border-color: var(--purple3); text-decoration: none; }
-.tabs a.on { background: var(--purple); color: #fff; border-color: var(--purple); }
+.tabs a.on { background: linear-gradient(160deg, var(--purple2), var(--purple)); color: #fff; border-color: var(--purple2); box-shadow: 0 2px 8px -3px color-mix(in srgb, var(--purple2) 60%, transparent); }
+.tabs a.on:hover { color: #fff; }
+
+/* ── Gauges: the dashboard dials ───────────────────────────────────────── */
+.gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 14px; }
+.gauge {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center;
+  background: var(--card); border: 1px solid color-mix(in srgb, var(--lav-line) 70%, var(--line)); border-radius: 12px;
+  padding: 18px 10px 14px; text-decoration: none; box-shadow: var(--shadow);
+  transition: transform .16s, box-shadow .16s, border-color .16s;
+}
+.gauge:hover { transform: translateY(-2px); border-color: var(--purple3); box-shadow: var(--shadow-lg); text-decoration: none; }
+.g-ring { position: relative; display: inline-flex; width: 118px; height: 118px; }
+.g-ring svg { transform: rotate(140deg); }
+.g-ring circle { fill: none; stroke-width: 9; stroke-linecap: round; }
+.g-track { stroke: color-mix(in srgb, var(--lav) 80%, var(--card2)); }
+.g-arc { stroke: url(#gaugeGrad); transition: stroke-dashoffset .5s ease; }
+.gauge .g-n {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-family: var(--display); font-size: 40px; color: var(--ink); font-variant-numeric: tabular-nums;
+}
+.gauge .g-l { font-size: 12px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin-top: 2px; }
+.gauge .g-c { font-size: 11px; color: var(--muted); }
+.gauge.g-green .g-n { color: var(--green); }
+.gauge.g-orange .g-n { color: var(--orange); }
+.gauge.g-red .g-n { color: var(--red); }
+.gauge.g-blue .g-n { color: var(--blue); }
+.gauge:hover .g-l { color: var(--purple2); }
+
+/* ── The staff clock ───────────────────────────────────────────────────── */
+.clock { text-align: right; flex: none; border-left: 1px solid var(--lav-line); padding-left: 28px; }
+.clock-time { display: block; font-family: var(--display); font-size: 52px; line-height: 1; color: var(--purple2); font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.clock-date { display: block; color: var(--muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; margin-top: 7px; }
+@media (max-width: 760px) { .clock { text-align: left; border-left: none; padding-left: 0; } .clock-time { font-size: 40px; } }
+
+/* Purple form controls & scrollbars */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--purple2); }
+* { scrollbar-width: thin; scrollbar-color: var(--purple3) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--purple3) 80%, transparent); border-radius: 99px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--purple2); }
+*::-webkit-scrollbar-track { background: transparent; }
+::selection { background: color-mix(in srgb, var(--purple2) 30%, transparent); }
+summary { color: var(--purple2); }
+input:checked + span, .chk { accent-color: var(--purple2); }
 .tabs a .cnt { opacity: .7; font-weight: 800; margin-left: 6px; font-variant-numeric: tabular-nums; }
 
 /* ── Activity / alert feeds ────────────────────────────────────────────── */
@@ -391,6 +477,16 @@ input[type="checkbox"] { width: auto; }
 .empty p { margin: 0 0 14px; font-size: 14px; }
 
 /* ── Case file components ──────────────────────────────────────────────── */
+.case-grid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(320px, 4fr); gap: 30px; align-items: start; }
+.case-main > .card { margin-bottom: 28px; }
+.case-side { position: sticky; top: 84px; max-height: calc(100vh - 104px); overflow-y: auto; padding: 2px 6px 20px 2px; }
+.case-side .card { padding: 22px 24px; }
+.actionlist { display: grid; gap: 9px; }
+.actionlist .btn { width: 100%; justify-content: flex-start; text-align: left; }
+@media (max-width: 1000px) { .case-grid { grid-template-columns: 1fr; } .case-side { position: static; max-height: none; overflow: visible; } }
+dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 10px 26px; font-size: 13.5px; }
+dl.kv dt { color: var(--muted); font-weight: 600; }
+dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 .stepper { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; margin: 4px 0 18px; }
 .stepper .step { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; color: var(--muted); }
 .stepper .step .dot { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--card2); font-size: 11px; font-weight: 800; }
@@ -578,6 +674,24 @@ const TOAST_JS = `
 })();
 `;
 
+const CLOCK_JS = `
+(function () {
+  var t = document.getElementById('clock-time');
+  if (!t) return;
+  var d = document.getElementById('clock-date');
+  function tick() {
+    var now = new Date();
+    var h = now.getHours(), m = now.getMinutes(), sec = now.getSeconds();
+    var ampm = h >= 12 ? 'PM' : 'AM';
+    var h12 = h % 12; if (h12 === 0) h12 = 12;
+    t.textContent = (h12 < 10 ? ' ' : '') + h12 + ':' + (m < 10 ? '0' : '') + m + ':' + (sec < 10 ? '0' : '') + sec + ' ' + ampm;
+    if (d) d.textContent = now.toLocaleDateString('en-KE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+`;
+
 export function layout(opts: {
   title: string;
   content: string;
@@ -604,6 +718,7 @@ export function layout(opts: {
   const paletteLinks: Array<{ label: string; hint: string; href: string; keys: string }> = [];
   if (opts.user) {
     paletteLinks.push({ label: "Overview", hint: "home", href: "/", keys: "dashboard home overview" });
+    paletteLinks.push({ label: "Admissions", hint: "pipeline stages", href: "/admissions", keys: "admissions applications pipeline levels received checked review completed" });
     if (opts.user.role !== "admin") {
       paletteLinks.push(
         { label: "Review queue", hint: "queue", href: "/queue", keys: "queue review human" },
@@ -629,6 +744,7 @@ export function layout(opts: {
     // Role-separated navigation: admins administer, officers/IT work cases.
     const nav: Array<{ href: string; label: string; active: string }> = [
       { href: "/", label: "Overview", active: "dashboard" },
+      { href: "/admissions", label: "Admissions", active: "admissions" },
       ...(role !== "admin"
         ? [
             { href: "/queue", label: "Review Queue", active: "queue" },
@@ -668,6 +784,11 @@ export function layout(opts: {
 ${opts.content}
   </main>
 </div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="gaugeGrad" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#8B5CF6"/><stop offset="55%" stop-color="#7C3AED"/><stop offset="100%" stop-color="#4B1FA6"/>
+  </linearGradient>
+</defs></svg>
 <div class="palette" id="palette">
   <div class="palette-box">
     <input id="palette-q" type="text" placeholder="Jump to a case, applicant or page…" autocomplete="off" spellcheck="false">
@@ -693,7 +814,7 @@ ${opts.content}
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" type="image/png" href="/assets/favicon">
+<link rel="icon" type="image/png" href="/assets/favicon?v=2">
 ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
 <title>${esc(opts.title)}</title>
 <style>${CSS}</style>
@@ -714,7 +835,7 @@ ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
   })();
 </script>
 ${shell}
-<script>${paletteJs}${TOAST_JS}</script>
+<script>${paletteJs}${TOAST_JS}${CLOCK_JS}</script>
 </body>
 </html>`;
 }

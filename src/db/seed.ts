@@ -5,7 +5,7 @@
  */
 import * as crypto from "crypto";
 import type { Repo } from "./repo";
-import { DEFAULT_INTAKES, DEFAULT_PROGRAMMES, DEFAULT_REQUIREMENTS, DEFAULT_SETTINGS } from "../config";
+import { DEFAULT_INTAKES, DEFAULT_PROGRAMME_REQUIREMENTS, DEFAULT_PROGRAMMES, DEFAULT_REQUIREMENTS, DEFAULT_SETTINGS } from "../config";
 import { hashPassword } from "../util/password";
 import { defaultEmailBanner } from "../pack";
 
@@ -134,6 +134,23 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
   }
   for (const i of DEFAULT_INTAKES) {
     repo.addIntake(i);
+  }
+  // Per-course grade rules — seeded ONCE (never clobbers staff edits, which
+  // live in the same requirement_rules table as Configuration-added rules).
+  for (const r of DEFAULT_PROGRAMME_REQUIREMENTS) {
+    const existing = repo.db
+      .prepare("SELECT 1 FROM requirement_rules WHERE programme = ? AND document_type = ? AND programme IS NOT NULL")
+      .get(r.programme, r.document_type);
+    if (!existing) {
+      repo.upsertRule({
+        programme: r.programme,
+        intake: null,
+        document_type: r.document_type,
+        required: true,
+        meanGrade: r.meanGrade,
+        subjectGrades: r.subjectGrades ?? null,
+      });
+    }
   }
   // Base requirements (only if table is empty — don't clobber staff edits)
   const ruleCount = (repo.db.prepare("SELECT COUNT(*) AS n FROM requirement_rules").get() as { n: number }).n;

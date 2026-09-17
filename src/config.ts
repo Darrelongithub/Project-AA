@@ -58,13 +58,17 @@ export function loadConfig(): AppConfig {
   };
 }
 
-/** Default (base) requirement set — overridden by programme/intake rules. */
+/**
+ * Default (base) requirement set — overridden by programme/intake rules.
+ * Grades are configured per course (mean grade + subject lines); the base set
+ * only demands the documents every applicant must supply.
+ */
 export const DEFAULT_REQUIREMENTS = [
-  { document_type: "academic_cert" as const, required: true, minGradePoints: null },
-  { document_type: "kcpe_cert" as const, required: true, minGradePoints: 250 },
-  { document_type: "id" as const, required: true, minGradePoints: null },
-  { document_type: "application_form" as const, required: true, minGradePoints: null },
-  { document_type: "birth_cert" as const, required: false, minGradePoints: null },
+  { document_type: "academic_cert" as const, required: true },
+  { document_type: "kcpe_cert" as const, required: true },
+  { document_type: "id" as const, required: true },
+  { document_type: "application_form" as const, required: true },
+  { document_type: "birth_cert" as const, required: false },
 ];
 
 /**
@@ -82,7 +86,7 @@ export interface DefaultProgramme {
 export const DEFAULT_PROGRAMMES: DefaultProgramme[] = [
   // ── School of Law ──
   { code: "LLB", name: "Bachelor of Laws", school: "School of Law",
-    entry: "KCSE C+ (plus) with B plain in English or Kiswahili; or KACE with three principal passes; or a degree from a recognised university; or a CLE-accredited Diploma in Law (average B). An oral interview may be required." },
+    entry: "KCSE mean grade C+ (plus) with B (plain) in English or Kiswahili; or KACE with three principal passes; or a degree from a recognised university; or a CLE-accredited Diploma in Law (average B). An oral interview may be required." },
   // ── School of Business ──
   { code: "BBA", name: "Bachelor of Business Administration", school: "School of Business",
     entry: "KCSE C+ (plus) with C (plain) in English and Mathematics; or GCE A-Level with at least 2 principal passes; or other Senate-recognised certificates." },
@@ -121,11 +125,40 @@ export const DEFAULT_PROGRAMMES: DefaultProgramme[] = [
     entry: "KCSE C- with C or above in English/Kiswahili; or D+ plus a recognised certificate." },
   { code: "CCM", name: "Certificate in Communication", school: "School of Communication and Multimedia Journalism",
     entry: "KCSE D+ or equivalent." },
+  // ── School of Nursing ──
+  { code: "BNS", name: "BSc Nursing", school: "School of Nursing",
+    entry: "KCSE mean grade C+ (plus) with C+ in Biology, Chemistry and English or Kiswahili, and C (plain) in Mathematics or Physics; or a KCE/KACE equivalent recognised by the Nursing Council of Kenya (NCK)." },
+  { code: "DNS", name: "Diploma in Nursing (Pre-Service)", school: "School of Nursing",
+    entry: "KCSE mean grade C (plain) with C (plain) in English or Kiswahili, C- (minus) in Biology and Chemistry, and C- in Mathematics or Physics; NCK requirements apply." },
+  { code: "KRCHN", name: "Certificate: Kenya Registered Community Health Nursing", school: "School of Nursing",
+    entry: "KCSE mean grade C- (minus) with C- in English or Kiswahili, Biology and Chemistry; NCK-approved curriculum." },
   // ── School of Education ──
   { code: "BED", name: "Bachelor of Education (Arts)", school: "School of Education",
     entry: "KCSE C+ (plus) or equivalent; or a Diploma in Education with credit; or A-Level with 2 principal passes; C+ in teaching subjects commonly expected." },
   { code: "CTI", name: "Certificate in Teaching International Curricula", school: "School of Education",
     entry: "Aimed at practising teachers; specific academic thresholds vary." },
+];
+
+/**
+ * Per-course grade rules seeded once (staff-editable afterwards — they are
+ * stored in requirement_rules like any rule added in Configuration).
+ * Grades, not points: mean grade + per-subject lines exactly as published.
+ */
+export const DEFAULT_PROGRAMME_REQUIREMENTS: Array<{
+  programme: string;
+  document_type: "academic_cert" | "kcpe_cert";
+  meanGrade: string;
+  subjectGrades?: string;
+}> = [
+  // Bachelor of Laws: KCSE C+ mean, B plain in English or Kiswahili.
+  { programme: "LLB", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "B in English; B in Kiswahili" },
+  // BSc Nursing: C+ mean with lab-science and language requirements (NCK).
+  { programme: "BNS", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "C+ in Biology; C+ in Chemistry; C+ in English; C in Mathematics; C in Physics" },
+  { programme: "BNS", document_type: "kcpe_cert", meanGrade: "C+" },
+  // Diploma in Nursing: C mean.
+  { programme: "DNS", document_type: "academic_cert", meanGrade: "C", subjectGrades: "C in English; C- in Biology; C- in Chemistry" },
+  //KRCHN certificate: C- mean.
+  { programme: "KRCHN", document_type: "academic_cert", meanGrade: "C-" },
 ];
 
 export const DEFAULT_INTAKES = ["September 2026", "January 2027"];

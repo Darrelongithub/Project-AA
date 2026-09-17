@@ -58,7 +58,33 @@ async function main(): Promise<void> {
 
   const adapters = buildAdapters(cfg, sender);
   const ctx: PipelineContext = { repo, adapters, jsonlPath: cfg.logToFile ? "./logs/decisions.jsonl" : undefined };
-  const app = createApp({ repo, ctx });
+  // One ingest pass, usable by BOTH the 60s poll and Configuration → "Sync now".
+  const runSyncOnce = async (): Promise<Error | null> => {
+    try {
+      const fromSettings = gmailFromSettings(repo);
+      if (!gmail && fromSettings) {
+        gmail = new GmailClient(fromSettings);
+        sender.inner = new GmailSender(gmail);
+        log(`serve: Gmail connected via Settings (${fromSettings.address}) — live sorting enabled`);
+      } else if (gmail && !fromSettings) {
+        log(`serve: Gmail disconnected via Settings — live fetching stopped`);
+        gmail = null;
+        sender.inner = new MockSender();
+      }
+      if (!gmail) return new Error("Gmail is not connected.");
+      const opts = { autoMissingDocsEmails: cfg.autoMissingDocsEmails, autoStatusAnswers: cfg.autoStatusAnswers };
+      await ingestNewEmails(gmail, ctx, cfg.ingestLookbackDays, opts);
+      repo.setSetting("gmail_last_sync_at", new Date().toISOString());
+      repo.setSetting("gmail_last_error", "");
+      return null;
+    } catch (e) {
+      const err = e as Error;
+      log(`ingest poll failed: ${err.message}`, "error");
+      try { repo.setSetting("gmail_last_error", err.message.slice(0, 300)); } catch { /* best-effort */ }
+      return err;
+    }
+  };
+  const app = createApp({ repo, ctx, gmailSync: runSyncOnce });
 
   const port = cfg.port;
   app.listen(port, "0.0.0.0", () => {
@@ -88,35 +114,8 @@ async function main(): Promise<void> {
 
   // Live inbox polling. Runs always: if Gmail gets connected from Settings
   // while the server is up, the next tick picks it up — no restart needed.
-  const opts = { autoMissingDocsEmails: cfg.autoMissingDocsEmails, autoStatusAnswers: cfg.autoStatusAnswers };
-  const poll = async () => {
-    try {
-      const fromSettings = gmailFromSettings(repo);
-      if (!gmail && fromSettings) {
-        gmail = new GmailClient(fromSettings);
-        sender.inner = new GmailSender(gmail);
-        log(`serve: Gmail connected via Settings (${fromSettings.address}) — live sorting enabled`);
-      } else if (gmail && !fromSettings) {
-        // "Disconnect" in Settings clears the refresh token — honour it
-        // immediately instead of polling on with the stale client.
-        log(`serve: Gmail disconnected via Settings — live fetching stopped`);
-        gmail = null;
-        sender.inner = new MockSender();
-      }
-      if (gmail) {
-        await ingestNewEmails(gmail, ctx, cfg.ingestLookbackDays, opts);
-        // Truthful connection state for Settings → Gmail connection.
-        repo.setSetting("gmail_last_sync_at", new Date().toISOString());
-        repo.setSetting("gmail_last_error", "");
-      }
-    } catch (e) {
-      const msg = (e as Error).message;
-      log(`ingest poll failed: ${msg}`, "error");
-      try { repo.setSetting("gmail_last_error", msg.slice(0, 300)); } catch { /* settings write is best-effort */ }
-    }
-  };
-  await poll();
-  setInterval(poll, 60_000);
+  await runSyncOnce();
+  setInterval(() => { runSyncOnce(); }, 60_000);
 }
 
 main().catch((e) => {

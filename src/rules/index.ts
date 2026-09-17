@@ -79,6 +79,40 @@ export function namesAreSimilar(a: string, b: string): boolean {
 
 const GRADE_CHECKED_TYPES: DocType[] = ["academic_cert", "kcpe_cert"];
 
+/** The KCSE/KCPE mean-grade ladder, best (A) → worst (E). */
+export const GRADE_LADDER = ["A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "E"] as const;
+
+/**
+ * Pure mean-grade comparison: true when `actual` is STRICTLY below `required`.
+ * Unknown grades never compare false-positive — callers treat them as
+ * unreadable and flag for a human instead.
+ */
+export function gradeBelow(actual: string | null | undefined, required: string | null | undefined): boolean {
+  if (!actual || !required) return false;
+  const a = GRADE_LADDER.indexOf(actual.trim().toUpperCase().replace(/\s*\(PLUS\)\s*/i, "+") as never);
+  const r = GRADE_LADDER.indexOf(required.trim().toUpperCase() as never);
+  if (a < 0 || r < 0) return false;
+  return a > r;
+}
+
+/** Parse "C+ in Maths, English" / "B (plain) in English" subject lines → entries. */
+export function parseGradeRule(raw: string | null | undefined): Array<{ grade: string; subjects: string[] }> {
+  if (!raw) return [];
+  return String(raw)
+    .split(/[,;\n]+/)
+    .map((part) => {
+      const m = part.trim().match(/^([A-E][+-]?(?:\s*\((?:plus|minus|plain)\))?)\s*(?:in\s+(.*))?$/i);
+      if (!m) return null;
+      let grade = m[1].toUpperCase().replace(/\s*\(PLUS\)/, "+").replace(/\s*\(MINUS\)/, "-").replace(/\s*\(PLAIN\)/, "");
+      const subjects = (m[2] ?? "")
+        .split(/\band\b|\/|&|\+/i)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return { grade, subjects };
+    })
+    .filter((x): x is { grade: string; subjects: string[] } => x !== null);
+}
+
 /**
  * Derive flags from the current document snapshot. Pure and deterministic.
  * Borderline/judgment-adjacent situations become flags here — they never
@@ -91,24 +125,46 @@ export function deriveFlags(
   const flags: DerivedFlag[] = [];
 
   // 1. Grade-requirement checks → ALWAYS a flag, never an auto decision.
+  //    Rules speak GRADES (mean grade + optional subject grades), exactly as
+  //    the university publishes them — no numeric "points".
   for (const req of requirements) {
-    if (req.minGradePoints == null) continue;
     if (!GRADE_CHECKED_TYPES.includes(req.document_type)) continue;
+    if (!req.meanGrade && !req.subjectGrades) continue;
     const doc = docs.find((d) => d.document_type === req.document_type);
     if (!doc) continue; // missing documents are handled by the verdict logic
-    const points = doc.extracted_fields?.gradePoints;
-    if (typeof points === "number" && Number.isFinite(points)) {
-      if (points < req.minGradePoints) {
+    const mean = typeof doc.extracted_fields?.meanGrade === "string" ? (doc.extracted_fields.meanGrade as string) : null;
+    if (req.meanGrade && mean) {
+      if (gradeBelow(mean, req.meanGrade)) {
         flags.push({
           type: "grade_below_requirement",
-          detail: `${req.document_type}: extracted ${points} points < required minimum ${req.minGradePoints} — borderline case, human must review`,
+          detail: `${req.document_type}: mean grade ${mean} is below the required ${req.meanGrade} — human must review`,
         });
       }
-    } else {
+    } else if (req.meanGrade && !mean) {
       flags.push({
         type: "low_confidence",
-        detail: `${req.document_type}: grade could not be read reliably — human must verify`,
+        detail: `${req.document_type}: mean grade could not be read (rule expects ${req.meanGrade}) — human must verify`,
       });
+    }
+    // Subject grades: each configured "C+ in English" line is checked against
+    // the extracted subjectGrades map; a missing reading is flagged, not guessed.
+    const got = (doc.extracted_fields?.subjectGrades ?? {}) as Record<string, string>;
+    for (const rule of parseGradeRule(req.subjectGrades ?? null)) {
+      for (const subject of rule.subjects) {
+        const key = Object.keys(got).find((k) => k.toLowerCase() === subject.toLowerCase());
+        const actual = key ? got[key] : undefined;
+        if (!actual) {
+          flags.push({
+            type: "low_confidence",
+            detail: `${req.document_type}: grade for ${subject} could not be read (rule expects ${rule.grade}) — human must verify`,
+          });
+        } else if (gradeBelow(actual, rule.grade)) {
+          flags.push({
+            type: "grade_below_requirement",
+            detail: `${req.document_type}: ${subject} grade ${actual} is below the required ${rule.grade} — human must review`,
+          });
+        }
+      }
     }
   }
 

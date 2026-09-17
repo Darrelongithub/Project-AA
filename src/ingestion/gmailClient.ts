@@ -120,7 +120,11 @@ export class GmailClient {
       fromName: nameMatch ? nameMatch[1].trim() : undefined,
       subject: headers["subject"] || "(no subject)",
       body,
-      receivedAt: new Date(Number(msg.internalDate)).toISOString(),
+      // Some messages (drafts, imported mail) carry no internalDate — a NaN
+      // date used to throw toISOString() and silently drop the message.
+      receivedAt: msg.internalDate
+        ? new Date(Number(msg.internalDate)).toISOString()
+        : new Date().toISOString(),
       attachments: attachmentBuffers,
     };
   }
@@ -195,9 +199,21 @@ export class GmailClient {
       .replace(/\+/g, "-")
       .replace(/\//g, "_")
       .replace(/=+$/, "");
-    await this.gmail.users.messages.send({
-      userId: "me",
-      requestBody: { raw: encoded, threadId },
-    });
+    try {
+      await this.gmail.users.messages.send({
+        userId: "me",
+        requestBody: { raw: encoded, threadId },
+      });
+    } catch (e) {
+      const reason = String((e as { errors?: Array<{ reason?: string }>; message?: string })?.errors?.[0]?.reason ?? (e as Error)?.message ?? "");
+      // A stale/unknown thread id (conversation deleted, case created outside
+      // Gmail) used to kill the send entirely. Retry as a fresh message —
+      // the applicant still gets the reply, just as a new thread.
+      if (/thread|not found|invalid/i.test(reason)) {
+        await this.gmail.users.messages.send({ userId: "me", requestBody: { raw: encoded } });
+        return;
+      }
+      throw e;
+    }
   }
 }

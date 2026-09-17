@@ -302,4 +302,22 @@ function migrate(db: Database.Database): void {
   addColumn("intakes", "deadline", "TEXT");
   // Wrong OTP guesses are counted; the code burns after too many failures.
   addColumn("portal_otps", "attempts", "INTEGER NOT NULL DEFAULT 0");
+  // v5: requirement rules speak GRADES, not points. New columns carry the
+  // published mean grade ("C+") and per-subject lines ("C+ in English and Maths").
+  addColumn("requirement_rules", "mean_grade", "TEXT");
+  addColumn("requirement_rules", "subject_grades", "TEXT");
+  // Migrate any legacy min-points rules into a best-effort grade equivalent
+  // so old databases keep meaningful rules (points → the KCSE grade ladder).
+  try {
+    const legacy = db
+      .prepare("SELECT id, min_grade_points FROM requirement_rules WHERE min_grade_points IS NOT NULL AND mean_grade IS NULL")
+      .all() as Array<{ id: number; min_grade_points: number }>;
+    const ptsToGrade = (p: number): string =>
+      p >= 400 ? "A" : p >= 381 ? "A-" : p >= 353 ? "B+" : p >= 325 ? "B" : p >= 295 ? "B-" : p >= 265 ? "C+" : p >= 235 ? "C" : p >= 205 ? "C-" : p >= 175 ? "D+" : p >= 145 ? "D" : p >= 115 ? "D-" : "E";
+    const upd = db.prepare("UPDATE requirement_rules SET mean_grade = ? WHERE id = ?");
+    for (const r of legacy) upd.run(ptsToGrade(r.min_grade_points), r.id);
+    if (legacy.length) db.exec("UPDATE requirement_rules SET min_grade_points = NULL");
+  } catch {
+    // best-effort: a fresh DB has nothing to migrate
+  }
 }

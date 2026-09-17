@@ -62,7 +62,7 @@ describe("rules: grade requirement is ALWAYS a flag, never an auto decision", ()
   it("grade below the floor → Orange + grade_below_requirement flag (never auto-rejected)", () => {
     const docs = completeDocs();
     const kcpe = docs.find((d) => d.document_type === "kcpe_cert")!;
-    kcpe.extracted_fields = { ...kcpe.extracted_fields, gradePoints: 240 };
+    kcpe.extracted_fields = { ...kcpe.extracted_fields, meanGrade: "D", subjectGrades: { English: "D" } };
     const out = decide({ requirements: REQS, docs, flags: [] });
     expect(out.status).toBe("Orange");
     expect(out.derivedFlags.map((f) => f.type)).toContain("grade_below_requirement");
@@ -72,7 +72,7 @@ describe("rules: grade requirement is ALWAYS a flag, never an auto decision", ()
   it("grade exactly at the floor → not below → Green", () => {
     const docs = completeDocs();
     const kcpe = docs.find((d) => d.document_type === "kcpe_cert")!;
-    kcpe.extracted_fields = { ...kcpe.extracted_fields, gradePoints: 250 };
+    kcpe.extracted_fields = { ...kcpe.extracted_fields, meanGrade: "C-", subjectGrades: { English: "C-" } };
     const out = decide({ requirements: REQS, docs, flags: [] });
     expect(out.status).toBe("Green");
     expect(out.derivedFlags.find((f) => f.type === "grade_below_requirement")).toBeUndefined();
@@ -81,8 +81,17 @@ describe("rules: grade requirement is ALWAYS a flag, never an auto decision", ()
   it("grade above the floor → Green", () => {
     const docs = completeDocs();
     const kcpe = docs.find((d) => d.document_type === "kcpe_cert")!;
-    kcpe.extracted_fields = { ...kcpe.extracted_fields, gradePoints: 401 };
+    kcpe.extracted_fields = { ...kcpe.extracted_fields, meanGrade: "A", subjectGrades: { English: "A" } };
     expect(decide({ requirements: REQS, docs, flags: [] }).status).toBe("Green");
+  });
+
+  it("subject below the required subject grade → grade_below_requirement flag", () => {
+    const docs = completeDocs();
+    const kcpe = docs.find((d) => d.document_type === "kcpe_cert")!;
+    kcpe.extracted_fields = { ...kcpe.extracted_fields, meanGrade: "B", subjectGrades: { English: "D" } };
+    const out = decide({ requirements: REQS, docs, flags: [] });
+    expect(out.derivedFlags.map((f) => f.type)).toContain("grade_below_requirement");
+    expect(out.status).toBe("Orange");
   });
 
   it("doc with a grade floor but unreadable grade → Orange + low_confidence (human verifies)", () => {

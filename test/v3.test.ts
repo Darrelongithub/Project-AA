@@ -155,7 +155,7 @@ describe("rules versioning (feature 19) & deadlines (features 20, 21)", () => {
     repo.freezeRequirementsSnapshot(a);
     const frozen = repo.effectiveRequirements(repo.getApplicant(a.id)!);
     // Later: somebody makes the birth certificate required.
-    repo.upsertRule({ programme: null, intake: null, document_type: "birth_cert", required: true, minGradePoints: null });
+    repo.upsertRule({ programme: null, intake: null, document_type: "birth_cert", required: true, meanGrade: null });
     const after = repo.effectiveRequirements(repo.getApplicant(a.id)!);
     expect(after).toEqual(frozen);
     // …but brand-new applicants get the new rules.

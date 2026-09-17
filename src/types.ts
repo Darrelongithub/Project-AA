@@ -125,11 +125,16 @@ export interface StaffUser {
  * RequirementSet — config: what's currently being asked for.
  * v2: rules can be scoped per programme and/or intake (features 8, 36, 37);
  * the most specific rule wins.
+ * v5: rules speak GRADES, not points — `meanGrade` ("C+") and optional
+ * per-subject lines ("C+ in English and Mathematics") exactly as published.
  */
 export interface RequirementSetEntry {
   document_type: DocType;
   required: boolean;
-  minGradePoints?: number | null;
+  /** Minimum overall mean grade, e.g. "C+". null/undefined = not graded. */
+  meanGrade?: string | null;
+  /** Free-form subject lines, e.g. "C+ in English and Mathematics". */
+  subjectGrades?: string | null;
 }
 
 /** A course in the official catalogue, grouped by school. */
@@ -155,6 +160,8 @@ export interface ExtractedFields {
   name?: string | null;
   gradePoints?: number | null;
   meanGrade?: string | null;
+  /** Per-subject grades read off a KNEC slip, e.g. { English: "B-" }. */
+  subjectGrades?: Record<string, string> | null;
   idNumber?: string | null;
   indexNumber?: string | null;
   examYear?: string | null;

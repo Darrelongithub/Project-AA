@@ -30,12 +30,12 @@ describe("reference numbers (feature 1)", () => {
 describe("requirement resolution (features 8, 36, 37)", () => {
   it("base rules apply to everyone", () => {
     const reqs = repo.resolveRequirements(null, null);
-    expect(reqs.find((r) => r.document_type === "kcpe_cert")?.minGradePoints).toBe(250);
+    expect(reqs.find((r) => r.document_type === "kcpe_cert")?.required).toBe(true);
     expect(reqs.find((r) => r.document_type === "id")?.required).toBe(true);
   });
 
   it("programme-specific rules override base", () => {
-    repo.upsertRule({ programme: "LAW", intake: null, document_type: "kcpe_cert", required: false, minGradePoints: null });
+    repo.upsertRule({ programme: "LAW", intake: null, document_type: "kcpe_cert", required: false, meanGrade: null });
     const law = repo.resolveRequirements("LAW", null);
     const bcs = repo.resolveRequirements("BCS", null);
     expect(law.find((r) => r.document_type === "kcpe_cert")?.required).toBe(false);
@@ -43,8 +43,8 @@ describe("requirement resolution (features 8, 36, 37)", () => {
   });
 
   it("programme+intake is the most specific", () => {
-    repo.upsertRule({ programme: "BCS", intake: null, document_type: "birth_cert", required: true, minGradePoints: null });
-    repo.upsertRule({ programme: "BCS", intake: "January 2027", document_type: "birth_cert", required: false, minGradePoints: null });
+    repo.upsertRule({ programme: "BCS", intake: null, document_type: "birth_cert", required: true, meanGrade: null });
+    repo.upsertRule({ programme: "BCS", intake: "January 2027", document_type: "birth_cert", required: false, meanGrade: null });
     expect(repo.resolveRequirements("BCS", "January 2027").find((r) => r.document_type === "birth_cert")?.required).toBe(false);
     expect(repo.resolveRequirements("BCS", "September 2026").find((r) => r.document_type === "birth_cert")?.required).toBe(true);
   });

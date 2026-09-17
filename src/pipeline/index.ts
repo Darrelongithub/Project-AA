@@ -213,6 +213,24 @@ export async function processEmail(
         if (i) patch.intake = i;
       }
     }
+    // Course routing: once the programme is known, the case lands with that
+    // course's assigned officer — automatically, and only when the case is
+    // unassigned (a human hand-over is never overwritten).
+    const prog = patch.programme ?? current.programme;
+    if (prog && !current.assigned_to) {
+      const ownerId = repo.ownerOfProgramme(prog);
+      if (ownerId) {
+        (patch as { assigned_to?: number }).assigned_to = ownerId;
+        const owner = repo.getStaff(ownerId);
+        repo.notify(
+          "assignment",
+          `New ${prog} case routed to you: ${applicant.ref_number}`,
+          applicant.id,
+          ownerId
+        );
+        repo.audit(applicant.id, "system", "case_routed", `assigned to ${owner?.display_name ?? ownerId} (owner of ${prog})`);
+      }
+    }
     if (Object.keys(patch).length) {
       repo.updateApplicant(applicant.id, patch);
       repo.audit(
