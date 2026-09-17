@@ -13,14 +13,14 @@ function main(): void {
   const rows = repo.queueView();
 
   if (rows.length === 0) {
-    console.log("Human queue is empty. 🎉");
+    console.log("Human queue is empty.");
     return;
   }
 
   const urgent = rows.filter((r) => r.priority === "urgent").length;
   const high = rows.filter((r) => r.priority === "high").length;
   console.log(
-    `\nHUMAN QUEUE — ${rows.length} case(s)${urgent ? ` — 🔴 ${urgent} urgent` : ""}${high ? ` — 🟠 ${high} high priority` : ""}\n`
+    `\nHUMAN QUEUE — ${rows.length} case(s)${urgent ? ` — ${urgent} urgent` : ""}${high ? ` — ${high} high priority` : ""}\n`
   );
 
   for (const r of rows) {

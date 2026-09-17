@@ -107,5 +107,5 @@ export function loginAttempt(repo: Repo, username: string, password: string): St
   const row = repo.getStaffByUsername(username.trim());
   if (!row || row.active !== 1) return null;
   if (!verifyPassword(password, row.password_hash)) return null;
-  return { id: row.id, username: row.username, display_name: row.display_name, role: row.role as StaffUser["role"], active: row.active };
+  return { id: row.id, username: row.username, display_name: row.display_name, role: row.role as StaffUser["role"], active: row.active, demo: row.demo };
 }

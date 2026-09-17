@@ -12,7 +12,7 @@ let repo: Repo;
 
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
-  seedDefaults(repo, { createDemoUsers: false });
+  seedDefaults(repo);
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
 });
 

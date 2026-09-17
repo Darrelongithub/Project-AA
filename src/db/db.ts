@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS staff_users (
   password_hash TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'officer',   -- admin | manager | officer
   active        INTEGER NOT NULL DEFAULT 1,
+  demo          INTEGER NOT NULL DEFAULT 0,        -- 1 = seeded demo-dataset account
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -285,6 +286,9 @@ function migrate(db: Database.Database): void {
   addColumn("emails", "channel", "TEXT NOT NULL DEFAULT 'email'");
   // Courses get an owner: the staff member responsible for handling them.
   addColumn("programmes", "owner_id", "INTEGER REFERENCES staff_users(id)");
+  // Accounts seeded by the demo dataset are marked, so the UI can label them
+  // and production accounts are never confused with sample ones.
+  addColumn("staff_users", "demo", "INTEGER NOT NULL DEFAULT 0");
   addColumn("intakes", "deadline", "TEXT");
   // Wrong OTP guesses are counted; the code burns after too many failures.
   addColumn("portal_otps", "attempts", "INTEGER NOT NULL DEFAULT 0");

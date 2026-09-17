@@ -33,7 +33,14 @@ async function main(): Promise<void> {
   }
 
   const repo = new Repo(openDb(dbPath));
-  seedDefaults(repo, { createDemoUsers: true });
+  seedDefaults(repo);
+
+  // ── Demo accounts — separate from the real ones ─────────────────────────
+  // demo_admin / demo_user belong to the mock dataset (demo flag = 1).
+  // The plain `admin` account created by seedDefaults is the REAL
+  // administrator: same database, no demo flag, no mock ownership.
+  repo.createStaff("demo_admin", "Darrel", hashPassword("demo123"), "admin", true);
+  repo.createStaff("demo_user", "Jane Wairimu", hashPassword("demo123"), "officer", true);
 
   console.log(`demo: running simulation against ${dbPath} …`);
   const result = await runSimulation({ dbPath, disableOcr: process.env.DISABLE_OCR === "1" });
@@ -41,16 +48,16 @@ async function main(): Promise<void> {
 
   // ── Manual touches so the demo feels like a working office ──────────────
   const queued = repo.queueView();
-  const jane = repo.getStaffByUsername("jane");
+  const demoUser = repo.getStaffByUsername("demo_user");
 
-  if (queued.length > 0 && jane) {
+  if (queued.length > 0 && demoUser) {
     const first = queued[0];
-    repo.updateApplicant(first.id, { assigned_to: jane.id });
-    repo.addNote(first.id, jane.id, "Applicant called. Waiting for the original certificate.");
+    repo.updateApplicant(first.id, { assigned_to: demoUser.id });
+    repo.addNote(first.id, demoUser.id, "Applicant called. Waiting for the original certificate.");
     // v3: cases carry work items, not just statuses.
-    repo.addTask(first.id, "Verify KCSE certificate with KNEC", jane.id);
-    repo.addTask(first.id, "Contact applicant about the ID copy", jane.id);
-    repo.audit(first.id, "jane", "case_assigned", "assigned during demo seeding");
+    repo.addTask(first.id, "Verify KCSE certificate with KNEC", demoUser.id);
+    repo.addTask(first.id, "Contact applicant about the ID copy", demoUser.id);
+    repo.audit(first.id, "demo_user", "case_assigned", "assigned during demo seeding");
   }
 
   // Backdate one queued case so it's overdue, then escalate it.
@@ -65,37 +72,25 @@ async function main(): Promise<void> {
   // v3: an intake deadline for the NEXT round (late arrivals get flagged).
   repo.setIntakeDeadline("January 2027", "2027-01-15T23:59:59Z");
 
-  // A couple of staff accounts always help the pitch.
-  if (!repo.getStaffByUsername("admin")) {
-    repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
-  }
-
   // Marks this database as the demo dataset. The web console shows the
   // "Demo workspace" banner ONLY while this flag is set — a database you
   // start fresh (production) never shows it.
   repo.setSetting("demo_dataset", "1");
 
-  // The demo admin gets a real name so the Overview greeting reads like the
-  // product it is — "Good evening, Darrel." (production admins set their own).
-  const demoAdmin = repo.getStaffByUsername("admin");
-  if (demoAdmin && demoAdmin.display_name === "System Administrator") {
-    repo.setStaffDisplayName(demoAdmin.id, "Darrel");
-  }
-
-  // Course ownership: who handles what. Officers get courses; one is left
-  // unassigned on purpose so the assignment flow is visible.
-  const ownerFor: Record<string, string> = { BCS: "jane", NUR: "otis", LAW: "manager" };
+  // Course ownership in the demo: the demo user handles two courses; the
+  // other two stay unassigned so the assignment flow is visible.
+  const ownerFor: Record<string, string> = { BCS: "demo_user", NUR: "demo_user" };
   for (const [code, username] of Object.entries(ownerFor)) {
     const member = repo.getStaffByUsername(username);
     if (member) {
       repo.assignProgrammeOwner(code, member.id);
-      repo.audit(null, "admin", "course_owner_changed", `${code} → ${member.display_name} (demo seeding)`);
+      repo.audit(null, "demo_admin", "course_owner_changed", `${code} → ${member.display_name} (demo seeding)`);
     }
   }
 
   console.log("\ndemo: done. Now run:\n\n  npm run serve\n");
-  console.log("then open the printed URL and sign in as admin/admin123 (administration)");
-  console.log("or jane/jane123 (officer casework) to see the two separated workspaces.");
+  console.log("Demo accounts (mock data):  demo_admin / demo123  ·  demo_user / demo123");
+  console.log("Real administrator (same database, no demo flag):  admin / admin123");
   console.log("");
   process.exit(0);
 }

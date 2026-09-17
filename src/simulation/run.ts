@@ -159,7 +159,7 @@ export async function runSimulation(
 export function printReport(result: SimulationResult): void {
   console.log("\n══════════════════════════ SIMULATION SCORECARD (v2) ══════════════════════════\n");
   for (const r of result.reports) {
-    console.log(`${r.passed ? "✅" : "❌"} ${r.fixture.name} — ${r.fixture.description}`);
+    console.log(`${r.passed ? "PASS" : "FAIL"}  ${r.fixture.name} — ${r.fixture.description}`);
     for (const c of r.checks) {
       if (!c.pass) {
         console.log(`     [FAIL] ${c.field.padEnd(15)} expected "${c.expected}", got "${c.actual}"`);
@@ -169,7 +169,7 @@ export function printReport(result: SimulationResult): void {
   const failed = result.reports.filter((r) => !r.passed).length;
   console.log(
     `\n${result.passedChecks}/${result.totalChecks} checks passed across ${result.reports.length} scenarios (${failed} scenario(s) with failures) — ${
-      result.allPassed ? "ALL GREEN ✅" : "FAILURES PRESENT ❌"
+      result.allPassed ? "ALL GREEN" : "FAILURES PRESENT"
     }\n`
   );
 }

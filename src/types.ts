@@ -115,6 +115,8 @@ export interface StaffUser {
   display_name: string;
   role: StaffRole;
   active: number;
+  /** 1 when the account belongs to the seeded demo dataset. */
+  demo?: number;
 }
 
 // ── Requirements ───────────────────────────────────────────────────────────

@@ -216,6 +216,7 @@ h2 .small { font-weight: 600; text-transform: none; letter-spacing: 0; }
 
 /* Hero — greeting left, one quiet stat right. */
 .hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 28px; margin: 6px 0 4px; }
+.hero .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-width: 0; }
 .herostat { text-align: right; border-left: 1px solid var(--line); padding-left: 28px; flex: none; }
 .herostat .n { font-family: var(--display); font-size: 46px; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
 .herostat .l { color: var(--muted); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; margin-top: 6px; }
@@ -570,7 +571,7 @@ export function layout(opts: {
   publicPage?: boolean;
   csrf?: string;
   theme?: Theme;
-  /** Institution name from Settings — drives all branding text. */
+  /** Brand name — fixed to the institution; there is no settings field for it. */
   institution?: string;
   /** True when the database contains the seeded demo dataset — shown to staff. */
   demo?: boolean;
@@ -628,7 +629,7 @@ export function layout(opts: {
     ];
     shell = `
 <div class="app">
-  ${opts.demo ? `<div class="demobar">Demo workspace — sample applicants and demo staff accounts are loaded. Connect Gmail in Configuration for real mail.</div>` : ""}
+  ${opts.demo ? `<div class="demobar">Demo dataset loaded — <b>demo_admin</b> and <b>demo_user</b> are sample accounts holding mock applicants. The real <b>admin</b> account is separate and for live data. Connect Gmail in Configuration for real mail.</div>` : ""}
   <header class="sitehead">
     <div class="head-in">
       <a class="head-brand" href="/">${crest(27)}<span class="sr-only">${esc(inst)} — automated admissions</span></a>
@@ -683,6 +684,19 @@ ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
 </head>
 <body>
 <div id="splash" aria-hidden="true">${crest(54)}${flowLine(160, 30)}<div class="s-sub">Nurturing Innovations</div></div>
+<script>
+  // The greeting shield plays once per tab session. Reloads, back/forward and
+  // every later page load remove it instantly so navigation never feels stuck.
+  (function () {
+    var sp = document.getElementById("splash");
+    if (!sp) return;
+    try {
+      if (sessionStorage.getItem("riara.seen")) { sp.remove(); return; }
+      sessionStorage.setItem("riara.seen", "1");
+    } catch (e) {}
+    setTimeout(function () { if (sp.parentNode) sp.remove(); }, 1600);
+  })();
+</script>
 ${shell}
 <script>${paletteJs}${TOAST_JS}</script>
 </body>

@@ -14,6 +14,7 @@ import { makeHeuristicWatcher } from "../src/watcher";
 import { processEmail } from "../src/pipeline";
 import { createApp } from "../src/web/server";
 import { makeTextPdf, docLines } from "../src/simulation/pdfFactory";
+import { hashPassword } from "../src/util/password";
 import type { IncomingEmail } from "../src/types";
 
 let server: Server;
@@ -26,7 +27,10 @@ let ctx: PipelineContext;
 
 beforeAll(async () => {
   repo = new Repo(openDb(":memory:"));
-  seedDefaults(repo, { createDemoUsers: true });
+  seedDefaults(repo);
+  // Test fixtures: a real officer and manager (production-style, not demo).
+  repo.createStaff("manager", "Mary Mwangi (Manager)", hashPassword("manager123"), "manager");
+  repo.createStaff("jane", "Jane Wairimu (Officer)", hashPassword("jane123"), "officer");
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
 
   sender = new MockSender();
@@ -675,10 +679,39 @@ describe("QA audit regressions", () => {
     const { cookie } = await login();
     repo.setSetting("demo_dataset", "1");
     const withFlag = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-    expect(withFlag).toContain("Demo workspace — sample applicants and demo staff accounts are loaded");
+    expect(withFlag).toContain("Demo dataset loaded");
+    expect(withFlag).toContain("demo_admin");
     repo.setSetting("demo_dataset", "0");
     const cleared = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     expect(cleared).not.toContain("Demo workspace");
+  });
+
+  it("keeps demo accounts separate: flagged, badged, and never flagged as default-password risks", async () => {
+    // Demo-dataset accounts (as `npm run demo` creates them).
+    repo.createStaff("demo_admin", "Darrel", hashPassword("demo123"), "admin", true);
+    repo.createStaff("demo_user", "Jane Wairimu", hashPassword("demo123"), "officer", true);
+    expect(repo.getStaffByUsername("demo_user")?.demo).toBe(1);
+    expect(repo.getStaffByUsername("jane")?.demo ?? 0).toBe(0);
+
+    // Demo users can sign in with the sample credentials.
+    const res = await fetch(`${base}/login`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "username=demo_user&password=demo123",
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+
+    // Staff page: demo badge on sample accounts only; the default-password
+    // warning applies to REAL accounts, never to demo samples.
+    const { cookie } = await login();
+    const html = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
+    const demoRow = html.split("<tr>").find((r) => r.includes('<td class="mono">demo_user')) || "";
+    expect(demoRow).toContain("badge b-purple");
+    expect(demoRow).not.toContain("default password");
+    const adminRow = html.split("<tr>").find((r) => r.includes('<td class="mono">admin')) || "";
+    expect(adminRow).not.toContain("badge b-purple");
+    expect(adminRow).toContain("default password");
   });
 
 });

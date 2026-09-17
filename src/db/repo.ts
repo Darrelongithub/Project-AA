@@ -520,12 +520,12 @@ export class Repo {
 
   // ── Staff users & sessions (features 31, 32) ─────────────────────────────
 
-  createStaff(username: string, displayName: string, passwordHash: string, role: string): void {
+  createStaff(username: string, displayName: string, passwordHash: string, role: string, demo = false): void {
     this.db
       .prepare(
-        "INSERT INTO staff_users (username, display_name, password_hash, role) VALUES (?,?,?,?)"
+        "INSERT INTO staff_users (username, display_name, password_hash, role, demo) VALUES (?,?,?,?,?)"
       )
-      .run(username, displayName, passwordHash, role);
+      .run(username, displayName, passwordHash, role, demo ? 1 : 0);
   }
 
   /** Rename an account (e.g. giving the demo admin a human name). */
@@ -535,19 +535,19 @@ export class Repo {
 
   getStaffByUsername(username: string): (StaffUser & { password_hash: string }) | undefined {
     return this.db
-      .prepare("SELECT id, username, display_name, password_hash, role, active FROM staff_users WHERE username = ?")
+      .prepare("SELECT id, username, display_name, password_hash, role, active, demo FROM staff_users WHERE username = ?")
       .get(username) as never;
   }
 
   getStaff(id: number): StaffUser | undefined {
     return this.db
-      .prepare("SELECT id, username, display_name, role, active FROM staff_users WHERE id = ?")
+      .prepare("SELECT id, username, display_name, role, active, demo FROM staff_users WHERE id = ?")
       .get(id) as StaffUser | undefined;
   }
 
   listStaff(): StaffUser[] {
     return this.db
-      .prepare("SELECT id, username, display_name, role, active FROM staff_users ORDER BY id")
+      .prepare("SELECT id, username, display_name, role, active, demo FROM staff_users ORDER BY id")
       .all() as StaffUser[];
   }
 

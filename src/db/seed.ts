@@ -116,7 +116,7 @@ Kind regards,
   },
 ];
 
-export function seedDefaults(repo: Repo, opts: { createDemoUsers?: boolean; live?: boolean } = {}): void {
+export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
   // Older versions had a NULL-broken rule upsert that duplicated every base
   // requirement row on each re-seed. Clean that up idempotently.
   repo.dedupeRules();
@@ -159,14 +159,9 @@ export function seedDefaults(repo: Repo, opts: { createDemoUsers?: boolean; live
     } else {
       repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
     }
-    // Demo staff accounts belong to the DEMO DATASET only (npm run demo).
-    // A fresh production database gets the admin account alone.
-    if (opts.createDemoUsers === true && !opts.live) {
-      repo.createStaff("manager", "Mary Mwangi (Manager)", hashPassword("manager123"), "manager");
-      repo.createStaff("jane", "Jane Wairimu (Officer)", hashPassword("jane123"), "officer");
-      repo.createStaff("otis", "Otis Onyango (Officer)", hashPassword("otis123"), "officer");
-      repo.createStaff("kofi", "Kofi Mensah (IT)", hashPassword("kofi123"), "it");
-    }
+    // Production bootstraps with the admin account ALONE. Demo accounts
+    // (demo_admin / demo_user) are created by `npm run demo` and are marked
+    // as demo rows — real staff are provisioned by the real admin in Staff.
   }
   repo.purgeExpiredSessions();
 }

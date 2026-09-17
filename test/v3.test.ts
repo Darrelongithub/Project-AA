@@ -26,7 +26,7 @@ let ctx: PipelineContext;
 
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
-  seedDefaults(repo, { createDemoUsers: false });
+  seedDefaults(repo);
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
   sender = new MockSender();
   ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };

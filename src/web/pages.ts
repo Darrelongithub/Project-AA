@@ -150,7 +150,7 @@ ${flowLine()}
       <div><span>Gmail</span><b>${gmailConnected ? `connected${lastSync ? ` · synced ${esc(fmtDate(lastSync))}` : ""}` : "not connected"} <a class="small" href="/config#gmail">manage</a></b></div>
       <div><span>Automation</span><b>${globalMode === "draft" ? "draft-first" : "auto"} · <a class="small" href="/settings#automation">change</a></b></div>
       <div><span>Team</span><b>${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">staff</a></b></div>
-      <div><span>Replies to date</span><b>${Number(s.autoHandled) + team.reduce((n, t) => n + t.emailsSent, 0)}</b></div>
+      <div><span>Replies to date</span><b>${(() => { const ac = repo.accuracyStats(); return Number(ac.autoSends) + Number(ac.humanSends); })()}</b></div>
     </div>
   </section>
 </div>`
@@ -420,7 +420,7 @@ ${(() => {
     const current = q.filter && q.filter !== "all" ? q.filter : "all";
     const link = (f: string): string => {
       const params = new URLSearchParams();
-      if (q.search) params.set("search", q.search);
+      if (q.search) params.set("q", q.search);
       if (q.programme) params.set("programme", q.programme);
       if (q.intake) params.set("intake", q.intake);
       if (f !== "all") params.set("filter", f);
@@ -481,7 +481,11 @@ function whatChanged(repo: Repo, a: ApplicantRow): string | null {
   for (const f of added) parts.push(`New flag: <b>${esc(f)}</b>`);
   for (const f of cleared) parts.push(`Flag cleared: <b>${esc(f)}</b>`);
   if (prev.computed_status !== last.computed_status) {
-    parts.push(`${prev.computed_status === "Green" ? "🟢" : prev.computed_status === "Orange" ? "🟠" : "🔴"} ${esc(prev.computed_status)} → <b>${esc(last.computed_status)}</b>`);
+    const dotFor = (st: string): string => {
+      const color = st === "Green" ? "#1F7A3D" : st === "Orange" ? "#9A6A00" : "#A11F2E";
+      return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:4px"></span>`;
+    };
+    parts.push(`${dotFor(prev.computed_status)}${esc(prev.computed_status)} → ${dotFor(last.computed_status)}<b>${esc(last.computed_status)}</b>`);
   }
   if (parts.length === 0) return null;
   return parts.join(" &nbsp;·&nbsp; ");
@@ -1028,15 +1032,16 @@ export function staffPage(c: Ctx, flash?: string): string {
   const { repo } = c;
   const isAdmin = c.user.role === "admin";
 
-  // Seed/demo passwords that must not survive in real use.
+  // Passwords the system itself seeds. Demo-dataset accounts may keep
+  // theirs (they are samples); real accounts must not.
   const KNOWN_DEFAULTS: Record<string, string> = {
-    admin: "admin123", manager: "manager123", jane: "jane123", otis: "otis123", kofi: "kofi123",
+    admin: "admin123", demo_admin: "demo123", demo_user: "demo123",
   };
   const onDefaultPassword = (username: string): boolean => {
     const known = KNOWN_DEFAULTS[username];
     if (!known) return false;
     const full = repo.getStaffByUsername(username);
-    return Boolean(full && verifyPassword(known, full.password_hash));
+    return Boolean(full && !full.demo && verifyPassword(known, full.password_hash));
   };
 
   const stats = repo.staffStats();
@@ -1066,7 +1071,7 @@ ${repo.listStaff().some((st) => onDefaultPassword(st.username))
     <tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Actions</th></tr>
     ${repo.listStaff()
       .map((st) => `<tr>
-        <td class="mono">${esc(st.username)}${c.demo && KNOWN_DEFAULTS[st.username] ? ` <span class="badge b-purple" title="Part of the seeded demo dataset">demo</span>` : ""}${onDefaultPassword(st.username) ? ` <span class="badge b-red" title="This account still uses its seeded demo password">default password</span>` : ""}</td>
+        <td class="mono">${esc(st.username)}${st.demo ? ` <span class="badge b-purple" title="Sample account from the demo dataset">demo</span>` : ""}${onDefaultPassword(st.username) ? ` <span class="badge b-red" title="This account still uses its seeded password">default password</span>` : ""}</td>
         <td>${esc(st.display_name)}</td>
         <td><span class="badge b-gray">${esc(st.role)}</span></td>
         <td>${st.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-red">disabled</span>`}</td>

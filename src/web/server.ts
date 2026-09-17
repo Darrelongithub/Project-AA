@@ -331,7 +331,7 @@ export function createApp(deps: WebDeps): Express {
       if (tpl) {
         const rendered = renderTemplate(tpl.subject, tpl.body, {
           ref: a.ref_number,
-          institution: repo.getSetting("institution_name", "Admissions"),
+          institution: instName(),
           name: a.full_name ?? undefined,
           missingLabels: missing.map((m) => docLabel(m.document_type)),
           checklist: checklistText({ requirements, presentTypes: present }),
@@ -728,11 +728,12 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/staff/toggle", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const s = repo.getStaff(Number(req.body.id));
-    if (s && s.id !== req.staff!.id) {
-      repo.setStaffActive(s.id, s.active !== 1);
-      repo.audit(null, req.staff!.username, "staff_toggled", `${s.username} → ${s.active !== 1 ? "active" : "disabled"}`);
-    }
-    res.redirect("/staff");
+    const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
+    if (!s) return res.redirect("/staff");
+    if (s.id === req.staff!.id) return res.redirect(staffMsg("You cannot disable your own account."));
+    repo.setStaffActive(s.id, s.active !== 1);
+    repo.audit(null, req.staff!.username, "staff_toggled", `${s.username} → ${s.active !== 1 ? "active" : "disabled"}`);
+    res.redirect(staffMsg(`${s.display_name} is now ${s.active !== 1 ? "active" : "disabled"}.`));
   });
 
   app.post("/staff/password", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
@@ -834,7 +835,7 @@ export function createApp(deps: WebDeps): Express {
       content: `<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
         <h1>Page not found</h1>
         <p class="sub">That address does not exist${req.staff ? " in the console" : ""}.</p>
-        <p><a class="btn" href="${req.staff ? "/" : "/login"}">${req.staff ? "← Back to the Command Center" : "← Back to sign in"}</a></p>
+        <p><a class="btn" href="${req.staff ? "/" : "/login"}">${req.staff ? "← Back to the Overview" : "← Back to sign in"}</a></p>
       </div>`,
     }));
   });
