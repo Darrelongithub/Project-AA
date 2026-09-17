@@ -25,7 +25,8 @@ import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCooki
 import { processEmail } from "../pipeline";
 import { log } from "../util/log";
 import { hashPassword } from "../util/password";
-import { INSTITUTION } from "../branding";
+import { INSTITUTION, emailBanner } from "../branding";
+import { admissionPack, applicationPack } from "../pack";
 
 export interface WebDeps {
   repo: Repo;
@@ -122,6 +123,35 @@ export function createApp(deps: WebDeps): Express {
       res.send(Buffer.from(b64, "base64"));
     });
   }
+
+  /** Current email banner (used by the Configuration preview). */
+  app.get("/assets/email-banner", requireLogin, (_req, res) => {
+    const b = emailBanner(repo);
+    if (!b) return res.status(404).send("No banner configured.");
+    res.setHeader("Content-Type", b.mime);
+    res.setHeader("Cache-Control", "no-store");
+    res.send(Buffer.from(b.base64, "base64"));
+  });
+
+  /** Replace the email banner — raw image bytes in the request body. */
+  app.post(
+    "/config/branding/banner",
+    requireLogin,
+    requireRole("admin", "manager", "it"),
+    csrfCheck,
+    express.raw({ type: ["image/jpeg", "image/png"], limit: "1mb" }),
+    (req, res) => {
+      const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#branding`;
+      const buf = req.body as Buffer;
+      if (!Buffer.isBuffer(buf) || buf.length < 1024) return res.redirect(back("Banner image missing or too small."));
+      if (buf.length > 900 * 1024) return res.redirect(back("Banner too large — keep it under 900 KB."));
+      const mime = String(req.headers["content-type"] || "image/jpeg").split(";")[0];
+      repo.setSetting("email_banner", buf.toString("base64"));
+      repo.setSetting("email_banner_mime", mime);
+      repo.audit(null, req.staff!.username, "email_banner_changed", `${(buf.length / 1024).toFixed(0)} KB ${mime}`);
+      res.redirect(back("Email banner updated — every outgoing email now carries it."));
+    }
+  );
 
   app.get("/login", (req, res) => res.send(loginPage(undefined, req.theme, instName())));
 
@@ -284,7 +314,7 @@ export function createApp(deps: WebDeps): Express {
       return res.redirect(backToCase(id, "That draft still contains internal routing notes — edit the body before sending."));
     }
     try {
-      await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id);
+      await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, { banner: emailBanner(repo) });
       repo.insertEmail({
         applicant_id: id, message_id: `handoff-${draft.id}-${Date.now()}`, thread_id: a.thread_id,
         direction: "out", from_addr: "", to_addr: a.email_address, subject, body,
@@ -337,7 +367,9 @@ export function createApp(deps: WebDeps): Express {
           statusLabel: LIFECYCLE_LABELS[a.lifecycle],
         });
         try {
-          await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id);
+          await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
+            banner: emailBanner(repo),
+          });
         } catch (e) {
           repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
           return res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
@@ -392,7 +424,9 @@ export function createApp(deps: WebDeps): Express {
       return res.send(casePage(c(req), a, "Preview only — nothing has been sent.", rendered));
     }
     try {
-      await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id);
+      await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
+        banner: tpl.include_banner === 0 ? null : emailBanner(repo),
+      });
     } catch (e) {
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
       return res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
@@ -404,6 +438,51 @@ export function createApp(deps: WebDeps): Express {
     });
     staffAction(req, id, "email_sent_manual", `template ${tpl.key}: "${rendered.subject}"`);
     res.redirect(backToCase(id, `Sent "${tpl.name}".`));
+  });
+
+  /** Official document packs: the application pack, or the full admission pack. */
+  app.post("/case/:id/send-pack", requireLogin, requireRole("admin", "manager"), csrfCheck, async (req, res) => {
+    const id = Number(req.params.id);
+    const a = repo.getApplicant(id);
+    if (!a) return res.status(404).send("Case not found.");
+    const kind = String(req.body.kind ?? "");
+    const isAdmission = kind === "admission";
+    if (!isAdmission && kind !== "application") {
+      return res.redirect(backToCase(id, "Unknown pack — nothing sent."));
+    }
+    const tpl = repo.getTemplate(isAdmission ? "admission_letter" : "docs_request");
+    if (!tpl) return res.redirect(backToCase(id, "Template missing — nothing sent."));
+    const rendered = renderTemplate(tpl.subject, tpl.body, {
+      ref: a.ref_number,
+      institution: instName(),
+      name: a.full_name ?? undefined,
+      missingLabels: [],
+      checklist: "",
+      statusLabel: LIFECYCLE_LABELS[a.lifecycle],
+      programme: a.programme ? (repo.listProgrammes().find((p) => p.code === a.programme)?.name ?? a.programme) : undefined,
+      regDate: repo.getSetting("reg_date", ""),
+      orientationDates: repo.getSetting("orientation_dates", ""),
+    });
+    const attachments = isAdmission ? admissionPack() : applicationPack();
+    try {
+      await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
+        banner: tpl.include_banner === 0 ? null : emailBanner(repo),
+        attachments,
+      });
+    } catch (e) {
+      repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
+      return res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
+    }
+    repo.insertEmail({
+      applicant_id: id, message_id: `pack-${Date.now()}`, thread_id: a.thread_id, direction: "out",
+      from_addr: "", to_addr: a.email_address, subject: rendered.subject, body: rendered.body, category: null, auto: 0,
+      at: new Date().toISOString(),
+    });
+    staffAction(req, id, isAdmission ? "admission_pack_sent" : "application_pack_sent",
+      `${attachments.length} document(s): "${rendered.subject}"`);
+    res.redirect(backToCase(id, isAdmission
+      ? `Admission pack sent — letter plus ${attachments.length} documents.`
+      : "Application pack sent — form and brochure attached."));
   });
 
   app.post("/case/:id/note", requireLogin, csrfCheck, (req, res) => {
@@ -596,6 +675,7 @@ export function createApp(deps: WebDeps): Express {
     for (const key of [
       "ref_prefix", "sla_target_hours", "escalation_hours", "from_name",
       "unanswered_target_hours", "followup_ladder_days", "retention_days",
+      "reg_date", "orientation_dates",
     ]) {
       if (typeof req.body[key] !== "string") continue;
       const v = String(req.body[key]).trim();
@@ -702,6 +782,7 @@ export function createApp(deps: WebDeps): Express {
     const body = String(req.body.body ?? "").trim();
     if (!name || !subject || !body) return res.redirect(back("Template needs a name, a subject and a body — nothing saved."));
     repo.upsertTemplate(key, name, subject, body);
+    repo.setTemplateBanner(key, req.body.include_banner !== undefined);
     repo.audit(null, req.staff!.username, "template_changed", key);
     res.redirect(back(`Template “${name}” saved.`));
   });

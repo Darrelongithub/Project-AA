@@ -36,7 +36,9 @@ import { categorizeEmail, priorityForCategory } from "../categorize";
 import { extractPhone, inferIntake, inferProgramme } from "../enrich";
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
-import { INSTITUTION } from "../branding";
+import { INSTITUTION, emailBanner } from "../branding";
+import { applicationPack } from "../pack";
+import type { SendExtras } from "./adapters";
 import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
 import type { PipelineContext } from "./adapters";
@@ -420,7 +422,14 @@ export async function processEmail(
   const wantsAutoSend = autoKind !== null && draft?.audience === "auto";
   if (wantsAutoSend && draft) {
     try {
-      await adapters.sender.send(applicantNow.email_address, draft.subject, draft.body, email.threadId);
+      // Enquiries get the real application pack; every branded template
+      // carries the changeable banner unless the template opts out.
+      const tplRow = templateKey ? repo.getTemplate(templateKey) : undefined;
+      const extras: SendExtras = {
+        banner: tplRow?.include_banner === 0 ? null : emailBanner(repo),
+        attachments: autoKind === "docs_request" ? applicationPack() : [],
+      };
+      await adapters.sender.send(applicantNow.email_address, draft.subject, draft.body, email.threadId, extras);
       repo.insertEmail({
         applicant_id: applicant.id,
         message_id: `${email.id}:auto-reply`,

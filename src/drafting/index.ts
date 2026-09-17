@@ -21,6 +21,10 @@ export interface DraftContext {
   missingLabels: string[];
   checklist: string;
   statusLabel: string;
+  /** Admission-letter extras. */
+  programme?: string;
+  regDate?: string;
+  orientationDates?: string;
 }
 
 export interface Draft {
@@ -56,6 +60,9 @@ export function renderTemplate(
     "{checklist}": ctx.checklist,
     "{status}": ctx.statusLabel,
     "{institution}": ctx.institution,
+    "{programme}": ctx.programme?.trim() || "your programme",
+    "{reg_date}": ctx.regDate?.trim() || "the announced registration date",
+    "{orientation_dates}": ctx.orientationDates?.trim() || "the announced orientation dates",
   };
   let s = subject;
   let b = body;

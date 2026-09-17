@@ -28,6 +28,24 @@ function head(c: Ctx, title: string, active: string, content: string): string {
   return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution, demo: c.demo });
 }
 
+/** "it" → "IT", else first-letter title: polite, readable labels. */
+export function capFirst(s: string): string {
+  if (s.toLowerCase() === "it") return "IT";
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** Stable school grouping for course lists. */
+function groupBySchool<T extends { code: string; school?: string | null }>(rows: T[]): Array<[string, T[]]> {
+  const out: Array<[string, T[]]> = [];
+  for (const r of rows) {
+    const key = r.school || "Other programmes";
+    const last = out[out.length - 1];
+    if (last && last[0] === key) last[1].push(r);
+    else out.push([key, [r]]);
+  }
+  return out;
+}
+
 // ── Login ──────────────────────────────────────────────────────────────────
 
 export function loginPage(error?: string, theme?: Theme, institution = "Riara University"): string {
@@ -76,7 +94,7 @@ function adminDashboard(c: Ctx): string {
   const audit = repo.recentAudit(12);
   const team = repo.staffStats();
   const alerts = repo.notificationsFor(c.user.id, 6);
-  const programmes = repo.listProgrammes() as Array<{ code: string; name: string; owner_id: number | null; owner_name: string | null }>;
+  const programmes = repo.listProgrammes();
   const rules = repo.listRules();
   const all = repo.allApplicants();
   const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
@@ -87,22 +105,22 @@ function adminDashboard(c: Ctx): string {
   const completed = Number(s.completed);
   const completion = applications > 0 ? Math.round((completed / applications) * 100) : null;
 
-  const courseRows = programmes
-    .map((p) => {
-      const specific = rules.filter((r) => r.programme === p.code);
-      const effective = specific.length ? specific : rules.filter((r) => r.programme === null && r.intake === null);
-      const required = effective.filter((r) => r.required).length;
-      const mins = effective.map((r) => r.minGradePoints).filter((n): n is number => n !== null);
-      const reqText = required ? `${required} required doc${required === 1 ? "" : "s"}${mins.length ? ` · min ${Math.max(...mins)} pts` : ""}` : `<span class="muted">base rules apply</span>`;
-      const n = all.filter((a) => a.programme === p.code).length;
-      return `<tr>
-        <td><b>${esc(p.code)}</b> <span class="muted small">${esc(p.name)}</span></td>
-        <td>${p.owner_name ? esc(p.owner_name) : `<span class="muted">unassigned · <a href="/config#courses">assign</a></span>`}</td>
-        <td class="small">${reqText}</td>
-        <td>${n}</td>
-      </tr>`;
-    })
-    .join("");
+  const courseRows = groupBySchool(programmes)
+    .map(([school, rows]) => `<tr class="schoolrow"><td colspan="4">${esc(school)}</td></tr>` + rows
+      .map((p) => {
+        const specific = rules.filter((r) => r.programme === p.code);
+        const effective = specific.length ? specific : rules.filter((r) => r.programme === null && r.intake === null);
+        const required = effective.filter((r) => r.required).length;
+        const mins = effective.map((r) => r.minGradePoints).filter((n): n is number => n !== null);
+        const reqText = required ? `${required} required doc${required === 1 ? "" : "s"}${mins.length ? ` · min ${Math.max(...mins)} pts` : ""}` : `<span class="muted">base rules apply</span>`;
+        const n = all.filter((a) => a.programme === p.code).length;
+        return `<tr>
+          <td><b>${esc(p.code)}</b> <span class="muted small">${esc(p.name)}</span></td>
+          <td>${p.owner_name ? esc(p.owner_name) : `<span class="muted">unassigned · <a href="/config#courses">assign</a></span>`}</td>
+          <td class="small">${reqText}</td>
+          <td>${n}</td>
+        </tr>`;
+      }).join("")).join("");
 
   const activityRows = audit
     .map((e) => `<div class="feed-row">
@@ -760,6 +778,23 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       </form>
     </div>
 
+    ${c.user.role === "admin" || c.user.role === "manager" ? `<div class="card" id="packs">
+      <h2>Official document packs</h2>
+      <p class="small muted" style="margin-top:-6px">The <b>application pack</b> (application form + brochure) goes to anyone who asks about applying. The <b>admission pack</b> sends the official admission letter with all seven accompanying documents.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the application pack — form and brochure attached?')" style="margin:0">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          <input type="hidden" name="kind" value="application">
+          <button class="btn">Send application pack</button>
+        </form>
+        <form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the admission pack — letter plus seven documents?')" style="margin:0">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          <input type="hidden" name="kind" value="admission">
+          <button class="btn">Send admission pack</button>
+        </form>
+      </div>
+    </div>` : ""}
+
     ${outbox ? `<div class="card" style="border-left:6px solid var(--orange)">
       <h2>Draft held for approval <span class="heldnote">not sent</span></h2>
       <p class="small muted">${draftView && draftView.held
@@ -880,6 +915,10 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
       ${settingInput("followup_ladder_days", "Follow-up ladder (days, e.g. 3,7,10)")}
       ${settingInput("retention_days", "Retention of completed cases (days)")}
     </div>
+    <div class="formrow">
+      ${settingInput("reg_date", "Registration date (admission letter)")}
+      ${settingInput("orientation_dates", "Orientation dates (admission letter)")}
+    </div>
     <p><button class="btn">Save settings</button></p>
   </form>
 </div>`
@@ -890,7 +929,7 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string): s
   const { repo } = c;
   const settings = repo.allSettings();
   const rules = repo.listRules();
-  const programmes = repo.listProgrammes() as Array<{ code: string; name: string; owner_id: number | null; owner_name: string | null }>;
+  const programmes = repo.listProgrammes();
   const intakes = repo.listIntakes();
   const templates = repo.listTemplates();
   const staff = repo.listStaff().filter((m) => m.active);
@@ -906,21 +945,23 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string): s
     </tr>`)
     .join("");
 
-  const courseRows = programmes
-    .map((p) => `<tr>
-      <td><b>${esc(p.code)}</b></td>
-      <td class="small">${esc(p.name)}</td>
-      <td><form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-        <input type="hidden" name="programme" value="${esc(p.code)}">
-        <select name="owner" style="width:auto;min-width:190px">
-          <option value="">Unassigned</option>
-          ${staff.map((m) => `<option value="${m.id}" ${p.owner_id === m.id ? "selected" : ""}>${esc(m.display_name)} (${esc(m.role)})</option>`).join("")}
-        </select>
-        <button class="btn small ghost">Assign</button>
-      </form></td>
-    </tr>`)
-    .join("");
+  const assignForm = (p: { code: string; owner_id: number | null }) =>
+    `<form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <input type="hidden" name="programme" value="${esc(p.code)}">
+      <select name="owner" style="width:auto;min-width:190px">
+        <option value="">Unassigned</option>
+        ${staff.map((m) => `<option value="${m.id}" ${p.owner_id === m.id ? "selected" : ""}>${esc(m.display_name)} (${capFirst(m.role)})</option>`).join("")}
+      </select>
+      <button class="btn small ghost">Assign</button>
+    </form>`;
+  const courseRows = groupBySchool(programmes)
+    .map(([school, rows]) => `<tr class="schoolrow"><td colspan="3">${esc(school)}</td></tr>` + rows
+      .map((p) => `<tr>
+        <td><b>${esc(p.code)}</b><br><span class="small muted">${esc(p.name)}</span></td>
+        <td class="small muted" style="max-width:520px">${esc(p.entry_requirements)}</td>
+        <td>${assignForm(p)}</td>
+      </tr>`).join("")).join("");
 
   const first = templates[0];
 
@@ -943,7 +984,7 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
   <div class="card-head"><h2>Courses &amp; ownership</h2></div>
   <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone. Assign the responsible officer per course — they appear on the administration overview.</p>
   ${programmes.length
-    ? `<table><tr><th>Code</th><th>Course</th><th>Handled by</th></tr>${courseRows}</table>`
+    ? `<table><tr><th>Programme</th><th>Official entry requirements</th><th>Handled by</th></tr>${courseRows}</table>`
     : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
   <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
     <h2>Requirement rules</h2>
@@ -1011,7 +1052,7 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
 
 <div class="card" id="templates">
   <h2>Email templates</h2>
-  <p class="small muted" style="margin-top:-6px">Placeholders: <span class="mono">{ref} {name} {first_name} {missing_docs} {missing_docs_section} {checklist} {status} {institution}</span></p>
+  <p class="small muted" style="margin-top:-6px">Placeholders: <span class="mono">{ref} {name} {first_name} {missing_docs} {missing_docs_section} {checklist} {status} {institution} {programme} {reg_date} {orientation_dates}</span></p>
   <form method="get" action="/config" class="formrow">
     <div style="flex:2"><label>Template</label><select name="template" onchange="this.form.submit()">${templates
       .map((t) => `<option value="${esc(t.key)}" ${selectedTemplate === t.key ? "selected" : ""}>${esc(t.name)} (${esc(t.key)})</option>`)
@@ -1019,6 +1060,39 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
   </form>
   ${templateEditor(c, (selectedTemplate ? c.repo.getTemplate(selectedTemplate) : undefined) ?? first)}
 </div>
+
+<div class="card" id="branding">
+  <h2>Email branding</h2>
+  <p class="small muted" style="margin-top:-6px">The banner below is placed at the top of <b>every</b> outgoing email — automated replies, template sends and document packs alike. Replace it any time; individual templates can also opt out in the editor above.</p>
+  <img id="banner-preview" src="/assets/email-banner" alt="Email banner" style="width:100%;max-width:720px;border:1px solid var(--lav-line);border-radius:8px;display:block">
+  <p class="small" style="margin-top:12px">Change the banner — JPG or PNG, under 900 KB:
+    <input type="file" id="banner-file" accept="image/jpeg,image/png" style="width:auto;display:inline-block;margin-left:8px"></p>
+  <p class="small muted" id="banner-msg" role="status"></p>
+</div>
+<script>
+(function () {
+  var f = document.getElementById("banner-file");
+  if (!f) return;
+  f.addEventListener("change", function () {
+    var file = f.files && f.files[0];
+    if (!file) return;
+    var msg = document.getElementById("banner-msg");
+    msg.textContent = "Uploading…";
+    fetch("/config/branding/banner", {
+      method: "POST",
+      headers: { "x-csrf-token": "${esc(c.csrf)}", "content-type": file.type },
+      body: file,
+    }).then(function (res) {
+      if (res.ok) {
+        msg.textContent = "Saved — the banner now appears on every outgoing email.";
+        document.getElementById("banner-preview").src = "/assets/email-banner?" + Date.now();
+      } else {
+        msg.textContent = "Upload failed — use a JPG or PNG under 900 KB.";
+      }
+    }).catch(function () { msg.textContent = "Upload failed — network error."; });
+  });
+})();
+</script>
 
 <div class="card" id="export">
   <h2>Export (CSV)</h2>
@@ -1031,7 +1105,7 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
   );
 }
 
-function templateEditor(c: Pick<Ctx, "csrf">, t: { key: string; name: string; subject: string; body: string } | undefined): string {
+function templateEditor(c: Pick<Ctx, "csrf">, t: { key: string; name: string; subject: string; body: string; include_banner?: number } | undefined): string {
   if (!t) return `<p class="muted">No templates.</p>`;
   return `<form method="post" action="/settings/template">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -1039,6 +1113,7 @@ function templateEditor(c: Pick<Ctx, "csrf">, t: { key: string; name: string; su
     <label>Display name</label><input type="text" name="name" value="${esc(t.name)}">
     <label>Subject (reference number is prepended automatically)</label><input type="text" name="subject" value="${esc(t.subject)}">
     <label>Body</label><textarea name="body" style="min-height:220px">${esc(t.body)}</textarea>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" name="include_banner" style="width:auto" ${t.include_banner === 0 ? "" : "checked"}> Attach the email banner to this template</label>
     <p><button class="btn">Save template</button></p>
   </form>`;
 }
@@ -1090,7 +1165,7 @@ ${repo.listStaff().some((st) => onDefaultPassword(st.username))
       .map((st) => `<tr>
         <td class="mono">${esc(st.username)}${st.demo ? ` <span class="badge b-purple" title="Sample account from the demo dataset">demo</span>` : ""}${onDefaultPassword(st.username) ? ` <span class="badge b-red" title="This account still uses its seeded password">default password</span>` : ""}</td>
         <td>${esc(st.display_name)}</td>
-        <td><span class="badge b-gray">${esc(st.role)}</span></td>
+        <td><span class="badge b-gray">${esc(capFirst(st.role))}</span></td>
         <td>${st.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-red">disabled</span>`}</td>
         <td>
           <form method="post" action="/staff/toggle" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><button class="btn small ghost">${st.active ? "Disable" : "Enable"}</button></form>

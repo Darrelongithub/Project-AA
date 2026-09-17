@@ -2,7 +2,10 @@ node_modules/
 dist/
 # Anchored to the repo root: unanchored "logs/" and "data/" previously
 # swallowed src/logs/index.ts (the decision-log module) from the repo.
-/data/
+/data/*
+# The official document packs + email branding ship WITH the repo.
+!/data/pack/
+!/data/branding/
 /logs/
 /backups/
 .env

@@ -9,7 +9,7 @@ import { loadConfig } from "../config";
 import { openDb } from "../db/db";
 import { Repo } from "../db/repo";
 import { seedDefaults } from "../db/seed";
-import { buildAdapters, MockSender, type EmailSender, type PipelineContext } from "../pipeline/adapters";
+import { buildAdapters, MockSender, type EmailSender, type PipelineContext, type SendExtras } from "../pipeline/adapters";
 import { GmailClient } from "../ingestion/gmailClient";
 import { ingestNewEmails } from "../ingestion";
 import { createApp, runEscalationSweep } from "../web/server";
@@ -17,16 +17,16 @@ import { log } from "../util/log";
 
 class GmailSender implements EmailSender {
   constructor(private gmail: GmailClient) {}
-  async send(to: string, subject: string, body: string, threadId: string): Promise<void> {
-    await this.gmail.sendReply(to, subject, body, threadId);
+  async send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void> {
+    await this.gmail.sendReply(to, subject, body, threadId, extras);
   }
 }
 
 /** Forwards to a swappable inner sender so Gmail can connect without a restart. */
 class DelegatingSender implements EmailSender {
   constructor(public inner: EmailSender) {}
-  async send(to: string, subject: string, body: string, threadId: string): Promise<void> {
-    await this.inner.send(to, subject, body, threadId);
+  async send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void> {
+    await this.inner.send(to, subject, body, threadId, extras);
   }
 }
 

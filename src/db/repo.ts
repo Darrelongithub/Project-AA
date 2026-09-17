@@ -8,6 +8,7 @@ import * as crypto from "crypto";
 import type { Database } from "better-sqlite3";
 import type {
   ApplicantRow,
+  Programme,
   Classification,
   Confidence,
   DecisionLogEntry,
@@ -196,20 +197,25 @@ export class Repo {
 
   // ── Programmes & intakes ─────────────────────────────────────────────────
 
-  listProgrammes(): Array<{ code: string; name: string }> {
+  listProgrammes(): Programme[] {
     return this.db
       .prepare(
-        `SELECT p.code, p.name, p.owner_id, s.display_name AS owner_name
+        `SELECT p.code, p.name, p.school, p.entry_requirements, p.owner_id, s.display_name AS owner_name
          FROM programmes p LEFT JOIN staff_users s ON s.id = p.owner_id
-         ORDER BY p.code`
+         ORDER BY p.school, p.code`
       )
       .all() as never[];
   }
 
-  addProgramme(code: string, name: string): void {
+  addProgramme(code: string, name: string, school = "", entry = ""): void {
     this.db
-      .prepare("INSERT INTO programmes (code, name) VALUES (?, ?) ON CONFLICT(code) DO UPDATE SET name = excluded.name")
-      .run(code.toUpperCase(), name);
+      .prepare(
+        `INSERT INTO programmes (code, name, school, entry_requirements) VALUES (?, ?, ?, ?)
+         ON CONFLICT(code) DO UPDATE SET name = excluded.name,
+           school = CASE WHEN programmes.school = '' THEN excluded.school ELSE programmes.school END,
+           entry_requirements = CASE WHEN programmes.entry_requirements = '' THEN excluded.entry_requirements ELSE programmes.entry_requirements END`
+      )
+      .run(code.toUpperCase(), name, school, entry);
   }
 
   /** Assign (or unassign, with null) the staff member who handles a course. */
@@ -615,21 +621,27 @@ export class Repo {
 
   // ── Templates (feature 35) ───────────────────────────────────────────────
 
-  getTemplate(key: string): { key: string; name: string; subject: string; body: string } | undefined {
-    return this.db.prepare("SELECT key, name, subject, body FROM templates WHERE key = ?").get(key) as never;
+  getTemplate(key: string): { key: string; name: string; subject: string; body: string; include_banner: number } | undefined {
+    return this.db.prepare("SELECT key, name, subject, body, include_banner FROM templates WHERE key = ?").get(key) as never;
   }
 
-  listTemplates(): Array<{ key: string; name: string; subject: string; body: string }> {
-    return this.db.prepare("SELECT key, name, subject, body FROM templates ORDER BY key").all() as never[];
+  listTemplates(): Array<{ key: string; name: string; subject: string; body: string; include_banner: number }> {
+    return this.db.prepare("SELECT key, name, subject, body, include_banner FROM templates ORDER BY key").all() as never[];
   }
 
-  upsertTemplate(key: string, name: string, subject: string, body: string): void {
+  upsertTemplate(key: string, name: string, subject: string, body: string, includeBanner?: boolean): void {
     this.db
       .prepare(
-        `INSERT INTO templates (key, name, subject, body) VALUES (?,?,?,?)
-         ON CONFLICT(key) DO UPDATE SET name = excluded.name, subject = excluded.subject, body = excluded.body, updated_at = datetime('now')`
+        `INSERT INTO templates (key, name, subject, body, include_banner) VALUES (?,?,?,?,?)
+         ON CONFLICT(key) DO UPDATE SET name = excluded.name, subject = excluded.subject, body = excluded.body,
+           include_banner = COALESCE(?, templates.include_banner), updated_at = datetime('now')`
       )
-      .run(key, name, subject, body);
+      .run(key, name, subject, body, includeBanner === undefined ? 1 : includeBanner ? 1 : 0,
+        includeBanner === undefined ? null : includeBanner ? 1 : 0);
+  }
+
+  setTemplateBanner(key: string, include: boolean): void {
+    this.db.prepare("UPDATE templates SET include_banner = ? WHERE key = ?").run(include ? 1 : 0, key);
   }
 
   // ── Settings ─────────────────────────────────────────────────────────────

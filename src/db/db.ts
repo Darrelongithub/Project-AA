@@ -43,6 +43,8 @@ CREATE INDEX IF NOT EXISTS idx_applicants_lifecycle ON applicants(lifecycle);
 CREATE TABLE IF NOT EXISTS programmes (
   code TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  school TEXT NOT NULL DEFAULT '',
+  entry_requirements TEXT NOT NULL DEFAULT '',
   owner_id INTEGER REFERENCES staff_users(id)
 );
 
@@ -289,6 +291,11 @@ function migrate(db: Database.Database): void {
   addColumn("emails", "channel", "TEXT NOT NULL DEFAULT 'email'");
   // Courses get an owner: the staff member responsible for handling them.
   addColumn("programmes", "owner_id", "INTEGER REFERENCES staff_users(id)");
+  // Catalogue grouping (school) + official entry-requirement reference text.
+  addColumn("programmes", "school", "TEXT NOT NULL DEFAULT ''");
+  addColumn("programmes", "entry_requirements", "TEXT NOT NULL DEFAULT ''");
+  // Whether outgoing mail rendered from this template carries the banner.
+  addColumn("templates", "include_banner", "INTEGER NOT NULL DEFAULT 1");
   // Accounts seeded by the demo dataset are marked, so the UI can label them
   // and production accounts are never confused with sample ones.
   addColumn("staff_users", "demo", "INTEGER NOT NULL DEFAULT 0");

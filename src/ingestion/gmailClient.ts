@@ -125,15 +125,71 @@ export class GmailClient {
     };
   }
 
-  async sendReply(to: string, subject: string, body: string, threadId: string): Promise<void> {
+  async sendReply(
+    to: string,
+    subject: string,
+    body: string,
+    threadId: string,
+    extras?: { attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>; banner?: { mime: string; base64: string } | null }
+  ): Promise<void> {
     const { to: cleanTo, subject: cleanSubject } = sanitizeHeaders(to, subject);
-    const raw = [
-      `To: ${cleanTo}`,
-      `Subject: ${cleanSubject}`,
-      "Content-Type: text/plain; charset=UTF-8",
-      "",
-      body,
-    ].join("\r\n");
+    const headers = [`To: ${cleanTo}`, `Subject: ${cleanSubject}`, "MIME-Version: 1.0"];
+
+    const b64 = (buf: Buffer | string) => {
+      const s = typeof buf === "string" ? buf : buf.toString("base64");
+      return s.match(/.{1,76}/g)?.join("\r\n") ?? "";
+    };
+    const attachments = extras?.attachments ?? [];
+    const banner = extras?.banner ?? null;
+
+    let raw: string;
+    if (!banner && attachments.length === 0) {
+      raw = [...headers, "Content-Type: text/plain; charset=UTF-8", "", body].join("\r\n");
+    } else {
+      // multipart/mixed [ related(text + inline banner), att, att, … ]
+      const mixed = "RU-MIXED-" + Date.now().toString(16);
+      const related = "RU-REL-" + Date.now().toString(16);
+      const parts: string[] = [];
+      if (banner) {
+        parts.push(
+          [
+            `--${mixed}`,
+            `Content-Type: multipart/related; boundary="${related}"`,
+            "",
+            `--${related}`,
+            "Content-Type: text/plain; charset=UTF-8",
+            "",
+            body,
+            "",
+            `--${related}`,
+            `Content-Type: ${banner.mime}; name="riara-banner"`,
+            `Content-Disposition: inline; filename="riara-banner.jpg"`,
+            "Content-Transfer-Encoding: base64",
+            "Content-Id: <riara-banner>",
+            "",
+            b64(banner.base64),
+            `--${related}--`,
+          ].join("\r\n")
+        );
+      } else {
+        parts.push([`--${mixed}`, "Content-Type: text/plain; charset=UTF-8", "", body].join("\r\n"));
+      }
+      for (const a of attachments) {
+        const safeName = a.filename.replace(/[^\x20-\x7e]/g, "_").replace(/"/g, "'");
+        parts.push(
+          [
+            `--${mixed}`,
+            `Content-Type: ${a.mimeType}; name="${safeName}"`,
+            `Content-Disposition: attachment; filename="${safeName}"`,
+            "Content-Transfer-Encoding: base64",
+            "",
+            b64(a.content),
+          ].join("\r\n")
+        );
+      }
+      raw = [...headers, `Content-Type: multipart/mixed; boundary="${mixed}"`, "", parts.join("\r\n"), `--${mixed}--`, ""].join("\r\n");
+    }
+
     const encoded = Buffer.from(raw, "utf8")
       .toString("base64")
       .replace(/\+/g, "-")

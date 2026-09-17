@@ -79,7 +79,7 @@ async function main(): Promise<void> {
 
   // Course ownership in the demo: the demo user handles two courses; the
   // other two stay unassigned so the assignment flow is visible.
-  const ownerFor: Record<string, string> = { BCS: "demo_user", NUR: "demo_user" };
+  const ownerFor: Record<string, string> = { BCS: "demo_user", BBIT: "demo_user" };
   for (const [code, username] of Object.entries(ownerFor)) {
     const member = repo.getStaffByUsername(username);
     if (member) {

@@ -12,15 +12,25 @@ export { MockVisionAdapter };
 import { GeminiWatcher, makeHeuristicWatcher } from "../watcher";
 import { ocrImage } from "../extraction/ocr";
 
+/** Optional extras on an outgoing email: the changeable banner and PDF packs. */
+export interface SendExtras {
+  attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>;
+  banner?: { mime: string; base64: string } | null;
+}
+
 export interface EmailSender {
-  send(to: string, subject: string, body: string, threadId: string): Promise<void>;
+  send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void>;
 }
 
 /** Records sends in memory (simulation/tests) — plus an audit printout. */
 export class MockSender implements EmailSender {
-  sent: Array<{ to: string; subject: string; body: string; threadId: string }> = [];
-  async send(to: string, subject: string, body: string, threadId: string): Promise<void> {
-    this.sent.push({ to, subject, body, threadId });
+  sent: Array<{ to: string; subject: string; body: string; threadId: string; attachments: string[]; banner: boolean }> = [];
+  async send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void> {
+    this.sent.push({
+      to, subject, body, threadId,
+      attachments: (extras?.attachments ?? []).map((a) => a.filename),
+      banner: Boolean(extras?.banner),
+    });
   }
 }
 

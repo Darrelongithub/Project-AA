@@ -7,6 +7,7 @@ import * as crypto from "crypto";
 import type { Repo } from "./repo";
 import { DEFAULT_INTAKES, DEFAULT_PROGRAMMES, DEFAULT_REQUIREMENTS, DEFAULT_SETTINGS } from "../config";
 import { hashPassword } from "../util/password";
+import { defaultEmailBanner } from "../pack";
 
 export const TEMPLATE_SEEDS: Array<{ key: string; name: string; subject: string; body: string }> = [
   {
@@ -126,10 +127,10 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
     const existing = repo.db.prepare("SELECT 1 FROM settings WHERE key = ?").get(k);
     if (!existing) repo.setSetting(k, v);
   }
-  // Programmes & intakes
+  // Programmes & intakes — the real catalogue, grouped by school, with the
+  // official entry requirements as reference text for staff.
   for (const p of DEFAULT_PROGRAMMES) {
-    const exists = repo.db.prepare("SELECT 1 FROM programmes WHERE code = ?").get(p.code);
-    if (!exists) repo.addProgramme(p.code, p.name);
+    repo.addProgramme(p.code, p.name, p.school, p.entry);
   }
   for (const i of DEFAULT_INTAKES) {
     repo.addIntake(i);
@@ -163,5 +164,51 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
     // (demo_admin / demo_user) are created by `npm run demo` and are marked
     // as demo rows — real staff are provisioned by the real admin in Staff.
   }
+  // Admission letter: the official template (name + dates vary per student).
+  if (!repo.getTemplate("admission_letter")) {
+    repo.upsertTemplate(
+      "admission_letter",
+      "Admission letter (with full admission pack)",
+      "Welcome to Riara University — Your Admission to {programme}",
+      `Dear {name},
+
+Welcome to Riara University!
+
+Congratulations on your admission to the {programme} programme. We are delighted to extend our warmest greetings as you embark on an exciting academic journey with us. Your admission to Riara University (RU) signifies the beginning of an enriching and transformative experience, and we are thrilled to have you as part of our vibrant community.
+
+In preparation for the upcoming semester, please note the following important information and deadlines:
+
+Registration Date: registration and verification of your original documents is scheduled on or before {reg_date}. Please ensure your timely arrival to facilitate a smooth transition into university life.
+
+Orientation: the orientation programme is set for {orientation_dates}, where you will receive valuable information about our academic policies, support services and campus resources. Attendance is essential for all new students.
+
+Documents for Verification: bring the following (originals and copies): i) certificates (high school, certificate, diploma and/or degree), ii) one passport-size photograph, iii) ID card or passport (or a waiting card / parent or guardian ID where applicable), and iv) birth certificate.
+
+Laptop Requirement: it is mandatory for all students to own a personal laptop upon admission.
+
+Enclosed with this letter you will find the student medical form, data protection form, next of kin form, hostels list, fee structure, sponsorship form and the orientation programme — complete them and bring them for verification.
+
+Your reference number: {ref}.
+
+Kind regards,
+{institution} — Admissions Office`,
+      true
+    );
+  }
+
+  // Admission-letter dates (editable in Settings → Response targets).
+  if (!repo.getSetting("reg_date", "")) repo.setSetting("reg_date", "Monday 31st August, 2026");
+  if (!repo.getSetting("orientation_dates", "")) repo.setSetting("orientation_dates", "Thursday 3rd and Friday 4th September, 2026");
+
+  // Email banner: seed the bundled official banner once; staff can replace it
+  // in Configuration → Email branding.
+  if (!repo.getSetting("email_banner", "")) {
+    const banner = defaultEmailBanner();
+    if (banner) {
+      repo.setSetting("email_banner", banner.base64);
+      repo.setSetting("email_banner_mime", banner.mime);
+    }
+  }
+
   repo.purgeExpiredSessions();
 }

@@ -132,6 +132,17 @@ export interface RequirementSetEntry {
   minGradePoints?: number | null;
 }
 
+/** A course in the official catalogue, grouped by school. */
+export interface Programme {
+  code: string;
+  name: string;
+  school: string;
+  /** Official minimum entry requirement (descriptive — staff reference). */
+  entry_requirements: string;
+  owner_id: number | null;
+  owner_name: string | null;
+}
+
 export interface RequirementRule extends RequirementSetEntry {
   id?: number;
   programme: string | null; // null = all programmes
