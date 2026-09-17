@@ -135,13 +135,11 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
   for (const i of DEFAULT_INTAKES) {
     repo.addIntake(i);
   }
-  // Per-course grade rules — seeded ONCE (never clobbers staff edits, which
-  // live in the same requirement_rules table as Configuration-added rules).
-  for (const r of DEFAULT_PROGRAMME_REQUIREMENTS) {
-    const existing = repo.db
-      .prepare("SELECT 1 FROM requirement_rules WHERE programme = ? AND document_type = ? AND programme IS NOT NULL")
-      .get(r.programme, r.document_type);
-    if (!existing) {
+  // Per-course grade rules — seeded ONCE per database. After that the rules
+  // belong to the staff: edits AND deletions in Configuration persist across
+  // restarts (a per-row existence check would resurrect deleted rules).
+  if (!repo.getSetting("programme_requirements_seeded", "")) {
+    for (const r of DEFAULT_PROGRAMME_REQUIREMENTS) {
       repo.upsertRule({
         programme: r.programme,
         intake: null,
@@ -151,6 +149,7 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
         subjectGrades: r.subjectGrades ?? null,
       });
     }
+    repo.setSetting("programme_requirements_seeded", "v5");
   }
   // Base requirements (only if table is empty — don't clobber staff edits)
   const ruleCount = (repo.db.prepare("SELECT COUNT(*) AS n FROM requirement_rules").get() as { n: number }).n;

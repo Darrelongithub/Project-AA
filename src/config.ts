@@ -150,15 +150,17 @@ export const DEFAULT_PROGRAMME_REQUIREMENTS: Array<{
   meanGrade: string;
   subjectGrades?: string;
 }> = [
-  // Bachelor of Laws: KCSE C+ mean, B plain in English or Kiswahili.
-  { programme: "LLB", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "B in English; B in Kiswahili" },
-  // BSc Nursing: C+ mean with lab-science and language requirements (NCK).
-  { programme: "BNS", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "C+ in Biology; C+ in Chemistry; C+ in English; C in Mathematics; C in Physics" },
-  { programme: "BNS", document_type: "kcpe_cert", meanGrade: "C+" },
-  // Diploma in Nursing: C mean.
-  { programme: "DNS", document_type: "academic_cert", meanGrade: "C", subjectGrades: "C in English; C- in Biology; C- in Chemistry" },
-  //KRCHN certificate: C- mean.
-  { programme: "KRCHN", document_type: "academic_cert", meanGrade: "C-" },
+  // Bachelor of Laws: KCSE C+ mean, B plain in English OR Kiswahili (a slash
+  // means either/or — one language is enough).
+  { programme: "LLB", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "B in English/Kiswahili" },
+  // BSc Nursing: C+ mean with lab-science and language requirements (NCK):
+  // C+ in Biology, Chemistry and English/Kiswahili; C in Mathematics/Physics.
+  { programme: "BNS", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "C+ in Biology; C+ in Chemistry; C+ in English/Kiswahili; C in Mathematics/Physics" },
+  // Diploma in Nursing: C mean; C in English/Kiswahili, C- in Biology,
+  // Chemistry and Mathematics/Physics.
+  { programme: "DNS", document_type: "academic_cert", meanGrade: "C", subjectGrades: "C in English/Kiswahili; C- in Biology; C- in Chemistry; C- in Mathematics/Physics" },
+  // KRCHN certificate: C- mean; C- in English/Kiswahili, Biology and Chemistry.
+  { programme: "KRCHN", document_type: "academic_cert", meanGrade: "C-", subjectGrades: "C- in English/Kiswahili; C- in Biology; C- in Chemistry" },
 ];
 
 export const DEFAULT_INTAKES = ["September 2026", "January 2027"];

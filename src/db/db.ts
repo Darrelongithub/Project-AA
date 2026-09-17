@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS requirement_rules (
   document_type    TEXT NOT NULL,
   required         INTEGER NOT NULL DEFAULT 1,
   min_grade_points INTEGER,
+  mean_grade       TEXT,
+  subject_grades   TEXT,
   UNIQUE (programme, intake, document_type)
 );
 

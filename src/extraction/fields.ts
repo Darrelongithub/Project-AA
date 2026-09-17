@@ -68,10 +68,14 @@ export function extractFields(text: string): ExtractedFields {
     }
   }
 
-  const grade = text.match(MEAN_GRADE_RE);
-  if (grade) fields.meanGrade = grade[1].toUpperCase();
+  // Word forms first: "MEAN GRADE: C (plus)" carries more information than
+  // the plain-letter match, so it must not be shadowed by it.
   const gradeWord = text.match(MEAN_GRADE_WORD_RE);
-  if (gradeWord && !fields.meanGrade) fields.meanGrade = normalizeGradeLetter(gradeWord[1], gradeWord[2]);
+  if (gradeWord) fields.meanGrade = normalizeGradeLetter(gradeWord[1], gradeWord[2]);
+  else {
+    const grade = text.match(MEAN_GRADE_RE);
+    if (grade) fields.meanGrade = grade[1].toUpperCase();
+  }
 
   // Per-subject grades → the map the grade rules are checked against.
   const subjects: Record<string, string> = {};
@@ -81,10 +85,12 @@ export function extractFields(text: string): ExtractedFields {
     const g = m[2].toUpperCase();
     if (!subjects[subject]) subjects[subject] = g;
   }
+  // Word forms ("ENGLISH C (plus)") OVERRIDE the plainer capture — "C" alone
+  // would silently drop the plus and understate the applicant's grade.
   const gradeWords = text.matchAll(/\b(ENGLISH|KISWAHILI|MATHEMATICS|BIOLOGY|CHEMISTRY|PHYSICS|HISTORY|GEOGRAPHY|CRE|AGRICULTURE)\b\s*[:\-\u2013]?\s*([A-E])\s*\(\s*(plus|minus|plain)\s*\)/gi);
   for (const m of gradeWords) {
     const subject = prettifySubject(m[1]);
-    if (!subjects[subject]) subjects[subject] = normalizeGradeLetter(m[2], m[3]);
+    subjects[subject] = normalizeGradeLetter(m[2], m[3]);
   }
   if (Object.keys(subjects).length) fields.subjectGrades = subjects;
 

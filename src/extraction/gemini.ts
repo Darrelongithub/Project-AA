@@ -46,11 +46,12 @@ Respond with ONLY a JSON object, no markdown, in exactly this shape:
     "name": "full name on the document or null",
     "gradePoints": <number 100-500 if an exam score/points total is shown, else null>,
     "meanGrade": "letter mean grade e.g. B- or null",
-    "subjectGrades": {"English": "B-", "Mathematics": "C+"} — every subject grade visible on the document, or {},
+    "subjectGrades": {"English": "B-", "Mathematics": "C+"},
     "idNumber": "national ID number or null"
   },
   "confidence": "high" | "medium" | "low"
-}`;
+}
+"subjectGrades" lists every subject grade visible on the document; use {} when none are shown.`;
 
 /** A hung vision call must never stall the pipeline forever. */
 const VISION_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 60_000);

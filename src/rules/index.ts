@@ -87,12 +87,43 @@ export const GRADE_LADDER = ["A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", 
  * Unknown grades never compare false-positive — callers treat them as
  * unreadable and flag for a human instead.
  */
+/** "C (plus)" / "B (PLAIN)" → the ladder letter ("C+" / "B"). */
+export function normalizeGrade(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/\s*\(PLUS\)\s*/i, "+")
+    .replace(/\s*\(MINUS\)\s*/i, "-")
+    .replace(/\s*\(PLAIN\)\s*/i, "");
+}
+
 export function gradeBelow(actual: string | null | undefined, required: string | null | undefined): boolean {
   if (!actual || !required) return false;
-  const a = GRADE_LADDER.indexOf(actual.trim().toUpperCase().replace(/\s*\(PLUS\)\s*/i, "+") as never);
-  const r = GRADE_LADDER.indexOf(required.trim().toUpperCase() as never);
+  const a = GRADE_LADDER.indexOf(normalizeGrade(actual) as never);
+  const r = GRADE_LADDER.indexOf(normalizeGrade(required) as never);
   if (a < 0 || r < 0) return false;
   return a > r;
+}
+
+/**
+ * KCSE/KCPE points → the grade ladder (same thresholds the legacy migration
+ * in db.ts uses). Lets a grade rule be checked against a points document.
+ */
+export function ptsToGrade(p: number): string {
+  return p >= 400 ? "A" : p >= 381 ? "A-" : p >= 353 ? "B+" : p >= 325 ? "B" : p >= 295 ? "B-"
+    : p >= 265 ? "C+" : p >= 235 ? "C" : p >= 205 ? "C-" : p >= 175 ? "D+" : p >= 145 ? "D"
+    : p >= 115 ? "D-" : "E";
+}
+
+/** Staff write subjects many ways ("Maths", "Kis", "Bio") — canonicalise. */
+const SUBJECT_SYNONYMS: Record<string, string> = {
+  maths: "mathematics", math: "mathematics", kis: "kiswahili", eng: "english",
+  bio: "biology", chem: "chemistry", phys: "physics", phy: "physics",
+  hist: "history", geo: "geography",
+};
+function canonSubject(s: string): string {
+  const k = s.trim().toLowerCase();
+  return SUBJECT_SYNONYMS[k] ?? k;
 }
 
 /** Parse "C+ in Maths, English" / "B (plain) in English" subject lines → entries. */
@@ -105,7 +136,7 @@ export function parseGradeRule(raw: string | null | undefined): Array<{ grade: s
       if (!m) return null;
       let grade = m[1].toUpperCase().replace(/\s*\(PLUS\)/, "+").replace(/\s*\(MINUS\)/, "-").replace(/\s*\(PLAIN\)/, "");
       const subjects = (m[2] ?? "")
-        .split(/\band\b|\/|&|\+/i)
+        .split(/\band\b|&|\+/i)
         .map((s) => s.trim())
         .filter(Boolean);
       return { grade, subjects };
@@ -132,7 +163,14 @@ export function deriveFlags(
     if (!req.meanGrade && !req.subjectGrades) continue;
     const doc = docs.find((d) => d.document_type === req.document_type);
     if (!doc) continue; // missing documents are handled by the verdict logic
-    const mean = typeof doc.extracted_fields?.meanGrade === "string" ? (doc.extracted_fields.meanGrade as string) : null;
+    let mean = typeof doc.extracted_fields?.meanGrade === "string" ? (doc.extracted_fields.meanGrade as string) : null;
+    // KCPE slips carry POINTS, not a letter grade. A readable points total is
+    // converted to its grade equivalent so grade rules still apply — only a
+    // genuinely unreadable document is flagged for a human.
+    if (!mean && req.document_type === "kcpe_cert") {
+      const pts = doc.extracted_fields?.gradePoints;
+      if (typeof pts === "number" && Number.isFinite(pts)) mean = ptsToGrade(pts);
+    }
     if (req.meanGrade && mean) {
       if (gradeBelow(mean, req.meanGrade)) {
         flags.push({
@@ -148,20 +186,27 @@ export function deriveFlags(
     }
     // Subject grades: each configured "C+ in English" line is checked against
     // the extracted subjectGrades map; a missing reading is flagged, not guessed.
+    // A "/" inside a subject means EITHER/OR (e.g. "English/Kiswahili"): the
+    // rule is satisfied when ANY alternative is present and high enough.
     const got = (doc.extracted_fields?.subjectGrades ?? {}) as Record<string, string>;
     for (const rule of parseGradeRule(req.subjectGrades ?? null)) {
-      for (const subject of rule.subjects) {
-        const key = Object.keys(got).find((k) => k.toLowerCase() === subject.toLowerCase());
-        const actual = key ? got[key] : undefined;
-        if (!actual) {
+      for (const entry of rule.subjects) {
+        const options = entry.split("/").map((x) => x.trim()).filter(Boolean);
+        const found = options
+          .map((opt) => {
+            const key = Object.keys(got).find((k) => canonSubject(k) === canonSubject(opt));
+            return key ? { subject: key, grade: String(got[key]) } : null;
+          })
+          .filter((x): x is { subject: string; grade: string } => x !== null);
+        if (found.length === 0) {
           flags.push({
             type: "low_confidence",
-            detail: `${req.document_type}: grade for ${subject} could not be read (rule expects ${rule.grade}) — human must verify`,
+            detail: `${req.document_type}: grade for ${options.join(" or ")} could not be read (rule expects ${rule.grade}) — human must verify`,
           });
-        } else if (gradeBelow(actual, rule.grade)) {
+        } else if (found.every((f) => gradeBelow(f.grade, rule.grade))) {
           flags.push({
             type: "grade_below_requirement",
-            detail: `${req.document_type}: ${subject} grade ${actual} is below the required ${rule.grade} — human must review`,
+            detail: `${req.document_type}: ${found.map((f) => `${f.subject} ${f.grade}`).join(", ")} below the required ${rule.grade} — human must review`,
           });
         }
       }

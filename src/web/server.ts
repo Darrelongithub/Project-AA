@@ -152,7 +152,11 @@ export function createApp(deps: WebDeps): Express {
       const buf = req.body as Buffer;
       if (!Buffer.isBuffer(buf) || buf.length < 1024) return res.redirect(back("Banner image missing or too small."));
       if (buf.length > 900 * 1024) return res.redirect(back("Banner too large — keep it under 900 KB."));
-      const mime = String(req.headers["content-type"] || "image/jpeg").split(";")[0];
+      // Trust the BYTES, not the Content-Type header: JPEG/PNG magic only.
+      const isJpeg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+      const isPng = buf.length > 8 && buf.readUInt32BE(0) === 0x89504e47 && buf.subarray(4, 8).toString("hex") === "0d0a1a0a";
+      if (!isJpeg && !isPng) return res.redirect(back("That file is not a JPEG or PNG image — banner unchanged."));
+      const mime = isPng ? "image/png" : "image/jpeg";
       repo.setSetting("email_banner", buf.toString("base64"));
       repo.setSetting("email_banner_mime", mime);
       repo.audit(null, req.staff!.username, "email_banner_changed", `${(buf.length / 1024).toFixed(0)} KB ${mime}`);
@@ -668,6 +672,7 @@ export function createApp(deps: WebDeps): Express {
       ["academic_cert", "kcse"],
       ["kcpe_cert", "kcpe"],
     ];
+    let saved = 0;
     for (const [docType, prefix] of pairs) {
       const meanGrade = String(req.body[`${prefix}_mean`] ?? "").trim().toUpperCase();
       const subjects = String(req.body[`${prefix}_subjects`] ?? "").trim();
@@ -679,9 +684,14 @@ export function createApp(deps: WebDeps): Express {
         programme, intake: null, document_type: docType as DocType, required: true,
         meanGrade: meanGrade || null, subjectGrades: subjects || null,
       });
+      saved++;
     }
-    repo.audit(null, req.staff!.username, "requirements_changed", `${programme}: grade requirements edited`);
-    res.redirect(back(`Grade requirements for ${programme} saved.`));
+    if (saved > 0) {
+      repo.audit(null, req.staff!.username, "requirements_changed", `${programme}: grade requirements edited`);
+      res.redirect(back(`Grade requirements for ${programme} saved.`));
+    } else {
+      res.redirect(back(`Nothing entered — requirements for ${programme} are unchanged.`));
+    }
   });
 
   // ── Gmail connect (OAuth code flow; tokens stored in Settings) ───────────

@@ -34,6 +34,14 @@ export function capFirst(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** Alert kinds arrive as snake_case — staff read words, not tokens. */
+export function kindLabel(kind: string): string {
+  const known: Record<string, string> = {
+    review_needed: "Review needed", escalation: "Escalation", assignment: "Assignment",
+  };
+  return known[kind] ?? capFirst(kind.replace(/_/g, " "));
+}
+
 /** Stable school grouping for course lists. */
 function groupBySchool<T extends { code: string; school?: string | null }>(rows: T[]): Array<[string, T[]]> {
   const out: Array<[string, T[]]> = [];
@@ -114,7 +122,7 @@ function adminDashboard(c: Ctx): string {
         const required = effective.filter((r) => r.required).length;
         const graded = effective.filter((r) => r.meanGrade);
         const reqText = required
-          ? `${required} required doc${required === 1 ? "" : "s"}${graded.length ? ` · min ${graded.map((r) => r.meanGrade).join("/")}` : ""}`
+          ? `${required} required doc${required === 1 ? "" : "s"}${graded.length ? ` · min ${graded.map((r) => esc(r.meanGrade ?? "")).join("/")}` : ""}`
           : `<span class="muted">base rules apply</span>`;
         const n = all.filter((a) => a.programme === p.code).length;
         return `<tr>
@@ -245,7 +253,7 @@ function adminDashboard(c: Ctx): string {
   ${alerts.length
     ? `<div class="feed">${alerts
         .map((n) => `<div class="feed-row ${n.read ? "read" : ""}">
-          <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : "b-blue"}">${esc(n.kind)}</span>
+          <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : "b-blue"}">${esc(kindLabel(n.kind))}</span>
           <span class="feed-msg">${esc(n.message)}</span>
           ${n.applicant_id ? `<a class="small nowrap" href="/case/${n.applicant_id}">open →</a>` : ""}
           <span class="feed-when right">${esc(fmtDate(n.at))}</span>
@@ -333,7 +341,7 @@ function officerDashboard(c: Ctx): string {
 
   const alertRows = alerts
     .map((n) => `<div class="feed-row ${n.read ? "read" : ""}">
-      <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : "b-blue"}">${esc(n.kind)}</span>
+      <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : "b-blue"}">${esc(kindLabel(n.kind))}</span>
       <span class="feed-msg">${esc(n.message.replace(/^\u26a0\ufe0f\s*/, ""))}</span>
       ${n.applicant_id ? `<a class="small nowrap" href="/case/${n.applicant_id}">open →</a>` : ""}
       <span class="feed-when right">${esc(fmtDate(n.at))}</span>
@@ -359,7 +367,7 @@ function officerDashboard(c: Ctx): string {
   ${gaugeRow([
     { n: stage.finished, label: "Finished", tone: "green", href: "/admissions?stage=completed", caption: "completed files" },
     { n: stage.unfinished, label: "Unfinished", tone: "orange", href: "/admissions?stage=unfinished", caption: "still gathering documents" },
-    { n: stage.pending, label: "Pending review", tone: "purple", href: "/admissions?stage=awaiting_review", caption: "waiting on a human" },
+    { n: stage.pending, label: "Pending review", tone: "purple", href: "/admissions?stage=pending", caption: "waiting on a human" },
     { n: stage.enquiries, label: "Enquiries today", tone: "blue", href: "/admissions?stage=enquiries", caption: "fee · admission · follow-ups" },
   ])}
   <h2 style="margin-top:26px">By level</h2>
@@ -491,33 +499,29 @@ const STAGE_TABS: Array<{ key: string; label: string }> = [
   { key: "documents_checked", label: "Documents checked" },
   { key: "awaiting_review", label: "Awaiting review" },
   { key: "verification", label: "Verification" },
+  { key: "pending", label: "Pending review" },
   { key: "completed", label: "Completed" },
 ];
 
 export function admissionsPage(c: Ctx, stage: string): string {
   const { repo } = c;
   const counts = repo.stageCounts();
-  const enquiryCats = ["fee_enquiry", "admission_enquiry", "follow_up", "complaint", "other"];
   const start = new Date(); start.setHours(0, 0, 0, 0);
-  const hasEnquiryToday = new Map<number, boolean>();
-  for (const a of repo.allApplicants()) {
-    hasEnquiryToday.set(
-      a.id,
-      repo.emailsForApplicant(a.id).some((e) => e.direction === "in" && enquiryCats.includes(e.category ?? "") && new Date(e.at) >= start)
-    );
-  }
-  const enquiriesToday = repo.allApplicants().filter((a) => hasEnquiryToday.get(a.id));
+  // ONE query for today's enquiry applicants — never one per applicant.
+  const enquiryIds = repo.enquiryApplicantIdsToday(start.toISOString());
+  const all = repo.allApplicants();
+  const enquiriesToday = all.filter((a) => enquiryIds.has(a.id));
 
   const staffById = new Map(repo.listStaff().map((m) => [m.id, m.display_name]));
   const validStages = new Set(STAGE_TABS.map((t) => t.key));
   const active = validStages.has(stage) ? stage : "all";
 
-  let rows = repo.allApplicants();
+  let rows = all;
   if (active === "unfinished") rows = rows.filter((a) => ["application_received", "documents_received", "documents_checked"].includes(a.lifecycle));
   else if (active === "pending") rows = rows.filter((a) => ["awaiting_review", "verification"].includes(a.lifecycle));
   else if (active === "enquiries") rows = enquiriesToday;
   else if (active !== "all") rows = rows.filter((a) => a.lifecycle === active);
-  rows = rows.slice().sort((x, y) => (y.updated_at > x.updated_at ? 1 : -1));
+  rows = rows.slice().sort((x, y) => (y.updated_at ?? "").localeCompare(x.updated_at ?? ""));
 
   const countFor = (key: string): number => {
     if (key === "all") return counts.total;
@@ -554,23 +558,13 @@ export function admissionsPage(c: Ctx, stage: string): string {
 <h1>Admissions</h1>
 <div class="sub">Every applicant sits in exactly one level. Finished files are counted at Completed — everything still moving is counted where it stands. Open a case to work it.</div>
 
-<div class="gauges" style="margin-bottom:26px">
-  <span class="gauge g-green">
-    <span class="g-ring"><svg viewBox="0 0 110 110" width="104" height="104" aria-hidden="true"><circle class="g-track" cx="55" cy="55" r="46"/><circle class="g-arc" cx="55" cy="55" r="46"/></svg><span class="g-n">${counts.finished}</span></span>
-    <span class="g-l">Finished</span>
-  </span>
-  <span class="gauge g-orange">
-    <span class="g-ring"><svg viewBox="0 0 110 110" width="104" height="104" aria-hidden="true"><circle class="g-track" cx="55" cy="55" r="46"/><circle class="g-arc" cx="55" cy="55" r="46"/></svg><span class="g-n">${counts.unfinished}</span></span>
-    <span class="g-l">Unfinished</span>
-  </span>
-  <span class="gauge g-purple">
-    <span class="g-ring"><svg viewBox="0 0 110 110" width="104" height="104" aria-hidden="true"><circle class="g-track" cx="55" cy="55" r="46"/><circle class="g-arc" cx="55" cy="55" r="46"/></svg><span class="g-n">${counts.pending}</span></span>
-    <span class="g-l">Pending review</span>
-  </span>
-  <span class="gauge g-blue">
-    <span class="g-ring"><svg viewBox="0 0 110 110" width="104" height="104" aria-hidden="true"><circle class="g-track" cx="55" cy="55" r="46"/><circle class="g-arc" cx="55" cy="55" r="46"/></svg><span class="g-n">${enquiriesToday.length}</span></span>
-    <span class="g-l">Enquiries today</span>
-  </span>
+<div style="margin-bottom:26px">
+  ${gaugeRow([
+    { n: counts.finished, label: "Finished", tone: "green", href: "/admissions?stage=completed" },
+    { n: counts.unfinished, label: "Unfinished", tone: "orange", href: "/admissions?stage=unfinished" },
+    { n: counts.pending, label: "Pending review", tone: "purple", href: "/admissions?stage=pending" },
+    { n: enquiriesToday.length, label: "Enquiries today", tone: "blue", href: "/admissions?stage=enquiries" },
+  ])}
 </div>
 
 <div class="tabs">
@@ -1194,6 +1188,7 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string): s
             <input type="hidden" name="programme" value="${esc(p.code)}">
             <div style="flex:1">
               <input type="text" name="name" value="${esc(p.name)}" title="Course name" style="margin-bottom:6px">
+              <input type="text" name="school" value="${esc(p.school)}" title="School (faculty)" style="margin-bottom:6px">
               <textarea name="entry_requirements" rows="3" title="Entry requirements" style="min-height:64px;font-size:12.5px">${esc(p.entry_requirements)}</textarea>
             </div>
             <button class="btn small ghost" title="Save course details">Save</button>
@@ -1227,7 +1222,7 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
     : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
   <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
     <h2>Grade requirements per course</h2>
-    <p class="small muted" style="margin-top:-6px">Entry requirements change every intake — edit them here and new applicants are checked against the new grades immediately (already-submitted files keep the rules they applied under). Write subject lines like <span class="mono">C+ in English and Mathematics</span>; leave a row blank to skip it.</p>
+    <p class="small muted" style="margin-top:-6px">Entry requirements change every intake — edit them here and new applicants are checked against the new grades immediately (already-submitted files keep the rules they applied under). Write subject lines like <span class="mono">C+ in English and Mathematics</span>; use a slash for either/or subjects, e.g. <span class="mono">B in English/Kiswahili</span>. KCPE is marked out of points — a grade there acts as the minimum equivalent. Leave a row blank to skip it.</p>
     ${programmes.map((p) => {
       const kcse = rules.find((r) => r.programme === p.code && r.document_type === "academic_cert");
       const kcpe = rules.find((r) => r.programme === p.code && r.document_type === "kcpe_cert");
@@ -1238,7 +1233,7 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
           <div style="flex:0;min-width:110px"><label>&nbsp;</label><b>${esc(p.code)}</b></div>
           <div><label>KCSE mean grade</label><input type="text" name="kcse_mean" placeholder="e.g. C+" value="${esc(kcse?.meanGrade ?? "")}" maxlength="2" style="text-transform:uppercase"></div>
           <div style="flex:3"><label>KCSE subject grades</label><input type="text" name="kcse_subjects" placeholder="e.g. B in English and Kiswahili" value="${esc(kcse?.subjectGrades ?? "")}"></div>
-          <div><label>KCPE mean grade</label><input type="text" name="kcpe_mean" placeholder="e.g. C-" value="${esc(kcpe?.meanGrade ?? "")}" maxlength="2" style="text-transform:uppercase"></div>
+          <div><label>KCPE minimum (grade equivalent)</label><input type="text" name="kcpe_mean" placeholder="e.g. C-" value="${esc(kcpe?.meanGrade ?? "")}" maxlength="2" style="text-transform:uppercase"></div>
           <div style="flex:0"><label>&nbsp;</label><button class="btn small ghost">Save ${esc(p.code)}</button></div>
         </div>
       </form>`;

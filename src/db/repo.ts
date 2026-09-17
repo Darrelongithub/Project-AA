@@ -227,7 +227,7 @@ export class Repo {
       .prepare("UPDATE programmes SET name = ?, school = ?, entry_requirements = ? WHERE code = ?")
       .run(
         fields.name?.trim() || cur.name,
-        fields.school !== undefined ? fields.school.trim() : cur.school,
+        fields.school !== undefined ? fields.school.trim() || cur.school : cur.school,
         fields.entry_requirements !== undefined ? fields.entry_requirements.trim() : cur.entry_requirements,
         code
       );
@@ -236,9 +236,15 @@ export class Repo {
   /** Courses are worked by people: a new case lands with its course's owner. */
   ownerOfProgramme(code: string | null): number | null {
     if (!code) return null;
-    const row = this.db.prepare("SELECT owner_id FROM programmes WHERE code = ? COLLATE NOCASE").get(code) as
-      | { owner_id: number | null }
-      | undefined;
+    // The join on active staff matters: a deactivated officer must never
+    // receive freshly routed cases (or the notifications that come with them).
+    const row = this.db
+      .prepare(
+        `SELECT p.owner_id FROM programmes p
+         JOIN staff_users s ON s.id = p.owner_id AND s.active = 1
+         WHERE p.code = ? COLLATE NOCASE`
+      )
+      .get(code) as { owner_id: number | null } | undefined;
     return row?.owner_id ?? null;
   }
 
@@ -820,6 +826,21 @@ export class Repo {
     this.db.prepare("DELETE FROM outbox WHERE id = ?").run(id);
   }
 
+  /**
+   * Applicants who received an enquiry-style incoming email today (one SQL
+   * query — the admissions page must not do one query per applicant).
+   */
+  enquiryApplicantIdsToday(startISO: string): Set<number> {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT applicant_id AS id FROM emails
+         WHERE direction = 'in' AND at >= ?
+           AND category IN ('fee_enquiry','admission_enquiry','follow_up','complaint','other')`
+      )
+      .all(startISO) as Array<{ id: number }>;
+    return new Set(rows.map((r) => r.id));
+  }
+
   /** Counters for the Overview "Today" panel. */
   // ── Stage model (v5): every applicant sits in exactly one level ──────────
   // finished / unfinished / pending are the three buckets staff think in;
@@ -847,14 +868,7 @@ export class Repo {
     const total = rows.reduce((n, r) => n + r.n, 0);
     const start = new Date();
     start.setHours(0, 0, 0, 0);
-    const enquiries = (
-      this.db
-        .prepare(
-          `SELECT COUNT(DISTINCT applicant_id) AS n FROM emails
-           WHERE direction = 'in' AND at >= ? AND category IN ('fee_enquiry','admission_enquiry','follow_up','complaint','other')`
-        )
-        .get(start.toISOString()) as { n: number }
-    ).n;
+    const enquiries = this.enquiryApplicantIdsToday(start.toISOString()).size;
     return {
       finished: g("completed"),
       unfinished: g("application_received") + g("documents_received") + g("documents_checked"),
