@@ -28,7 +28,7 @@ function main(): void {
     console.log("──────────────────────────────────────────────────────────────────────────");
     console.log(`${r.ref_number}  ${r.full_name ?? ""}  <${r.email_address}>`);
     console.log(
-      `Verdict: ${r.computed_status} · ${LIFECYCLE_LABELS[r.lifecycle]} · priority ${r.priority}${overdue ? " · ⚠️ OVERDUE" : ""}`
+      `Verdict: ${r.computed_status} · ${LIFECYCLE_LABELS[r.lifecycle]} · priority ${r.priority}${overdue ? " · OVERDUE" : ""}`
     );
     if (r.flag_summary) console.log(`Flags: ${r.flag_summary}`);
     console.log(`\nReasoning:\n${indent(r.reasoning)}`);

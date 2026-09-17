@@ -23,7 +23,9 @@ export interface IdentityResolution {
   concern?: string;
 }
 
-const REF_RE = /\b([A-Z]{2}-\d{4}-\d{6})\b/i;
+// ref_prefix is configurable (1–4 letters) — the pattern must accept all of
+// them or quoted refs stop matching the moment the prefix changes.
+const REF_RE = /\b([A-Z]{1,4}-\d{4}-\d{6})\b/i;
 
 export function resolveIdentity(
   repo: Repo,

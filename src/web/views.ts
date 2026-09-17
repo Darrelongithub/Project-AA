@@ -54,8 +54,7 @@ export function confidenceBadge(c: string): string {
 export function triageBadge(t: string | null): string {
   if (!t) return `<span class="badge b-gray">—</span>`;
   const cls = t === "Green" ? "b-green" : t === "Orange" ? "b-orange" : "b-red";
-  const dot = t === "Green" ? "●" : t === "Orange" ? "●" : "●";
-  return `<span class="badge ${cls}"><span class="bdot">${dot}</span>${esc(t)}</span>`;
+  return `<span class="badge ${cls}"><span class="bdot">●</span>${esc(t)}</span>`;
 }
 
 export function priorityBadge(p: Priority): string {
@@ -107,8 +106,9 @@ export function avatar(name: string | null | undefined, size = 34): string {
   return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px;background:linear-gradient(135deg,${c1},${c2})">${esc(initials)}</span>`;
 }
 
-/** The official full Riara University logo, on a white chip; the image itself
- * is served once at /assets/logo and cached, pages only reference the path. */
+/** The official full Riara University logo; the image itself is served once
+ * at /assets/logo and cached, pages only reference the path. The white
+ * variant renders in dark mode so the mark blends with its background. */
 export function crest(size = 40, variant: "auto" | "white" = "auto"): string {
   if (variant === "white") {
     return `<span class="crest" style="height:${size}px"><img src="/assets/logo-white" alt="Riara University"></span>`;
@@ -116,7 +116,6 @@ export function crest(size = 40, variant: "auto" | "white" = "auto"): string {
   return `<span class="crest" style="height:${size}px"><img class="logo-c" src="/assets/logo" alt="Riara University"><img class="logo-w" src="/assets/logo-white" alt=""></span>`;
 }
 
-/** Human-readable flag names: "name_mismatch" → "Name mismatch". */
 /** The signature motif: one thin flowing purple line — progress, connection. */
 export function flowLine(width = 220, height = 34): string {
   return `<svg class="flowline" width="${width}" height="${height}" viewBox="0 0 220 34" fill="none" aria-hidden="true" preserveAspectRatio="xMinYMid meet"><path d="M2 28 C 42 28, 52 6, 92 6 S 150 30, 184 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="210" cy="9" r="2.6" fill="currentColor"/></svg>`;

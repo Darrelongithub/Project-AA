@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS applicants (
   requirements_snapshot TEXT,           -- frozen requirement set at first triage (feature 19)
   followup_rung  INTEGER NOT NULL DEFAULT 0,
   followup_next_at TEXT,
+  followup_base_at TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (email_address, thread_id)

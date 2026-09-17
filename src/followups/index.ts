@@ -16,6 +16,7 @@ import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
+import { INSTITUTION } from "../branding";
 
 const nowIso = () => new Date().toISOString();
 
@@ -57,7 +58,7 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
       if (tpl) {
         const rendered = renderTemplate(tpl.subject, tpl.body, {
           ref: a.ref_number,
-          institution: repo.getSetting("institution_name", "Admissions"),
+          institution: INSTITUTION,
           name: a.full_name ?? undefined,
           missingLabels: missing.map((m) => docLabel(m.document_type)),
           checklist: checklistText({ requirements, presentTypes: present }),

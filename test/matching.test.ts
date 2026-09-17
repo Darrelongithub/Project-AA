@@ -28,6 +28,17 @@ function mkEmail(id: string, threadId: string, from: string): IncomingEmail {
   };
 }
 
+it("matches a quoted reference number even with a non-default prefix length", () => {
+  // ref_prefix is configurable (1–4 letters); identity matching must not
+  // assume the default two-letter "RU" shape.
+  const a = repo.getOrCreateApplicant("longprefix@example.com", "t-prefix", { refPrefix: "ABC" });
+  expect(a.ref_number).toMatch(/^ABC-\d{4}-\d{6}$/);
+  const email = mkEmail("m-prefix", "another-thread", "someone-else@example.com");
+  email.body = `Please add this to my file, my reference is ${a.ref_number}`;
+  const resolved = resolveApplicant(repo, email, { refPrefix: "ABC" });
+  expect(resolved.id).toBe(a.id);
+});
+
 let hashCounter = 0;
 function mkExtraction(filename: string, type: ExtractionResult["document_type"]): ExtractionResult {
   return {

@@ -18,7 +18,7 @@ interface Ctx {
   unread: number;
   csrf: string;
   theme?: Theme;
-  /** Institution name from Settings — drives all branding text. */
+  /** Fixed institution name — there is no settings field for it. */
   institution: string;
   /** True when the seeded demo dataset is present — banner shown to staff. */
   demo: boolean;
@@ -75,6 +75,7 @@ function adminDashboard(c: Ctx): string {
   const s = repo.dashboardStats();
   const audit = repo.recentAudit(12);
   const team = repo.staffStats();
+  const alerts = repo.notificationsFor(c.user.id, 6);
   const programmes = repo.listProgrammes() as Array<{ code: string; name: string; owner_id: number | null; owner_name: string | null }>;
   const rules = repo.listRules();
   const all = repo.allApplicants();
@@ -153,7 +154,23 @@ ${flowLine()}
       <div><span>Replies to date</span><b>${(() => { const ac = repo.accuracyStats(); return Number(ac.autoSends) + Number(ac.humanSends); })()}</b></div>
     </div>
   </section>
-</div>`
+</div>
+
+<section class="card nopad" id="alerts">
+  <div class="card-head"><h2>Alerts${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
+    ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark all read</button></form>` : ""}
+  </div>
+  ${alerts.length
+    ? `<div class="feed">${alerts
+        .map((n) => `<div class="feed-row ${n.read ? "read" : ""}">
+          <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : "b-blue"}">${esc(n.kind)}</span>
+          <span class="feed-msg">${esc(n.message)}</span>
+          ${n.applicant_id ? `<a class="small nowrap" href="/case/${n.applicant_id}">open →</a>` : ""}
+          <span class="feed-when right">${esc(fmtDate(n.at))}</span>
+        </div>`)
+        .join("")}</div>`
+    : `<div class="empty"><p>No alerts. Escalations appear here.</p></div>`}
+</section>`
   );
 }
 
@@ -178,7 +195,7 @@ function officerDashboard(c: Ctx): string {
   const activeCount = Number(s.applications) - Number(s.completed);
 
   const attention = [
-    { label: "applicant emails unanswered", n: unanswered.filter((u) => u.hours >= target).length, href: "/applicants?filter=human_review", tone: "orange" },
+    { label: "applicant emails unanswered", n: unanswered.filter((u) => u.hours >= target).length, href: "/applicants", tone: "orange" },
     { label: "cases past their response target", n: Number(s.overdue), href: "/queue?filter=overdue", tone: "red" },
     { label: "cases waiting for human review", n: Number(s.humanReview), href: "/queue", tone: "orange" },
     { label: "files incomplete (documents missing)", n: Number(s.incomplete), href: "/applicants?filter=awaiting_docs", tone: "blue" },
@@ -1063,7 +1080,7 @@ export function staffPage(c: Ctx, flash?: string): string {
   const accountsSection = isAdmin
     ? `
 ${repo.listStaff().some((st) => onDefaultPassword(st.username))
-  ? `<div class="flash err" style="position:static;margin-bottom:16px">One or more accounts still use their seeded demo passwords. Reset them below before going live.</div>`
+  ? `<div class="flash err" style="position:static;margin-bottom:16px">One or more real accounts still use their seeded starting passwords. Reset them below before going live.</div>`
   : ""}
 <section class="card nopad">
   <div class="card-head"><h2>Accounts</h2></div>

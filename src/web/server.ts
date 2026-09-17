@@ -25,6 +25,7 @@ import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCooki
 import { processEmail } from "../pipeline";
 import { log } from "../util/log";
 import { hashPassword } from "../util/password";
+import { INSTITUTION } from "../branding";
 
 export interface WebDeps {
   repo: Repo;
@@ -51,9 +52,8 @@ function makeRateLimiter(limit: number, windowMs: number) {
 export function createApp(deps: WebDeps): Express {
   const { repo, ctx } = deps;
   const app = express();
-  /** Institution name for all branding. Fixed to the brand; the institution-name
-   * setting was removed from the UI at the user's request. */
-  const instName = (): string => "Riara University";
+  /** Institution name for all branding — fixed; no settings field exists. */
+  const instName = (): string => INSTITUTION;
 
   app.disable("x-powered-by");
   // Behind any reverse proxy (the preview environment included) req.ip is the
@@ -145,10 +145,9 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(target);
   });
 
-  // Failed-logins-only limiter: only FAILURES count, so legitimate users are
-  // limits, but staff login had none — unlimited scrypt brute force. Only
-  // FAILURES count, so legitimate users are never locked out by normal use;
-  // 10 failures per IP per minute blocks further attempts.
+  // Failed-logins-only limiter: 10 failures per IP per minute blocks further
+  // attempts. Only FAILURES count, so legitimate users are never locked out
+  // by normal use.
   const loginFails = new Map<string, number[]>();
   const pruneLoginFails = (ip: string): number[] => {
     if (loginFails.size > 5000) loginFails.clear();
@@ -440,8 +439,9 @@ export function createApp(deps: WebDeps): Express {
     if (["normal", "high", "urgent"].includes(p)) {
       repo.updateApplicant(id, { priority: p as never });
       staffAction(req, id, "priority_changed", `priority → ${p}`);
+      return res.redirect(backToCase(id, `Priority set to ${p}.`));
     }
-    res.redirect(backToCase(id, `Priority set to ${p}.`));
+    res.redirect(backToCase(id, "Unknown priority — nothing changed."));
   });
 
   /**
@@ -822,7 +822,7 @@ export function createApp(deps: WebDeps): Express {
 
   // Branded 404 instead of Express's raw "Cannot GET …" page.
   app.use((req, res) => {
-    if (req.path.startsWith("/api/") || req.path.startsWith("/portal/upload")) {
+    if (req.path.startsWith("/api/")) {
       return res.status(404).json({ ok: false, error: "not found" });
     }
     res.status(404).send(layout({
@@ -845,7 +845,7 @@ export function createApp(deps: WebDeps): Express {
   app.use((err: unknown, req: Request, res: Response, _next: unknown) => {
     log(`unhandled error on ${req.method} ${req.path}: ${(err as Error)?.stack ?? err}`, "error");
     if (res.headersSent) return;
-    if (req.path.startsWith("/api/") || req.path.startsWith("/portal/upload")) {
+    if (req.path.startsWith("/api/")) {
       return res.status(500).json({ ok: false, error: "internal error" });
     }
     res.status(500).send(layout({

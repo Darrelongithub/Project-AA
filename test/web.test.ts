@@ -675,6 +675,24 @@ describe("QA audit regressions", () => {
     expect(home).not.toContain(">0 hrs<");
   });
 
+  it("admin Overview carries an alerts panel that can clear unread alerts", async () => {
+    repo.notify("escalation", "Case RU-ALERT escalation for admins", null);
+    const { cookie, csrf } = await login();
+    const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    expect(home).toContain('id="alerts"');
+    expect(home).toContain("Case RU-ALERT escalation for admins");
+    const res = await fetch(`${base}/notifications/read-all`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${csrf}`,
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    const after = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    expect(after).toContain('id="alerts"');
+    expect(after).not.toContain("new</span>");
+  });
+
   it("shows the demo banner only when the demo dataset flag is set", async () => {
     const { cookie } = await login();
     repo.setSetting("demo_dataset", "1");

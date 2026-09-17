@@ -63,7 +63,7 @@ async function main(): Promise<void> {
   const port = cfg.port;
   app.listen(port, "0.0.0.0", () => {
     log(`serve: listening on http://0.0.0.0:${port}`);
-    log(`serve: staff console → /login (admin is created on first boot; demo staff come from \`npm run demo\`)`);
+    log(`serve: staff console → /login (admin is created on first boot; the demo accounts demo_admin/demo_user come from \`npm run demo\`)`);
     log(`serve: applicants who email just their reference number receive a status reply`);
   });
 
@@ -91,13 +91,17 @@ async function main(): Promise<void> {
   const opts = { autoMissingDocsEmails: cfg.autoMissingDocsEmails, autoStatusAnswers: cfg.autoStatusAnswers };
   const poll = async () => {
     try {
-      if (!gmail) {
-        const fromSettings = gmailFromSettings(repo);
-        if (fromSettings) {
-          gmail = new GmailClient(fromSettings);
-          sender.inner = new GmailSender(gmail);
-          log(`serve: Gmail connected via Settings (${fromSettings.address}) — live sorting enabled`);
-        }
+      const fromSettings = gmailFromSettings(repo);
+      if (!gmail && fromSettings) {
+        gmail = new GmailClient(fromSettings);
+        sender.inner = new GmailSender(gmail);
+        log(`serve: Gmail connected via Settings (${fromSettings.address}) — live sorting enabled`);
+      } else if (gmail && !fromSettings) {
+        // "Disconnect" in Settings clears the refresh token — honour it
+        // immediately instead of polling on with the stale client.
+        log(`serve: Gmail disconnected via Settings — live fetching stopped`);
+        gmail = null;
+        sender.inner = new MockSender();
       }
       if (gmail) {
         await ingestNewEmails(gmail, ctx, cfg.ingestLookbackDays, opts);

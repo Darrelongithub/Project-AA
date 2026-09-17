@@ -77,9 +77,8 @@ export const DEFAULT_PROGRAMMES = [
 
 export const DEFAULT_INTAKES = ["September 2026", "January 2027"];
 
-/** Default SLA / institution settings (editable in Settings). */
+/** Default SLA / behaviour settings (editable in Settings). */
 export const DEFAULT_SETTINGS: Record<string, string> = {
-  institution_name: "Riara University",
   ref_prefix: "RU",
   sla_target_hours: "4",
   escalation_hours: "8",
@@ -89,5 +88,4 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   followup_ladder_days: "3,7,10", // Day 3 reminder, Day 7 final, Day 10 → human
   retention_days: "730", // completed cases kept 2 years, then archived+removed
   automation_mode: "auto", // 'draft' holds EVERY automated reply for approval
-  portal_otp_delivery: "screen", // 'email' sends the OTP via the configured sender
 };

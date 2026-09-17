@@ -36,6 +36,7 @@ import { categorizeEmail, priorityForCategory } from "../categorize";
 import { extractPhone, inferIntake, inferProgramme } from "../enrich";
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
+import { INSTITUTION } from "../branding";
 import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
 import type { PipelineContext } from "./adapters";
@@ -352,7 +353,7 @@ export async function processEmail(
   }
 
   // ── Drafting (features 14, 35) ──────────────────────────────────────────
-  const institution = repo.getSetting("institution_name", "the Admissions Office");
+  const institution = INSTITUTION;
   const requiredReqs = requirements.filter((r) => r.required);
   const presentTypes = activeDocs.map((d) => d.document_type);
   const missingLabels = rulesOut.missing.map((m) => docLabel(m));

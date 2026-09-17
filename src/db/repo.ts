@@ -576,7 +576,7 @@ export class Repo {
     const row = this.db
       .prepare(
         `SELECT s.csrf AS csrf, s.expires_at AS expires_at, u.id AS id, u.username AS username,
-                u.display_name AS display_name, u.role AS role, u.active AS active
+                u.display_name AS display_name, u.role AS role, u.active AS active, u.demo AS demo
          FROM sessions s JOIN staff_users u ON u.id = s.staff_id
          WHERE s.token = ?`
       )
@@ -585,7 +585,7 @@ export class Repo {
     if (new Date(row.expires_at).getTime() < Date.now() || row.active !== 1) return undefined;
     return {
       csrf: row.csrf,
-      staff: { id: row.id, username: row.username, display_name: row.display_name, role: row.role, active: row.active },
+      staff: { id: row.id, username: row.username, display_name: row.display_name, role: row.role, active: row.active, demo: row.demo },
     };
   }
 
@@ -771,7 +771,7 @@ export class Repo {
     this.db.prepare("DELETE FROM outbox WHERE id = ?").run(id);
   }
 
-  /** Counters for the Command Center's "TODAY" strip. */
+  /** Counters for the Overview "Today" panel. */
   todayStats(): { emailsToday: number; docsToday: number; completedToday: number } {
     // date('now') is UTC — in UTC+3 the "today" counters would reset at 03:00
     // local. Compute THIS machine's local day boundaries instead.
