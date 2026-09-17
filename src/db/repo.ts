@@ -207,6 +207,41 @@ export class Repo {
       .all() as never[];
   }
 
+  programmeByCode(code: string): Programme | undefined {
+    return this.db
+      .prepare(
+        `SELECT p.code, p.name, p.school, p.entry_requirements, p.owner_id, s.display_name AS owner_name
+         FROM programmes p LEFT JOIN staff_users s ON s.id = p.owner_id
+         WHERE p.code = ? COLLATE NOCASE`
+      )
+      .get(code) as Programme | undefined;
+  }
+
+  /** Editable catalogue fields (name/school/entry requirements) — Configuration. */
+  updateProgramme(code: string, fields: { name?: string; school?: string; entry_requirements?: string }): void {
+    const cur = this.db.prepare("SELECT name, school, entry_requirements FROM programmes WHERE code = ?").get(code) as
+      | { name: string; school: string; entry_requirements: string }
+      | undefined;
+    if (!cur) return;
+    this.db
+      .prepare("UPDATE programmes SET name = ?, school = ?, entry_requirements = ? WHERE code = ?")
+      .run(
+        fields.name?.trim() || cur.name,
+        fields.school !== undefined ? fields.school.trim() : cur.school,
+        fields.entry_requirements !== undefined ? fields.entry_requirements.trim() : cur.entry_requirements,
+        code
+      );
+  }
+
+  /** Courses are worked by people: a new case lands with its course's owner. */
+  ownerOfProgramme(code: string | null): number | null {
+    if (!code) return null;
+    const row = this.db.prepare("SELECT owner_id FROM programmes WHERE code = ? COLLATE NOCASE").get(code) as
+      | { owner_id: number | null }
+      | undefined;
+    return row?.owner_id ?? null;
+  }
+
   addProgramme(code: string, name: string, school = "", entry = ""): void {
     this.db
       .prepare(
@@ -240,19 +275,19 @@ export class Repo {
    * duplicate. Rules are therefore upserted as delete-then-insert matched
    * with `IS`, which treats NULL as equal to NULL.
    */
-  private upsertRuleRow(programme: string | null, intake: string | null, documentType: string, required: boolean, minGradePoints: number | null): void {
+  private upsertRuleRow(programme: string | null, intake: string | null, documentType: string, required: boolean, meanGrade: string | null, subjectGrades: string | null): void {
     this.db
       .prepare("DELETE FROM requirement_rules WHERE programme IS ? AND intake IS ? AND document_type = ?")
       .run(programme, intake, documentType);
     this.db
-      .prepare("INSERT INTO requirement_rules (programme, intake, document_type, required, min_grade_points) VALUES (?,?,?,?,?)")
-      .run(programme, intake, documentType, required ? 1 : 0, minGradePoints);
+      .prepare("INSERT INTO requirement_rules (programme, intake, document_type, required, mean_grade, subject_grades) VALUES (?,?,?,?,?,?)")
+      .run(programme, intake, documentType, required ? 1 : 0, meanGrade, subjectGrades);
   }
 
   seedBaseRequirements(entries: RequirementSetEntry[]): void {
     const tx = this.db.transaction(() => {
       for (const e of entries) {
-        this.upsertRuleRow(null, null, e.document_type, e.required, e.minGradePoints ?? null);
+        this.upsertRuleRow(null, null, e.document_type, e.required, e.meanGrade ?? null, e.subjectGrades ?? null);
       }
     });
     tx();
@@ -282,15 +317,16 @@ export class Repo {
       intake: r.intake,
       document_type: r.document_type,
       required: r.required === 1,
-      minGradePoints: r.min_grade_points,
+      meanGrade: r.mean_grade ?? null,
+      subjectGrades: r.subject_grades ?? null,
     }));
   }
 
-  upsertRule(rule: { programme: string | null; intake: string | null; document_type: DocType; required: boolean; minGradePoints: number | null }): void {
+  upsertRule(rule: { programme: string | null; intake: string | null; document_type: DocType; required: boolean; meanGrade?: string | null; subjectGrades?: string | null }): void {
     // See seedBaseRequirements: ON CONFLICT cannot see NULL programme/intake,
     // so upsert is delete-then-insert with IS-matching.
     this.db.transaction(() => {
-      this.upsertRuleRow(rule.programme, rule.intake, rule.document_type, rule.required, rule.minGradePoints);
+      this.upsertRuleRow(rule.programme, rule.intake, rule.document_type, rule.required, rule.meanGrade ?? null, rule.subjectGrades ?? null);
     })();
   }
 
@@ -339,7 +375,7 @@ export class Repo {
 
   resolveRequirements(programme: string | null, intake: string | null): RequirementSetEntry[] {
     const rows = this.db
-      .prepare("SELECT programme, intake, document_type, required, min_grade_points FROM requirement_rules")
+      .prepare("SELECT programme, intake, document_type, required, mean_grade, subject_grades FROM requirement_rules")
       .all() as any[];
     const ladder = [
       (r: any) => r.programme === null && r.intake === null,
@@ -354,7 +390,8 @@ export class Repo {
         merged.set(r.document_type, {
           document_type: r.document_type,
           required: r.required === 1,
-          minGradePoints: r.min_grade_points,
+          meanGrade: r.mean_grade ?? null,
+          subjectGrades: r.subject_grades ?? null,
         });
       }
     }
@@ -784,6 +821,65 @@ export class Repo {
   }
 
   /** Counters for the Overview "Today" panel. */
+  // ── Stage model (v5): every applicant sits in exactly one level ──────────
+  // finished / unfinished / pending are the three buckets staff think in;
+  // awaiting_review inside pending is the classic "human queue".
+
+  stageCounts(): {
+    finished: number;
+    unfinished: number;
+    pending: number;
+    enquiries: number;
+    application_received: number;
+    documents_received: number;
+    documents_checked: number;
+    awaiting_review: number;
+    verification: number;
+    completed: number;
+    total: number;
+  } {
+    const rows = this.db.prepare("SELECT lifecycle, COUNT(*) AS n FROM applicants GROUP BY lifecycle").all() as Array<{
+      lifecycle: string;
+      n: number;
+    }>;
+    const by = new Map(rows.map((r) => [r.lifecycle, r.n]));
+    const g = (k: string) => by.get(k) ?? 0;
+    const total = rows.reduce((n, r) => n + r.n, 0);
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const enquiries = (
+      this.db
+        .prepare(
+          `SELECT COUNT(DISTINCT applicant_id) AS n FROM emails
+           WHERE direction = 'in' AND at >= ? AND category IN ('fee_enquiry','admission_enquiry','follow_up','complaint','other')`
+        )
+        .get(start.toISOString()) as { n: number }
+    ).n;
+    return {
+      finished: g("completed"),
+      unfinished: g("application_received") + g("documents_received") + g("documents_checked"),
+      pending: g("awaiting_review") + g("verification"),
+      enquiries,
+      application_received: g("application_received"),
+      documents_received: g("documents_received"),
+      documents_checked: g("documents_checked"),
+      awaiting_review: g("awaiting_review"),
+      verification: g("verification"),
+      completed: g("completed"),
+      total,
+    };
+  }
+
+  /** Per-applicant "who approved/completed this file" attribution. */
+  approverFor(applicantId: number): { actor: string; at: string } | undefined {
+    return this.db
+      .prepare(
+        `SELECT actor, at FROM status_history WHERE applicant_id = ? AND to_status = 'completed' AND actor != 'system'
+         ORDER BY id DESC LIMIT 1`
+      )
+      .get(applicantId) as { actor: string; at: string } | undefined;
+  }
+
   todayStats(): { emailsToday: number; docsToday: number; completedToday: number } {
     // date('now') is UTC — in UTC+3 the "today" counters would reset at 03:00
     // local. Compute THIS machine's local day boundaries instead.

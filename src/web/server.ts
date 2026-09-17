@@ -7,22 +7,26 @@
  * Server-rendered, self-contained, DB-backed sessions + CSRF.
  */
 import * as crypto from "crypto";
-import { LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
+import { FAVICON_BASE64, LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
 import { FONT_INSTRUMENT_SERIF_ITALIC_WOFF2, FONT_INSTRUMENT_SERIF_WOFF2, FONT_MANROPE_WOFF2 } from "./fonts";
 import express, { type Express, type Request, type Response } from "express";
 import type { Repo } from "../db/repo";
 import type { PipelineContext } from "../pipeline/adapters";
-import type { LifecycleStage } from "../types";
+import type { ApplicantRow, LifecycleStage } from "../types";
 import { DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type DocType, type EmailCategory } from "../types";
 import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import {
-  applicantsPage, casePage, configPage, dashboardPage, loginPage,
+  admissionsPage, applicantsPage, casePage, composePage, configPage, dashboardPage, loginPage,
   queuePage, replayPage, settingsPage, staffPage,
 } from "./pages";
 import { avatar, esc, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
 import { processEmail } from "../pipeline";
+import { GeminiVisionAdapter } from "../extraction/gemini";
+import { GeminiWatcher } from "../watcher";
+import { buildAdapters, type Adapters } from "../pipeline/adapters";
+import type { PipelineContext as PCtx } from "../pipeline/adapters";
 import { log } from "../util/log";
 import { hashPassword } from "../util/password";
 import { INSTITUTION, emailBanner } from "../branding";
@@ -31,6 +35,8 @@ import { admissionPack, applicationPack } from "../pack";
 export interface WebDeps {
   repo: Repo;
   ctx: PipelineContext; // reuse the pipeline's sender/vision adapters
+  /** Manual "Sync now" hook — one live ingest pass; returns the failure, if any. */
+  gmailSync?: () => Promise<Error | null>;
 }
 
 /**
@@ -51,7 +57,7 @@ function makeRateLimiter(limit: number, windowMs: number) {
 }
 
 export function createApp(deps: WebDeps): Express {
-  const { repo, ctx } = deps;
+  const { repo, ctx, gmailSync } = deps;
   const app = express();
   /** Institution name for all branding — fixed; no settings field exists. */
   const instName = (): string => INSTITUTION;
@@ -103,11 +109,12 @@ export function createApp(deps: WebDeps): Express {
     res.send(Buffer.from(LOGO_WHITE_BASE64, "base64"));
   });
 
-  // Browser-tab mark: the official logo, same transparent PNG.
+  // Browser-tab mark: the purple "R" app tile — crisp at 16px, unmistakably
+  // Riara. A real favicon (not the wide crest squashed into a square).
   app.get("/assets/favicon", (_req, res) => {
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "public, max-age=604800");
-    res.send(Buffer.from(LOGO_BASE64, "base64"));
+    res.send(Buffer.from(FAVICON_BASE64, "base64"));
   });
 
   // Self-hosted typefaces (no CDN): Manrope for UI, Instrument Serif display.
@@ -247,6 +254,13 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Case file ────────────────────────────────────────────────────────────
 
+  // ── Admissions: the whole pipeline, split into its levels ─────────────────
+  // Every gauge on the dashboard opens this page at its own stage; the stage
+  // tabs show live counts. Staff act on cases right here.
+  app.get("/admissions", requireLogin, (req, res) => {
+    res.send(admissionsPage(c(req), String(req.query.stage ?? "all")));
+  });
+
   app.get("/case/:id", requireLogin, (req, res) => {
     const a = repo.getApplicant(Number(req.params.id));
     if (!a) return res.status(404).send("Case not found.");
@@ -349,39 +363,17 @@ export function createApp(deps: WebDeps): Express {
     }
 
     if (action === "request_info") {
+      // Actions open a READY, pre-filled reply — nothing leaves until the
+      // officer has seen it and pressed Send on the compose page.
       const activeDocs = repo.listDocuments(id, { activeOnly: true });
-      // effectiveRequirements — the FROZEN snapshot — not live rules: a case
-      // triaged under the old requirement set must not be chased under a new
-      // one just because staff clicked a button.
-      const requirements = repo.effectiveRequirements(a).filter((r) => r.required);
-      const present = activeDocs.map((d) => d.document_type);
-      const missing = requirements.filter((r) => !present.includes(r.document_type));
-      const tpl = repo.getTemplate(activeDocs.length === 0 ? "docs_request" : "missing_documents");
-      if (tpl) {
-        const rendered = renderTemplate(tpl.subject, tpl.body, {
-          ref: a.ref_number,
-          institution: instName(),
-          name: a.full_name ?? undefined,
-          missingLabels: missing.map((m) => docLabel(m.document_type)),
-          checklist: checklistText({ requirements, presentTypes: present }),
-          statusLabel: LIFECYCLE_LABELS[a.lifecycle],
-        });
-        try {
-          await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
-            banner: emailBanner(repo),
-          });
-        } catch (e) {
-          repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
-          return res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
-        }
-        repo.insertEmail({
-          applicant_id: id, message_id: `manual-${Date.now()}`, thread_id: a.thread_id, direction: "out",
-          from_addr: "", to_addr: a.email_address, subject: rendered.subject, body: rendered.body, category: null, auto: 0,
-          at: new Date().toISOString(),
-        });
-        staffAction(req, id, "email_sent_manual", `requested missing documents: "${rendered.subject}"`);
-        return res.redirect(backToCase(id, "Missing-documents request sent."));
-      }
+      const tplKey = activeDocs.length === 0 ? "docs_request" : "missing_documents";
+      return res.redirect(`/case/${id}/compose?template=${tplKey}`);
+    }
+    if (action === "ack_receipt") {
+      return res.redirect(`/case/${id}/compose?template=ack_received`);
+    }
+    if (action === "status_answer") {
+      return res.redirect(`/case/${id}/compose?template=status_answer`);
     }
     res.redirect(backToCase(id, "No action taken."));
   });
@@ -483,6 +475,65 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(backToCase(id, isAdmission
       ? `Admission pack sent — letter plus ${attachments.length} documents.`
       : "Application pack sent — form and brochure attached."));
+  });
+
+  // Compose: an action (e.g. "Request missing documents") or any template
+  // opens a full-page reply with everything pre-filled — the officer edits if
+  // they want, presses Send, done. One obvious path: draft → send.
+  const renderFor = (a: ApplicantRow, subject: string, body: string) =>
+    renderTemplate(subject, body, {
+      ref: a.ref_number,
+      institution: instName(),
+      name: a.full_name ?? undefined,
+      missingLabels: repo.effectiveRequirements(a)
+        .filter((r) => r.required)
+        .filter((r) => !repo.listDocuments(a.id, { activeOnly: true }).some((d) => d.document_type === r.document_type))
+        .map((r) => docLabel(r.document_type)),
+      checklist: checklistText({
+        requirements: repo.effectiveRequirements(a),
+        presentTypes: repo.listDocuments(a.id, { activeOnly: true }).map((d) => d.document_type),
+      }),
+      statusLabel: LIFECYCLE_LABELS[a.lifecycle],
+      programme: a.programme ? (repo.programmeByCode(a.programme)?.name ?? a.programme) : undefined,
+      regDate: repo.getSetting("reg_date", ""),
+      orientationDates: repo.getSetting("orientation_dates", ""),
+    });
+
+  app.get("/case/:id/compose", requireLogin, (req, res) => {
+    const a = repo.getApplicant(Number(req.params.id));
+    if (!a) return res.status(404).send("Case not found.");
+    const tpl = repo.getTemplate(String(req.query.template ?? ""));
+    if (!tpl) return res.redirect(backToCase(a.id, "Unknown template."));
+    const rendered = renderFor(a, tpl.subject, tpl.body);
+    res.send(composePage(c(req), a, tpl, rendered));
+  });
+
+  app.post("/case/:id/compose", requireLogin, csrfCheck, async (req, res) => {
+    const a = repo.getApplicant(Number(req.params.id));
+    if (!a) return res.status(404).send("Case not found.");
+    const tplKey = String(req.body.template ?? "");
+    const tpl = repo.getTemplate(tplKey);
+    if (!tpl) return res.redirect(backToCase(a.id, "Unknown template."));
+    const subject = String(req.body.subject ?? "").trim();
+    const body = String(req.body.body ?? "").trim();
+    if (!subject || !body) {
+      const rendered = renderFor(a, subject || tpl.subject, body || tpl.body);
+      return res.send(composePage(c(req), a, tpl, rendered, "Both a subject and a body are needed before this can be sent."));
+    }
+    try {
+      await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
+        banner: tpl.include_banner === 0 ? null : emailBanner(repo),
+      });
+    } catch (e) {
+      repo.audit(a.id, req.staff!.username, "send_failed", (e as Error).message);
+      return res.redirect(backToCase(a.id, `Send failed: ${(e as Error).message}`));
+    }
+    repo.insertEmail({
+      applicant_id: a.id, message_id: `compose-${Date.now()}`, thread_id: a.thread_id, direction: "out",
+      from_addr: "", to_addr: a.email_address, subject, body, category: null, auto: 0, at: new Date().toISOString(),
+    });
+    staffAction(req, a.id, "email_sent_manual", `composed reply (${tpl.key}): "${subject}"`);
+    res.redirect(backToCase(a.id, `Reply sent to ${a.email_address}.`));
   });
 
   app.post("/case/:id/note", requireLogin, csrfCheck, (req, res) => {
@@ -592,6 +643,47 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(back(`Course ${programme} now handled by ${who}.`));
   });
 
+  // Editable course fields: entry requirements (and name/school) change over
+  // time — they are data, not code. New applicants are judged by the rules in
+  // force when THEY applied (requirement snapshots); edits affect new cases.
+  app.post("/config/programme/edit", requireLogin, requireRole("admin", "manager"), csrfCheck, (req, res) => {
+    const programme = String(req.body.programme ?? "").trim();
+    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#courses`;
+    if (!programme || !repo.programmeByCode(programme)) return res.redirect(back("Unknown course."));
+    repo.updateProgramme(programme, {
+      name: String(req.body.name ?? ""),
+      school: String(req.body.school ?? ""),
+      entry_requirements: String(req.body.entry_requirements ?? ""),
+    });
+    repo.audit(null, req.staff!.username, "programme_updated", `${programme}: catalogue fields edited`);
+    res.redirect(back(`Course ${programme} saved.`));
+  });
+
+  // Per-course grade requirements, edited straight from the course row.
+  app.post("/config/programme-requirements", requireLogin, requireRole("admin", "manager"), csrfCheck, (req, res) => {
+    const programme = String(req.body.programme ?? "").trim();
+    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#courses`;
+    if (!programme || !repo.programmeByCode(programme)) return res.redirect(back("Unknown course."));
+    const pairs: Array<[string, string]> = [
+      ["academic_cert", "kcse"],
+      ["kcpe_cert", "kcpe"],
+    ];
+    for (const [docType, prefix] of pairs) {
+      const meanGrade = String(req.body[`${prefix}_mean`] ?? "").trim().toUpperCase();
+      const subjects = String(req.body[`${prefix}_subjects`] ?? "").trim();
+      if (!meanGrade && !subjects) continue; // nothing entered for this row
+      if (meanGrade && !/^[A-E][+-]?$/.test(meanGrade)) {
+        return res.redirect(back(`"${meanGrade}" is not a KCSE grade — nothing saved.`));
+      }
+      repo.upsertRule({
+        programme, intake: null, document_type: docType as DocType, required: true,
+        meanGrade: meanGrade || null, subjectGrades: subjects || null,
+      });
+    }
+    repo.audit(null, req.staff!.username, "requirements_changed", `${programme}: grade requirements edited`);
+    res.redirect(back(`Grade requirements for ${programme} saved.`));
+  });
+
   // ── Gmail connect (OAuth code flow; tokens stored in Settings) ───────────
 
   const settingsBack = (msg: string) => `/config?msg=${encodeURIComponent(msg)}#gmail`;
@@ -666,6 +758,79 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(settingsBack("Gmail disconnected — live fetching stopped."));
   });
 
+  // Manual "Sync now": pull the inbox immediately instead of waiting for the
+  // next 60s poll. Errors are surfaced verbatim on the config page — a broken
+  // connection is never silently ignored.
+  app.post("/settings/gmail/sync", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, async (req, res) => {
+    if (!gmailSync) {
+      return res.redirect(settingsBack("No live mailbox — connect Gmail first."));
+    }
+    const err = await gmailSync();
+    if (err) {
+      repo.setSetting("gmail_last_error", err.message.slice(0, 300));
+      repo.audit(null, req.staff!.username, "gmail_sync_failed", err.message.slice(0, 200));
+      return res.redirect(settingsBack(`Sync failed: ${err.message}`));
+    }
+    repo.setSetting("gmail_last_sync_at", new Date().toISOString());
+    repo.setSetting("gmail_last_error", "");
+    repo.audit(null, req.staff!.username, "gmail_synced", "manual sync from Configuration");
+    res.redirect(settingsBack("Inbox synced — new mail has been triaged."));
+  });
+
+  // ── Gemini (document-reading AI) — a first-class settings field ───────────
+  // The key is stored in Settings, used by the extraction pipeline AT ONCE
+  // (no restart, no env file). "Test key" performs a real round-trip and
+  // reports exactly what happened.
+  const rebuildAdapters = () => {
+    const key = repo.getSetting("gemini_api_key", "").trim();
+    if (!key) return;
+    const model = repo.getSetting("gemini_model", "gemini-1.5-flash").trim() || "gemini-1.5-flash";
+    try {
+      const next: Adapters = {
+        ...ctx.adapters,
+        vision: new GeminiVisionAdapter(key, model),
+        watcher: ((w) => (input) => w.watch(input))(new GeminiWatcher(key, model)),
+      };
+      ctx.adapters = next;
+      repo.setSetting("gemini_last_error", "");
+      return;
+    } catch (e) {
+      repo.setSetting("gemini_last_error", (e as Error).message.slice(0, 300));
+    }
+  };
+  // Boot with a key that was saved earlier (server restarts keep it working).
+  rebuildAdapters();
+
+  app.post("/settings/gemini", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, async (req, res) => {
+    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#gemini`;
+    const key = String(req.body.gemini_api_key ?? "").trim();
+    const model = String(req.body.gemini_model ?? "gemini-1.5-flash").trim() || "gemini-1.5-flash";
+    if (req.body.clear !== undefined) {
+      repo.setSetting("gemini_api_key", "");
+      repo.setSetting("gemini_last_error", "");
+      repo.audit(null, req.staff!.username, "gemini_disabled", "API key removed — back to mock reading");
+      return res.redirect(back("Gemini key removed. Document reading falls back to text/OCR only."));
+    }
+    if (!key && !repo.getSetting("gemini_api_key", "")) {
+      return res.redirect(back("Paste a Gemini API key first (get one free at aistudio.google.com/apikey)."));
+    }
+    if (key) repo.setSetting("gemini_api_key", key);
+    repo.setSetting("gemini_model", model);
+    // Prove the key with ONE real API call before claiming it works.
+    try {
+      const probe = new GeminiVisionAdapter(repo.getSetting("gemini_api_key", ""), model);
+      await probe.probeKey();
+      rebuildAdapters();
+      repo.audit(null, req.staff!.username, "gemini_enabled", `live document reading on (${model})`);
+      return res.redirect(back(`Gemini is live (${model}) — unreadable scans are now read by AI, no restart needed.`));
+    } catch (e) {
+      const msg = (e as Error).message;
+      repo.setSetting("gemini_last_error", msg.slice(0, 300));
+      repo.audit(null, req.staff!.username, "gemini_test_failed", msg.slice(0, 200));
+      return res.redirect(back(`Gemini test call failed: ${msg}`));
+    }
+  });
+
   app.post("/settings/general", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
     // Blank identity fields keep their current value (an empty ref prefix
     // would break ref generation); numbers are validated.
@@ -734,6 +899,8 @@ export function createApp(deps: WebDeps): Express {
     res.redirect("/config#intakes");
   });
 
+  // Requirement rules now speak GRADES (mean grade + subject lines) — the way
+  // the university actually publishes entry requirements. No numeric points.
   app.post("/settings/rules/add", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
     const docType = String(req.body.document_type);
     // Anything outside the known document types would store a rule that can
@@ -741,20 +908,20 @@ export function createApp(deps: WebDeps): Express {
     if (!DOC_TYPES.includes(docType as DocType) || docType === "unknown") {
       return res.redirect("/config?msg=" + encodeURIComponent("Unknown document type — rule not saved.") + "#courses");
     }
-    const minPoints = req.body.min_grade_points !== undefined && req.body.min_grade_points !== ""
-      ? Number(req.body.min_grade_points)
-      : null;
-    if (minPoints !== null && (!Number.isFinite(minPoints) || minPoints < 0 || minPoints > 500)) {
-      return res.redirect("/config?msg=" + encodeURIComponent("Minimum points must be a number between 0 and 500 — rule not saved.") + "#courses");
+    const meanGrade = String(req.body.mean_grade ?? "").trim().toUpperCase();
+    if (meanGrade && !/^[A-E][+-]?$/.test(meanGrade)) {
+      return res.redirect("/config?msg=" + encodeURIComponent(`"${meanGrade}" is not a KCSE grade (use A, A-, B+, … E) — rule not saved.`) + "#courses");
     }
+    const subjectGrades = String(req.body.subject_grades ?? "").trim() || null;
     repo.upsertRule({
       programme: req.body.programme ? String(req.body.programme) : null,
       intake: req.body.intake ? String(req.body.intake) : null,
       document_type: docType as DocType,
       required: String(req.body.required) === "1",
-      minGradePoints: minPoints,
+      meanGrade: meanGrade || null,
+      subjectGrades,
     });
-    repo.audit(null, req.staff!.username, "requirements_changed", `rule added/updated for ${docType}`);
+    repo.audit(null, req.staff!.username, "requirements_changed", `rule saved for ${docType}${meanGrade ? ` (min ${meanGrade})` : ""}`);
     res.redirect("/config#courses");
   });
 

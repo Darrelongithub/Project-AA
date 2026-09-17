@@ -8,8 +8,8 @@ import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../typ
 import { docLabel } from "../rules";
 import { verifyPassword } from "../util/password";
 import {
-  avatar, categoryBadge, confidenceBadge, crest, esc, flagLabel, flowLine, fmtDate, fmtTime, layout,
-  lifecycleBadge, lifecycleStepper, priorityBadge, slaText, triageBadge, type Theme,
+  avatar, categoryBadge, confidenceBadge, crest, esc, flagLabel, flowLine, fmtDate, fmtTime, gaugeRow,
+  heroClock, layout, lifecycleBadge, lifecycleStepper, priorityBadge, slaText, triageBadge, type Theme,
 } from "./views";
 
 interface Ctx {
@@ -91,6 +91,7 @@ function greeting(): string {
 function adminDashboard(c: Ctx): string {
   const { repo } = c;
   const s = repo.dashboardStats();
+  const stage = repo.stageCounts();
   const audit = repo.recentAudit(12);
   const team = repo.staffStats();
   const alerts = repo.notificationsFor(c.user.id, 6);
@@ -111,8 +112,10 @@ function adminDashboard(c: Ctx): string {
         const specific = rules.filter((r) => r.programme === p.code);
         const effective = specific.length ? specific : rules.filter((r) => r.programme === null && r.intake === null);
         const required = effective.filter((r) => r.required).length;
-        const mins = effective.map((r) => r.minGradePoints).filter((n): n is number => n !== null);
-        const reqText = required ? `${required} required doc${required === 1 ? "" : "s"}${mins.length ? ` · min ${Math.max(...mins)} pts` : ""}` : `<span class="muted">base rules apply</span>`;
+        const graded = effective.filter((r) => r.meanGrade);
+        const reqText = required
+          ? `${required} required doc${required === 1 ? "" : "s"}${graded.length ? ` · min ${graded.map((r) => r.meanGrade).join("/")}` : ""}`
+          : `<span class="muted">base rules apply</span>`;
         const n = all.filter((a) => a.programme === p.code).length;
         return `<tr>
           <td><b>${esc(p.code)}</b> <span class="muted small">${esc(p.name)}</span></td>
@@ -131,6 +134,34 @@ function adminDashboard(c: Ctx): string {
     </div>`)
     .join("");
 
+  // Team performance — the same numbers a staff member sees, per person.
+  const teamRows = team
+    .map((t) => `<tr${t.active ? "" : ' class="muted"'}>
+      <td><div class="nameline">${avatar(t.display_name, 26)}<span><b>${esc(t.display_name)}</b><br><span class="muted small">${esc(capFirst(t.role))}${t.active ? "" : " · deactivated"}</span></span></div></td>
+      <td>${t.assignedCases}</td>
+      <td>${t.emailsReceived} in · ${t.emailsSent} out</td>
+      <td>${t.avgResponseMinutes !== null ? `${t.avgResponseMinutes} min` : "—"}</td>
+      <td>${t.admissionsCompleted}</td>
+    </tr>`)
+    .join("");
+
+  // Approvals: completed files with WHO completed them and when — real,
+  // attributable work, not vanity counts.
+  const completedFiles = all
+    .filter((a) => a.lifecycle === "completed")
+    .slice(0, 12)
+    .map((a) => {
+      const appr = repo.approverFor(a.id);
+      return `<tr>
+        <td class="mono"><a href="/case/${a.id}">${esc(a.ref_number)}</a></td>
+        <td>${esc(a.full_name ?? "—")}</td>
+        <td>${esc(a.programme ?? "—")}</td>
+        <td class="small">${esc(appr?.actor ?? "—")}</td>
+        <td class="small nowrap muted">${esc(fmtDate(appr?.at ?? a.updated_at))}</td>
+      </tr>`;
+    })
+    .join("");
+
   return head(
     c,
     `Overview — ${c.institution}`,
@@ -142,9 +173,41 @@ function adminDashboard(c: Ctx): string {
     <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}.</h1>
     <p class="lede">Everything worth knowing is right here.</p>
   </div>
-  ${completion !== null ? `<div class="herostat"><div class="n">${completion}%</div><div class="l">of ${applications} files complete</div></div>` : ""}
+  ${heroClock()}
 </div>
-${flowLine()}
+
+<section class="card">
+  <h2>Totals <span class="small muted" style="text-transform:none;letter-spacing:0">— ${applications} applications, every dial opens its level in Admissions</span></h2>
+  ${gaugeRow([
+    { n: stage.finished, label: "Finished", tone: "green", href: "/admissions?stage=completed", caption: `${completion ?? 0}% of all files` },
+    { n: stage.unfinished, label: "Unfinished", tone: "orange", href: "/admissions?stage=unfinished", caption: "gathering documents" },
+    { n: stage.pending, label: "Pending review", tone: "purple", href: "/admissions?stage=awaiting_review", caption: "waiting on staff" },
+    { n: stage.enquiries, label: "Enquiries today", tone: "blue", href: "/admissions?stage=enquiries", caption: "across the team" },
+  ])}
+  <h2 style="margin-top:26px">Pipeline levels</h2>
+  ${gaugeRow([
+    { n: stage.application_received, label: "Application received", href: "/admissions?stage=application_received" },
+    { n: stage.documents_received, label: "Documents received", href: "/admissions?stage=documents_received" },
+    { n: stage.documents_checked, label: "Documents checked", href: "/admissions?stage=documents_checked" },
+    { n: stage.awaiting_review, label: "Awaiting review", href: "/admissions?stage=awaiting_review" },
+    { n: stage.verification, label: "Verification", href: "/admissions?stage=verification" },
+    { n: stage.completed, label: "Completed", tone: "green", href: "/admissions?stage=completed" },
+  ])}
+</section>
+
+<section class="card nopad">
+  <div class="card-head"><h2>Team performance <span class="muted small" style="text-transform:none;letter-spacing:0">— how your staff are working</span></h2><a class="small" href="/staff">staff accounts →</a></div>
+  ${team.length
+    ? `<table><tr><th>Staff member</th><th>Assigned cases</th><th>Emails</th><th>Avg response</th><th>Files completed</th></tr>${teamRows}</table>`
+    : `<div class="empty"><p>No staff accounts yet.</p></div>`}
+</section>
+
+<section class="card nopad">
+  <div class="card-head"><h2>Completed files &amp; approvals <span class="muted small" style="text-transform:none;letter-spacing:0">— who finished what, and when</span></h2></div>
+  ${completedFiles
+    ? `<table><tr><th>Ref</th><th>Applicant</th><th>Course</th><th>Completed by</th><th>When</th></tr>${completedFiles}</table>`
+    : `<div class="empty"><p>No completed files yet — approvals appear here as cases finish.</p></div>`}
+</section>
 
 <section class="card nopad">
   <div class="card-head"><h2>Courses &amp; ownership</h2><a class="small" href="/config#courses">manage →</a></div>
@@ -167,6 +230,7 @@ ${flowLine()}
     <h2>System</h2>
     <div class="kv">
       <div><span>Gmail</span><b>${gmailConnected ? `connected${lastSync ? ` · synced ${esc(fmtDate(lastSync))}` : ""}` : "not connected"} <a class="small" href="/config#gmail">manage</a></b></div>
+      <div><span>Document AI (Gemini)</span><b>${repo.getSetting("gemini_api_key", "") ? "key saved · live" : "not set"} <a class="small" href="/config#gemini">manage</a></b></div>
       <div><span>Automation</span><b>${globalMode === "draft" ? "draft-first" : "auto"} · <a class="small" href="/settings#automation">change</a></b></div>
       <div><span>Team</span><b>${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">staff</a></b></div>
       <div><span>Replies to date</span><b>${(() => { const ac = repo.accuracyStats(); return Number(ac.autoSends) + Number(ac.humanSends); })()}</b></div>
@@ -202,6 +266,7 @@ export function dashboardPage(c: Ctx): string {
 function officerDashboard(c: Ctx): string {
   const { repo } = c;
   const s = repo.dashboardStats();
+  const stage = repo.stageCounts();
   const today = repo.todayStats();
   const accuracy = repo.accuracyStats();
   const queue = repo.queueView();
@@ -275,13 +340,6 @@ function officerDashboard(c: Ctx): string {
     </div>`)
     .join("");
 
-  const heroStat =
-    Number(s.humanReview) > 0
-      ? { n: String(s.humanReview), l: "cases waiting for review" }
-      : reviewed > 0
-        ? { n: `${accuracyPct}%`, l: "automation stood uncorrected" }
-        : null;
-
   return head(
     c,
     `Overview — ${c.institution}`,
@@ -293,9 +351,27 @@ function officerDashboard(c: Ctx): string {
     <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}.</h1>
     <p class="lede">Here is what needs you today.</p>
   </div>
-  ${heroStat ? `<div class="herostat"><div class="n">${heroStat.n}</div><div class="l">${heroStat.l}</div></div>` : ""}
+  ${heroClock()}
 </div>
-${flowLine()}
+
+<section class="card">
+  <h2>The pipeline, at a glance <span class="small muted" style="text-transform:none;letter-spacing:0">— every dial opens its level in Admissions</span></h2>
+  ${gaugeRow([
+    { n: stage.finished, label: "Finished", tone: "green", href: "/admissions?stage=completed", caption: "completed files" },
+    { n: stage.unfinished, label: "Unfinished", tone: "orange", href: "/admissions?stage=unfinished", caption: "still gathering documents" },
+    { n: stage.pending, label: "Pending review", tone: "purple", href: "/admissions?stage=awaiting_review", caption: "waiting on a human" },
+    { n: stage.enquiries, label: "Enquiries today", tone: "blue", href: "/admissions?stage=enquiries", caption: "fee · admission · follow-ups" },
+  ])}
+  <h2 style="margin-top:26px">By level</h2>
+  ${gaugeRow([
+    { n: stage.application_received, label: "Application received", href: "/admissions?stage=application_received" },
+    { n: stage.documents_received, label: "Documents received", href: "/admissions?stage=documents_received" },
+    { n: stage.documents_checked, label: "Documents checked", href: "/admissions?stage=documents_checked" },
+    { n: stage.awaiting_review, label: "Awaiting review", href: "/admissions?stage=awaiting_review" },
+    { n: stage.verification, label: "Verification", href: "/admissions?stage=verification" },
+    { n: stage.completed, label: "Completed", tone: "green", href: "/admissions?stage=completed" },
+  ])}
+</section>
 
 <div class="cols wide">
   <section class="card nopad">
@@ -401,6 +477,116 @@ export function queuePage(c: Ctx, filter: string): string {
   <a class="btn small ${filter === "overdue" ? "" : "ghost"}" href="/queue?filter=overdue">Overdue</a>
 </p>
 ${cards || `<div class="card muted">Queue is empty.</div>`}`
+  );
+}
+
+// ── Admissions: the pipeline split into its levels ──────────────────────────
+// Every dashboard gauge lands here. Staff see who is at each level, open case
+// files, and act without leaving the page.
+
+const STAGE_TABS: Array<{ key: string; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "application_received", label: "Application received" },
+  { key: "documents_received", label: "Documents received" },
+  { key: "documents_checked", label: "Documents checked" },
+  { key: "awaiting_review", label: "Awaiting review" },
+  { key: "verification", label: "Verification" },
+  { key: "completed", label: "Completed" },
+];
+
+export function admissionsPage(c: Ctx, stage: string): string {
+  const { repo } = c;
+  const counts = repo.stageCounts();
+  const enquiryCats = ["fee_enquiry", "admission_enquiry", "follow_up", "complaint", "other"];
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  const hasEnquiryToday = new Map<number, boolean>();
+  for (const a of repo.allApplicants()) {
+    hasEnquiryToday.set(
+      a.id,
+      repo.emailsForApplicant(a.id).some((e) => e.direction === "in" && enquiryCats.includes(e.category ?? "") && new Date(e.at) >= start)
+    );
+  }
+  const enquiriesToday = repo.allApplicants().filter((a) => hasEnquiryToday.get(a.id));
+
+  const staffById = new Map(repo.listStaff().map((m) => [m.id, m.display_name]));
+  const validStages = new Set(STAGE_TABS.map((t) => t.key));
+  const active = validStages.has(stage) ? stage : "all";
+
+  let rows = repo.allApplicants();
+  if (active === "unfinished") rows = rows.filter((a) => ["application_received", "documents_received", "documents_checked"].includes(a.lifecycle));
+  else if (active === "pending") rows = rows.filter((a) => ["awaiting_review", "verification"].includes(a.lifecycle));
+  else if (active === "enquiries") rows = enquiriesToday;
+  else if (active !== "all") rows = rows.filter((a) => a.lifecycle === active);
+  rows = rows.slice().sort((x, y) => (y.updated_at > x.updated_at ? 1 : -1));
+
+  const countFor = (key: string): number => {
+    if (key === "all") return counts.total;
+    if (key === "unfinished") return counts.unfinished;
+    if (key === "enquiries") return enquiriesToday.length;
+    return (counts as unknown as Record<string, number>)[key] ?? 0;
+  };
+
+  const tableRows = rows
+    .slice(0, 300)
+    .map((a) => {
+      const owner = a.assigned_to ? staffById.get(a.assigned_to) : null;
+      const courseOwner = a.programme ? repo.programmeByCode(a.programme)?.owner_name : null;
+      return `<tr>
+        <td class="mono"><a href="/case/${a.id}">${esc(a.ref_number)}</a></td>
+        <td><div class="nameline">${avatar(a.full_name ?? a.ref_number, 30)}<span><b>${esc(a.full_name ?? "Unknown")}</b><br><span class="muted small">${esc(a.email_address)}</span></span></div></td>
+        <td>${a.programme ? `<b>${esc(a.programme)}</b>` : `<span class="muted">—</span>`}<br><span class="muted small">${esc(a.intake ?? "no intake yet")}</span></td>
+        <td>${lifecycleBadge(a.lifecycle)}</td>
+        <td class="small nowrap muted" title="Applied">${esc(fmtDate(a.created_at))}</td>
+        <td class="small">${owner ? esc(owner) : courseOwner ? `<span class="muted">course owner: ${esc(courseOwner)}</span>` : `<span class="muted">unassigned</span>`}</td>
+        <td class="nowrap">
+          <a class="btn small ghost" href="/case/${a.id}">Open</a>
+          <a class="btn small" href="/case/${a.id}/compose?template=missing_documents" title="A ready-drafted request — edit if you like, then send">Request docs</a>
+        </td>
+      </tr>`;
+    })
+    .join("");
+
+  return head(
+    c,
+    `Admissions — ${c.institution}`,
+    "admissions",
+    `
+<h1>Admissions</h1>
+<div class="sub">Every applicant sits in exactly one level. Finished files are counted at Completed — everything still moving is counted where it stands. Open a case to work it.</div>
+
+<div class="gauges" style="margin-bottom:26px">
+  <span class="gauge g-green">
+    <span class="g-ring"><svg viewBox="0 0 110 110" width="104" height="104" aria-hidden="true"><circle class="g-track" cx="55" cy="55" r="46"/><circle class="g-arc" cx="55" cy="55" r="46"/></svg><span class="g-n">${counts.finished}</span></span>
+    <span class="g-l">Finished</span>
+  </span>
+  <span class="gauge g-orange">
+    <span class="g-ring"><svg viewBox="0 0 110 110" width="104" height="104" aria-hidden="true"><circle class="g-track" cx="55" cy="55" r="46"/><circle class="g-arc" cx="55" cy="55" r="46"/></svg><span class="g-n">${counts.unfinished}</span></span>
+    <span class="g-l">Unfinished</span>
+  </span>
+  <span class="gauge g-purple">
+    <span class="g-ring"><svg viewBox="0 0 110 110" width="104" height="104" aria-hidden="true"><circle class="g-track" cx="55" cy="55" r="46"/><circle class="g-arc" cx="55" cy="55" r="46"/></svg><span class="g-n">${counts.pending}</span></span>
+    <span class="g-l">Pending review</span>
+  </span>
+  <span class="gauge g-blue">
+    <span class="g-ring"><svg viewBox="0 0 110 110" width="104" height="104" aria-hidden="true"><circle class="g-track" cx="55" cy="55" r="46"/><circle class="g-arc" cx="55" cy="55" r="46"/></svg><span class="g-n">${enquiriesToday.length}</span></span>
+    <span class="g-l">Enquiries today</span>
+  </span>
+</div>
+
+<div class="tabs">
+  ${STAGE_TABS.concat([{ key: "unfinished", label: "Unfinished" }, { key: "enquiries", label: "Enquiries" }])
+    .map((t) => `<a href="/admissions?stage=${t.key}" class="${active === t.key ? "on" : ""}">${esc(t.label)}<span class="cnt">${countFor(t.key)}</span></a>`)
+    .join("")}
+</div>
+
+<section class="card nopad">
+  ${rows.length
+    ? `<table>
+        <tr><th>Ref</th><th>Applicant</th><th>Applied for</th><th>Level</th><th>Applied</th><th>Handled by</th><th></th></tr>
+        ${tableRows}
+      </table>`
+    : `<div class="empty">${flowLine(150, 26)}<p>Nobody at this level right now.</p><p class="small muted">New applications land at <b>Application received</b> and move down the pipeline as your team works them.</p></div>`}
+</section>`
   );
 }
 
@@ -575,31 +761,37 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
   const tasks = repo.listTasks(a.id);
   const changed = whatChanged(repo, a);
   const threads = repo.threadsForApplicant(a.id);
+  const programme = a.programme ? repo.programmeByCode(a.programme) : undefined;
+  const staffById = new Map(staff.map((m) => [m.id, m.display_name]));
+  const handledBy = a.assigned_to ? staffById.get(a.assigned_to) : programme?.owner_name ?? null;
 
   const checklist = requirements
     .filter((r) => r.required)
     .map((r) => {
       const doc = activeDocs.find((d) => d.document_type === r.document_type);
+      const gradeBits: string[] = [];
+      if (r.meanGrade) gradeBits.push(`min ${esc(r.meanGrade)}`);
+      if (r.subjectGrades) gradeBits.push(esc(r.subjectGrades));
       return doc
-        ? `<div><span class="ok">✓</span> ${esc(docLabel(r.document_type))} <span class="muted small">(${esc(doc.extraction_method)} · ${doc.confidence})</span></div>`
-        : `<div><span class="no">✗</span> ${esc(docLabel(r.document_type))}</div>`;
+        ? `<div><span class="ok">✓</span> <span>${esc(docLabel(r.document_type))} <span class="muted small">(${esc(doc.extraction_method)} · ${doc.confidence})</span>${gradeBits.length ? `<br><span class="muted small" style="margin-left:23px">rule: ${gradeBits.join(" · ")}</span>` : ""}</span></div>`
+        : `<div><span class="no">✗</span> <span>${esc(docLabel(r.document_type))}${gradeBits.length ? ` <span class="muted small">— rule: ${gradeBits.join(" · ")}</span>` : ""}</span></div>`;
     })
     .join("");
 
   const docRows = allDocs
     .map((d) => {
       const fields = Object.entries(d.extracted_fields)
-        .filter(([, v]) => v !== null && v !== undefined && v !== "")
-        .map(([k, v]) => `${esc(k)}: <b>${esc(v)}</b>`)
+        .filter(([, v]) => v !== null && v !== undefined && v !== "" && JSON.stringify(v) !== "{}")
+        .map(([k, v]) => `${esc(k)}: <b>${esc(typeof v === "object" ? Object.entries(v as Record<string, string>).map(([sk, sv]) => `${sk} ${sv}`).join(", ") : String(v))}</b>`)
         .join(" · ");
       const status = d.is_duplicate
         ? `<span class="badge b-gray">duplicate of #${d.duplicate_of}</span>`
         : d.superseded_by
           ? `<span class="badge b-gray">superseded by #${d.superseded_by}</span>`
-          : `<span class="badge b-blue">active</span>`;
+          : `<span class="badge b-purple">active</span>`;
       return `<tr>
         <td class="mono small">#${d.id}</td>
-        <td>${esc(docLabel(d.document_type))}<br><span class="muted small">${esc(fields || "no fields extracted")}</span></td>
+        <td>${esc(docLabel(d.document_type))}<br><span class="muted small">${fields || "no fields extracted"}</span></td>
         <td>${status}</td>
         <td>${confidenceBadge(d.confidence)}<br><span class="muted small">${esc(d.extraction_method)}</span></td>
         <td class="small">${esc(fmtDate(d.received_at))}<br><span class="muted">email ${esc(d.source_email_id)}</span></td>
@@ -611,13 +803,13 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
   const emailCards = emails
     .map((e) => `<div class="emailcard ${e.direction === "out" ? "out" : ""}">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <span class="badge ${e.direction === "in" ? "b-blue" : "b-green"}">${e.direction === "in" ? "← incoming" : "→ outgoing"}</span>
+        <span class="badge ${e.direction === "in" ? "b-blue" : "b-purple"}">${e.direction === "in" ? "← from applicant" : "→ to applicant"}</span>
         ${categoryBadge(e.category)}
         ${e.channel && e.channel !== "email" ? `<span class="badge b-blue">via ${esc(e.channel)}</span>` : ""}
         ${e.auto ? `<span class="badge b-gray">automated</span>` : ""}
         <span class="small muted" style="margin-left:auto" title="${esc(fmtDate(e.at))}"><span data-rel="${esc(e.at)}">${esc(fmtDate(e.at))}</span></span>
       </div>
-      <p style="margin:8px 0 0"><b>${esc(e.subject)}</b></p>
+      <p style="margin:10px 0 0"><b>${esc(e.subject)}</b></p>
       <pre>${esc(e.body.slice(0, 900))}</pre>
     </div>`)
     .reverse()
@@ -652,12 +844,12 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
 ${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
 <div class="hero">
   <div class="row">
-    ${avatar(a.full_name ?? a.ref_number, 54)}
+    ${avatar(a.full_name ?? a.ref_number, 58)}
     <div style="min-width:0">
-      <h1 style="margin:0">${esc(a.full_name ?? "Unknown applicant")}</h1>
-      <div class="sub" style="margin:2px 0 6px"><span class="mono">${esc(a.ref_number)}</span> · opened ${esc(fmtDate(a.created_at))}</div>
+      <h1 style="margin:0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">${esc(a.full_name ?? "Unknown applicant")}${lifecycleBadge(a.lifecycle)}</h1>
+      <div class="sub" style="margin:4px 0 8px"><span class="mono">${esc(a.ref_number)}</span> · opened ${esc(fmtDate(a.created_at))}${handledBy ? ` · handled by <b>${esc(handledBy)}</b>` : ""}</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
-        ${lifecycleBadge(a.lifecycle)} ${triageBadge(a.triage)} ${priorityBadge(a.priority)}
+        ${triageBadge(a.triage)} ${priorityBadge(a.priority)}
         ${a.escalated ? `<span class="badge b-red">escalated</span>` : ""}
       </div>
     </div>
@@ -671,18 +863,20 @@ ${lifecycleStepper(a.lifecycle)}
 
 ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${changed}</div>` : ""}
 
-<div class="cols" style="margin-top:18px">
-  <div>
+<div class="case-grid">
+  <div class="case-main">
+
     <div class="card">
-      <h2>Profile</h2>
-      <dl class="kv">
+      <h2>Details &amp; what they applied for</h2>
+      <dl class="kv" style="margin-top:6px">
         <dt>Name</dt><dd>${esc(a.full_name ?? "—")}</dd>
         <dt>Email</dt><dd>${esc(a.email_address)}</dd>
         <dt>Phone</dt><dd>${esc(a.phone ?? "—")}</dd>
-        <dt>Programme</dt><dd>${esc(a.programme ?? "—")}</dd>
+        <dt>Applied for</dt><dd>${programme ? `<b>${esc(programme.code)} — ${esc(programme.name)}</b>${programme.school ? `<br><span class="muted small">${esc(programme.school)}</span>` : ""}` : `<span class="muted">not identified yet — the latest email decides it</span>`}</dd>
         <dt>Intake</dt><dd>${esc(a.intake ?? "—")}</dd>
         <dt>Reference no.</dt><dd class="mono">${esc(a.ref_number)}</dd>
-        <dt>Threads</dt><dd>${threads.length} linked conversation${threads.length === 1 ? "" : "s"} <span class="muted small">(cross-thread reconstruction)</span></dd>
+        <dt>Current level</dt><dd>${lifecycleBadge(a.lifecycle)} <span class="muted small">moved through ${history.length} change${history.length === 1 ? "" : "s"}</span></dd>
+        <dt>Threads</dt><dd>${threads.length} linked conversation${threads.length === 1 ? "" : "s"}</dd>
         <dt>Follow-up ladder</dt><dd>${a.followup_next_at ? `rung ${a.followup_rung} — next reminder ${esc(fmtDate(a.followup_next_at))}` : "not armed"}</dd>
         <dt>SLA</dt><dd>${a.sla_due_at ? `${esc(slaText(a.sla_due_at, a.sla_handled_at))} (due ${esc(fmtDate(a.sla_due_at))})` : "—"}</dd>
         <dt>Assigned to</dt><dd>
@@ -700,65 +894,51 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
           </form>
         </dd>
       </dl>
+      ${programme?.entry_requirements ? `<p class="small muted" style="margin:14px 0 0"><b>Published entry requirements for ${esc(programme.code)}:</b> ${esc(programme.entry_requirements)} <span class="muted">— editable in Configuration.</span></p>` : ""}
     </div>
 
     <div class="card">
       <h2>Document checklist</h2>
-      <div class="checklist">${checklist}</div>
-      <p class="small muted">${a.requirements_snapshot ? "Judged by the requirement set frozen at first triage (rule changes don't move goalposts)." : `Resolved for ${esc(a.programme ?? "all programmes")} / ${esc(a.intake ?? "all intakes")}`} — edit rules in Configuration.</p>
+      <div class="checklist" style="margin-top:6px">${checklist}</div>
+      <p class="small muted" style="margin-top:14px">${a.requirements_snapshot ? "Judged by the requirement set frozen at first triage (rule changes don't move goalposts)." : `Resolved for ${esc(a.programme ?? "all programmes")} / ${esc(a.intake ?? "all intakes")}`} — grade rules are editable in Configuration.</p>
     </div>
 
     <div class="card">
-      <h2>Tasks</h2>
-      ${tasks.length ? tasks.map((t) => `<div class="taskrow ${t.done ? "done" : ""}">
-        <form method="post" action="/case/${a.id}/task/toggle" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-          <input type="hidden" name="task_id" value="${t.id}">
-          <button class="btn small ghost" title="toggle">${t.done ? "☑" : "☐"}</button>
-        </form>
-        <span class="t">${esc(t.title)}</span>
-        <span class="small muted" style="margin-left:auto">${t.done ? "done" : ""} ${esc(t.display_name ?? "")}</span>
-      </div>`).join("") : `<p class="muted small">No tasks yet.</p>`}
-      <form method="post" action="/case/${a.id}/task/add" style="display:flex;gap:6px;margin-top:10px">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-        <input type="text" name="title" placeholder="e.g. Verify certificate with KNEC" style="flex:1">
-        <button class="btn small">Add task</button>
-      </form>
+      <h2>Email history <span class="muted small" style="text-transform:none;letter-spacing:0">— everything exchanged with ${esc(a.full_name ?? "this applicant")}</span></h2>
+      ${emailCards || `<p class="muted">No emails recorded.</p>`}
     </div>
 
     <div class="card">
-      <h2>Flags</h2>
-      <ul style="margin:0;padding-left:18px">${flagRows}</ul>
+      <h2>Documents (${allDocs.length} received, ${activeDocs.length} active)</h2>
+      <table><tr><th>#</th><th>Type &amp; extracted fields</th><th>State</th><th>Confidence</th><th>Received</th><th></th></tr>
+      ${docRows || `<tr><td colspan="6" class="muted">No documents received yet.</td></tr>`}</table>
     </div>
 
-    <div class="card">
-      <h2>Internal notes <span class="muted small">(not visible to applicant)</span></h2>
-      ${noteCards || `<p class="muted small">No notes yet.</p>`}
-      <form method="post" action="/case/${a.id}/note">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-        <label>Add note</label>
-        <textarea name="body" style="min-height:60px" placeholder="e.g. Applicant called. Waiting for original certificate."></textarea>
-        <p><button class="btn small">Save note</button></p>
-      </form>
+    <div class="cols">
+      <div class="card">
+        <h2>Status history</h2>
+        <table><tr><th>When</th><th>Change</th><th>By</th><th>Why</th></tr>
+        ${historyRows || `<tr><td colspan="4" class="muted">No changes recorded.</td></tr>`}</table>
+      </div>
+      <div class="card">
+        <h2>Audit log</h2>
+        <div class="timeline">${auditRows || `<p class="muted">Empty.</p>`}</div>
+      </div>
     </div>
   </div>
 
-  <div>
+  <div class="case-side no-print">
+
     <div class="card">
       <h2>Actions</h2>
-      <div class="formrow">
-        <form method="post" action="/case/${a.id}/action">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-          ${nextStage ? `<button class="btn" name="action" value="advance">Advance → ${esc(LIFECYCLE_LABELS[nextStage])}</button>` : ""}
-          ${a.lifecycle !== "completed" ? `<button class="btn ghost" name="action" value="complete">Mark completed</button>` : ""}
-        </form>
+      <div class="actionlist">
+        ${nextStage ? `<form method="post" action="/case/${a.id}/action" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn" name="action" value="advance">Advance → ${esc(LIFECYCLE_LABELS[nextStage])}</button></form>` : ""}
+        ${a.lifecycle !== "completed" ? `<form method="post" action="/case/${a.id}/action" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost" name="action" value="complete">Mark completed</button></form>` : ""}
+        <a class="btn ghost" href="/case/${a.id}/compose?template=missing_documents">Request missing documents <span class="muted small">→ ready template</span></a>
+        <a class="btn ghost" href="/case/${a.id}/compose?template=status_answer">Answer status question</a>
+        <a class="btn ghost" href="/case/${a.id}/compose?template=ack_received">Acknowledge receipt</a>
       </div>
-      <div class="formrow" style="margin-top:10px">
-        <form method="post" action="/case/${a.id}/action" style="display:flex;gap:6px;align-items:center">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-          <button class="btn ghost" name="action" value="request_info">Request missing docs</button>
-        </form>
-      </div>
+      <p class="small muted" style="margin:10px 0 0">Every action opens a <b>ready, pre-filled reply</b> — nothing is sent until you press Send.</p>
     </div>
 
     <div class="card">
@@ -766,16 +946,15 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       <p class="small muted">Pick a reply template — it is rendered with this applicant's details. Preview first; nothing is sent without your click.</p>
       <form method="post" action="/case/${a.id}/send">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-        <div class="formrow" style="align-items:end">
-          <div style="flex:2"><label>Template</label><select name="template">${tplOptions}</select></div>
-          <div style="flex:0;display:flex;gap:8px">
-            <button class="btn ghost" name="preview" value="1">Preview</button>
-            <button class="btn" onclick="return confirm('Send this reply now?')">Send now</button>
-          </div>
+        <label>Template</label><select name="template">${tplOptions}</select>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn ghost" name="preview" value="1">Preview</button>
+          <button class="btn" onclick="return confirm('Send this reply now?')">Send now</button>
         </div>
-        ${preview ? `<div class="resp-preview"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>` : ""}
-        <p class="small muted" style="margin-top:12px">Auto-response toggles per category live in <a href="/settings#automation">Settings → Automation</a>. Current modes: ${esc(autoSummary || "defaults")}</p>
       </form>
+      ${preview ? `<div class="resp-preview"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>` : ""}
+      <p class="small muted" style="margin-top:12px">Or open any template in the full composer: ${templates.slice(0, 3).map((t) => `<a href="/case/${a.id}/compose?template=${esc(t.key)}">${esc(t.name)}</a>`).join(" · ")}</p>
+      <p class="small muted" style="margin:6px 0 0">Auto-response toggles per category live in <a href="/settings#automation">Settings → Automation</a>. Current modes: ${esc(autoSummary || "defaults")}</p>
     </div>
 
     ${c.user.role === "admin" || c.user.role === "manager" ? `<div class="card" id="packs">
@@ -815,9 +994,37 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
     </div>` : ""}
 
     <div class="card">
-      <h2>Documents (${allDocs.length} received, ${activeDocs.length} active)</h2>
-      <table><tr><th>#</th><th>Type &amp; extracted fields</th><th>State</th><th>Confidence</th><th>Received</th><th></th></tr>
-      ${docRows || `<tr><td colspan="6" class="muted">No documents received yet.</td></tr>`}</table>
+      <h2>Tasks</h2>
+      ${tasks.length ? tasks.map((t) => `<div class="taskrow ${t.done ? "done" : ""}">
+        <form method="post" action="/case/${a.id}/task/toggle" style="margin:0">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          <input type="hidden" name="task_id" value="${t.id}">
+          <button class="btn small ghost" title="toggle">${t.done ? "☑" : "☐"}</button>
+        </form>
+        <span class="t">${esc(t.title)}</span>
+        <span class="small muted" style="margin-left:auto">${t.done ? "done" : ""} ${esc(t.display_name ?? "")}</span>
+      </div>`).join("") : `<p class="muted small">No tasks yet.</p>`}
+      <form method="post" action="/case/${a.id}/task/add" style="display:flex;gap:6px;margin-top:10px">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <input type="text" name="title" placeholder="e.g. Verify certificate with KNEC" style="flex:1">
+        <button class="btn small">Add task</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Flags</h2>
+      <ul style="margin:0;padding-left:18px">${flagRows}</ul>
+    </div>
+
+    <div class="card">
+      <h2>Internal notes <span class="muted small">(not visible to applicant)</span></h2>
+      ${noteCards || `<p class="muted small">No notes yet.</p>`}
+      <form method="post" action="/case/${a.id}/note">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <label>Add note</label>
+        <textarea name="body" style="min-height:60px" placeholder="e.g. Applicant called. Waiting for original certificate."></textarea>
+        <p><button class="btn small">Save note</button></p>
+      </form>
     </div>
 
     ${c.user.role === "admin" || c.user.role === "manager" ? `<div class="card">
@@ -834,23 +1041,45 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
 
     ${lastDecision ? `<div class="card"><h2>Latest triage reasoning (${esc(lastDecision.computed_status)}${lastDecision.auto_sent ? ", auto-sent" : ", queued"})</h2><pre style="white-space:pre-wrap;font-size:12.5px">${esc(lastDecision.reasoning)}</pre></div>` : ""}
   </div>
+</div>`
+  );
+}
+
+// ── Compose: a ready, pre-filled reply — one obvious path to Send ───────────
+
+export function composePage(c: Ctx, a: ApplicantRow, tpl: { key: string; name: string; subject: string; body: string; include_banner: number }, rendered: { subject: string; body: string }, error?: string): string {
+  return head(
+    c,
+    `Compose — ${a.ref_number}`,
+    "applicants",
+    `
+<div class="hero">
+  <div class="row">
+    ${avatar(a.full_name ?? a.ref_number, 46)}
+    <div style="min-width:0">
+      <div class="kicker">Compose reply · ${esc(tpl.name)}</div>
+      <h1 style="margin:0">${esc(a.full_name ?? a.ref_number)}</h1>
+      <div class="sub" style="margin:2px 0 0">To <b>${esc(a.email_address)}</b> · ${lifecycleBadge(a.lifecycle)} · <a href="/case/${a.id}">← back to the case file</a></div>
+    </div>
+  </div>
 </div>
 
-<div class="card">
-  <h2>Email history</h2>
-  ${emailCards || `<p class="muted">No emails recorded.</p>`}
-</div>
-
-<div class="cols">
-  <div class="card">
-    <h2>Status history</h2>
-    <table><tr><th>When</th><th>Change</th><th>By</th><th>Why</th></tr>
-    ${historyRows || `<tr><td colspan="4" class="muted">No changes recorded.</td></tr>`}</table>
-  </div>
-  <div class="card">
-    <h2>Audit log</h2>
-    <div class="timeline">${auditRows || `<p class="muted">Empty.</p>`}</div>
-  </div>
+<div class="card" style="max-width:880px">
+  ${error ? `<div class="flash err" style="position:static;margin-bottom:16px">${esc(error)}</div>` : ""}
+  <p class="small muted" style="margin-top:0">Everything below is already filled in from the case file — the checklist, the missing documents, the reference number. Edit if you like; nothing is sent until you press Send.</p>
+  <form method="post" action="/case/${a.id}/compose">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <input type="hidden" name="template" value="${esc(tpl.key)}">
+    <label>Subject</label>
+    <input type="text" name="subject" value="${esc(rendered.subject)}">
+    <label>Message</label>
+    <textarea name="body" style="min-height:380px;font-size:14px;line-height:1.7">${esc(rendered.body)}</textarea>
+    <div style="display:flex;gap:10px;margin-top:18px;align-items:center">
+      <button class="btn">Send now</button>
+      <a class="btn ghost" href="/case/${a.id}">Cancel — don't send</a>
+      ${tpl.include_banner === 0 ? `<span class="muted small">sends without the branded banner</span>` : `<span class="muted small">branded banner is attached automatically</span>`}
+    </div>
+  </form>
 </div>`
   );
 }
@@ -940,7 +1169,7 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string): s
       <td>${r.intake ? esc(r.intake) : "<i>all</i>"}</td>
       <td>${esc(docLabel(r.document_type))}</td>
       <td>${r.required ? "required" : "optional"}</td>
-      <td>${r.minGradePoints ?? "—"}</td>
+      <td>${r.meanGrade ? esc(r.meanGrade) : "—"}${r.subjectGrades ? `<br><span class="muted small">${esc(r.subjectGrades)}</span>` : ""}</td>
       <td><form method="post" action="/settings/rules/delete"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${r.id}"><button class="btn small ghost">Remove</button></form></td>
     </tr>`)
     .join("");
@@ -959,7 +1188,17 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string): s
     .map(([school, rows]) => `<tr class="schoolrow"><td colspan="3">${esc(school)}</td></tr>` + rows
       .map((p) => `<tr>
         <td><b>${esc(p.code)}</b><br><span class="small muted">${esc(p.name)}</span></td>
-        <td class="small muted" style="max-width:520px">${esc(p.entry_requirements)}</td>
+        <td>
+          <form method="post" action="/config/programme/edit" style="display:flex;gap:6px;align-items:flex-start;max-width:640px">
+            <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+            <input type="hidden" name="programme" value="${esc(p.code)}">
+            <div style="flex:1">
+              <input type="text" name="name" value="${esc(p.name)}" title="Course name" style="margin-bottom:6px">
+              <textarea name="entry_requirements" rows="3" title="Entry requirements" style="min-height:64px;font-size:12.5px">${esc(p.entry_requirements)}</textarea>
+            </div>
+            <button class="btn small ghost" title="Save course details">Save</button>
+          </form>
+        </td>
         <td>${assignForm(p)}</td>
       </tr>`).join("")).join("");
 
@@ -984,19 +1223,38 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
   <div class="card-head"><h2>Courses &amp; ownership</h2></div>
   <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone. Assign the responsible officer per course — they appear on the administration overview.</p>
   ${programmes.length
-    ? `<table><tr><th>Programme</th><th>Official entry requirements</th><th>Handled by</th></tr>${courseRows}</table>`
+    ? `<table><tr><th>Programme</th><th>Entry requirements (editable — they change over time)</th><th>Handled by</th></tr>${courseRows}</table>`
     : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
   <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
-    <h2>Requirement rules</h2>
+    <h2>Grade requirements per course</h2>
+    <p class="small muted" style="margin-top:-6px">Entry requirements change every intake — edit them here and new applicants are checked against the new grades immediately (already-submitted files keep the rules they applied under). Write subject lines like <span class="mono">C+ in English and Mathematics</span>; leave a row blank to skip it.</p>
+    ${programmes.map((p) => {
+      const kcse = rules.find((r) => r.programme === p.code && r.document_type === "academic_cert");
+      const kcpe = rules.find((r) => r.programme === p.code && r.document_type === "kcpe_cert");
+      return `<form method="post" action="/config/programme-requirements" style="border-top:1px solid var(--line2);padding:14px 0 4px">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <input type="hidden" name="programme" value="${esc(p.code)}">
+        <div class="formrow">
+          <div style="flex:0;min-width:110px"><label>&nbsp;</label><b>${esc(p.code)}</b></div>
+          <div><label>KCSE mean grade</label><input type="text" name="kcse_mean" placeholder="e.g. C+" value="${esc(kcse?.meanGrade ?? "")}" maxlength="2" style="text-transform:uppercase"></div>
+          <div style="flex:3"><label>KCSE subject grades</label><input type="text" name="kcse_subjects" placeholder="e.g. B in English and Kiswahili" value="${esc(kcse?.subjectGrades ?? "")}"></div>
+          <div><label>KCPE mean grade</label><input type="text" name="kcpe_mean" placeholder="e.g. C-" value="${esc(kcpe?.meanGrade ?? "")}" maxlength="2" style="text-transform:uppercase"></div>
+          <div style="flex:0"><label>&nbsp;</label><button class="btn small ghost">Save ${esc(p.code)}</button></div>
+        </div>
+      </form>`;
+    }).join("")}
+
+    <h2 style="margin-top:20px">Requirement rules (all courses)</h2>
     <p class="small muted" style="margin-top:-6px">Most specific rule wins: programme+intake → programme → intake → base (all).</p>
-    <table><tr><th>Programme</th><th>Intake</th><th>Document</th><th>Required?</th><th>Min points</th><th></th></tr>${ruleRows}</table>
+    <table><tr><th>Programme</th><th>Intake</th><th>Document</th><th>Required?</th><th>Grades</th><th></th></tr>${ruleRows}</table>
     <form method="post" action="/settings/rules/add" class="formrow" style="margin-top:14px">
       <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
       <div><label>Programme</label><select name="programme"><option value="">All programmes</option>${programmes.map((p) => `<option value="${esc(p.code)}">${esc(p.code)}</option>`).join("")}</select></div>
       <div><label>Intake</label><select name="intake"><option value="">All intakes</option>${intakes.map((i) => `<option value="${esc(i)}">${esc(i)}</option>`).join("")}</select></div>
       <div><label>Document</label><select name="document_type">${(["academic_cert", "kcpe_cert", "id", "birth_cert", "application_form"] as DocType[]).map((d) => `<option value="${d}">${esc(docLabel(d))}</option>`).join("")}</select></div>
       <div><label>Required</label><select name="required"><option value="1">required</option><option value="0">optional</option></select></div>
-      <div><label>Min points</label><input type="number" name="min_grade_points" placeholder="optional"></div>
+      <div><label>Min mean grade</label><input type="text" name="mean_grade" placeholder="e.g. C+" maxlength="2" style="text-transform:uppercase"></div>
+      <div style="flex:2"><label>Subject grades</label><input type="text" name="subject_grades" placeholder="e.g. C+ in English and Mathematics"></div>
       <div style="flex:0"><label>&nbsp;</label><button class="btn">Add rule</button></div>
     </form>
     <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
@@ -1007,6 +1265,23 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
       <div style="flex:0"><label>&nbsp;</label><button class="btn ghost">Add</button></div>
     </form>
   </div>
+</div>
+
+<div class="card" id="gemini">
+  <h2>Document AI (Gemini) ${settings["gemini_api_key"]
+    ? `<span class="badge b-green">key saved — AI reads what OCR can't</span>`
+    : `<span class="badge b-gray">optional</span>`}</h2>
+  <p class="small muted" style="margin-top:-6px">When a document beats text extraction and OCR (bad scans, photos, handwriting), Gemini reads it as a vision model. Paste your API key — get one free at <b>aistudio.google.com/apikey</b>. The key is tested with one real call and goes live <b>immediately</b>, no restart. Without a key the console still works; unreadable files simply land in the review queue.</p>
+  <form method="post" action="/settings/gemini">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      <div style="flex:2"><label>Gemini API key ${settings["gemini_api_key"] ? "(saved — paste a new value to replace)" : ""}</label><input type="password" name="gemini_api_key" value="" placeholder="AIza…" autocomplete="new-password"></div>
+      <div><label>Model</label><input type="text" name="gemini_model" value="${esc(settings["gemini_model"] ?? "gemini-1.5-flash")}" placeholder="gemini-1.5-flash"></div>
+      <div style="flex:0"><label>&nbsp;</label><button class="btn">Save &amp; test key</button></div>
+    </div>
+  </form>
+  ${settings["gemini_api_key"] ? `<form method="post" action="/settings/gemini" style="margin-top:8px"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger small" name="clear" value="1">Remove key</button></form>` : ""}
+  ${settings["gemini_last_error"] ? `<p class="small" style="color:var(--red)">Last test failed: ${esc(settings["gemini_last_error"])}</p>` : ""}
 </div>
 
 <div class="card" id="gmail">
@@ -1024,13 +1299,15 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="btn ghost">Save credentials</button>
       ${gClientId && gClientSecret ? `<a class="btn" href="/settings/gmail/connect">Connect with Google…</a>` : ""}
+      ${connected ? `<form method="post" action="/settings/gmail/sync" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost">Sync now</button></form>` : ""}
       ${connected ? `<form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>` : ""}
     </div>
   </form>
   <p class="small muted" style="margin-top:10px">${connected
     ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically — no restart needed.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
     : "Mail is not being fetched yet. Emails can still be replayed through the simulator."}</p>
-  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}</p>` : ""}
+  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again. If new mail still doesn’t appear after a good sync, check that the message is in the inbox of <b>${esc(gAddress || "the connected address")}</b> and within the lookback window.</span></p>` : ""}
+  <p class="small muted">Receiving works both ways: staff replies and automated replies are recorded on the case, and anything the applicant sends lands here within a minute of arriving in the mailbox (or immediately after <b>Sync now</b>).</p>
 </div>
 
 <div class="card" id="intakes">

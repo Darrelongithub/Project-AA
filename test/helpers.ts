@@ -1,11 +1,11 @@
 import type { Confidence, DocType, DocumentRecord, RequirementSetEntry } from "../src/types";
 
 export const REQS: RequirementSetEntry[] = [
-  { document_type: "academic_cert", required: true, minGradePoints: null },
-  { document_type: "kcpe_cert", required: true, minGradePoints: 250 },
-  { document_type: "id", required: true, minGradePoints: null },
-  { document_type: "application_form", required: true, minGradePoints: null },
-  { document_type: "birth_cert", required: false, minGradePoints: null },
+  { document_type: "academic_cert", required: true },
+  { document_type: "kcpe_cert", required: true, meanGrade: "C-", subjectGrades: "C- in English" },
+  { document_type: "id", required: true },
+  { document_type: "application_form", required: true },
+  { document_type: "birth_cert", required: false },
 ];
 
 let nextId = 1;
@@ -38,7 +38,7 @@ export function mkDoc(
 export function completeDocs(): DocumentRecord[] {
   return [
     mkDoc("academic_cert", { name: "ALICE WANJIKU KAMAU" }),
-    mkDoc("kcpe_cert", { name: "ALICE WANJIKU KAMAU", fields: { name: "ALICE WANJIKU KAMAU", gradePoints: 312 } }),
+    mkDoc("kcpe_cert", { name: "ALICE WANJIKU KAMAU", fields: { name: "ALICE WANJIKU KAMAU", meanGrade: "B", subjectGrades: { English: "B" } } }),
     mkDoc("id", { name: "ALICE WANJIKU KAMAU" }),
     mkDoc("application_form", { name: "ALICE WANJIKU KAMAU" }),
     mkDoc("birth_cert", { name: "ALICE WANJIKU KAMAU" }),

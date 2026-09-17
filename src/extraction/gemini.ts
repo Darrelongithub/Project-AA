@@ -46,6 +46,7 @@ Respond with ONLY a JSON object, no markdown, in exactly this shape:
     "name": "full name on the document or null",
     "gradePoints": <number 100-500 if an exam score/points total is shown, else null>,
     "meanGrade": "letter mean grade e.g. B- or null",
+    "subjectGrades": {"English": "B-", "Mathematics": "C+"} — every subject grade visible on the document, or {},
     "idNumber": "national ID number or null"
   },
   "confidence": "high" | "medium" | "low"
@@ -109,6 +110,17 @@ export class GeminiVisionAdapter implements VisionAdapter {
     } catch {
       return null;
     }
+  }
+
+  /** Settings-page key test: one real API round-trip that THROWS on failure. */
+  async probeKey(): Promise<void> {
+    const res: any = await withTimeout(
+      this.model.generateContent("Reply with the single word OK."),
+      VISION_TIMEOUT_MS,
+      "gemini key test"
+    );
+    const text = String(res?.response?.text() ?? "");
+    if (!text.trim()) throw new Error("Gemini returned an empty response");
   }
 }
 

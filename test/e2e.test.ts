@@ -22,6 +22,8 @@ beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  // The grade floor the pipeline tests judge against: KCPE mean grade B-.
+  repo.upsertRule({ programme: null, intake: null, document_type: "kcpe_cert", required: true, meanGrade: "B-" });
   sender = new MockSender();
   ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
 });
@@ -99,7 +101,7 @@ describe("pipeline v2 end-to-end", () => {
     const name = "BRIAN KIPROTICH RUTO";
     const email = mkEmail("e2e-brian", "brian@example.org", [
       await mkAtt("a.pdf", "academic_cert", name),
-      await mkAtt("k.pdf", "kcpe_cert", name, { kcpePoints: 240, year: "2016" }),
+      await mkAtt("k.pdf", "kcpe_cert", name, { kcpePoints: 240, meanGrade: "C+", year: "2016" }),
       await mkAtt("i.pdf", "id", name),
       await mkAtt("f.pdf", "application_form", name),
     ]);

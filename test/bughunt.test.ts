@@ -28,12 +28,13 @@ describe("bug: requirement-rule upsert duplicated every base rule (NULLs in UNIQ
     const repo = freshRepo();
     repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
     repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
-    expect(repo.listRules().length).toBe(DEFAULT_REQUIREMENTS.length);
+    const baseRules = repo.listRules().filter((r) => r.programme === null && r.intake === null);
+    expect(baseRules.length).toBe(DEFAULT_REQUIREMENTS.length);
   });
 
   it("upsertRule on an All-programmes/All-intakes rule is idempotent", () => {
     const repo = freshRepo();
-    const rule = { programme: null, intake: null, document_type: "academic_cert" as const, required: true, minGradePoints: null };
+    const rule = { programme: null, intake: null, document_type: "academic_cert" as const, required: true, meanGrade: null };
     repo.upsertRule(rule);
     repo.upsertRule({ ...rule, required: false });
     const rows = repo.listRules().filter((r) => r.programme === null && r.intake === null && r.document_type === "academic_cert");
