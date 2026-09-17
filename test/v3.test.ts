@@ -237,21 +237,24 @@ describe("automatic follow-up ladder (feature 13)", () => {
       }),
       ctx
     );
-    expect(res.autoKind).toBe("missing_docs"); // notice sent, ladder armed
+    expect(res.autoKind).toBe("missing_docs"); // suggestion held for staff, ladder armed
     return res.applicantId;
   }
 
-  it("missing-docs notice arms the ladder; a due rung sends a reminder and advances", async () => {
+  it("missing-docs notice arms the ladder; a due rung HOLDS a reminder suggestion and advances", async () => {
     const id = await incompleteApplicant("ladder@example.org");
     // Wind the clock: reminder is due now.
     repo.setFollowup(id, 0, new Date(Date.now() - 1000).toISOString());
 
-    const sent = await runFollowUpSweep(repo, ctx);
-    expect(sent).toBe(1);
-    expect(sender.sent.some((s) => s.subject.includes("REMINDER"))).toBe(true);
+    const processed = await runFollowUpSweep(repo, ctx);
+    expect(processed).toBe(1);
+    expect(sender.sent.length).toBe(0); // qualification gate: never auto-sent
+    const held = repo.queuedOutbox(id);
+    expect(held?.subject).toContain("REMINDER");
     const a = repo.getApplicant(id)!;
     expect(a.followup_rung).toBe(1);
     expect(a.followup_next_at).toBeTruthy();
+    expect(repo.auditForApplicant(id).some((e) => e.event === "followup_held_qualification")).toBe(true);
   });
 
   it("ladder exhaustion escalates to a human instead of emailing forever", async () => {
@@ -286,8 +289,9 @@ describe("automatic follow-up ladder (feature 13)", () => {
 describe("unanswered email detection (feature 1)", () => {
   it("flags cases whose last incoming email has no reply; answered cases disappear", async () => {
     await processEmail(mkEmail("un1", "tun", "waiting@example.org"), ctx);
-    // auto docs_request counts as a reply → not unanswered.
-    expect(repo.unansweredCases().some((u) => u.applicant.email_address === "waiting@example.org")).toBe(false);
+    // The docs-request suggestion is HELD (qualification gate) — until a human
+    // sends something, the applicant genuinely has no reply yet.
+    expect(repo.unansweredCases().some((u) => u.applicant.email_address === "waiting@example.org")).toBe(true);
   });
 });
 

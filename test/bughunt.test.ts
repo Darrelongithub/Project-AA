@@ -209,7 +209,9 @@ describe("bug: follow-up ladder stacked intervals instead of absolute days", () 
     repo.setFollowup(a.id, 0, new Date(Date.now() - 5 * 24 * 3600_000).toISOString(), base.toISOString());
     const sent = await runFollowUpSweep(repo, ctx);
     expect(sent).toBe(1);
-    expect(sender.sent.length).toBe(1);
+    // Qualification gate: the rung is HELD as a staff suggestion, never sent.
+    expect(sender.sent.length).toBe(0);
+    expect(repo.queuedOutbox(a.id)?.subject).toContain("REMINDER");
     const row = repo.getApplicant(a.id)!;
     expect(row.followup_rung).toBe(1);
     const expected = base.getTime() + 7 * 24 * 3600_000;

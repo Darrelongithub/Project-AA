@@ -1097,7 +1097,7 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
 
 <div class="card" id="automation">
   <h2>Automation mode (draft-first)</h2>
-  <p class="small muted" style="margin-top:-6px">Recommended rollout: keep the global mode on <b>draft</b> (every automated reply waits for a human), then switch automation on category by category as you trust it. Factual replies only — receipts, missing-doc lists, status answers.</p>
+  <p class="small muted" style="margin-top:-6px">Two rules always apply. First, automated sending is reserved for <b>fully qualified</b> applicants — a Green verdict with no flags; everyone else gets the reply as a <b>suggested draft</b> for staff to review, edit or discard, because borderline files can still be admitted on special acceptance. Second, the rollout dial: keep the global mode on <b>draft</b> (every automated reply waits for a human), then switch automation on category by category as you trust it.</p>
   <form method="post" action="/settings/automation/global" class="formrow" style="align-items:end">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div><label>Global mode</label><select name="mode">

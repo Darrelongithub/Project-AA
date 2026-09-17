@@ -7,8 +7,12 @@
  *   Day 10 → case handed to staff
  *
  * The ladder is configurable (`followup_ladder_days` setting, e.g. "3,7,10").
- * Every reminder is factual (the checklist is recomputed from reality at send
+ * Every reminder is factual (the checklist is recomputed from reality at rung
  * time) — if the file became complete meanwhile, the ladder quietly stops.
+ *
+ * Reminders are never auto-sent: an applicant with outstanding documents is
+ * not fully qualified, so each rung produces a SUGGESTED reply held for staff
+ * (special acceptance may apply). Returns the number of rungs processed.
  */
 import type { Repo } from "../db/repo";
 import type { PipelineContext } from "../pipeline/adapters";
@@ -28,11 +32,11 @@ export function ladderDays(repo: Repo): number[] {
     .filter((n) => Number.isFinite(n) && n > 0);
 }
 
-export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promise<number> {
+export async function runFollowUpSweep(repo: Repo, _ctx: PipelineContext): Promise<number> {
   const ladder = ladderDays(repo);
   if (ladder.length === 0) return 0;
   const due = repo.dueFollowUps(nowIso());
-  let sent = 0;
+  let processed = 0;
 
   for (const a of due) {
     // Recompute from reality: maybe the documents arrived since scheduling.
@@ -65,22 +69,19 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
           statusLabel: LIFECYCLE_LABELS[a.lifecycle],
         });
         const subject = rung === ladder.length - 1 ? `[FINAL REMINDER] ${rendered.subject}` : `[REMINDER] ${rendered.subject}`;
-        try {
-          await ctx.adapters.sender.send(a.email_address, subject, rendered.body, a.thread_id);
-          repo.insertEmail({
-            applicant_id: a.id, message_id: `followup-${a.id}-${rung}-${Date.now()}`, thread_id: a.thread_id,
-            direction: "out", from_addr: "", to_addr: a.email_address, subject, body: rendered.body,
-            category: null, auto: 1, at: nowIso(),
-          });
-          repo.audit(a.id, "system", "followup_sent", `rung ${rung}/${ladder.length - 1} (${subject})`);
-          log(`followups: ${a.ref_number} rung ${rung} reminder sent`);
-        } catch (e) {
-          repo.audit(a.id, "system", "send_failed", `followup rung ${rung}: ${(e as Error).message}`);
-        }
+        // Qualification gate: anyone on the reminder ladder still has
+        // documents outstanding — by definition NOT fully qualified. The
+        // reminder is held as a staff suggestion, never auto-sent: the file
+        // may still be headed for special acceptance, so the office decides
+        // what (if anything) goes out.
+        repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued" });
+        repo.notify("review_needed", `${a.ref_number}: follow-up reminder (rung ${rung}/${ladder.length - 1}) drafted — review and send`, a.id);
+        repo.audit(a.id, "system", "followup_held_qualification", `rung ${rung}/${ladder.length - 1} held as a suggested reply (${subject})`);
+        log(`followups: ${a.ref_number} rung ${rung} reminder held for staff`);
       }
       const nextAt = new Date(baseMs + ladder[rung] * 24 * 3600_000).toISOString();
       repo.setFollowup(a.id, rung, nextAt);
-      sent++;
+      processed++;
     } else {
       // Ladder exhausted → human.
       repo.setFollowup(a.id, rung, null);
@@ -90,5 +91,5 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
       log(`followups: ${a.ref_number} ladder exhausted → human review`, "warn");
     }
   }
-  return sent;
+  return processed;
 }

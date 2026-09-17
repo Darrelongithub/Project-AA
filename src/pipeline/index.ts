@@ -343,13 +343,13 @@ export async function processEmail(
     autoKind = "status_answer";
     if (finalStatus !== "Green" && !cleanMissingCase) {
       queueForHuman = true;
-      // The applicant still gets the factual status answer, AND staff see the
-      // case — make that deliberate double-track visible in the audit trail.
+      // The factual status answer is drafted alongside the human queue —
+      // make that deliberate double-track visible in the audit trail.
       repo.audit(
         applicant.id,
         "system",
         "status_answer_and_queued",
-        "factual status answer auto-sent while the underlying case also needs human review"
+        "factual status answer drafted while the underlying case also needs human review"
       );
     }
   } else if (opts.autoMissingDocsEmails && cleanMissingCase) {
@@ -372,6 +372,25 @@ export async function processEmail(
     queueForHuman = true;
   }
 
+  // ── Qualification gate: automated mail is for the FULLY QUALIFIED only ──
+  // Fully qualified = Green verdict, no blocking flags, watcher clean. Every
+  // other file — including "clean" missing-document cases — gets the reply
+  // HELD as a staff suggestion instead: an applicant who is short of a
+  // document or below a grade line today may still be admitted tomorrow on
+  // special acceptance, so the machine never speaks for the office on them.
+  const fullyQualified =
+    finalStatus === "Green" && activeBlockingFlags.length === 0 && !watcherFlagged;
+  const heldForQualification = autoKind !== null && !fullyQualified;
+  if (heldForQualification) {
+    repo.audit(
+      applicant.id,
+      "system",
+      "automation_held_qualification",
+      `verdict=${finalStatus} — not fully qualified, so the suggested reply is held for staff (special acceptance may apply)`
+    );
+    queueForHuman = true;
+  }
+
   // ── Drafting (features 14, 35) ──────────────────────────────────────────
   const institution = INSTITUTION;
   const requiredReqs = requirements.filter((r) => r.required);
@@ -381,7 +400,7 @@ export async function processEmail(
     activeDocs
       .map((d) => normalizeName(d.extracted_fields?.name as string | undefined))
       .find((n) => n.length >= 3) || freshApplicant.full_name || email.fromName;
-  const lifecycleAfter: LifecycleStage = heldForApproval
+  const lifecycleAfter: LifecycleStage = heldForApproval || heldForQualification
     ? activeDocs.length > 0
       ? "documents_received"
       : "application_received"
@@ -421,7 +440,7 @@ export async function processEmail(
     }
   }
   // Held replies keep their rendered content but are queued for a person.
-  if (heldForApproval && draft) draft.audience = "human";
+  if ((heldForApproval || heldForQualification) && draft) draft.audience = "human";
 
   if (!draft && queueForHuman) {
     draft = pickQueuedDraft({
@@ -505,7 +524,11 @@ export async function processEmail(
     .filter((n) => Number.isFinite(n) && n > 0);
   if (finalStatus === "Green") {
     repo.setFollowup(applicant.id, 0, null, null);
-  } else if (autoSent && (autoKind === "missing_docs" || autoKind === "docs_request") && ladder.length > 0) {
+  } else if (
+    (autoSent || heldForQualification || heldForApproval) &&
+    (autoKind === "missing_docs" || autoKind === "docs_request") &&
+    ladder.length > 0
+  ) {
     // Base date anchors the ladder: rung N fires at base + ladder[N] days.
     const baseAt = new Date().toISOString();
     const nextAt = new Date(Date.now() + ladder[0] * 24 * 3600_000).toISOString();
@@ -519,8 +542,10 @@ export async function processEmail(
     const due = new Date(Date.now() + slaHours * 3600_000).toISOString();
     const cur = repo.getApplicant(applicant.id)!;
     if (!cur.sla_handled_at) repo.updateApplicant(applicant.id, { sla_due_at: due });
-    const reason = heldForApproval
-      ? "automated reply held for approval (draft-first mode)"
+    const reason = heldForQualification && !heldForApproval
+      ? "applicant not fully qualified — suggested reply held for staff (special acceptance may apply)"
+      : heldForApproval
+        ? "automated reply held for approval (draft-first mode)"
       : finalStatus === "Orange"
         ? "flagged for human review"
         : watcherFlagged
@@ -569,7 +594,9 @@ export async function processEmail(
     finalStatus,
     lifecycle: finalRow.lifecycle,
     autoSent,
-    autoKind: autoSent ? autoKind : null,
+    // The kind the automation ATTEMPTED — even when the qualification gate
+    // held it as a suggestion (autoSent=false); null means no reply drafted.
+    autoKind,
     category,
     reasoning,
     flags: repo

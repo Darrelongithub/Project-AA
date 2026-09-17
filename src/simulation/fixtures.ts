@@ -105,7 +105,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           receivedAt: "2026-09-14T10:00:00Z",
           attachments: await Promise.all([
             att({ filename: "brian-academic.pdf", docType: "academic_cert", name, spec: { kcseMeanGrade: "C" } }),
-            att({ filename: "brian-kcpe.pdf", docType: "kcpe_cert", name, spec: { kcpePoints: 240, meanGrade: "C+", year: "2016" } }),
+            att({ filename: "brian-kcpe.pdf", docType: "kcpe_cert", name, spec: { kcpePoints: 240, meanGrade: "C", year: "2016" } }),
             att({ filename: "brian-id.pdf", docType: "id", name, spec: { idNumber: "30112233" } }),
             att({ filename: "brian-form.pdf", docType: "application_form", name }),
           ]),
@@ -134,7 +134,8 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Red", lifecycle: "documents_received", autoSent: true, autoKind: "missing_docs", flagTypes: [], superseded: 0, duplicates: 0, missing: ["id"], category: "document_submission", priority: "normal" },
+      // Qualification gate: the missing-docs reply is held as a staff suggestion, not auto-sent.
+      expected: { finalStatus: "Red", lifecycle: "documents_received", autoSent: false, autoKind: "missing_docs", flagTypes: [], superseded: 0, duplicates: 0, missing: ["id"], category: "document_submission", priority: "normal" },
     });
   }
 
@@ -268,7 +269,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           attachments: [],
         }),
       ],
-      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: true, autoKind: "docs_request", flagTypes: [], superseded: 0, duplicates: 0, missing: ["academic_cert", "kcpe_cert", "id", "application_form"], category: "application", priority: "normal" },
+      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: false, autoKind: "docs_request", flagTypes: [], superseded: 0, duplicates: 0, missing: ["academic_cert", "kcpe_cert", "id", "application_form"], category: "application", priority: "normal" }, // qualification gate: held suggestion
     });
   }
 
@@ -390,7 +391,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           attachments: [],
         }),
       ],
-      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: true, autoKind: "docs_request", flagTypes: [], superseded: 0, duplicates: 0, missing: ["academic_cert", "kcpe_cert", "id", "application_form"], category: "complaint", priority: "high" },
+      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: false, autoKind: "docs_request", flagTypes: [], superseded: 0, duplicates: 0, missing: ["academic_cert", "kcpe_cert", "id", "application_form"], category: "complaint", priority: "high" }, // qualification gate: held suggestion
     });
   }
 
@@ -552,7 +553,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_received", autoSent: false, autoKind: null, flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal", audited: ["automation_held"] },
+      expected: { finalStatus: "Green", lifecycle: "documents_received", autoSent: false, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal", audited: ["automation_held"] },
     });
   }
 

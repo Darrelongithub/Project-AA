@@ -71,7 +71,7 @@ describe("pipeline v2 end-to-end", () => {
     expect(audit.some((a) => a.event === "requirements_checked")).toBe(true);
   });
 
-  it("missing required doc → automatic factual missing-docs email (never a decision)", async () => {
+  it("missing required doc → suggested missing-docs reply HELD for staff (qualification gate)", async () => {
     const name = "CAROL NJERI MAINA";
     const email = mkEmail("e2e-carol", "carol@example.org", [
       await mkAtt("a.pdf", "academic_cert", name),
@@ -81,19 +81,24 @@ describe("pipeline v2 end-to-end", () => {
     const res = await processEmail(email, ctx);
 
     expect(res.finalStatus).toBe("Red");
-    expect(res.autoSent).toBe(true);
     expect(res.autoKind).toBe("missing_docs");
+    expect(res.autoSent).toBe(false); // not fully qualified → nothing leaves automatically
+    expect(sender.sent.length).toBe(0);
+    const held = repo.queuedOutbox(res.applicantId);
+    expect(held).toBeTruthy();
+    expect(held!.body).toMatch(/National ID/);
+    expect(repo.auditForApplicant(res.applicantId).some((e) => e.event === "automation_held_qualification")).toBe(true);
     expect(res.missing).toEqual(["id"]);
-    expect(sender.sent.length).toBe(1);
-    expect(sender.sent[0].body).toMatch(/National ID/);
     expect(res.lifecycle).toBe("documents_received");
   });
 
-  it("bare inquiry → automatic document-request email", async () => {
+  it("bare inquiry → document-request suggestion held for staff (qualification gate)", async () => {
     const email = mkEmail("e2e-henry", "henry@example.org", [], "What documents do you need?");
     const res = await processEmail(email, ctx);
     expect(res.autoKind).toBe("docs_request");
-    expect(res.autoSent).toBe(true);
+    expect(res.autoSent).toBe(false);
+    expect(sender.sent.length).toBe(0);
+    expect(repo.queuedOutbox(res.applicantId)).toBeTruthy();
     expect(res.lifecycle).toBe("application_received");
   });
 
