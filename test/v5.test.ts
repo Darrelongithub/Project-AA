@@ -147,11 +147,18 @@ describe("stages & routing", () => {
     expect(repo.programmeByCode("BNS")?.entry_requirements).toContain("New NCK rules");
   });
 
-  it("LLB and Nursing carry seeded grade rules", () => {
+  it("seeded grade rules match the published requirement set", () => {
     const llb = repo.listRules().filter((r) => r.programme === "LLB");
     expect(llb.some((r) => r.meanGrade === "C+" && (r.subjectGrades ?? "").includes("English"))).toBe(true);
+    const bba = repo.listRules().filter((r) => r.programme === "BBA");
+    expect(bba.some((r) => r.meanGrade === "C+" && (r.subjectGrades ?? "").includes("Mathematics"))).toBe(true);
+    // Diploma floors override the university-wide C+ degree minimum.
+    const dbm = repo.listRules().filter((r) => r.programme === "DBM");
+    expect(dbm.some((r) => r.meanGrade === "C-")).toBe(true);
+    // Nursing specifics were not in the published details → no invented
+    // subject clusters; the programme falls back to the university-wide floor.
     const bns = repo.listRules().filter((r) => r.programme === "BNS");
-    expect(bns.some((r) => r.meanGrade === "C+" && (r.subjectGrades ?? "").includes("Biology"))).toBe(true);
+    expect(bns.length).toBe(0);
   });
 });
 

@@ -1222,18 +1222,16 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
     : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
   <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
     <h2>Grade requirements per course</h2>
-    <p class="small muted" style="margin-top:-6px">Entry requirements change every intake — edit them here and new applicants are checked against the new grades immediately (already-submitted files keep the rules they applied under). Write subject lines like <span class="mono">C+ in English and Mathematics</span>; use a slash for either/or subjects, e.g. <span class="mono">B in English/Kiswahili</span>. KCPE is marked out of points — a grade there acts as the minimum equivalent. Leave a row blank to skip it.</p>
+    <p class="small muted" style="margin-top:-6px">Entry requirements change every intake — edit them here and new applicants are checked against the new grades immediately (already-submitted files keep the rules they applied under). Every course starts from the university-wide minimum (KCSE mean grade C+ on the secondary certificate); a course row overrides that floor. Subject syntax: <span class="mono">C in English; C in Mathematics</span> means BOTH apply (separate requirements with commas or semicolons); a slash means either/or, e.g. <span class="mono">B in English/Kiswahili</span>. Save a row with both fields blank to remove the course override and fall back to the university-wide minimum.</p>
     ${programmes.map((p) => {
       const kcse = rules.find((r) => r.programme === p.code && r.document_type === "academic_cert");
-      const kcpe = rules.find((r) => r.programme === p.code && r.document_type === "kcpe_cert");
       return `<form method="post" action="/config/programme-requirements" style="border-top:1px solid var(--line2);padding:14px 0 4px">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
         <input type="hidden" name="programme" value="${esc(p.code)}">
         <div class="formrow">
           <div style="flex:0;min-width:110px"><label>&nbsp;</label><b>${esc(p.code)}</b></div>
           <div><label>KCSE mean grade</label><input type="text" name="kcse_mean" placeholder="e.g. C+" value="${esc(kcse?.meanGrade ?? "")}" maxlength="2" style="text-transform:uppercase"></div>
-          <div style="flex:3"><label>KCSE subject grades</label><input type="text" name="kcse_subjects" placeholder="e.g. B in English and Kiswahili" value="${esc(kcse?.subjectGrades ?? "")}"></div>
-          <div><label>KCPE minimum (grade equivalent)</label><input type="text" name="kcpe_mean" placeholder="e.g. C-" value="${esc(kcpe?.meanGrade ?? "")}" maxlength="2" style="text-transform:uppercase"></div>
+          <div style="flex:3"><label>KCSE subject grades</label><input type="text" name="kcse_subjects" placeholder="e.g. C+ in Mathematics/Physics" value="${esc(kcse?.subjectGrades ?? "")}"></div>
           <div style="flex:0"><label>&nbsp;</label><button class="btn small ghost">Save ${esc(p.code)}</button></div>
         </div>
       </form>`;

@@ -30,16 +30,20 @@ describe("reference numbers (feature 1)", () => {
 describe("requirement resolution (features 8, 36, 37)", () => {
   it("base rules apply to everyone", () => {
     const reqs = repo.resolveRequirements(null, null);
-    expect(reqs.find((r) => r.document_type === "kcpe_cert")?.required).toBe(true);
+    // The KCPE certificate is not part of the published application basics.
+    expect(reqs.find((r) => r.document_type === "kcpe_cert")?.required).toBe(false);
+    // The general minimum: KCSE mean grade C+ on the secondary certificate.
+    expect(reqs.find((r) => r.document_type === "academic_cert")?.meanGrade).toBe("C+");
     expect(reqs.find((r) => r.document_type === "id")?.required).toBe(true);
   });
 
   it("programme-specific rules override base", () => {
-    repo.upsertRule({ programme: "LAW", intake: null, document_type: "kcpe_cert", required: false, meanGrade: null });
+    repo.upsertRule({ programme: "LAW", intake: null, document_type: "academic_cert", required: true, meanGrade: "B" });
     const law = repo.resolveRequirements("LAW", null);
     const bcs = repo.resolveRequirements("BCS", null);
-    expect(law.find((r) => r.document_type === "kcpe_cert")?.required).toBe(false);
-    expect(bcs.find((r) => r.document_type === "kcpe_cert")?.required).toBe(true);
+    expect(law.find((r) => r.document_type === "academic_cert")?.meanGrade).toBe("B");
+    // BCS keeps its own seeded floor — unaffected by LAW's override.
+    expect(bcs.find((r) => r.document_type === "academic_cert")?.meanGrade).toBe("C+");
   });
 
   it("programme+intake is the most specific", () => {

@@ -93,11 +93,10 @@ export async function runSimulation(
 
   const repo = new Repo(openDb(dbPath));
   seedDefaults(repo);
+  // Base set = the published application basics incl. the general minimum
+  // (KCSE mean grade C+ on the secondary certificate); programme overrides
+  // for diplomas/certificates/postgrad come from seedDefaults.
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
-  // The base grade floor the corpus is judged against: KCSE slip average C+
-  // (same shape Configuration uses — a grade rule on the KCSE certificate).
-  // Seeded AFTER the base set so the delete-then-insert upsert keeps the floor.
-  repo.upsertRule({ programme: null, intake: null, document_type: "kcpe_cert", required: true, meanGrade: "C+" });
   const sender = new MockSender();
   const adapters = buildAdapters(cfg, sender);
   const ctx: PipelineContext = { repo, adapters };

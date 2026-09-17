@@ -149,7 +149,7 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
         subjectGrades: r.subjectGrades ?? null,
       });
     }
-    repo.setSetting("programme_requirements_seeded", "v5");
+    repo.setSetting("programme_requirements_seeded", "v6-published-set");
   }
   // Base requirements (only if table is empty — don't clobber staff edits)
   const ruleCount = (repo.db.prepare("SELECT COUNT(*) AS n FROM requirement_rules").get() as { n: number }).n;

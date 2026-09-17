@@ -668,30 +668,29 @@ export function createApp(deps: WebDeps): Express {
     const programme = String(req.body.programme ?? "").trim();
     const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#courses`;
     if (!programme || !repo.programmeByCode(programme)) return res.redirect(back("Unknown course."));
-    const pairs: Array<[string, string]> = [
-      ["academic_cert", "kcse"],
-      ["kcpe_cert", "kcpe"],
-    ];
-    let saved = 0;
-    for (const [docType, prefix] of pairs) {
-      const meanGrade = String(req.body[`${prefix}_mean`] ?? "").trim().toUpperCase();
-      const subjects = String(req.body[`${prefix}_subjects`] ?? "").trim();
-      if (!meanGrade && !subjects) continue; // nothing entered for this row
-      if (meanGrade && !/^[A-E][+-]?$/.test(meanGrade)) {
-        return res.redirect(back(`"${meanGrade}" is not a KCSE grade — nothing saved.`));
+    // Requirements are KCSE-based (secondary certificate). A blank row means
+    // "remove the course override" — the programme falls back to the
+    // university-wide minimum on the base rule.
+    const meanGrade = String(req.body.kcse_mean ?? "").trim().toUpperCase();
+    const subjects = String(req.body.kcse_subjects ?? "").trim();
+    if (meanGrade && !/^[A-E][+-]?$/.test(meanGrade)) {
+      return res.redirect(back(`"${meanGrade}" is not a KCSE grade — nothing saved.`));
+    }
+    const existing = repo.listRules().find((r) => r.programme === programme && r.intake === null && r.document_type === "academic_cert");
+    if (!meanGrade && !subjects) {
+      if (existing && typeof existing.id === "number") {
+        repo.deleteRule(existing.id);
+        repo.audit(null, req.staff!.username, "requirements_changed", `${programme}: course override removed — back to the university-wide minimum`);
+        return res.redirect(back(`Override for ${programme} removed — the university-wide minimum now applies.`));
       }
-      repo.upsertRule({
-        programme, intake: null, document_type: docType as DocType, required: true,
-        meanGrade: meanGrade || null, subjectGrades: subjects || null,
-      });
-      saved++;
+      return res.redirect(back(`Nothing entered — requirements for ${programme} are unchanged.`));
     }
-    if (saved > 0) {
-      repo.audit(null, req.staff!.username, "requirements_changed", `${programme}: grade requirements edited`);
-      res.redirect(back(`Grade requirements for ${programme} saved.`));
-    } else {
-      res.redirect(back(`Nothing entered — requirements for ${programme} are unchanged.`));
-    }
+    repo.upsertRule({
+      programme, intake: null, document_type: "academic_cert" as DocType, required: true,
+      meanGrade: meanGrade || null, subjectGrades: subjects || null,
+    });
+    repo.audit(null, req.staff!.username, "requirements_changed", `${programme}: grade requirements edited`);
+    res.redirect(back(`Grade requirements for ${programme} saved.`));
   });
 
   // ── Gmail connect (OAuth code flow; tokens stored in Settings) ───────────

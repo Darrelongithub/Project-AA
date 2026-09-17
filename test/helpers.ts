@@ -37,7 +37,7 @@ export function mkDoc(
 /** A complete, clean, high-confidence document set (incl. optional birth cert). */
 export function completeDocs(): DocumentRecord[] {
   return [
-    mkDoc("academic_cert", { name: "ALICE WANJIKU KAMAU" }),
+    mkDoc("academic_cert", { name: "ALICE WANJIKU KAMAU", fields: { name: "ALICE WANJIKU KAMAU", meanGrade: "B", subjectGrades: { English: "B", Kiswahili: "B", Mathematics: "B" } } }),
     mkDoc("kcpe_cert", { name: "ALICE WANJIKU KAMAU", fields: { name: "ALICE WANJIKU KAMAU", meanGrade: "B", subjectGrades: { English: "B" } } }),
     mkDoc("id", { name: "ALICE WANJIKU KAMAU" }),
     mkDoc("application_form", { name: "ALICE WANJIKU KAMAU" }),

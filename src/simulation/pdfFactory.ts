@@ -49,8 +49,21 @@ export interface DocSpec {
   year?: string;
   idNumber?: string;
   programme?: string;
+  /** Per-subject grades printed on the KCSE slip (subject → grade). */
+  subjects?: Record<string, string>;
   extraLines?: string[];
 }
+
+/**
+ * A clean KCSE subject set used when a fixture doesn't specify one. Real
+ * slips list every sat subject; these defaults satisfy the university's
+ * published subject requirements (e.g. LLB's B in English/Kiswahili, BCS's
+ * C+ in Mathematics/Physics), so per-subject rules see readable grades.
+ */
+const DEFAULT_SUBJECTS: Record<string, string> = {
+  ENGLISH: "B", KISWAHILI: "B", MATHEMATICS: "B",
+  PHYSICS: "B", CHEMISTRY: "B", BIOLOGY: "B",
+};
 
 export function docLines(type: string, spec: DocSpec): string[] {
   const year = spec.year ?? "2021";
@@ -64,6 +77,7 @@ export function docLines(type: string, spec: DocSpec): string[] {
         `NAME: ${spec.name}`,
         `MEAN GRADE: ${spec.kcseMeanGrade ?? "C+"}`,
         `YEAR: ${year}`,
+        ...Object.entries(spec.subjects ?? DEFAULT_SUBJECTS).map(([subj, g]) => `${subj}: ${g}`),
         ...(spec.extraLines ?? []),
       ];
     case "kcpe_cert":

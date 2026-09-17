@@ -60,12 +60,16 @@ export function loadConfig(): AppConfig {
 
 /**
  * Default (base) requirement set — overridden by programme/intake rules.
- * Grades are configured per course (mean grade + subject lines); the base set
- * only demands the documents every applicant must supply.
+ * Mirrors the university's published application basics: application form,
+ * national ID/passport, academic certificates. The general minimum entry for
+ * undergraduate study is a KCSE mean grade of C+ on the secondary certificate
+ * (academic_cert); diploma/certificate/postgraduate courses override that
+ * floor per course in Configuration. The KCPE certificate is NOT part of the
+ * published requirement set — it stays a recognised document but is optional.
  */
 export const DEFAULT_REQUIREMENTS = [
-  { document_type: "academic_cert" as const, required: true },
-  { document_type: "kcpe_cert" as const, required: true },
+  { document_type: "academic_cert" as const, required: true, meanGrade: "C+" },
+  { document_type: "kcpe_cert" as const, required: false },
   { document_type: "id" as const, required: true },
   { document_type: "application_form" as const, required: true },
   { document_type: "birth_cert" as const, required: false },
@@ -127,11 +131,11 @@ export const DEFAULT_PROGRAMMES: DefaultProgramme[] = [
     entry: "KCSE D+ or equivalent." },
   // ── School of Nursing ──
   { code: "BNS", name: "BSc Nursing", school: "School of Nursing",
-    entry: "KCSE mean grade C+ (plus) with C+ in Biology, Chemistry and English or Kiswahili, and C (plain) in Mathematics or Physics; or a KCE/KACE equivalent recognised by the Nursing Council of Kenya (NCK)." },
+    entry: "KCSE mean grade C+ (plus) — the university-wide degree minimum. Programme-specific subject requirements were not in the published details provided; confirm with the Admissions Office before relying on automated checks." },
   { code: "DNS", name: "Diploma in Nursing (Pre-Service)", school: "School of Nursing",
-    entry: "KCSE mean grade C (plain) with C (plain) in English or Kiswahili, C- (minus) in Biology and Chemistry, and C- in Mathematics or Physics; NCK requirements apply." },
+    entry: "KCSE mean grade C (plain) — the general diploma minimum. Programme-specific subject requirements were not in the published details provided; confirm with the Admissions Office." },
   { code: "KRCHN", name: "Certificate: Kenya Registered Community Health Nursing", school: "School of Nursing",
-    entry: "KCSE mean grade C- (minus) with C- in English or Kiswahili, Biology and Chemistry; NCK-approved curriculum." },
+    entry: "KCSE mean grade D+ — the university-wide certificate minimum. Programme-specific requirements were not in the published details provided; confirm with the Admissions Office." },
   // ── School of Education ──
   { code: "BED", name: "Bachelor of Education (Arts)", school: "School of Education",
     entry: "KCSE C+ (plus) or equivalent; or a Diploma in Education with credit; or A-Level with 2 principal passes; C+ in teaching subjects commonly expected." },
@@ -142,25 +146,75 @@ export const DEFAULT_PROGRAMMES: DefaultProgramme[] = [
 /**
  * Per-course grade rules seeded once (staff-editable afterwards — they are
  * stored in requirement_rules like any rule added in Configuration).
- * Grades, not points: mean grade + per-subject lines exactly as published.
+ *
+ * Source: Riara University's published admission requirements (general
+ * minimum entry + school pages). Grades, not points: KCSE mean grade plus
+ * per-subject lines exactly as published. Subject syntax: commas/semicolons
+ * separate requirements that ALL apply; a slash means EITHER/OR
+ * ("B in English/Kiswahili" = one of the two is enough).
+ *
+ * Postgraduate rows carry no KCSE grade rule — a degree class (Second Class
+ * Honours Upper Division) is verified by a human, not by this engine.
+ * Nursing rows use only the university-wide minima: programme-specific
+ * subject clusters were not in the published details provided, so they stay
+ * blank until the Admissions Office confirms them.
  */
 export const DEFAULT_PROGRAMME_REQUIREMENTS: Array<{
   programme: string;
   document_type: "academic_cert" | "kcpe_cert";
-  meanGrade: string;
+  meanGrade: string | null;
   subjectGrades?: string;
 }> = [
-  // Bachelor of Laws: KCSE C+ mean, B plain in English OR Kiswahili (a slash
-  // means either/or — one language is enough).
+  // ── Undergraduate degrees — general floor C+ plus published subjects ──
+  // LLB: C+ mean with B plain in English OR Kiswahili (interview may follow —
+  // interviews are a human step, not a document check).
   { programme: "LLB", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "B in English/Kiswahili" },
-  // BSc Nursing: C+ mean with lab-science and language requirements (NCK):
-  // C+ in Biology, Chemistry and English/Kiswahili; C in Mathematics/Physics.
-  { programme: "BNS", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "C+ in Biology; C+ in Chemistry; C+ in English/Kiswahili; C in Mathematics/Physics" },
-  // Diploma in Nursing: C mean; C in English/Kiswahili, C- in Biology,
-  // Chemistry and Mathematics/Physics.
-  { programme: "DNS", document_type: "academic_cert", meanGrade: "C", subjectGrades: "C in English/Kiswahili; C- in Biology; C- in Chemistry; C- in Mathematics/Physics" },
-  // KRCHN certificate: C- mean; C- in English/Kiswahili, Biology and Chemistry.
-  { programme: "KRCHN", document_type: "academic_cert", meanGrade: "C-", subjectGrades: "C- in English/Kiswahili; C- in Biology; C- in Chemistry" },
+  // BBA: C+ mean with C plain in English AND Mathematics (both required).
+  { programme: "BBA", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "C in English; C in Mathematics" },
+  // BSc Computer Science: C+ mean with C+ in Mathematics OR Physics OR
+  // Physical Sciences.
+  { programme: "BCS", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "C+ in Mathematics/Physics/Physical Sciences" },
+  // BBIT: C+ mean with D+ in Mathematics OR Physics OR Physical Sciences.
+  { programme: "BBIT", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "D+ in Mathematics/Physics/Physical Sciences" },
+  // BA International Relations & Diplomacy: minimum C+, with C+ in English
+  // or Kiswahili.
+  { programme: "BIR", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "C+ in English/Kiswahili" },
+  // B. Communication & Multimedia Journalism: C+ mean with C+ in English or
+  // Kiswahili AND D+ in Mathematics.
+  { programme: "BCJ", document_type: "academic_cert", meanGrade: "C+", subjectGrades: "C+ in English/Kiswahili; D+ in Mathematics" },
+  // BEd (Arts): C+ mean (C+ in teaching subjects is commonly expected — the
+  // subject list varies per specialisation, so staff add it per intake).
+  { programme: "BED", document_type: "academic_cert", meanGrade: "C+" },
+  // ── Diplomas — C-/C floors override the general C+ degree floor ──
+  // Diploma in Business Management: C- mean with C- in English OR Mathematics.
+  { programme: "DBM", document_type: "academic_cert", meanGrade: "C-", subjectGrades: "C- in English/Mathematics" },
+  // Diploma in Computer Science: typically C- with D+ in Mathematics or Physics.
+  { programme: "DCS", document_type: "academic_cert", meanGrade: "C-", subjectGrades: "D+ in Mathematics/Physics" },
+  // Diploma in Information & Cyber Security: typically C- and above.
+  { programme: "DCY", document_type: "academic_cert", meanGrade: "C-" },
+  // Diploma in IR & Diplomacy: C- mean with C in English AND C in any Science
+  // (the science cluster is checked against the KCSE sciences).
+  { programme: "DIR", document_type: "academic_cert", meanGrade: "C-", subjectGrades: "C in English; C in Biology/Chemistry/Physics" },
+  // Diploma in Communication & Multimedia Journalism: C- with C in English or
+  // any language (Kiswahili stands in for the second language).
+  { programme: "DCJ", document_type: "academic_cert", meanGrade: "C-", subjectGrades: "C in English/Kiswahili" },
+  // Diploma in Corporate Public Relations: C- with C in English/Kiswahili.
+  { programme: "DPR", document_type: "academic_cert", meanGrade: "C-", subjectGrades: "C in English/Kiswahili" },
+  // Diploma in Nursing: general diploma minimum (C plain) — programme-specific
+  // subjects not published in the provided details; confirm with Admissions.
+  { programme: "DNS", document_type: "academic_cert", meanGrade: "C" },
+  // ── Certificates — general D+ minimum ──
+  { programme: "CBM", document_type: "academic_cert", meanGrade: "D+" },
+  { programme: "CIT", document_type: "academic_cert", meanGrade: "D+" },
+  { programme: "CCD", document_type: "academic_cert", meanGrade: "D+" },
+  { programme: "CCM", document_type: "academic_cert", meanGrade: "D+" },
+  // KRCHN: general certificate minimum — NCK subject requirements to confirm.
+  { programme: "KRCHN", document_type: "academic_cert", meanGrade: "D+" },
+  // CTI (Certificate in Teaching International Curricula): no published
+  // academic threshold — intentionally no rule; staff may add one.
+  // ── Postgraduate — degree class is a human judgment, no KCSE rule ──
+  { programme: "MBA", document_type: "academic_cert", meanGrade: null },
+  { programme: "MIR", document_type: "academic_cert", meanGrade: null },
 ];
 
 export const DEFAULT_INTAKES = ["September 2026", "January 2027"];
