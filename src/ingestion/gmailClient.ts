@@ -126,12 +126,19 @@ export class GmailClient {
     const nameMatch = fromHeader.match(/^"?\s*([^"<]+?)\s*"?\s*</);
 
     const bodyParts: string[] = [];
-    const attachments: Array<{ filename: string; mimeType: string; attachmentId: string; size?: number }> = [];
+    const attachments: Array<{
+      filename: string;
+      mimeType: string;
+      attachmentId?: string;
+      /** Some clients embed inline images as base64 directly in the part. */
+      data?: Buffer;
+      size?: number;
+    }> = [];
 
     const walk = (part: MimePartNode) => {
+      const disposition = (part.headers || []).find((h) => h.name.toLowerCase() === "content-disposition")?.value || "";
+      const isDocumentish = /^(application\/pdf|image\/(png|jpe?g|tiff?))$/i.test(part.mimeType);
       if (part.body?.attachmentId) {
-        const disposition = (part.headers || []).find((h) => h.name.toLowerCase() === "content-disposition")?.value || "";
-        const isDocumentish = /^(application\/pdf|image\/(png|jpe?g|tiff?))$/i.test(part.mimeType);
         // Named attachments always; INLINE images of document types too —
         // phone users paste their scan into the message body itself.
         const inlineDocument = /inline/i.test(disposition) && isDocumentish;
@@ -144,6 +151,21 @@ export class GmailClient {
           attachments.push({ filename, mimeType: part.mimeType, attachmentId: part.body.attachmentId, size: part.body.size });
           return;
         }
+      } else if (/inline/i.test(disposition) && isDocumentish && part.body?.data) {
+        // Inline document image carried directly in the part (no attachmentId).
+        const cid = (part.headers || []).find((h) => h.name.toLowerCase() === "content-id")?.value || "";
+        const ext = part.mimeType.split("/")[1] || "bin";
+        const filename =
+          part.filename && part.filename.length > 0
+            ? part.filename
+            : `inline-${cid.replace(/[<>]/g, "") || attachments.length + 1}.${ext}`;
+        attachments.push({
+          filename,
+          mimeType: part.mimeType,
+          data: Buffer.from(part.body.data, "base64"),
+          size: part.body.size,
+        });
+        return;
       }
       if (part.mimeType === "text/plain" && part.body?.data) {
         bodyParts.push(Buffer.from(part.body.data, "base64").toString("utf8"));
@@ -171,17 +193,22 @@ export class GmailClient {
         .filter((a) => {
           // The extraction layer enforces the same cap on bytes, but an
           // attachment that DECLARES itself oversized is never downloaded.
-          if ((a.size ?? 0) > MAX_ATTACHMENT_BYTES) {
-            log(`gmail: skipping ${a.filename} — declared ${(a.size! / 1024 / 1024).toFixed(1)} MB exceeds the ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB attachment cap`, "warn");
+          const declared = a.size ?? a.data?.length ?? 0;
+          if (declared > MAX_ATTACHMENT_BYTES) {
+            log(`gmail: skipping ${a.filename} — declared ${(declared / 1024 / 1024).toFixed(1)} MB exceeds the ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB attachment cap`, "warn");
             return false;
           }
           return true;
         })
         .map(async (a) => {
+          if (a.data) {
+            // Inline image already carried its bytes in the MIME part.
+            return { filename: a.filename, mimeType: a.mimeType, content: a.data };
+          }
           const attRes = await this.gmail.users.messages.attachments.get({
             userId: "me",
             messageId: id,
-            id: a.attachmentId,
+            id: a.attachmentId!,
           });
           return {
             filename: a.filename,

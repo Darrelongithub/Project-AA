@@ -25,6 +25,29 @@ export interface VisionAdapter {
   extractDocument(att: Attachment): Promise<VisionExtraction | null>;
 }
 
+/** Cached stand-in for "the model read this and found nothing". */
+const NULL_MARKER: VisionExtraction = {
+  document_type: "unknown",
+  text: "__null__",
+  fields: {},
+  confidence: "low",
+};
+
+function isNullMarker(v: VisionExtraction): boolean {
+  return v.text === "__null__";
+}
+
+/** A cache row must at least smell like a VisionExtraction or it's a miss. */
+export function isValidCachedVision(v: unknown): v is VisionExtraction {
+  return (
+    !!v &&
+    typeof v === "object" &&
+    typeof (v as any).document_type === "string" &&
+    typeof (v as any).text === "string" &&
+    ["high", "medium", "low"].includes((v as any).confidence)
+  );
+}
+
 /** Why the vision tier could not run — surfaced verbatim to staff. */
 export type VisionFailureKind = "timeout" | "api" | "budget" | "circuit";
 
@@ -209,9 +232,10 @@ export class BudgetedVisionAdapter implements VisionAdapter {
     const sha = crypto.createHash("sha256").update(att.content).digest("hex");
 
     // 1 — cache first: identical bytes were already read (or already read
-    //     as nothing). Zero cost, zero API risk.
+    //     as nothing). Zero cost, zero API risk. A cached NULL is replayed
+    //     as null — provenance must be identical on first read and replay.
     const cached = this.store.get(sha);
-    if (cached) return cached;
+    if (cached) return isNullMarker(cached) ? null : cached;
 
     // 2 — budget: refuse to overspend; the document goes to a human.
     if (this.store.callsToday() >= this.dailyBudget) {
@@ -233,8 +257,9 @@ export class BudgetedVisionAdapter implements VisionAdapter {
       this.store.noteCall();
       const v = await this.inner.extractDocument(att);
       this.consecutiveFailures = 0;
-      // Cache BOTH outcomes: a reading, and a confirmed "read as nothing".
-      this.store.set(sha, v ?? { document_type: "unknown", text: "", fields: {}, confidence: "low" });
+      // Cache BOTH outcomes: a reading, and a confirmed "read as nothing"
+      // (stored as a marker so the replay returns the same null).
+      this.store.set(sha, v ?? NULL_MARKER);
       return v;
     } catch (e) {
       if (e instanceof VisionUnavailableError) {

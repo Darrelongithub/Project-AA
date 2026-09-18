@@ -32,6 +32,16 @@ interface TextItem {
   transform: number[]; // [a, b, c, d, x, y]
 }
 
+/** Classify WHY a pdf.js open failed. */
+function classifyOpenError(e: unknown): { status: "encrypted" | "corrupt"; error: string } {
+  const name = (e as any)?.name || "";
+  const msg = String((e as Error)?.message || e);
+  if (/password/i.test(name) || /PasswordException/.test(name) || /password/i.test(msg)) {
+    return { status: "encrypted", error: msg };
+  }
+  return { status: "corrupt", error: msg };
+}
+
 /** Open a PDF and classify WHY it can't be opened. */
 export async function pdfInspect(buf: Buffer): Promise<PdfInspection> {
   try {
@@ -44,12 +54,8 @@ export async function pdfInspect(buf: Buffer): Promise<PdfInspection> {
     if (numPages === 0) return { status: "empty", numPages: 0, truncated: false };
     return { status: "ok", numPages, truncated: numPages > PDF_MAX_PAGES };
   } catch (e) {
-    const name = (e as any)?.name || "";
-    const msg = String((e as Error)?.message || e);
-    if (/password/i.test(name) || /PasswordException/.test(name) || /password/i.test(msg)) {
-      return { status: "encrypted", numPages: 0, truncated: false, error: msg };
-    }
-    return { status: "corrupt", numPages: 0, truncated: false, error: msg };
+    const c = classifyOpenError(e);
+    return { status: c.status, numPages: 0, truncated: false, error: c.error };
   }
 }
 
@@ -59,43 +65,54 @@ export interface PdfTextResult {
 }
 
 /**
- * Text layer + inspection in one pass. `text` is null when the document
- * could not be opened at all; check `inspection.status` for the reason.
+ * Text layer + inspection in ONE pass — the document is opened a single
+ * time. `text` is null when it could not be opened at all; check
+ * `inspection.status` for the reason.
  */
 export async function pdfRead(buf: Buffer): Promise<PdfTextResult> {
-  const inspection = await pdfInspect(buf);
-  if (inspection.status !== "ok") return { text: null, inspection };
-
+  let doc: any;
   try {
-    const doc = await pdfjs.getDocument({
+    doc = await pdfjs.getDocument({
       data: new Uint8Array(buf),
       useSystemFonts: true,
       isEvalSupported: false,
       verbosity: 0,
     }).promise;
-
-    const lines: string[] = [];
-    try {
-      const limit = Math.min(doc.numPages, PDF_MAX_PAGES);
-      for (let p = 1; p <= limit; p++) {
-        const page = await doc.getPage(p);
-        try {
-          const content = await page.getTextContent();
-          lines.push(itemsToLines(content.items as TextItem[]));
-        } finally {
-          page.cleanup();
-        }
-      }
-    } finally {
-      await doc.destroy();
-    }
-    return { text: lines.join("\n"), inspection };
   } catch (e) {
+    const c = classifyOpenError(e);
+    return {
+      text: null,
+      inspection: { status: c.status, numPages: 0, truncated: false, error: c.error },
+    };
+  }
+
+  const numPages = doc.numPages;
+  const inspection: PdfInspection =
+    numPages === 0
+      ? { status: "empty", numPages: 0, truncated: false }
+      : { status: "ok", numPages, truncated: numPages > PDF_MAX_PAGES };
+
+  const lines: string[] = [];
+  try {
+    const limit = Math.min(numPages, PDF_MAX_PAGES);
+    for (let p = 1; p <= limit; p++) {
+      const page = await doc.getPage(p);
+      try {
+        const content = await page.getTextContent();
+        lines.push(itemsToLines(content.items as TextItem[]));
+      } finally {
+        page.cleanup();
+      }
+    }
+  } catch (e) {
+    await doc.destroy();
     return {
       text: null,
       inspection: { ...inspection, status: "corrupt", error: String((e as Error)?.message || e) },
     };
   }
+  await doc.destroy();
+  return { text: lines.join("\n"), inspection };
 }
 
 /** Legacy signature kept for callers that only want the text. */

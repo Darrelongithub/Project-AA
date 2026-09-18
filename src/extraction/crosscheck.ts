@@ -40,8 +40,12 @@ export function nameTokens(name: string): string[] {
 /**
  * Do two names plausibly belong to the same person?
  *   - token-set equality (order-insensitive): "KAMAU JOHN" = "John Kamau"
- *   - initials: "JOHN K KAMAU" ~ "JOHN KAMAU"
+ *   - initials: "JOHN K KAMAU" ~ "JOHN KAMAU", "J P KAMAU" ~ "JOHN PETER KAMAU"
  *   - subset when one side has extra middle names (common on certificates)
+ *
+ * The check is coverage, not intersection: EVERY token of the shorter name
+ * must appear in the longer one, either verbatim or as an initial. (An
+ * intersection gate would silently reject genuine initial-only matches.)
  */
 export function namesConsistent(a: string | null | undefined, b: string | null | undefined): boolean {
   const ta = nameTokens(a ?? "");
@@ -49,13 +53,6 @@ export function namesConsistent(a: string | null | undefined, b: string | null |
   if (!ta.length || !tb.length) return true; // nothing to contradict
   if (ta.join(" ") === tb.join(" ")) return true;
 
-  const sa = new Set(ta);
-  const sb = new Set(tb);
-  const intersection = [...sa].filter((t) => sb.has(t));
-  const shorter = Math.min(ta.length, tb.length);
-
-  // Every token of the shorter name must appear (as token or initial) in
-  // the longer one.
   const cover = (short: string[], long: string[]): boolean =>
     short.every((t) => {
       if (long.includes(t)) return true;
@@ -64,16 +61,71 @@ export function namesConsistent(a: string | null | undefined, b: string | null |
       return false;
     });
 
-  if (intersection.length >= shorter && (cover(ta.length <= tb.length ? ta : tb, ta.length <= tb.length ? tb : ta))) {
-    return true;
-  }
-  return false;
+  const short = ta.length <= tb.length ? ta : tb;
+  const long = ta.length <= tb.length ? tb : ta;
+  return cover(short, long);
 }
 
-/** Normalise a printed DOB to a comparable form (digits only). */
+const MONTH_NAMES: Record<string, number> = {
+  JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6,
+  JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12,
+};
+
+function daysInMonth(y: number, m: number): number {
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+function validYmd(y: number, m: number, d: number): boolean {
+  return y >= 1900 && y <= 2100 && m >= 1 && m <= 12 && d >= 1 && d <= daysInMonth(y, m);
+}
+
+function monthFromWord(w: string): number | null {
+  const key = w.slice(0, 3).toUpperCase();
+  return MONTH_NAMES[key] ?? null;
+}
+
+/**
+ * Parse a printed DOB to canonical {y, m, d}. Format-aware: "12/03/2004"
+ * (assumed day-first; swapped automatically when only the US order is
+ * possible), "2004-03-12", "12 JANUARY 2005", "JANUARY 12 2005". Returns
+ * null when the date cannot be pinned down — unknown never contradicts.
+ */
+export function dobCanonical(dob: string | null | undefined): { y: number; m: number; d: number } | null {
+  const s = (dob || "").trim().toUpperCase().replace(/\s+/g, " ");
+  if (!s) return null;
+
+  let m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (m) {
+    let d = Number(m[1]);
+    let mo = Number(m[2]);
+    const y = Number(m[3]);
+    if (!validYmd(y, mo, d) && validYmd(y, d, mo)) [d, mo] = [mo, d]; // US order rescue
+    return validYmd(y, mo, d) ? { y, m: mo, d } : null;
+  }
+  m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+  if (m) {
+    const y = Number(m[1]); const mo = Number(m[2]); const d = Number(m[3]);
+    return validYmd(y, mo, d) ? { y, m: mo, d } : null;
+  }
+  m = s.match(/^(\d{1,2})(?:ST|ND|RD|TH)?\s+([A-Z]{3,9})\s*,?\s*(\d{4})$/);
+  if (m) {
+    const mo = monthFromWord(m[2]);
+    const d = Number(m[1]); const y = Number(m[3]);
+    return mo && validYmd(y, mo, d) ? { y, m: mo, d } : null;
+  }
+  m = s.match(/^([A-Z]{3,9})\s+(\d{1,2})(?:ST|ND|RD|TH)?\s*,?\s*(\d{4})$/);
+  if (m) {
+    const mo = monthFromWord(m[1]);
+    const d = Number(m[2]); const y = Number(m[3]);
+    return mo && validYmd(y, mo, d) ? { y, m: mo, d } : null;
+  }
+  return null;
+}
+
+/** Stable comparable key (kept for callers that want a string). */
 export function dobKey(dob: string | null | undefined): string | null {
-  const digits = (dob || "").replace(/[^0-9]/g, "");
-  return digits.length >= 6 ? digits : null;
+  const c = dobCanonical(dob);
+  return c ? `${c.y}-${String(c.m).padStart(2, "0")}-${String(c.d).padStart(2, "0")}` : null;
 }
 
 export function dobsConsistent(a: string | null | undefined, b: string | null | undefined): boolean {
@@ -123,9 +175,11 @@ export function consistencyCheck(docs: ConsistencyDoc[]): ConsistencyReport {
 
   // Majority pass: mark the outliers so the pipeline can cap THEIR scores.
   if (!report.nameConsistent && named.length >= 2) {
+    // Single-linkage clustering: a doc joins a cluster when it is consistent
+    // with ANY member (not just the first), so chained variants stay together.
     const clusters: ConsistencyDoc[][] = [];
     for (const d of named) {
-      const cluster = clusters.find((c) => namesConsistent(c[0].name, d.name));
+      const cluster = clusters.find((c) => c.some((member) => namesConsistent(member.name, d.name)));
       if (cluster) cluster.push(d);
       else clusters.push([d]);
     }
@@ -143,7 +197,7 @@ export function consistencyCheck(docs: ConsistencyDoc[]): ConsistencyReport {
   if (!report.dobConsistent && dated.length >= 2) {
     const clusters: ConsistencyDoc[][] = [];
     for (const d of dated) {
-      const cluster = clusters.find((c) => dobsConsistent(c[0].dateOfBirth, d.dateOfBirth));
+      const cluster = clusters.find((c) => c.some((member) => dobsConsistent(member.dateOfBirth, d.dateOfBirth)));
       if (cluster) cluster.push(d);
       else clusters.push([d]);
     }

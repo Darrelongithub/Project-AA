@@ -16,11 +16,19 @@ import type { DocumentRecord } from "../types";
 import { SYSTEM_LABELS } from "../admissions/systems";
 import { docLabel } from "../rules";
 
-/** Notes staff need but applicants must not (kept out of emails). */
-const INTERNAL_NOTE_PREFIXES = ["Contradicts"];
+/**
+ * Notes staff need but applicants must not see are built through
+ * `internalNote()` and recognised by the marker — one constant, two files,
+ * no magic-string drift.
+ */
+export const INTERNAL_NOTE_PREFIX = "INTERNAL: ";
+
+export function internalNote(message: string): string {
+  return `${INTERNAL_NOTE_PREFIX}${message.charAt(0).toUpperCase()}${message.slice(1)}`;
+}
 
 function isApplicantSafe(note: string): boolean {
-  return !INTERNAL_NOTE_PREFIXES.some((p) => note.startsWith(p));
+  return !note.startsWith(INTERNAL_NOTE_PREFIX);
 }
 
 function subjectSummary(grades: Record<string, string>): string {
@@ -55,7 +63,7 @@ export function readBackText(docs: DocumentRecord[]): string {
     if (Object.keys(grades).length) bits.push(`subjects: ${subjectSummary(grades)}`);
 
     if (bits.length) lines.push(`  • ${label} — ${bits.join("; ")}`);
-    else if (d.confidence_score && d.confidence_score >= 75) {
+    else if ((d.confidence_score ?? 0) >= 75) {
       lines.push(`  • ${label} — received and read successfully`);
     }
   }

@@ -31,7 +31,7 @@ import { recordDocuments } from "../matching";
 import { resolveIdentity } from "../matching/identity";
 import { extractAttachment, MIN_AUTO_PASS_SCORE } from "../extraction/extract";
 import { consistencyCheck } from "../extraction/crosscheck";
-import { readBackText, documentIssuesText } from "../extraction/feedback";
+import { readBackText, documentIssuesText, internalNote } from "../extraction/feedback";
 import { decide, docLabel, normalizeName } from "../rules";
 import { evaluateAdmission, downgradeRoutingForWatcher } from "../admissions/evaluate";
 import { SYSTEM_LABELS } from "../admissions/systems";
@@ -41,7 +41,7 @@ import { extractPhone, inferIntake, inferProgramme, inferTransfer } from "../enr
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
 import { INSTITUTION, emailBanner } from "../branding";
-import { admissionPack, applicationPack, takePackIssues } from "../pack";
+import { admissionPack, applicationPack } from "../pack";
 import type { SendExtras } from "./adapters";
 import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
@@ -208,7 +208,10 @@ export async function processEmail(
     // human-worded flag (incl. the "possible typo" phrasing) stays the
     // one staff see; here we add the DATE-OF-BIRTH check it doesn't do.
     if (!cons.dobConsistent) {
-      preFlags.push({ type: "identity_check", detail: `date of birth differs between documents: ${cons.issues.join("; ")}` });
+      const dobDetail = `date of birth differs between documents: ${cons.issues.join("; ")}`;
+      const existing = preFlags.find((f) => f.type === "identity_check");
+      if (existing) existing.detail = `${existing.detail}; ${dobDetail}`;
+      else preFlags.push({ type: "identity_check", detail: dobDetail });
     }
     repo.audit(applicant.id, "system", "cross_doc_inconsistency", cons.issues.join("; "));
     for (const outlierId of [...new Set([...cons.nameOutliers, ...cons.dobOutliers])]) {
@@ -218,7 +221,7 @@ export async function processEmail(
       repo.updateDocumentConfidence(outlierId, {
         confidence_score: capped,
         confidence: capped >= MIN_AUTO_PASS_SCORE ? "high" : "medium",
-        extraction_note: `Contradicts other documents on file: ${cons.issues[0]}`,
+        extraction_note: internalNote(`contradicts other documents on file: ${cons.issues[0]}`),
       });
     }
     activeDocs = repo.listDocuments(applicant.id, { activeOnly: true });
@@ -566,16 +569,16 @@ export async function processEmail(
       // Enquiries get the real application pack; every branded template
       // carries the changeable banner unless the template opts out.
       const tplRow = templateKey ? repo.getTemplate(templateKey) : undefined;
+      const pack = willAutoAdmit ? admissionPack() : autoKind === "docs_request" ? applicationPack() : null;
       const extras: SendExtras = {
         banner: tplRow?.include_banner === 0 ? null : emailBanner(repo),
-        attachments: willAutoAdmit ? admissionPack() : autoKind === "docs_request" ? applicationPack() : [],
+        attachments: pack ? pack.files : [],
       };
       // A pack that went out missing files is a silent failure no more:
       // audit it and tell staff which file is gone.
-      const packProblems = takePackIssues();
-      if (packProblems.length) {
-        repo.audit(applicant.id, "system", "pack_incomplete", packProblems.join("; "));
-        repo.notify("review_needed", `${applicantNow.ref_number}: outgoing pack is incomplete — ${packProblems[0]}`, applicant.id);
+      if (pack && pack.issues.length) {
+        repo.audit(applicant.id, "system", "pack_incomplete", pack.issues.join("; "));
+        repo.notify("review_needed", `${applicantNow.ref_number}: outgoing pack is incomplete — ${pack.issues[0]}`, applicant.id);
       }
       await adapters.sender.send(applicantNow.email_address, draft.subject, draft.body, email.threadId, extras);
       repo.insertEmail({

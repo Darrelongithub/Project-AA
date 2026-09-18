@@ -39,13 +39,6 @@ export const PACK_SLOTS: PackSlot[] = [
   { key: "credit-transfer-form", file: "credit-transfer-form.pdf", pretty: "Riara University Credit Transfer Form.pdf", pack: "transfer", purpose: "For applicants transferring credit from another institution" },
 ];
 
-/** Sent to applicants who are transferring with prior credit. */
-export function creditTransferPack(): PackFile[] {
-  return [
-    read("credit-transfer-form.pdf", "Riara University Credit Transfer Form.pdf"),
-  ].filter((f): f is PackFile => f !== null);
-}
-
 export const PACK_DIR = path.join(process.cwd(), "data", "pack");
 
 /** Pack files with existence + size, for the Documents & pack panel. */
@@ -60,49 +53,52 @@ export function packManifest(): Array<PackSlot & { exists: boolean; bytes: numbe
   });
 }
 
-/**
- * Missing pack files used to vanish into a log line — a student would get an
- * admission letter WITHOUT the medical form and nobody would notice. The
- * pipeline now drains this list after building attachments and writes an
- * audit entry + staff notification per missing file.
- */
-let packIssues: string[] = [];
-
-export function takePackIssues(): string[] {
-  const out = packIssues;
-  packIssues = [];
-  return out;
+/** Result of building a pack: what goes out, and exactly what was missing. */
+export interface PackBuild {
+  files: PackFile[];
+  issues: string[];
 }
 
-function read(name: string, pretty: string): PackFile | null {
+function read(name: string, pretty: string, issues: string[]): PackFile | null {
   try {
     return { filename: pretty, mimeType: "application/pdf", content: fs.readFileSync(path.join(PACK_DIR, name)) };
-  } catch {
-    log(`pack: ${name} not found in data/pack — skipped`, "warn");
-    packIssues.push(`${pretty} (${name}) is missing from data/pack — the outgoing pack is incomplete`);
+  } catch (e) {
+    const missing = (e as NodeJS.ErrnoException).code === "ENOENT";
+    log(`pack: ${name} ${missing ? "not found in" : "unreadable from"} data/pack — skipped`, "warn");
+    issues.push(
+      `${pretty} (${name}) is ${missing ? "missing from" : "unreadable from"} data/pack — the outgoing pack is incomplete`
+    );
     return null;
   }
 }
 
+function build(issues: string[], ...files: Array<PackFile | null>): PackBuild {
+  return { files: files.filter((f): f is PackFile => f !== null), issues };
+}
+
 /** Sent with every application enquiry reply. */
-export function applicationPack(): PackFile[] {
-  return [
-    read("application-form.pdf", "Riara University Application Form.pdf"),
-    read("brochure-2026.pdf", "Riara University Brochure 2026.pdf"),
-  ].filter((f): f is PackFile => f !== null);
+export function applicationPack(): PackBuild {
+  const issues: string[] = [];
+  return build(
+    issues,
+    read("application-form.pdf", "Riara University Application Form.pdf", issues),
+    read("brochure-2026.pdf", "Riara University Brochure 2026.pdf", issues)
+  );
 }
 
 /** Attached to the admission letter once a candidate passes. */
-export function admissionPack(): PackFile[] {
-  return [
-    read("student-medical-form.pdf", "RU Student Medical Form.pdf"),
-    read("data-protection-form.pdf", "RU Data Protection Form.pdf"),
-    read("next-of-kin-form.pdf", "RU Next of Kin Form.pdf"),
-    read("hostels-list.pdf", "RU Hostels List.pdf"),
-    read("fee-structure-2026.pdf", "Riara University Fee Structure 2026.pdf"),
-    read("sponsorship-form.pdf", "RU Sponsorship Form.pdf"),
-    read("orientation-programme-2026.pdf", "September 2026 Orientation Programmes.pdf"),
-  ].filter((f): f is PackFile => f !== null);
+export function admissionPack(): PackBuild {
+  const issues: string[] = [];
+  return build(
+    issues,
+    read("student-medical-form.pdf", "RU Student Medical Form.pdf", issues),
+    read("data-protection-form.pdf", "RU Data Protection Form.pdf", issues),
+    read("next-of-kin-form.pdf", "RU Next of Kin Form.pdf", issues),
+    read("hostels-list.pdf", "RU Hostels List.pdf", issues),
+    read("fee-structure-2026.pdf", "Riara University Fee Structure 2026.pdf", issues),
+    read("sponsorship-form.pdf", "RU Sponsorship Form.pdf", issues),
+    read("orientation-programme-2026.pdf", "September 2026 Orientation Programmes.pdf", issues)
+  );
 }
 
 /** Default email banner (./data/branding/email-banner.jpg). */

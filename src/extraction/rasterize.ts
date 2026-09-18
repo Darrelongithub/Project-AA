@@ -69,6 +69,15 @@ export interface RasterPage {
   height: number;
 }
 
+export interface RasterReport {
+  /** Pages actually rendered and handed to the callback. */
+  rendered: number;
+  /** Pages dropped by the pixel cap or the page cap. */
+  skipped: number;
+  /** True when the time budget ended the run early. */
+  timedOut: boolean;
+}
+
 export interface RasterOptions {
   /** Pages beyond this are dropped (the text tier still read them if any). */
   maxPages?: number;
@@ -88,15 +97,19 @@ export const RASTER_DEFAULTS: Required<RasterOptions> = {
 };
 
 /**
- * Render up to `maxPages` pages of a PDF to PNG buffers. Returns null when
- * the file can't be opened at all (the caller's status check explains why).
+ * Render up to `maxPages` pages of a PDF and hand each PNG to `onPage`
+ * IMMEDIATELY — the caller OCRs it and drops the buffer, so memory holds
+ * one page at a time instead of the whole rendered document. Throws when
+ * the file can't be opened (the caller's status check explains why).
  */
 export async function rasterizePdf(
   buf: Buffer,
-  opts: RasterOptions = {}
-): Promise<RasterPage[]> {
+  opts: RasterOptions = {},
+  onPage?: (page: RasterPage) => Promise<void> | void
+): Promise<RasterReport> {
   const o = { ...RASTER_DEFAULTS, ...opts };
   const started = Date.now();
+  const report: RasterReport = { rendered: 0, skipped: 0, timedOut: false };
 
   const canvasFactory = {
     create(width: number, height: number): { canvas: Canvas; context: CanvasRenderingContext2D } {
@@ -121,12 +134,13 @@ export async function rasterizePdf(
     canvasFactory,
   }).promise;
 
-  const pages: RasterPage[] = [];
   try {
     const count = Math.min(doc.numPages, o.maxPages);
+    report.skipped += Math.max(0, doc.numPages - count);
     for (let p = 1; p <= count; p++) {
       if (Date.now() - started > o.timeoutMs) {
-        log(`rasterize: time budget reached after ${pages.length} page(s)`, "warn");
+        report.timedOut = true;
+        log(`rasterize: time budget reached after ${report.rendered} page(s)`, "warn");
         break;
       }
       const page = await doc.getPage(p);
@@ -136,7 +150,11 @@ export async function rasterizePdf(
         while (viewport.width * viewport.height > o.maxPixelsPerPage && viewport.scale > 0.5) {
           viewport = page.getViewport({ scale: viewport.scale * 0.8 });
         }
-        if (viewport.width * viewport.height > o.maxPixelsPerPage) continue;
+        if (viewport.width * viewport.height > o.maxPixelsPerPage) {
+          report.skipped++;
+          log(`rasterize: page ${p} skipped — still ${Math.round(viewport.width * viewport.height / 1e6)}MP at minimum scale`, "warn");
+          continue;
+        }
 
         const { canvas, context } = canvasFactory.create(
           Math.floor(viewport.width),
@@ -148,12 +166,14 @@ export async function rasterizePdf(
         context.fillRect(0, 0, canvas.width, canvas.height);
 
         await page.render({ canvasContext: context as any, viewport, canvasFactory } as any).promise;
-        pages.push({
+        const raster: RasterPage = {
           pageNumber: p,
           buffer: canvas.toBuffer("image/png"),
           width: canvas.width,
           height: canvas.height,
-        });
+        };
+        report.rendered++;
+        if (onPage) await onPage(raster);
       } finally {
         page.cleanup();
       }
@@ -161,7 +181,7 @@ export async function rasterizePdf(
   } finally {
     await doc.destroy();
   }
-  return pages;
+  return report;
 }
 
 /**
@@ -178,7 +198,11 @@ export async function preprocessImage(buf: Buffer): Promise<Buffer | null> {
       .rotate() // auto-rotate by EXIF orientation
       .png()
       .toBuffer();
-  } catch {
+  } catch (e) {
+    // The caller falls back to the raw bytes; OCR decides. Logged because a
+    // systematic sharp failure (e.g. TIFF support missing) would otherwise
+    // disable preprocessing silently and forever.
+    log(`preprocessImage: sharp failed (${(e as Error).message}); using original bytes`);
     return null;
   }
 }

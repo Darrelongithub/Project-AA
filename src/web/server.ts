@@ -32,7 +32,7 @@ import type { PipelineContext as PCtx } from "../pipeline/adapters";
 import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { INSTITUTION, emailBanner } from "../branding";
-import { admissionPack, applicationPack, creditTransferPack, PACK_DIR, PACK_SLOTS, takePackIssues } from "../pack";
+import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS } from "../pack";
 import { EXAM_SYSTEMS, SUBJECT_CATALOG } from "../config";
 import type { SystemBlock } from "../types";
 import * as fs from "fs";
@@ -462,16 +462,15 @@ export function createApp(deps: WebDeps): Express {
       regDate: repo.getSetting("reg_date", ""),
       orientationDates: repo.getSetting("orientation_dates", ""),
     });
-    const attachments = isAdmission ? admissionPack() : applicationPack();
+    const pack = isAdmission ? admissionPack() : applicationPack();
     // Missing pack files must never be a silent gap in a real send.
-    const packProblems = takePackIssues();
-    if (packProblems.length) {
-      repo.audit(id, req.staff!.username, "pack_incomplete", packProblems.join("; "));
+    if (pack.issues.length) {
+      repo.audit(id, req.staff!.username, "pack_incomplete", pack.issues.join("; "));
     }
     try {
       await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
         banner: tpl.include_banner === 0 ? null : emailBanner(repo),
-        attachments,
+        attachments: pack.files,
       });
     } catch (e) {
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
@@ -483,12 +482,12 @@ export function createApp(deps: WebDeps): Express {
       at: new Date().toISOString(),
     });
     staffAction(req, id, isAdmission ? "admission_pack_sent" : "application_pack_sent",
-      `${attachments.length} document(s): "${rendered.subject}"`);
-    const packWarn = packProblems.length
-      ? ` ⚠ ${packProblems.length} pack file(s) missing — see audit.`
+      `${pack.files.length} document(s): "${rendered.subject}"`);
+    const packWarn = pack.issues.length
+      ? ` ⚠ ${pack.issues.length} pack file(s) missing — see audit.`
       : "";
     res.redirect(backToCase(id, (isAdmission
-      ? `Admission pack sent — letter plus ${attachments.length} documents.`
+      ? `Admission pack sent — letter plus ${pack.files.length} documents.`
       : "Application pack sent — form and brochure attached.") + packWarn));
   });
 
@@ -673,17 +672,26 @@ export function createApp(deps: WebDeps): Express {
   app.post("/config/reevaluate-open", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#rules`;
     let done = 0;
+    let failed = 0;
     for (const id of repo.openApplicantIds()) {
       const a = repo.getApplicant(id);
       if (!a || !sameRealm(req, a)) continue;
-      const flags = repo.activeFlags(id).filter((f) => f.type !== "duplicate_submission");
-      const result = evaluateAdmission(repo, id, flags);
-      repo.syncFlags(id, [...flags, ...result.derivedFlags]);
-      repo.audit(id, req.staff!.username, "evaluation_rerun", `bulk re-evaluation → ${result.report.result}/${result.report.routing}`);
-      done++;
+      try {
+        const flags = repo.activeFlags(id).filter((f) => f.type !== "duplicate_submission");
+        const result = evaluateAdmission(repo, id, flags);
+        repo.syncFlags(id, [...flags, ...result.derivedFlags]);
+        repo.audit(id, req.staff!.username, "evaluation_rerun", `bulk re-evaluation → ${result.report.result}/${result.report.routing}`);
+        done++;
+      } catch (e) {
+        // One pathological case must not abort the whole batch.
+        failed++;
+        repo.audit(id, req.staff!.username, "evaluation_rerun_failed", (e as Error).message.slice(0, 200));
+      }
     }
-    repo.audit(null, req.staff!.username, "bulk_reevaluation", `${done} open case(s) re-evaluated`);
-    res.redirect(back(`Re-evaluated ${done} open case(s) against their frozen rule sets.`));
+    repo.audit(null, req.staff!.username, "bulk_reevaluation", `${done} open case(s) re-evaluated${failed ? `, ${failed} failed` : ""}`);
+    res.redirect(back(
+      `Re-evaluated ${done} open case(s) against their frozen rule sets.${failed ? ` ${failed} case(s) failed — see their audit trails.` : ""}`
+    ));
   });
 
   // Dead-letter queue: retry puts a parked message back in front of the next
@@ -800,7 +808,8 @@ export function createApp(deps: WebDeps): Express {
     // Cases a human already picked up are never re-routed automatically.
     let routed = 0;
     if (ownerId !== null) {
-      for (const c of repo.openUnassignedCasesForProgramme(programme)) {
+      const realm: 0 | 1 = req.staff!.demo ? 1 : 0;
+      for (const c of repo.openUnassignedCasesForProgramme(programme, realm)) {
         repo.updateApplicant(c.id, { assigned_to: ownerId });
         repo.audit(c.id, req.staff!.username, "case_routed", `assigned to ${who} — new owner of ${programme}`);
         repo.notify("assignment", `${programme} ownership changed: case ${c.ref_number} routed to you`, c.id, ownerId);

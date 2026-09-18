@@ -3,6 +3,7 @@
  * the facts; AI is never needed for this step on well-formed documents.
  */
 import type { ExtractedFields } from "../types";
+import { dobCanonical } from "./crosscheck";
 
 const NAME_RE =
   /^(?:FULL\s+NAME|NAME\s+OF\s+(?:APPLICANT|STUDENT|HOLDER|CANDIDATE|DECEASED|CHILD)|APPLICANT(?:'S)?\s+NAME|CANDIDATE(?:\s+NAME)?|STUDENT(?:\s+NAME)?|HOLDER(?:'S)?\s+NAME|NAME)\s*[:\-]\s*(.+)$/im;
@@ -68,10 +69,21 @@ function normalizeGradeLetter(letter: string, word?: string): string {
  * ID / passport numbers. Labels end at a word boundary; a separator is
  * required before the value (otherwise "NATIONAL IDENTITY CARD" would
  * capture "ENTITY"); the value must contain a digit (words never do).
+ * A raw capture is not enough — "ID 2026" must not read as an ID — so
+ * candidates pass `validIdCandidate` and the search continues past rejects.
  */
 const ID_NO_RE =
-  /\b(?:NATIONAL\s+ID(?:ENTITY)?(?:\s+CARD)?|PASSPORT|IDENTITY\s*CARD|ID\s*CARD|ID)\s*(?:NO|NUMBER|NBR|CARD\s*NO)?\.?\s*(?:[:#\-]\s*|\s+)(?=[A-Z0-9/\-]*\d)([A-Z0-9][A-Z0-9\-/]{4,14})\b/i;
+  /\b(?:NATIONAL\s+ID(?:ENTITY)?(?:\s+CARD)?|PASSPORT|IDENTITY\s*CARD|ID\s*CARD|ID)\s*(?:NO|NUMBER|NBR|CARD\s*NO)?\.?\s*(?:[:#\-]\s*|\s+)(?=[A-Z0-9/\-]*\d)([A-Z0-9][A-Z0-9\-/]{4,14})\b/gi;
+
+/** All-digit IDs need >=6 digits (Kenyan IDs are 7-8); mixed values need >=7 chars (passport format). */
+function validIdCandidate(v: string): boolean {
+  if (!/\d/.test(v)) return false;
+  if (/^\d+$/.test(v)) return v.length >= 6;
+  return v.length >= 7;
+}
 const YEAR_RE = /(?:YEAR|INDEX\s+YEAR|EXAM(?:INATION)?\s+YEAR)\s*[:\-]?\s*(19|20)\d{2}/i;
+const DOB_RE =
+  /\b(?:DATE\s+OF\s+BIRTH|DOB|BORN\s+ON|DAY\s+OF\s+BIRTH)\s*[:\-]?\s*(\d{1,2}[\/\-.]\d{1,2}[\/\-.](?:19|20)\d{2}|(?:19|20)\d{2}[\/\-.]\d{1,2}[\/\-.]\d{1,2}|\d{1,2}(?:ST|ND|RD|TH)?\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\s*,?\s*(?:19|20)\d{2})/gi;
 
 export function extractFields(text: string): ExtractedFields {
   const fields: ExtractedFields = {};
@@ -120,14 +132,25 @@ export function extractFields(text: string): ExtractedFields {
   }
   if (Object.keys(subjects).length) fields.subjectGrades = subjects;
 
-  const idNo = text.match(ID_NO_RE);
-  if (idNo) fields.idNumber = idNo[1].toUpperCase().trim();
+  ID_NO_RE.lastIndex = 0;
+  for (const m of text.matchAll(ID_NO_RE)) {
+    const candidate = m[1].toUpperCase().trim();
+    if (validIdCandidate(candidate)) {
+      fields.idNumber = candidate;
+      break;
+    }
+  }
 
   // Date of birth — cross-checked between documents by the confidence layer.
-  const dob = text.match(
-    /(?:DATE\s+OF\s+BIRTH|DOB|BORN\s+ON|DAY\s+OF\s+BIRTH)\s*[:\-]?\s*(\d{1,2}[\/\-.]\d{1,2}[\/\-.](?:19|20)\d{2}|(?:19|20)\d{2}[\/\-.]\d{1,2}[\/\-.]\d{1,2}|\d{1,2}(?:ST|ND|RD|TH)?\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\s*,?\s*(?:19|20)\d{2})/i
-  );
-  if (dob) fields.dateOfBirth = dob[1].toUpperCase().replace(/\s+/g, " ").trim();
+  // Candidates are range-validated (month/day) so "31/15/2004" is not a DOB.
+  DOB_RE.lastIndex = 0;
+  for (const m of text.matchAll(DOB_RE)) {
+    const candidate = m[1].toUpperCase().replace(/\s+/g, " ").trim();
+    if (dobCanonical(candidate)) {
+      fields.dateOfBirth = candidate;
+      break;
+    }
+  }
 
   // Exam index number (document intelligence field, v3 feature 6).
   const indexNo = text.match(/INDEX\s*(?:NO|NUMBER)\.?\s*[:\-]?\s*([0-9][0-9A-Z\/\-]{3,})/i);

@@ -284,13 +284,15 @@ export async function extractAttachment(
     if (truncNote) log(`extraction: ${att.filename} — ${truncNote}`, "warn");
 
     // ── Tier 1: embedded text layer ──────────────────────────────────────
-    if (rawText && isGoodText(rawText, classifyDocumentType(rawText))) {
-      log(`extraction: ${att.filename} → embedded text layer (high confidence)`);
-      return { ...finish(att.filename, rawText, "pdf_text", "high", truncNote), sha256 };
+    if (rawText) {
+      const t1Type = classifyDocumentType(rawText);
+      if (isGoodText(rawText, t1Type)) {
+        log(`extraction: ${att.filename} → embedded text layer (high confidence)`);
+        return { ...finish(att.filename, rawText, "pdf_text", "high", truncNote), sha256 };
+      }
     }
 
     // ── Tier 2: OCR on embedded images ───────────────────────────────────
-    let best: { text: string; tier: Confidence } | null = null;
     if (deps.ocr) {
       const images = extractPdfImages(att.content);
       const parts: string[] = [];
@@ -303,7 +305,6 @@ export async function extractAttachment(
         log(`extraction: ${att.filename} → Tesseract OCR on embedded images`);
         return { ...finish(att.filename, joined, "ocr", "medium", truncNote), sha256 };
       }
-      if (joined) best = { text: joined, tier: "medium" };
       if (images.length === 0) {
         log(`extraction: ${att.filename} → no usable embedded images found for OCR`);
       } else {
@@ -314,34 +315,36 @@ export async function extractAttachment(
     // ── Tier 2½: full-page rasterisation ─────────────────────────────────
     // Phone "Scan" apps wrap images in PDFs with exotic filters; 16-bit
     // scans and JPX/JBIG2 XObjects are skipped above. Rendering the pages
-    // ourselves gives Tesseract clean PNGs to read.
+    // ourselves gives Tesseract clean PNGs to read. Pages stream through
+    // one at a time (OCR → discard) so memory holds a single page.
     if (deps.ocr && deps.rasterize !== false) {
       try {
-        const pages = await rasterizePdf(att.content, {
-          maxPages: Math.min(RASTER_DEFAULTS.maxPages, inspection.numPages || RASTER_DEFAULTS.maxPages),
-        });
+        const ocr = deps.ocr;
         const parts: string[] = [];
-        for (const pg of pages) {
-          const t = await deps.ocr(pg.buffer, "png");
-          if (t) parts.push(t);
-        }
+        const report = await rasterizePdf(
+          att.content,
+          { maxPages: Math.min(RASTER_DEFAULTS.maxPages, inspection.numPages || RASTER_DEFAULTS.maxPages) },
+          async (pg) => {
+            const t = await ocr(pg.buffer, "png");
+            if (t) parts.push(t);
+          }
+        );
         const joined = parts.join("\n");
         if (joined && isGoodText(joined, classifyDocumentType(joined))) {
-          log(`extraction: ${att.filename} → rasterised ${pages.length} page(s) + Tesseract OCR`);
-          const note = truncNote ?? (pages.length < inspection.numPages
-            ? `Rendered ${pages.length} of ${inspection.numPages} pages (per-document limit).`
-            : undefined);
-          return { ...finish(att.filename, joined, "pdf_raster", "medium", note), sha256 };
+          log(`extraction: ${att.filename} → rasterised ${report.rendered} page(s) + Tesseract OCR`);
+          const notes: string[] = [];
+          if (truncNote) notes.push(truncNote);
+          else if (report.rendered < inspection.numPages) {
+            notes.push(`Rendered ${report.rendered} of ${inspection.numPages} pages (per-document limit).`);
+          }
+          if (report.skipped > 0) notes.push(`${report.skipped} page(s) were too large to render.`);
+          if (report.timedOut) notes.push("Rendering stopped at the time limit; later pages were not read.");
+          return { ...finish(att.filename, joined, "pdf_raster", "medium", notes.length ? notes.join(" ") : undefined), sha256 };
         }
-        if (joined && (!best || joined.length > best.text.length)) best = { text: joined, tier: "medium" };
       } catch (e) {
         log(`extraction: rasterise failed for ${att.filename}: ${(e as Error).message}`);
       }
     }
-
-    // Carry the best partial OCR into the vision tier as context-free input
-    // (vision reads the original PDF anyway); nothing more to do here.
-    if (best) log(`extraction: ${att.filename} → partial OCR (${best.text.length} chars) insufficient; trying vision`);
   } else if (isImage && deps.ocr) {
     // Image attachments: EXIF-rotate first (sideways phone shots of IDs),
     // then OCR.

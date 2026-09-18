@@ -276,9 +276,14 @@ trailer <</Size 4 /Root 1 0 R /Encrypt 3 0 R>>
 });
 
 describe("extraction: full-page rasterisation tier (round 19)", () => {
-  it("renders an image-only PDF to clean PNGs", async () => {
+  it("renders an image-only PDF to clean PNGs (streaming)", async () => {
     const pdf = await makeImageOnlyPdf();
-    const pages = await rasterizePdf(pdf);
+    const pages: { width: number; height: number; buffer: Buffer }[] = [];
+    const report = await rasterizePdf(pdf, {}, (p) => {
+      pages.push(p);
+    });
+    expect(report.rendered).toBe(1);
+    expect(report.skipped).toBe(0);
     expect(pages.length).toBe(1);
     expect(pages[0].width).toBeGreaterThan(500);
     expect(pages[0].buffer.subarray(1, 4).toString()).toBe("PNG");
@@ -403,5 +408,128 @@ describe("dead-letter queue (round 19)", () => {
 
     repo.clearDeadLetterByMessage("m1");
     expect(repo.listDeadLetters(false).every((d) => d.message_id !== "m1")).toBe(true);
+  });
+});
+
+// ── Regression block: hostile-review fixes ─────────────────────────────────
+
+describe("regression: cached-null replay must stay null (gemini cache sentinel)", () => {
+  it("first read null → replay null → provenance identical", async () => {
+    const map = new Map<string, VisionExtraction>();
+    let storeCalls = 0;
+    const store: VisionCacheStore = {
+      get: (sha) => map.get(sha) ?? null,
+      set: (sha, r) => {
+        map.set(sha, r);
+      },
+      callsToday: () => storeCalls,
+      noteCall: () => {
+        storeCalls++;
+      },
+    };
+    let calls = 0;
+    const inner: VisionAdapter = {
+      async extractDocument() {
+        calls++;
+        return null; // "the model read this and found nothing"
+      },
+    };
+    const a: Attachment = { filename: "scan.pdf", mimeType: "application/pdf", content: Buffer.from("a") };
+    const b = new BudgetedVisionAdapter(inner, store, 5);
+
+    expect(await b.extractDocument(a)).toBeNull();
+    expect(calls).toBe(1);
+    expect(await b.extractDocument(a)).toBeNull(); // replayed from cache
+    expect(calls).toBe(1); // NOT re-invoked
+  });
+
+  it("corrupt cache row is a miss, never trusted data", () => {
+    const db = openDb(":memory:");
+    const repo = new Repo(db);
+    seedDefaults(repo);
+    db.prepare("INSERT INTO gemini_cache (sha256, result_json) VALUES (?, ?)").run("abc", '{"garbage": true}');
+    expect(repo.visionCacheGet("abc")).toBeNull();
+    // and the poisoned row was removed
+    expect(db.prepare("SELECT COUNT(*) AS n FROM gemini_cache WHERE sha256 = 'abc'").get() as any).toEqual({ n: 0 });
+  });
+});
+
+describe("regression: crosscheck must not flag format differences as fraud", () => {
+  it("initials cover the full name", () => {
+    expect(namesConsistent("J P KAMAU", "JOHN PETER KAMAU")).toBe(true);
+    expect(namesConsistent("J KAMAU", "JOHN KAMAU")).toBe(true);
+    expect(namesConsistent("JOHN KAMAU", "MARY WANJIRU")).toBe(false);
+  });
+
+  it("the same date in different formats is NOT a contradiction", () => {
+    expect(dobsConsistent("12/03/2004", "2004-03-12")).toBe(true);
+    expect(dobsConsistent("12/03/2004", "12 MAR 2004")).toBe(true);
+    expect(dobsConsistent("12/03/2004", "March 12, 2004")).toBe(true);
+  });
+
+  it("a genuinely different date still IS flagged", () => {
+    expect(dobsConsistent("12/03/2004", "2004-03-13")).toBe(false);
+    expect(dobsConsistent("05/06/2004", "2004-06-07")).toBe(false);
+  });
+
+  it("impossible calendar dates are ignored, not matched", () => {
+    // 31/15/2004 has no valid day-first reading, and swapping order is still garbage
+    expect(extractFields("DATE OF BIRTH: 31/15/2004").dateOfBirth).toBeUndefined();
+    expect(dobsConsistent("31/15/2004", "2004-05-31")).toBe(true); // no overlap → true, no flag
+  });
+});
+
+describe("regression: ID and DOB capture must validate the value", () => {
+  it("short numeric values near an ID label are not captured", () => {
+    expect(extractFields("STUDENT ID: 2026").idNumber).toBeUndefined();
+    expect(extractFields("ID NO: 12345").idNumber).toBeUndefined();
+  });
+
+  it("real IDs still extract", () => {
+    expect(extractFields("NATIONAL ID NO. 1234567").idNumber).toBe("1234567");
+    expect(extractFields("PASSPORT NO: P1234567A").idNumber).toBe("P1234567A");
+  });
+});
+
+describe("regression: classifier keywords must be word-bounded", () => {
+  it("'a level of detail' in prose is not an A-level certificate", () => {
+    expect(
+      classifyDocumentType("This memo discusses a level of detail appropriate for the review board.")
+    ).not.toBe("academic_cert");
+    expect(classifyDocumentType("Please maintain an advanced level of professionalism.")).not.toBe("academic_cert");
+  });
+
+  it("genuine A-level / Advanced Level documents still classify", () => {
+    expect(classifyDocumentType("CAMBRIDGE INTERNATIONAL A LEVEL RESULTS")).toBe("academic_cert");
+    expect(classifyDocumentType("UGANDA ADVANCED LEVEL CERTIFICATE")).toBe("academic_cert");
+  });
+
+  it("'transcript' needs a qualifier", () => {
+    expect(classifyDocumentType("Here is a transcript of our phone call.")).not.toBe("academic_cert");
+    expect(classifyDocumentType("OFFICIAL ACADEMIC TRANSCRIPT")).toBe("academic_cert");
+  });
+});
+
+describe("regression: case routing is realm-scoped", () => {
+  it("openUnassignedCasesForProgramme never crosses the demo boundary", () => {
+    const db = openDb(":memory:");
+    const repo = new Repo(db);
+    seedDefaults(repo);
+
+    const live = repo.getOrCreateApplicant("live@example.com", "t-live");
+    const demo = repo.getOrCreateApplicant("demo@example.com", "t-demo");
+    for (const a of [live, demo]) {
+      repo.updateApplicant(a.id, { programme: "BBIT", lifecycle: "application_received" });
+    }
+    // Everything seeded so far becomes the demo realm
+    repo.markDemoRealm();
+    // New applicant created after the mark stays live
+    const live2 = repo.getOrCreateApplicant("live2@example.com", "t-live2");
+    repo.updateApplicant(live2.id, { programme: "BBIT", lifecycle: "application_received" });
+
+    const forLive = repo.openUnassignedCasesForProgramme("BBIT", 0);
+    const forDemo = repo.openUnassignedCasesForProgramme("BBIT", 1);
+    expect(forLive.map((r) => r.id)).toEqual([live2.id]);
+    expect(forDemo.map((r) => r.id).sort()).toEqual([live.id, demo.id].sort());
   });
 });

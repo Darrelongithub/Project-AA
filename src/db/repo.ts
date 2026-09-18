@@ -33,6 +33,7 @@ import type {
   CourseLevel,
 } from "../types";
 import type { VisionCacheStore } from "../extraction/gemini";
+import { isValidCachedVision } from "../extraction/gemini";
 import type { VisionExtraction } from "../types";
 
 const nowIso = () => new Date().toISOString();
@@ -1937,7 +1938,13 @@ export class Repo {
       | undefined;
     if (!r) return null;
     try {
-      return JSON.parse(r.result_json) as VisionExtraction;
+      const parsed = JSON.parse(r.result_json);
+      // A corrupt/truncated cache row is a MISS, never trusted data.
+      if (!isValidCachedVision(parsed)) {
+        this.db.prepare("DELETE FROM gemini_cache WHERE sha256 = ?").run(sha256);
+        return null;
+      }
+      return parsed;
     } catch {
       return null;
     }
@@ -1964,6 +1971,10 @@ export class Repo {
     const today = new Date().toISOString().slice(0, 10);
     const key = `gemini_calls_${today}`;
     this.setSetting(key, String(this.visionCallsToday() + 1));
+    // One counter row per day accumulates forever otherwise; drop the rest.
+    this.db
+      .prepare(`DELETE FROM settings WHERE key LIKE 'gemini_calls_%' AND key <> ?`)
+      .run(key);
   }
 
   /** Adapter factory: hands the extraction layer a DB-backed cache store. */
@@ -2073,14 +2084,17 @@ export class Repo {
    * owner changes, these can flow to the new owner automatically — but a
    * case somebody already picked up is never re-routed behind their back.
    */
-  openUnassignedCasesForProgramme(programme: string): ApplicantRow[] {
+  openUnassignedCasesForProgramme(programme: string, demo: 0 | 1): ApplicantRow[] {
+    // Realm-scoped: an owner change in the live console must never re-route
+    // demo cases (and vice versa) — programme codes are shared across realms.
     const rows = this.db
       .prepare(
         `SELECT * FROM applicants
          WHERE programme = ? AND assigned_to IS NULL AND lifecycle <> 'completed'
+           AND IFNULL(demo, 0) = ?
          ORDER BY id`
       )
-      .all(programme) as ApplicantRow[];
+      .all(programme, demo) as ApplicantRow[];
     return rows;
   }
 
