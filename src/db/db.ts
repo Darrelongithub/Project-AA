@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS applicants (
   sla_handled_at TEXT,
   escalated      INTEGER NOT NULL DEFAULT 0,
   requirements_snapshot TEXT,           -- frozen requirement set at first triage (feature 19)
+  requirements_structured TEXT,         -- frozen structured entry-requirement blocks
   followup_rung  INTEGER NOT NULL DEFAULT 0,
   followup_next_at TEXT,
   followup_base_at TEXT,
@@ -45,7 +46,27 @@ CREATE TABLE IF NOT EXISTS programmes (
   name TEXT NOT NULL,
   school TEXT NOT NULL DEFAULT '',
   entry_requirements TEXT NOT NULL DEFAULT '',
-  owner_id INTEGER REFERENCES staff_users(id)
+  owner_id INTEGER REFERENCES staff_users(id),
+  level TEXT NOT NULL DEFAULT 'degree'   -- degree|diploma|certificate|postgrad
+);
+
+-- Structured entry requirements: one row per (course, qualification system).
+-- programme NULL + level = the university-wide defaults for that level.
+-- Subject requirements are stored as JSON: [{subject, grade, alts[]}].
+CREATE TABLE IF NOT EXISTS course_requirements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  programme TEXT,                     -- NULL = university-wide defaults
+  level TEXT NOT NULL,                -- degree|diploma|certificate|postgrad
+  system TEXT NOT NULL,               -- KCSE|IGCSE|ALEVEL|IB|DIPLOMA|PREUNI|DEGREE
+  enabled INTEGER NOT NULL DEFAULT 1,
+  overall TEXT,                       -- KCSE mean grade (grade ladder)
+  min_credits INTEGER,                -- IGCSE subjects at C or better
+  min_principals INTEGER,             -- GCE A-Level / KACE principal passes
+  min_subsidiaries INTEGER,
+  min_points INTEGER,                 -- IB total points
+  min_gpa REAL,                       -- Pre-University / diploma / IB Grade 12
+  min_class TEXT,                     -- "Credit", "Second Class Upper"…
+  subjects TEXT                       -- JSON SubjectRequirement[]
 );
 
 CREATE TABLE IF NOT EXISTS intakes (
@@ -308,6 +329,9 @@ function migrate(db: Database.Database): void {
   // published mean grade ("C+") and per-subject lines ("C+ in English and Maths").
   addColumn("requirement_rules", "mean_grade", "TEXT");
   addColumn("requirement_rules", "subject_grades", "TEXT");
+  // Structured entry requirements (per qualification system) + their freeze.
+  addColumn("applicants", "requirements_structured", "TEXT");
+  addColumn("programmes", "level", "TEXT NOT NULL DEFAULT 'degree'");
   // Migrate any legacy min-points rules into a best-effort grade equivalent
   // so old databases keep meaningful rules (points → the KCSE grade ladder).
   try {

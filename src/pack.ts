@@ -17,7 +17,40 @@ export interface PackFile {
   content: Buffer;
 }
 
-const PACK_DIR = path.join(process.cwd(), "data", "pack");
+/** Every official pack file, keyed for the Configuration panel. */
+export interface PackSlot {
+  key: string;
+  file: string;
+  pretty: string;
+  pack: "application" | "admission";
+  purpose: string;
+}
+
+export const PACK_SLOTS: PackSlot[] = [
+  { key: "application-form", file: "application-form.pdf", pretty: "Riara University Application Form.pdf", pack: "application", purpose: "Application form sent to enquirers" },
+  { key: "brochure-2026", file: "brochure-2026.pdf", pretty: "Riara University Brochure 2026.pdf", pack: "application", purpose: "Prospectus sent to enquirers" },
+  { key: "student-medical-form", file: "student-medical-form.pdf", pretty: "RU Student Medical Form.pdf", pack: "admission", purpose: "Admission pack — medical form" },
+  { key: "data-protection-form", file: "data-protection-form.pdf", pretty: "RU Data Protection Form.pdf", pack: "admission", purpose: "Admission pack — data protection consent" },
+  { key: "next-of-kin-form", file: "next-of-kin-form.pdf", pretty: "RU Next of Kin Form.pdf", pack: "admission", purpose: "Admission pack — next of kin" },
+  { key: "hostels-list", file: "hostels-list.pdf", pretty: "RU Hostels List.pdf", pack: "admission", purpose: "Admission pack — accommodation" },
+  { key: "fee-structure-2026", file: "fee-structure-2026.pdf", pretty: "Riara University Fee Structure 2026.pdf", pack: "admission", purpose: "Admission pack — fee structure" },
+  { key: "sponsorship-form", file: "sponsorship-form.pdf", pretty: "RU Sponsorship Form.pdf", pack: "admission", purpose: "Admission pack — sponsorship" },
+  { key: "orientation-programme-2026", file: "orientation-programme-2026.pdf", pretty: "September 2026 Orientation Programmes.pdf", pack: "admission", purpose: "Admission pack — orientation" },
+];
+
+export const PACK_DIR = path.join(process.cwd(), "data", "pack");
+
+/** Pack files with existence + size, for the Documents & pack panel. */
+export function packManifest(): Array<PackSlot & { exists: boolean; bytes: number }> {
+  return PACK_SLOTS.map((slot) => {
+    try {
+      const st = fs.statSync(path.join(PACK_DIR, slot.file));
+      return { ...slot, exists: true, bytes: st.size };
+    } catch {
+      return { ...slot, exists: false, bytes: 0 };
+    }
+  });
+}
 
 function read(name: string, pretty: string): PackFile | null {
   try {

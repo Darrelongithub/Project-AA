@@ -32,18 +32,22 @@ describe("requirement resolution (features 8, 36, 37)", () => {
     const reqs = repo.resolveRequirements(null, null);
     // The KCPE certificate is not part of the published application basics.
     expect(reqs.find((r) => r.document_type === "kcpe_cert")?.required).toBe(false);
-    // The general minimum: KCSE mean grade C+ on the secondary certificate.
-    expect(reqs.find((r) => r.document_type === "academic_cert")?.meanGrade).toBe("C+");
     expect(reqs.find((r) => r.document_type === "id")?.required).toBe(true);
+    // The general minimum lives in the structured entry requirements:
+    // university-wide degree floor = KCSE mean grade C+.
+    const kcse = repo.listSystemBlocks(null).find((b) => b.level === "degree" && b.system === "KCSE");
+    expect(kcse?.overall).toBe("C+");
   });
 
   it("programme-specific rules override base", () => {
-    repo.upsertRule({ programme: "LAW", intake: null, document_type: "academic_cert", required: true, meanGrade: "B" });
-    const law = repo.resolveRequirements("LAW", null);
-    const bcs = repo.resolveRequirements("BCS", null);
-    expect(law.find((r) => r.document_type === "academic_cert")?.meanGrade).toBe("B");
-    // BCS keeps its own seeded floor — unaffected by LAW's override.
-    expect(bcs.find((r) => r.document_type === "academic_cert")?.meanGrade).toBe("C+");
+    repo.upsertSystemBlock("LAW", "degree", { system: "KCSE", enabled: true, overall: "B", subjects: [] });
+    const law = repo.resolveBlocks("LAW").find((b) => b.system === "KCSE");
+    const bcs = repo.resolveBlocks("BCS").find((b) => b.system === "KCSE");
+    expect(law?.overall).toBe("B");
+    // BCS keeps its own seeded block — unaffected by LAW's override.
+    expect(bcs?.overall).toBe("C+");
+    // A system the course never configured falls back to the university-wide default.
+    expect(repo.resolveBlocks("BCS").find((b) => b.system === "IGCSE")?.minCredits).toBe(5);
   });
 
   it("programme+intake is the most specific", () => {

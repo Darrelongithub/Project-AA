@@ -37,7 +37,8 @@ export type FlagType =
   | "duplicate_submission"
   | "identity_check"
   | "late_submission"
-  | "anomaly";
+  | "anomaly"
+  | "alternative_qualification";
 
 export const BLOCKING_FLAG_TYPES: FlagType[] = [
   "grade_below_requirement",
@@ -128,6 +129,43 @@ export interface StaffUser {
  * v5: rules speak GRADES, not points — `meanGrade` ("C+") and optional
  * per-subject lines ("C+ in English and Mathematics") exactly as published.
  */
+/**
+ * One structured subject requirement: the subject must reach `grade` — OR any
+ * of `alts` may (English/Kiswahili, Mathematics/Physics). Checked subjects
+ * within a block are AND-ed together.
+ */
+export interface SubjectRequirement {
+  subject: string;
+  grade: string;
+  alts?: string[];
+}
+
+/**
+ * One qualification-system route for a course (or the university-wide
+ * defaults when programme is null). An applicant qualifies through a route
+ * when its overall minimum AND every ticked subject pass the checks.
+ */
+export interface SystemBlock {
+  system: ExamSystem;
+  enabled: boolean;
+  /** KCSE mean grade (grade ladder) — the overall floor for this route. */
+  overall?: string | null;
+  /** IGCSE/O-Level: minimum subjects at grade C or better. */
+  minCredits?: number | null;
+  /** GCE A-Level / KACE: minimum principal passes (+ optional subsidiaries). */
+  minPrincipals?: number | null;
+  minSubsidiaries?: number | null;
+  /** IB diploma minimum total points. */
+  minPoints?: number | null;
+  /** Minimum GPA (Pre-University, IB Grade 12, some diplomas). */
+  minGpa?: number | null;
+  /** Minimum award class ("Credit", "Second Class Upper"…). */
+  minClass?: string | null;
+  subjects?: SubjectRequirement[];
+}
+
+export type CourseLevel = "degree" | "diploma" | "certificate" | "postgrad";
+
 export interface RequirementSetEntry {
   document_type: DocType;
   required: boolean;
@@ -146,6 +184,8 @@ export interface Programme {
   entry_requirements: string;
   owner_id: number | null;
   owner_name: string | null;
+  /** Award level — selects the university-wide default entry requirements. */
+  level: CourseLevel;
 }
 
 export interface RequirementRule extends RequirementSetEntry {
@@ -156,12 +196,28 @@ export interface RequirementRule extends RequirementSetEntry {
 
 // ── Documents & extraction ─────────────────────────────────────────────────
 
+/** Qualification systems the engine can check deterministically. */
+export type ExamSystem = "KCSE" | "IGCSE" | "ALEVEL" | "IB" | "DIPLOMA" | "PREUNI" | "DEGREE";
+
 export interface ExtractedFields {
   name?: string | null;
   gradePoints?: number | null;
   meanGrade?: string | null;
   /** Per-subject grades read off a KNEC slip, e.g. { English: "B-" }. */
   subjectGrades?: Record<string, string> | null;
+  /** Qualification system detected on the document. */
+  examSystem?: ExamSystem | null;
+  /** IGCSE/O-Level: subjects passed at grade C or better. */
+  credits?: number | null;
+  /** GCE A-Level / KACE: principal passes (and subsidiaries). */
+  principals?: number | null;
+  subsidiaries?: number | null;
+  /** IB diploma total points. */
+  ibPoints?: number | null;
+  /** GPA (Pre-University, diploma, IB Grade 12…). */
+  gpa?: number | null;
+  /** Award class, normalised ("Credit", "Second Class Upper"…). */
+  classAwarded?: string | null;
   idNumber?: string | null;
   indexNumber?: string | null;
   examYear?: string | null;
@@ -301,6 +357,8 @@ export interface ApplicantRow {
   sla_handled_at: string | null;
   escalated: number;
   requirements_snapshot: string | null;
+  /** Frozen structured entry-requirement blocks (JSON SystemBlock[]). */
+  requirements_structured: string | null;
   followup_rung: number;
   followup_next_at: string | null;
   /** When the ladder was armed; rungs fire at base + ladder[n] days. */

@@ -25,6 +25,8 @@ import type {
   RequirementRule,
   RequirementSetEntry,
   StaffUser,
+  SystemBlock,
+  CourseLevel,
 } from "../types";
 
 const nowIso = () => new Date().toISOString();
@@ -200,7 +202,7 @@ export class Repo {
   listProgrammes(): Programme[] {
     return this.db
       .prepare(
-        `SELECT p.code, p.name, p.school, p.entry_requirements, p.owner_id, s.display_name AS owner_name
+        `SELECT p.code, p.name, p.school, p.entry_requirements, p.owner_id, s.display_name AS owner_name, p.level
          FROM programmes p LEFT JOIN staff_users s ON s.id = p.owner_id
          ORDER BY p.school, p.code`
       )
@@ -210,7 +212,7 @@ export class Repo {
   programmeByCode(code: string): Programme | undefined {
     return this.db
       .prepare(
-        `SELECT p.code, p.name, p.school, p.entry_requirements, p.owner_id, s.display_name AS owner_name
+        `SELECT p.code, p.name, p.school, p.entry_requirements, p.owner_id, s.display_name AS owner_name, p.level
          FROM programmes p LEFT JOIN staff_users s ON s.id = p.owner_id
          WHERE p.code = ? COLLATE NOCASE`
       )
@@ -248,15 +250,16 @@ export class Repo {
     return row?.owner_id ?? null;
   }
 
-  addProgramme(code: string, name: string, school = "", entry = ""): void {
+  addProgramme(code: string, name: string, school = "", entry = "", level: CourseLevel = "degree"): void {
     this.db
       .prepare(
-        `INSERT INTO programmes (code, name, school, entry_requirements) VALUES (?, ?, ?, ?)
+        `INSERT INTO programmes (code, name, school, entry_requirements, level) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET name = excluded.name,
            school = CASE WHEN programmes.school = '' THEN excluded.school ELSE programmes.school END,
-           entry_requirements = CASE WHEN programmes.entry_requirements = '' THEN excluded.entry_requirements ELSE programmes.entry_requirements END`
+           entry_requirements = CASE WHEN programmes.entry_requirements = '' THEN excluded.entry_requirements ELSE programmes.entry_requirements END,
+           level = excluded.level`
       )
-      .run(code.toUpperCase(), name, school, entry);
+      .run(code.toUpperCase(), name, school, entry, level);
   }
 
   /** Assign (or unassign, with null) the staff member who handles a course. */
@@ -338,6 +341,107 @@ export class Repo {
 
   deleteRule(id: number): void {
     this.db.prepare("DELETE FROM requirement_rules WHERE id = ?").run(id);
+  }
+
+  // ── Structured entry requirements (per qualification system) ──────────────
+
+  private rowToBlock(r: Record<string, unknown>): SystemBlock {
+    let subjects: SystemBlock["subjects"] = [];
+    if (typeof r.subjects === "string" && r.subjects) {
+      try { subjects = JSON.parse(r.subjects) as NonNullable<SystemBlock["subjects"]>; } catch { subjects = []; }
+    }
+    return {
+      system: String(r.system) as SystemBlock["system"],
+      enabled: r.enabled === 1,
+      overall: (r.overall as string | null) ?? null,
+      minCredits: (r.min_credits as number | null) ?? null,
+      minPrincipals: (r.min_principals as number | null) ?? null,
+      minSubsidiaries: (r.min_subsidiaries as number | null) ?? null,
+      minPoints: (r.min_points as number | null) ?? null,
+      minGpa: (r.min_gpa as number | null) ?? null,
+      minClass: (r.min_class as string | null) ?? null,
+      subjects,
+    };
+  }
+
+  listSystemBlocks(programme: string | null): Array<SystemBlock & { level: string }> {
+    const rows = this.db
+      .prepare("SELECT * FROM course_requirements WHERE programme IS ? ORDER BY system")
+      .all(programme) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({ ...this.rowToBlock(r), level: String(r.level) }));
+  }
+
+  /** Delete-then-insert (NULL programme cannot take part in ON CONFLICT). */
+  upsertSystemBlock(programme: string | null, level: CourseLevel, block: SystemBlock): void {
+    this.db.transaction(() => {
+      this.db
+        .prepare("DELETE FROM course_requirements WHERE programme IS ? AND level = ? AND system = ?")
+        .run(programme, level, block.system);
+      this.db
+        .prepare(
+          `INSERT INTO course_requirements
+           (programme, level, system, enabled, overall, min_credits, min_principals, min_subsidiaries, min_points, min_gpa, min_class, subjects)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          programme, level, block.system, block.enabled ? 1 : 0,
+          block.overall ?? null, block.minCredits ?? null, block.minPrincipals ?? null,
+          block.minSubsidiaries ?? null, block.minPoints ?? null, block.minGpa ?? null,
+          block.minClass ?? null, JSON.stringify(block.subjects ?? [])
+        );
+    })();
+  }
+
+  deleteSystemBlock(programme: string | null, system: string, level?: CourseLevel): void {
+    if (programme === null) {
+      this.db
+        .prepare("DELETE FROM course_requirements WHERE programme IS NULL AND level = ? AND system = ?")
+        .run(level ?? "degree", system);
+    } else {
+      this.db
+        .prepare("DELETE FROM course_requirements WHERE programme IS ? AND system = ?")
+        .run(programme, system);
+    }
+  }
+
+  /**
+   * Effective entry-requirement blocks for a course: the course's own block
+   * for a system wins; otherwise the university-wide default for the course's
+   * level applies. Unknown programmes fall back to the degree defaults.
+   */
+  resolveBlocks(programme: string | null): SystemBlock[] {
+    const row = programme
+      ? (this.db.prepare("SELECT level FROM programmes WHERE code = ?").get(programme.toUpperCase()) as { level?: string } | undefined)
+      : undefined;
+    const level = (row?.level ?? "degree") as CourseLevel;
+    const base = this.listSystemBlocks(null).filter((b) => b.level === level);
+    const course = programme ? this.listSystemBlocks(programme.toUpperCase()) : [];
+    const merged = new Map<string, SystemBlock>();
+    for (const b of base) merged.set(b.system, b);
+    for (const b of course) merged.set(b.system, b);
+    return [...merged.values()];
+  }
+
+  /** Structured blocks as they apply to THIS applicant (snapshot wins). */
+  effectiveBlocks(a: ApplicantRow): SystemBlock[] {
+    if (a.requirements_structured) {
+      try {
+        return JSON.parse(a.requirements_structured) as SystemBlock[];
+      } catch {
+        this.audit(a.id, "system", "structured_snapshot_corrupt",
+          "frozen structured requirements failed to parse — fell back to live rules; human should verify");
+      }
+    }
+    return this.resolveBlocks(a.programme);
+  }
+
+  /** Freeze the current structured blocks onto the applicant on first triage. */
+  freezeStructuredSnapshot(a: ApplicantRow): void {
+    if (a.requirements_structured) return;
+    const blocks = this.resolveBlocks(a.programme);
+    this.db
+      .prepare("UPDATE applicants SET requirements_structured = ? WHERE id = ?")
+      .run(JSON.stringify(blocks), a.id);
   }
 
   /**

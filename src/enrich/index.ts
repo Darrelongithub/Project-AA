@@ -21,9 +21,9 @@ export function extractPhone(text: string): string | null {
  * applicants to Certificate in Communication.) */
 const GENERIC_WORDS = new Set([
   "BACHELOR", "SCIENCE", "DEGREE", "DIPLOMA", "CERTIFICATE", "MASTER",
-  "ARTS", "EDUCATION", "MANAGEMENT", "BUSINESS", "COMMUNICATION",
-  "INFORMATION", "TECHNOLOGY", "STUDIES", "CURRICULA", "TEACHING",
-  "KENYA", "REGISTERED", "COMMUNITY", "HEALTH", "PRE", "SERVICE",
+  "ARTS", "EDUCATION", "MANAGEMENT", "BUSINESS", "ADMINISTRATION",
+  "COMMUNICATION", "INFORMATION", "TECHNOLOGY", "STUDIES", "CURRICULA",
+  "TEACHING", "KENYA", "REGISTERED", "COMMUNITY", "HEALTH", "PRE", "SERVICE",
 ]);
 
 /** Keyword match against known programmes; returns the programme code or null.
@@ -57,7 +57,11 @@ export function inferProgramme(
       const neededSupport = words.length - distinctive.length >= 2 ? 1 : 0;
       if (allDistinctive && supportHits >= neededSupport) return p.code;
     } else if (hits.length >= 2) {
-      // All-generic name (rare) — need at least two supporting words.
+      // All-generic name — two supporting words PLUS the name's leading word
+      // ("Bachelor…" vs "Master…", "Diploma…" vs "Certificate…"), so a Master
+      // of Business Administration form never matches the Bachelor's course.
+      const first = words[0];
+      if (first.length >= 4 && !up.includes(first)) continue;
       return p.code;
     }
   }

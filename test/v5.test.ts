@@ -147,18 +147,22 @@ describe("stages & routing", () => {
     expect(repo.programmeByCode("BNS")?.entry_requirements).toContain("New NCK rules");
   });
 
-  it("seeded grade rules match the published requirement set", () => {
-    const llb = repo.listRules().filter((r) => r.programme === "LLB");
-    expect(llb.some((r) => r.meanGrade === "C+" && (r.subjectGrades ?? "").includes("English"))).toBe(true);
-    const bba = repo.listRules().filter((r) => r.programme === "BBA");
-    expect(bba.some((r) => r.meanGrade === "C+" && (r.subjectGrades ?? "").includes("Mathematics"))).toBe(true);
+  it("seeded structured entry requirements match the published set", () => {
+    const blocks = (code: string) => repo.listSystemBlocks(code);
+    // LLB: KCSE C+ with B in English or Kiswahili.
+    const llb = blocks("LLB").find((b) => b.system === "KCSE");
+    expect(llb?.overall).toBe("C+");
+    expect(llb?.subjects?.some((r) => r.subject === "English" && r.grade === "B" && r.alts?.includes("Kiswahili"))).toBe(true);
+    // BBA: C in English AND Mathematics.
+    const bba = blocks("BBA").find((b) => b.system === "KCSE");
+    expect(bba?.subjects?.some((r) => r.subject === "Mathematics" && r.grade === "C")).toBe(true);
     // Diploma floors override the university-wide C+ degree minimum.
-    const dbm = repo.listRules().filter((r) => r.programme === "DBM");
-    expect(dbm.some((r) => r.meanGrade === "C-")).toBe(true);
+    expect(blocks("DBM").find((b) => b.system === "KCSE")?.overall).toBe("C-");
+    // Postgraduate routes check the degree class — no KCSE rule.
+    expect(blocks("MBA").find((b) => b.system === "DEGREE")?.minClass).toContain("Upper Division");
     // Nursing specifics were not in the published details → no invented
     // subject clusters; the programme falls back to the university-wide floor.
-    const bns = repo.listRules().filter((r) => r.programme === "BNS");
-    expect(bns.length).toBe(0);
+    expect(blocks("BNS").length).toBe(0);
   });
 });
 

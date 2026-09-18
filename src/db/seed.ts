@@ -5,7 +5,7 @@
  */
 import * as crypto from "crypto";
 import type { Repo } from "./repo";
-import { DEFAULT_INTAKES, DEFAULT_PROGRAMME_REQUIREMENTS, DEFAULT_PROGRAMMES, DEFAULT_REQUIREMENTS, DEFAULT_SETTINGS } from "../config";
+import { DEFAULT_INTAKES, DEFAULT_PROGRAMMES, DEFAULT_REQUIREMENTS, DEFAULT_SETTINGS, DEFAULT_STRUCTURED_BASE, DEFAULT_STRUCTURED_COURSES } from "../config";
 import { hashPassword } from "../util/password";
 import { defaultEmailBanner } from "../pack";
 
@@ -130,26 +130,23 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
   // Programmes & intakes — the real catalogue, grouped by school, with the
   // official entry requirements as reference text for staff.
   for (const p of DEFAULT_PROGRAMMES) {
-    repo.addProgramme(p.code, p.name, p.school, p.entry);
+    repo.addProgramme(p.code, p.name, p.school, p.entry, p.level);
   }
   for (const i of DEFAULT_INTAKES) {
     repo.addIntake(i);
   }
-  // Per-course grade rules — seeded ONCE per database. After that the rules
-  // belong to the staff: edits AND deletions in Configuration persist across
-  // restarts (a per-row existence check would resurrect deleted rules).
-  if (!repo.getSetting("programme_requirements_seeded", "")) {
-    for (const r of DEFAULT_PROGRAMME_REQUIREMENTS) {
-      repo.upsertRule({
-        programme: r.programme,
-        intake: null,
-        document_type: r.document_type,
-        required: true,
-        meanGrade: r.meanGrade,
-        subjectGrades: r.subjectGrades ?? null,
-      });
+  // Structured entry requirements — seeded ONCE per database. After that the
+  // requirements belong to the staff: edits AND deletions in Configuration
+  // persist across restarts (a per-row existence check would resurrect them).
+  if (!repo.getSetting("structured_requirements_seeded", "")) {
+    for (const b of DEFAULT_STRUCTURED_BASE) {
+      repo.upsertSystemBlock(null, b.level, b.block);
     }
-    repo.setSetting("programme_requirements_seeded", "v6-published-set");
+    for (const c of DEFAULT_STRUCTURED_COURSES) {
+      const level = DEFAULT_PROGRAMMES.find((p) => p.code === c.programme)?.level ?? "degree";
+      repo.upsertSystemBlock(c.programme, level, c.block);
+    }
+    repo.setSetting("structured_requirements_seeded", "v1-published-set");
   }
   // Base requirements (only if table is empty — don't clobber staff edits)
   const ruleCount = (repo.db.prepare("SELECT COUNT(*) AS n FROM requirement_rules").get() as { n: number }).n;

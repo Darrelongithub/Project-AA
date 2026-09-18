@@ -3,9 +3,11 @@
  * Single source of truth: nothing is rendered that isn't in the DB.
  */
 import type { ApplicantSearchQuery, Repo } from "../db/repo";
-import type { ApplicantRow, DocType, StaffUser } from "../types";
+import type { ApplicantRow, CourseLevel, DocType, Programme, StaffUser, SystemBlock } from "../types";
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
 import { docLabel } from "../rules";
+import { EXAM_SYSTEMS, SUBJECT_CATALOG } from "../config";
+import { packManifest } from "../pack";
 import { verifyPassword } from "../util/password";
 import {
   avatar, categoryBadge, confidenceBadge, crest, esc, flagLabel, flowLine, fmtDate, fmtTime, gaugeRow,
@@ -1148,7 +1150,152 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
   );
 }
 
-export function configPage(c: Ctx, selectedTemplate?: string, flash?: string): string {
+
+// ── Entry requirements editor (structured, per qualification system) ──────
+
+const LEVELS: Array<{ level: CourseLevel; label: string }> = [
+  { level: "degree", label: "University-wide — degree programmes" },
+  { level: "diploma", label: "University-wide — diploma programmes" },
+  { level: "certificate", label: "University-wide — certificate programmes" },
+  { level: "postgrad", label: "University-wide — postgraduate programmes" },
+];
+
+const CLASS_OPTIONS: Record<string, string[]> = {
+  minClass_diploma: ["Pass", "Credit", "Distinction"],
+  minClass_degree: ["Pass", "Second Class Honours (Lower Division)", "Second Class Honours (Upper Division)", "First Class Honours"],
+};
+
+function systemOverallInputs(meta: (typeof EXAM_SYSTEMS)[number], block: SystemBlock | undefined): string {
+  const parts: string[] = [];
+  for (const f of meta.fields) {
+    if (f === "overall") {
+      parts.push(`<div><label>Minimum mean grade</label><input type="text" name="overall" maxlength="2" style="text-transform:uppercase;width:70px" placeholder="C+" value="${esc(block?.overall ?? "")}"></div>`);
+    } else if (f === "minCredits") {
+      parts.push(`<div><label>Min passes at C or better</label><input type="number" name="min_credits" min="0" max="12" style="width:80px" value="${block?.minCredits ?? ""}"></div>`);
+    } else if (f === "minPrincipals") {
+      parts.push(`<div><label>Min principal passes</label><input type="number" name="min_principals" min="0" max="5" style="width:80px" value="${block?.minPrincipals ?? ""}"></div>`);
+    } else if (f === "minSubsidiaries") {
+      parts.push(`<div><label>Min subsidiary passes</label><input type="number" name="min_subsidiaries" min="0" max="5" style="width:80px" value="${block?.minSubsidiaries ?? ""}"></div>`);
+    } else if (f === "minPoints") {
+      parts.push(`<div><label>Min total points</label><input type="number" name="min_points" min="0" max="45" style="width:80px" value="${block?.minPoints ?? ""}"></div>`);
+    } else if (f === "minGpa") {
+      parts.push(`<div><label>Min GPA</label><input type="number" name="min_gpa" step="0.01" min="0" max="4" style="width:90px" value="${block?.minGpa ?? ""}"></div>`);
+    } else if (f === "minClass") {
+      const opts = meta.system === "DEGREE" ? CLASS_OPTIONS.minClass_degree : CLASS_OPTIONS.minClass_diploma;
+      parts.push(`<div><label>Min award class</label><select name="min_class"><option value="">—</option>${opts.map((o) => `<option value="${esc(o)}"${block?.minClass === o ? " selected" : ""}>${esc(o)}</option>`).join("")}</select></div>`);
+    }
+  }
+  return parts.join("");
+}
+
+function subjectMatrix(meta: (typeof EXAM_SYSTEMS)[number], block: SystemBlock | undefined): string {
+  if (!meta.gradeOptions) return "";
+  const reqs = block?.subjects ?? [];
+  const rows = SUBJECT_CATALOG.map((subj, i) => {
+    const hit = reqs.find((r) => r.subject === subj);
+    const gradeOpts = meta.gradeOptions!.map((g) => `<option value="${esc(g)}"${hit?.grade === g ? " selected" : ""}>${esc(g)}</option>`).join("");
+    const altOpts = SUBJECT_CATALOG.filter((x) => x !== subj).map((x) => `<option value="${esc(x)}"${hit?.alts?.[0] === x ? " selected" : ""}>${esc(x)}</option>`).join("");
+    return `<tr>
+      <td style="width:34px"><input type="checkbox" name="sub_${i}"${hit ? " checked" : ""} aria-label="Require ${esc(subj)}"></td>
+      <td>${esc(subj)}</td>
+      <td><select name="grade_${i}" style="min-width:74px"><option value="">—</option>${gradeOpts}</select></td>
+      <td><select name="alt_${i}" style="min-width:150px"><option value="">no alternative</option>${altOpts}</select></td>
+    </tr>`;
+  }).join("");
+  return `<details style="margin-top:8px"><summary class="small">Subject requirements — tick the required subjects and set the minimum grade (${reqs.length} ticked)</summary>
+    <table style="margin-top:8px"><tr><th></th><th>Subject</th><th>Minimum grade</th><th>Or alternative (one of the two is enough)</th></tr>${rows}</table>
+  </details>`;
+}
+
+function entryRequirementsEditor(c: Ctx, programmes: Programme[], target: string): string {
+  const isBase = target.startsWith("BASE:");
+  const level = (isBase ? target.slice(5) : "degree") as CourseLevel;
+  const programme = isBase ? null : target;
+  const blocks = c.repo.listSystemBlocks(programme).filter((b) => isBase ? b.level === level : true);
+  const title = isBase
+    ? LEVELS.find((l) => l.level === level)?.label ?? target
+    : `${target} — ${esc(programmes.find((p) => p.code === target)?.name ?? "")}`;
+
+  const picker = `<form method="get" action="/config#entryreqs" class="formrow" style="align-items:flex-end">
+    <div style="flex:2"><label>Edit requirements for</label><select name="reqs" onchange="this.form.submit()">
+      ${LEVELS.map((l) => `<option value="BASE:${l.level}"${target === `BASE:${l.level}` ? " selected" : ""}>${esc(l.label)}</option>`).join("")}
+      ${programmes.map((p) => `<option value="${esc(p.code)}"${target === p.code ? " selected" : ""}>${esc(p.code)} — ${esc(p.name)}</option>`).join("")}
+    </select></div>
+  </form>`;
+
+  const forms = EXAM_SYSTEMS.map((meta) => {
+    const block = blocks.find((b) => b.system === meta.system);
+    const cfg = block && block.enabled;
+    return `<form method="post" action="/config/entry-requirements" style="border-top:1px solid var(--line2);padding:12px 0 6px">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <input type="hidden" name="target" value="${esc(target)}">
+      <input type="hidden" name="system" value="${meta.system}">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="display:flex;gap:8px;align-items:center;min-width:320px"><input type="checkbox" name="enabled"${cfg ? " checked" : ""}> <b>${esc(meta.label)}</b></label>
+        ${systemOverallInputs(meta, block)}
+        <span style="flex:1"></span>
+        <button class="btn small ghost">Save ${esc(meta.system)}</button>
+      </div>
+      ${subjectMatrix(meta, block)}
+    </form>`;
+  }).join("");
+
+  return `${picker}
+    <p class="small muted" style="margin-top:10px">Tick the subjects this course requires, set the minimum grade for each, and save — the engine checks newly processed files against it immediately (already-submitted files keep the requirements they applied under). Untick <i>enabled</i> and save to drop this route for the course and fall back to the ${isBase ? "defaults" : "university-wide minimum"} for that qualification. A ticked subject with an <i>or alternative</i> is satisfied by either subject reaching the grade.</p>
+    <h3 style="margin:14px 0 2px">${title}</h3>
+    ${forms}`;
+}
+
+function documentsPackCard(c: Ctx): string {
+  const manifest = packManifest();
+  const app = manifest.filter((m) => m.pack === "application");
+  const adm = manifest.filter((m) => m.pack === "admission");
+  const fmt = (b: number) => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`;
+  const rows = (list: typeof manifest) => list.map((m) => `<tr>
+      <td>${esc(m.pretty)}</td>
+      <td class="small muted">${esc(m.purpose)}</td>
+      <td>${m.exists ? fmt(m.bytes) : "<b>MISSING</b>"}</td>
+      <td>${m.exists ? `<a class="btn small ghost" href="/pack/${esc(m.key)}" target="_blank" rel="noopener">Open</a>` : ""}</td>
+      <td>
+        <input type="file" accept="application/pdf" id="pack-${esc(m.key)}" style="max-width:210px">
+        <button class="btn small ghost" data-pack-slot="${esc(m.key)}">Replace</button>
+        <span class="small muted" id="pack-msg-${esc(m.key)}"></span>
+      </td>
+    </tr>`).join("");
+  return `<div class="card" id="documents">
+  <div class="card-head"><h2>Documents &amp; application packs</h2></div>
+  <div style="padding:14px 24px 22px">
+    <p class="small muted" style="margin-top:-4px">The official PDFs the university sends. The <b>application pack</b> (form + brochure) is attached when staff send the pack on an enquiry; the <b>admission pack</b> goes out with the admission letter. Replacing a file here swaps it everywhere immediately.</p>
+    <h3>Application pack</h3>
+    <table><tr><th>Document</th><th>Used for</th><th>Size</th><th></th><th>Replace (PDF)</th></tr>${rows(app)}</table>
+    <h3 style="margin-top:18px">Admission pack</h3>
+    <table><tr><th>Document</th><th>Used for</th><th>Size</th><th></th><th>Replace (PDF)</th></tr>${rows(adm)}</table>
+  </div>
+</div>
+<script>
+(function () {
+  document.querySelectorAll("[data-pack-slot]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var slot = btn.getAttribute("data-pack-slot");
+      var file = document.getElementById("pack-" + slot).files[0];
+      var msg = document.getElementById("pack-msg-" + slot);
+      if (!file) { msg.textContent = "Choose a PDF first."; return; }
+      if (file.type !== "application/pdf") { msg.textContent = "PDF files only."; return; }
+      msg.textContent = "Uploading…";
+      fetch("/config/pack/replace?slot=" + encodeURIComponent(slot), {
+        method: "POST",
+        headers: { "x-csrf-token": "${esc(c.csrf)}", "content-type": "application/pdf" },
+        body: file,
+      }).then(function (res) {
+        msg.textContent = res.ok ? "Saved — the new file is live." : "Upload failed (PDF under 12 MB).";
+      }).catch(function () { msg.textContent = "Upload failed — network error."; });
+    });
+  });
+})();
+</script>`;
+}
+
+export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, reqsTarget?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
   const rules = repo.listRules();
@@ -1221,21 +1368,8 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
     ? `<table><tr><th>Programme</th><th>Entry requirements (editable — they change over time)</th><th>Handled by</th></tr>${courseRows}</table>`
     : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
   <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
-    <h2>Grade requirements per course</h2>
-    <p class="small muted" style="margin-top:-6px">Entry requirements change every intake — edit them here and new applicants are checked against the new grades immediately (already-submitted files keep the rules they applied under). Every course starts from the university-wide minimum (KCSE mean grade C+ on the secondary certificate); a course row overrides that floor. Subject syntax: <span class="mono">C in English; C in Mathematics</span> means BOTH apply (separate requirements with commas or semicolons); a slash means either/or, e.g. <span class="mono">B in English/Kiswahili</span>. Save a row with both fields blank to remove the course override and fall back to the university-wide minimum.</p>
-    ${programmes.map((p) => {
-      const kcse = rules.find((r) => r.programme === p.code && r.document_type === "academic_cert");
-      return `<form method="post" action="/config/programme-requirements" style="border-top:1px solid var(--line2);padding:14px 0 4px">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-        <input type="hidden" name="programme" value="${esc(p.code)}">
-        <div class="formrow">
-          <div style="flex:0;min-width:110px"><label>&nbsp;</label><b>${esc(p.code)}</b></div>
-          <div><label>KCSE mean grade</label><input type="text" name="kcse_mean" placeholder="e.g. C+" value="${esc(kcse?.meanGrade ?? "")}" maxlength="2" style="text-transform:uppercase"></div>
-          <div style="flex:3"><label>KCSE subject grades</label><input type="text" name="kcse_subjects" placeholder="e.g. C+ in Mathematics/Physics" value="${esc(kcse?.subjectGrades ?? "")}"></div>
-          <div style="flex:0"><label>&nbsp;</label><button class="btn small ghost">Save ${esc(p.code)}</button></div>
-        </div>
-      </form>`;
-    }).join("")}
+    <h2 id="entryreqs">Entry requirements by qualification</h2>
+    ${entryRequirementsEditor(c, programmes, reqsTarget && reqsTarget.length ? reqsTarget : "BASE:degree")}
 
     <h2 style="margin-top:20px">Requirement rules (all courses)</h2>
     <p class="small muted" style="margin-top:-6px">Most specific rule wins: programme+intake → programme → intake → base (all).</p>
@@ -1246,8 +1380,7 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
       <div><label>Intake</label><select name="intake"><option value="">All intakes</option>${intakes.map((i) => `<option value="${esc(i)}">${esc(i)}</option>`).join("")}</select></div>
       <div><label>Document</label><select name="document_type">${(["academic_cert", "kcpe_cert", "id", "birth_cert", "application_form"] as DocType[]).map((d) => `<option value="${d}">${esc(docLabel(d))}</option>`).join("")}</select></div>
       <div><label>Required</label><select name="required"><option value="1">required</option><option value="0">optional</option></select></div>
-      <div><label>Min mean grade</label><input type="text" name="mean_grade" placeholder="e.g. C+" maxlength="2" style="text-transform:uppercase"></div>
-      <div style="flex:2"><label>Subject grades</label><input type="text" name="subject_grades" placeholder="e.g. C+ in English and Mathematics"></div>
+      <div style="flex:2"><label>&nbsp;</label><span class="small muted">Grade checks live in the entry-requirements editor above — this table only controls which documents must be present.</span></div>
       <div style="flex:0"><label>&nbsp;</label><button class="btn">Add rule</button></div>
     </form>
     <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
@@ -1259,6 +1392,8 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
     </form>
   </div>
 </div>
+
+${documentsPackCard(c)}
 
 <div class="card" id="gemini">
   <h2>Document AI (Gemini) ${settings["gemini_api_key"]

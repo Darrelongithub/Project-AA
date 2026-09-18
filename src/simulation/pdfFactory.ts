@@ -49,8 +49,17 @@ export interface DocSpec {
   year?: string;
   idNumber?: string;
   programme?: string;
-  /** Per-subject grades printed on the KCSE slip (subject → grade). */
+  /** Per-subject grades printed on the slip/transcript (subject → grade). */
   subjects?: Record<string, string>;
+  /** Qualification system printed on the academic document (default KCSE). */
+  examSystem?: "KCSE" | "IGCSE" | "ALEVEL" | "IB" | "DIPLOMA" | "PREUNI" | "DEGREE";
+  /** IB total points; GPA for diploma/pre-university; award class text. */
+  ibPoints?: number;
+  gpa?: number;
+  classAwarded?: string;
+  subsidiaries?: number;
+  diplomaTitle?: string;
+  degreeTitle?: string;
   extraLines?: string[];
 }
 
@@ -65,10 +74,84 @@ const DEFAULT_SUBJECTS: Record<string, string> = {
   PHYSICS: "B", CHEMISTRY: "B", BIOLOGY: "B",
 };
 
+const DEFAULT_IGCSE_SUBJECTS: Record<string, string> = {
+  ENGLISH: "C", MATHEMATICS: "B", BIOLOGY: "C", CHEMISTRY: "C", PHYSICS: "D", HISTORY: "C",
+};
+const DEFAULT_ALEVEL_SUBJECTS: Record<string, string> = {
+  MATHEMATICS: "B", PHYSICS: "C", ECONOMICS: "C",
+};
+
 export function docLines(type: string, spec: DocSpec): string[] {
   const year = spec.year ?? "2021";
   switch (type) {
-    case "academic_cert":
+    case "academic_cert": {
+      const sys = spec.examSystem ?? "KCSE";
+      if (sys === "IGCSE") {
+        return [
+          "CAMBRIDGE INTERNATIONAL EXAMINATIONS",
+          "INTERNATIONAL GCSE (IGCSE) — STATEMENT OF RESULTS",
+          "",
+          `NAME: ${spec.name}`,
+          `YEAR: ${year}`,
+          ...Object.entries(spec.subjects ?? DEFAULT_IGCSE_SUBJECTS).map(([subj, g]) => `${subj}: ${g}`),
+          ...(spec.extraLines ?? []),
+        ];
+      }
+      if (sys === "ALEVEL") {
+        return [
+          "GCE ADVANCED LEVEL EXAMINATION",
+          "STATEMENT OF RESULTS",
+          "",
+          `NAME: ${spec.name}`,
+          `YEAR: ${year}`,
+          ...Object.entries(spec.subjects ?? DEFAULT_ALEVEL_SUBJECTS).map(([subj, g]) => `${subj}: ${g}`),
+          `SUBSIDIARY: ${spec.subsidiaries ?? 1}`,
+          ...(spec.extraLines ?? []),
+        ];
+      }
+      if (sys === "IB") {
+        return [
+          "INTERNATIONAL BACCALAUREATE DIPLOMA — RESULTS",
+          "",
+          `NAME: ${spec.name}`,
+          `TOTAL POINTS: ${spec.ibPoints ?? 28}`,
+          `YEAR: ${year}`,
+          "ENGLISH HL: 5", "MATHEMATICS HL: 5", "PHYSICS SL: 4",
+          "HISTORY SL: 5", "BIOLOGY SL: 5", "FRENCH SL: 4",
+          ...(spec.extraLines ?? []),
+        ];
+      }
+      if (sys === "DIPLOMA") {
+        return [
+          `${spec.diplomaTitle ?? "DIPLOMA IN BUSINESS MANAGEMENT"} — DIPLOMA TRANSCRIPT`,
+          "",
+          `NAME: ${spec.name}`,
+          `OVERALL GRADE: ${spec.classAwarded ?? "CREDIT"}`,
+          `GPA: ${spec.gpa ?? 2.8}`,
+          `YEAR: ${year}`,
+          ...(spec.extraLines ?? []),
+        ];
+      }
+      if (sys === "PREUNI") {
+        return [
+          "PRE-UNIVERSITY CERTIFICATE — BRIDGING PROGRAMME",
+          "",
+          `NAME: ${spec.name}`,
+          `GPA: ${spec.gpa ?? 3.0}`,
+          `YEAR: ${year}`,
+          ...(spec.extraLines ?? []),
+        ];
+      }
+      if (sys === "DEGREE") {
+        return [
+          `${spec.degreeTitle ?? "BACHELOR OF BUSINESS ADMINISTRATION"} — DEGREE TRANSCRIPT`,
+          "",
+          `NAME: ${spec.name}`,
+          `DEGREE CLASSIFICATION: ${spec.classAwarded ?? "SECOND CLASS HONOURS (UPPER DIVISION)"}`,
+          `YEAR: ${year}`,
+          ...(spec.extraLines ?? []),
+        ];
+      }
       return [
         "REPUBLIC OF KENYA",
         "KENYA CERTIFICATE OF SECONDARY EDUCATION",
@@ -80,6 +163,7 @@ export function docLines(type: string, spec: DocSpec): string[] {
         ...Object.entries(spec.subjects ?? DEFAULT_SUBJECTS).map(([subj, g]) => `${subj}: ${g}`),
         ...(spec.extraLines ?? []),
       ];
+    }
     case "kcpe_cert":
       return [
         "REPUBLIC OF KENYA",

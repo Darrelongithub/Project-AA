@@ -30,7 +30,11 @@ import type { PipelineContext as PCtx } from "../pipeline/adapters";
 import { log } from "../util/log";
 import { hashPassword } from "../util/password";
 import { INSTITUTION, emailBanner } from "../branding";
-import { admissionPack, applicationPack } from "../pack";
+import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS } from "../pack";
+import { EXAM_SYSTEMS, SUBJECT_CATALOG } from "../config";
+import type { CourseLevel, SystemBlock } from "../types";
+import * as fs from "fs";
+import * as path from "path";
 
 export interface WebDeps {
   repo: Repo;
@@ -627,7 +631,8 @@ export function createApp(deps: WebDeps): Express {
       configPage(
         c(req),
         req.query.template ? String(req.query.template) : undefined,
-        req.query.msg ? String(req.query.msg) : undefined
+        req.query.msg ? String(req.query.msg) : undefined,
+        req.query.reqs ? String(req.query.reqs) : undefined
       ))
   );
 
@@ -663,35 +668,97 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(back(`Course ${programme} saved.`));
   });
 
-  // Per-course grade requirements, edited straight from the course row.
-  app.post("/config/programme-requirements", requireLogin, requireRole("admin", "manager"), csrfCheck, (req, res) => {
-    const programme = String(req.body.programme ?? "").trim();
-    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#courses`;
-    if (!programme || !repo.programmeByCode(programme)) return res.redirect(back("Unknown course."));
-    // Requirements are KCSE-based (secondary certificate). A blank row means
-    // "remove the course override" — the programme falls back to the
-    // university-wide minimum on the base rule.
-    const meanGrade = String(req.body.kcse_mean ?? "").trim().toUpperCase();
-    const subjects = String(req.body.kcse_subjects ?? "").trim();
-    if (meanGrade && !/^[A-E][+-]?$/.test(meanGrade)) {
-      return res.redirect(back(`"${meanGrade}" is not a KCSE grade — nothing saved.`));
+  // Structured entry requirements — one qualification-system block per save.
+  app.post("/config/entry-requirements", requireLogin, requireRole("admin", "manager"), csrfCheck, (req, res) => {
+    const target = String(req.body.target ?? "").trim();
+    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}&reqs=${encodeURIComponent(target)}#entryreqs`;
+    const system = String(req.body.system ?? "").trim() as SystemBlock["system"];
+    if (!EXAM_SYSTEMS.some((m) => m.system === system)) return res.redirect(back("Unknown qualification system."));
+    const isBase = target.startsWith("BASE:");
+    const level = (isBase ? target.slice(5) : repo.programmeByCode(target)?.level ?? "degree") as CourseLevel;
+    if (!["degree", "diploma", "certificate", "postgrad"].includes(level)) return res.redirect(back("Unknown level."));
+    const programme = isBase ? null : target.toUpperCase();
+    if (!isBase && !repo.programmeByCode(programme!)) return res.redirect(back("Unknown course."));
+    const meta = EXAM_SYSTEMS.find((m) => m.system === system)!;
+
+    const enabled = req.body.enabled === "on";
+    if (!enabled) {
+      repo.deleteSystemBlock(programme, system, level);
+      repo.audit(null, req.staff!.username, "requirements_changed",
+        `${programme ?? `${level} (university-wide)`}: ${system} route removed`);
+      return res.redirect(back(`${meta.label} route removed for ${programme ?? "the university-wide defaults"} — the fallback now applies.`));
     }
-    const existing = repo.listRules().find((r) => r.programme === programme && r.intake === null && r.document_type === "academic_cert");
-    if (!meanGrade && !subjects) {
-      if (existing && typeof existing.id === "number") {
-        repo.deleteRule(existing.id);
-        repo.audit(null, req.staff!.username, "requirements_changed", `${programme}: course override removed — back to the university-wide minimum`);
-        return res.redirect(back(`Override for ${programme} removed — the university-wide minimum now applies.`));
+
+    const block: SystemBlock = { system, enabled: true, overall: null, subjects: [] };
+    for (const f of meta.fields) {
+      if (f === "overall") {
+        const v = String(req.body.overall ?? "").trim().toUpperCase();
+        if (v && !/^[A-E][+-]?$/.test(v)) return res.redirect(back(`"${v}" is not a KCSE grade — nothing saved.`));
+        block.overall = v || null;
+      } else if (f === "minCredits" || f === "minPrincipals" || f === "minSubsidiaries" || f === "minPoints") {
+        const raw = String(req.body[f === "minCredits" ? "min_credits" : f === "minPrincipals" ? "min_principals" : f === "minSubsidiaries" ? "min_subsidiaries" : "min_points"] ?? "").trim();
+        if (raw !== "") {
+          const n = Number(raw);
+          if (!Number.isInteger(n) || n < 0) return res.redirect(back("Counts must be whole numbers — nothing saved."));
+          if (f === "minCredits") block.minCredits = n;
+          if (f === "minPrincipals") block.minPrincipals = n;
+          if (f === "minSubsidiaries") block.minSubsidiaries = n;
+          if (f === "minPoints") block.minPoints = n;
+        }
+      } else if (f === "minGpa") {
+        const raw = String(req.body.min_gpa ?? "").trim();
+        if (raw !== "") {
+          const n = Number(raw);
+          if (!Number.isFinite(n) || n < 0 || n > 4) return res.redirect(back("GPA must be between 0 and 4 — nothing saved."));
+          block.minGpa = n;
+        }
+      } else if (f === "minClass") {
+        const v = String(req.body.min_class ?? "").trim();
+        block.minClass = v || null;
       }
-      return res.redirect(back(`Nothing entered — requirements for ${programme} are unchanged.`));
     }
-    repo.upsertRule({
-      programme, intake: null, document_type: "academic_cert" as DocType, required: true,
-      meanGrade: meanGrade || null, subjectGrades: subjects || null,
-    });
-    repo.audit(null, req.staff!.username, "requirements_changed", `${programme}: grade requirements edited`);
-    res.redirect(back(`Grade requirements for ${programme} saved.`));
+    // Subject matrix: checkbox sub_i + grade_i + optional alternative alt_i.
+    for (let i = 0; i < SUBJECT_CATALOG.length; i++) {
+      if (req.body[`sub_${i}`] !== "on") continue;
+      const grade = String(req.body[`grade_${i}`] ?? "").trim();
+      if (!grade) return res.redirect(back(`${SUBJECT_CATALOG[i]} is ticked but has no minimum grade — nothing saved.`));
+      const alt = String(req.body[`alt_${i}`] ?? "").trim();
+      block.subjects!.push({ subject: SUBJECT_CATALOG[i], grade, ...(alt ? { alts: [alt] } : {}) });
+    }
+    repo.upsertSystemBlock(programme, level, block);
+    repo.audit(null, req.staff!.username, "requirements_changed",
+      `${programme ?? `${level} (university-wide)`}: ${system} entry requirements saved (${block.subjects!.length} subject rule(s))`);
+    res.redirect(back(`Entry requirements saved for ${meta.label} — new applicants are checked against them immediately.`));
   });
+
+  // Official pack files: download (staff) + replace (raw PDF upload).
+  app.get("/pack/:key", requireLogin, (req, res) => {
+    const slot = PACK_SLOTS.find((x) => x.key === req.params.key);
+    if (!slot) return res.status(404).send("Unknown pack file.");
+    const file = path.join(PACK_DIR, slot.file);
+    if (!fs.existsSync(file)) return res.status(404).send("Pack file missing.");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${slot.pretty}"`);
+    res.sendFile(file);
+  });
+  app.post(
+    "/config/pack/replace",
+    requireLogin,
+    requireRole("admin", "manager", "it"),
+    csrfCheck,
+    express.raw({ type: "application/pdf", limit: "12mb" }),
+    (req, res) => {
+      const slot = PACK_SLOTS.find((x) => x.key === String(req.query.slot ?? ""));
+      if (!slot) return res.status(400).send("Unknown pack slot.");
+      const body = req.body as Buffer;
+      if (!Buffer.isBuffer(body) || body.length < 512 || body.subarray(0, 5).toString() !== "%PDF-") {
+        return res.status(400).send("Not a PDF.");
+      }
+      fs.writeFileSync(path.join(PACK_DIR, slot.file), body);
+      repo.audit(null, req.staff!.username, "pack_file_replaced", `${slot.file} replaced (${body.length} bytes)`);
+      res.status(200).send("saved");
+    }
+  );
 
   // ── Gmail connect (OAuth code flow; tokens stored in Settings) ───────────
 

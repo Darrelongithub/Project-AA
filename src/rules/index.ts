@@ -14,8 +14,12 @@ import type {
   DerivedFlag,
   DocType,
   DocumentRecord,
+  ExamSystem,
+  ExtractedFields,
   Flag,
   RequirementSetEntry,
+  SubjectRequirement,
+  SystemBlock,
 } from "../types";
 
 export interface RulesInput {
@@ -373,4 +377,227 @@ export function decide(input: RulesInput): RulesOutput {
   ].join("\n");
 
   return { status, reasoning, derivedFlags: derived, missing };
+}
+
+
+// ── Structured qualification checks (per exam system) ─────────────────────
+// Requirement blocks speak the language each system is actually marked in:
+// KCSE letter grades, IGCSE credits + A*–G, A-Level principal passes, IB
+// points, diploma/degree classes, GPAs. Every check below DETERMINISTICALLY
+// compares a read value against the configured minimum; anything unreadable
+// becomes a flag for a human — never a guess.
+
+export const IGCSE_LADDER = ["A*", "A", "B", "C", "D", "E", "F", "G"] as const;
+export const ALEVEL_LADDER = ["A", "B", "C", "D", "E"] as const;
+export const IB_SUBJECT_LADDER = ["7", "6", "5", "4", "3", "2", "1"] as const;
+/** Worst → best. */
+export const DIPLOMA_CLASS_LADDER = ["pass", "credit", "distinction"];
+export const DEGREE_CLASS_LADDER = [
+  "pass",
+  "second class honours (lower division)",
+  "second class lower",
+  "second class honours (upper division)",
+  "second class upper",
+  "first class honours",
+  "first class",
+];
+
+function canonClass(raw: string): string {
+  return raw.toLowerCase().replace(/[^a-z0-9 ()]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** Generic ladder comparison: true when `actual` is STRICTLY below `required`. */
+export function ladderBelow(actual: string | null | undefined, required: string | null | undefined, ladder: readonly string[]): boolean {
+  if (!actual || !required) return false;
+  const a = ladder.indexOf(String(actual).trim().toUpperCase());
+  const r = ladder.indexOf(String(required).trim().toUpperCase());
+  if (a < 0 || r < 0) return false;
+  return a > r;
+}
+
+function classBelow(actual: string | null | undefined, required: string | null | undefined, ladder: readonly string[]): boolean {
+  if (!actual || !required) return false;
+  const a = ladder.indexOf(canonClass(actual));
+  const r = ladder.indexOf(canonClass(required));
+  if (a < 0 || r < 0) return false;
+  return a < r; // class ladders are ordered worst → best
+}
+
+const SYSTEM_LABEL: Record<ExamSystem, string> = {
+  KCSE: "KCSE", IGCSE: "IGCSE/GCE O-Level", ALEVEL: "GCE A-Level/KACE",
+  IB: "IB Diploma", DIPLOMA: "Diploma", PREUNI: "Pre-University", DEGREE: "Degree",
+};
+
+/**
+ * Check one subject requirement ({subject, grade, alts}) against the subject
+ * map read off the document. Either/or alternatives: ONE subject reaching the
+ * grade is enough; nothing readable → flag, never a guess.
+ */
+function checkSubjectRule(req: SubjectRequirement, got: Record<string, string> | null | undefined, ladder: readonly string[] | null, label: string): DerivedFlag[] {
+  const options = [req.subject, ...(req.alts ?? [])];
+  const found: Array<{ subject: string; grade: string }> = [];
+  for (const opt of options) {
+    const key = Object.keys(got ?? {}).find((k) => canonSubject(k) === canonSubject(opt));
+    if (key && got) found.push({ subject: key, grade: String(got[key]) });
+  }
+  if (found.length === 0) {
+    return [{
+      type: "low_confidence",
+      detail: `${label}: grade for ${options.join(" or ")} could not be read (rule expects ${req.grade}) — human must verify`,
+    }];
+  }
+  const passes = found.some((f) =>
+    ladder ? !ladderBelow(f.grade, req.grade, ladder) : !gradeBelow(f.grade, req.grade)
+  );
+  if (!passes) {
+    return [{
+      type: "grade_below_requirement",
+      detail: `${label}: ${found.map((f) => `${f.subject} ${f.grade}`).join(", ")} below the required ${req.grade} — human must review`,
+    }];
+  }
+  return [];
+}
+
+/**
+ * Deterministic check of one qualification-system block against the fields
+ * read off the applicant's document. Returns flags only — never a decision.
+ */
+export function checkSystemBlock(block: SystemBlock, fields: ExtractedFields): DerivedFlag[] {
+  const flags: DerivedFlag[] = [];
+  const label = SYSTEM_LABEL[block.system];
+  const subs = (fields.subjectGrades ?? null) as Record<string, string> | null;
+
+  switch (block.system) {
+    case "KCSE": {
+      if (block.overall) {
+        const mean = typeof fields.meanGrade === "string" ? fields.meanGrade : null;
+        if (mean && gradeBelow(mean, block.overall)) {
+          flags.push({ type: "grade_below_requirement", detail: `KCSE: mean grade ${mean} is below the required ${block.overall} — human must review` });
+        } else if (!mean) {
+          flags.push({ type: "low_confidence", detail: `KCSE: mean grade could not be read (rule expects ${block.overall}) — human must verify` });
+        }
+      }
+      for (const r of block.subjects ?? []) flags.push(...checkSubjectRule(r, subs, null, "KCSE"));
+      break;
+    }
+    case "IGCSE": {
+      if (block.minCredits != null) {
+        const credits = typeof fields.credits === "number" ? fields.credits : null;
+        if (credits == null) {
+          flags.push({ type: "low_confidence", detail: `IGCSE: credit count could not be read (rule expects ${block.minCredits} passes at C or better) — human must verify` });
+        } else if (credits < block.minCredits) {
+          flags.push({ type: "grade_below_requirement", detail: `IGCSE: ${credits} pass(es) at C or better, below the required ${block.minCredits} — human must review` });
+        }
+      }
+      for (const r of block.subjects ?? []) flags.push(...checkSubjectRule(r, subs, [...IGCSE_LADDER], "IGCSE"));
+      break;
+    }
+    case "ALEVEL": {
+      if (block.minPrincipals != null) {
+        const principals = typeof fields.principals === "number" ? fields.principals : null;
+        if (principals == null) {
+          flags.push({ type: "low_confidence", detail: `GCE A-Level: principal passes could not be read (rule expects ${block.minPrincipals}) — human must verify` });
+        } else if (principals < block.minPrincipals) {
+          flags.push({ type: "grade_below_requirement", detail: `GCE A-Level: ${principals} principal pass(es), below the required ${block.minPrincipals} — human must review` });
+        }
+      }
+      if (block.minSubsidiaries != null) {
+        const sub = typeof fields.subsidiaries === "number" ? fields.subsidiaries : 0;
+        if (sub < block.minSubsidiaries) {
+          flags.push({ type: "grade_below_requirement", detail: `GCE A-Level: ${sub} subsidiary pass(es), below the required ${block.minSubsidiaries} — human must review` });
+        }
+      }
+      for (const r of block.subjects ?? []) flags.push(...checkSubjectRule(r, subs, [...ALEVEL_LADDER], "GCE A-Level"));
+      break;
+    }
+    case "IB": {
+      if (block.minPoints != null) {
+        const pts = typeof fields.ibPoints === "number" ? fields.ibPoints : null;
+        if (pts == null) {
+          flags.push({ type: "low_confidence", detail: `IB: total points could not be read (rule expects ${block.minPoints}) — human must verify` });
+        } else if (pts < block.minPoints) {
+          flags.push({ type: "grade_below_requirement", detail: `IB: ${pts} points, below the required ${block.minPoints} — human must review` });
+        }
+      }
+      for (const r of block.subjects ?? []) flags.push(...checkSubjectRule(r, subs, [...IB_SUBJECT_LADDER], "IB"));
+      break;
+    }
+    case "DIPLOMA": {
+      if (block.minClass) {
+        const cls = typeof fields.classAwarded === "string" ? fields.classAwarded : null;
+        if (!cls) flags.push({ type: "low_confidence", detail: `Diploma: award class could not be read (rule expects ${block.minClass}) — human must verify` });
+        else if (classBelow(cls, block.minClass, DIPLOMA_CLASS_LADDER)) {
+          flags.push({ type: "grade_below_requirement", detail: `Diploma: award class "${cls}" is below the required ${block.minClass} — human must review` });
+        }
+      }
+      if (block.minGpa != null) {
+        const gpa = typeof fields.gpa === "number" ? fields.gpa : null;
+        if (gpa == null) flags.push({ type: "low_confidence", detail: `Diploma: GPA could not be read (rule expects ${block.minGpa}) — human must verify` });
+        else if (gpa < block.minGpa) {
+          flags.push({ type: "grade_below_requirement", detail: `Diploma: GPA ${gpa.toFixed(2)} is below the required ${block.minGpa} — human must review` });
+        }
+      }
+      break;
+    }
+    case "PREUNI": {
+      if (block.minGpa != null) {
+        const gpa = typeof fields.gpa === "number" ? fields.gpa : null;
+        if (gpa == null) flags.push({ type: "low_confidence", detail: `Pre-University: GPA could not be read (rule expects ${block.minGpa}) — human must verify` });
+        else if (gpa < block.minGpa) {
+          flags.push({ type: "grade_below_requirement", detail: `Pre-University: GPA ${gpa.toFixed(2)} is below the required ${block.minGpa} — human must review` });
+        }
+      }
+      break;
+    }
+    case "DEGREE": {
+      if (block.minClass) {
+        const cls = typeof fields.classAwarded === "string" ? fields.classAwarded : null;
+        if (!cls) flags.push({ type: "low_confidence", detail: `Degree: class of degree could not be read (rule expects ${block.minClass}) — human must verify` });
+        else if (classBelow(cls, block.minClass, DEGREE_CLASS_LADDER)) {
+          flags.push({ type: "grade_below_requirement", detail: `Degree: class "${cls}" is below the required ${block.minClass} — human must review` });
+        }
+      }
+      // No minClass configured = recognised-degree route (no automated minimum).
+      break;
+    }
+  }
+  return flags;
+}
+
+/**
+ * Check every ACTIVE academic document against the course's qualification
+ * routes. A system with no configured route goes to a human — alternative
+ * entry is never auto-judged in either direction.
+ */
+export function checkQualificationSystems(blocks: SystemBlock[], docs: DocumentRecord[]): DerivedFlag[] {
+  const flags: DerivedFlag[] = [];
+  const academic = docs.filter((d) => d.document_type === "academic_cert");
+  for (const doc of academic) {
+    const fields = (doc.extracted_fields ?? {}) as ExtractedFields;
+    const system = fields.examSystem ?? null;
+    if (!system) {
+      flags.push({
+        type: "low_confidence",
+        detail: "academic document: qualification system could not be identified — human must verify which entry route applies",
+      });
+      continue;
+    }
+    const block = blocks.find((b) => b.system === system);
+    if (!block) {
+      flags.push({
+        type: "alternative_qualification",
+        detail: `${SYSTEM_LABEL[system]} presented, but no ${SYSTEM_LABEL[system]} route is configured for this course — human must assess this entry route`,
+      });
+      continue;
+    }
+    if (!block.enabled) {
+      flags.push({
+        type: "alternative_qualification",
+        detail: `${SYSTEM_LABEL[system]} route is switched off for this course — human must assess this entry route`,
+      });
+      continue;
+    }
+    flags.push(...checkSystemBlock(block, fields));
+  }
+  return flags;
 }

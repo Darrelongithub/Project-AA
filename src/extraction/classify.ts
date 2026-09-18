@@ -20,7 +20,7 @@ const RULES: Rule[] = [
   {
     type: "academic_cert",
     pattern:
-      /kenya\s+certificate\s+of\s+secondary\s+education|\bkcse\b|academic\s+transcript|secondary\s+education/i,
+      /kenya\s+certificate\s+of\s+secondary\s+education|\bkcse\b|academic\s+transcript|secondary\s+education|\bigcse\b|cambridge\s+international|gce\s+(?:ordinary|advanced)\s+level|\bkace\b|international\s+baccalaureate|\bib\s+diploma\b|a[-\s]level\s+(?:results?|certificate|transcript)|transcript|diploma\s+(?:results?|transcript)|degree\s+(?:certificate|transcript|classification)/i,
   },
 ];
 

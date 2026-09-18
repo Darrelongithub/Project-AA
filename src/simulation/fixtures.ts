@@ -599,5 +599,112 @@ export async function buildFixtures(): Promise<Fixture[]> {
     });
   }
 
+  // ── Qualification-system fixtures (structured entry requirements) ────────
+  {
+    const name = "WANJIRU IGCS APPLICANT";
+    fixtures.push({
+      name: "igcse-qualified-bba",
+      description: "IGCSE applicant for BBA with 6 passes at C or better → meets the 5-credit route → auto-acknowledged.",
+      emails: [
+        email({
+          id: "email-igcse-ok-1", threadId: "thread-igcse-ok", from: "wanjiru.igcse@student.example.org", fromName: "Wanjiru Igcse",
+          subject: "Application documents",
+          body: "Please find attached my IGCSE results and application form.",
+          receivedAt: "2026-09-15T09:00:00Z",
+          attachments: await Promise.all([
+            att({ filename: "igcse-ok-results.pdf", docType: "academic_cert", name, spec: { examSystem: "IGCSE", subjects: { ENGLISH: "C", MATHEMATICS: "B", BIOLOGY: "C", CHEMISTRY: "C", HISTORY: "C", ECONOMICS: "B" } } }),
+            att({ filename: "igcse-ok-id.pdf", docType: "id", name, spec: { idNumber: "33110022" } }),
+            att({ filename: "igcse-ok-form.pdf", docType: "application_form", name, spec: { programme: "BACHELOR OF BUSINESS ADMINISTRATION" } }),
+          ]),
+        }),
+      ],
+      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+    });
+  }
+  {
+    const name = "OTIENO FEW CREDITS";
+    fixtures.push({
+      name: "igcse-short-credits",
+      description: "IGCSE with only 4 passes at C or better — below the 5-credit degree route → flag + human review (held).",
+      emails: [
+        email({
+          id: "email-igcse-low-1", threadId: "thread-igcse-low", from: "otieno.credits@student.example.org", fromName: "Otieno Credits",
+          subject: "My results",
+          body: "Attached are my IGCSE statement of results and documents.",
+          receivedAt: "2026-09-15T10:00:00Z",
+          attachments: await Promise.all([
+            att({ filename: "igcse-low-results.pdf", docType: "academic_cert", name, spec: { examSystem: "IGCSE", subjects: { ENGLISH: "C", MATHEMATICS: "C", BIOLOGY: "C", HISTORY: "C", PHYSICS: "F", CHEMISTRY: "F" } } }),
+            att({ filename: "igcse-low-id.pdf", docType: "id", name, spec: { idNumber: "33445566" } }),
+            att({ filename: "igcse-low-form.pdf", docType: "application_form", name }),
+          ]),
+        }),
+      ],
+      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["grade_below_requirement"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+    });
+  }
+  {
+    const name = "KAMAU IB TWENTYSEVEN";
+    fixtures.push({
+      name: "ib-degree-route",
+      description: "IB Diploma with 27 points (≥ 24) for BBIT → qualifies through the university-wide IB route → auto-acknowledged.",
+      emails: [
+        email({
+          id: "email-ib-1", threadId: "thread-ib", from: "kamau.ib@student.example.org", fromName: "Kamau Ib",
+          subject: "IB results attached",
+          body: "I completed the IB Diploma and would like to apply.",
+          receivedAt: "2026-09-15T11:00:00Z",
+          attachments: await Promise.all([
+            att({ filename: "ib-results.pdf", docType: "academic_cert", name, spec: { examSystem: "IB", ibPoints: 27 } }),
+            att({ filename: "ib-id.pdf", docType: "id", name, spec: { idNumber: "33778899" } }),
+            att({ filename: "ib-form.pdf", docType: "application_form", name, spec: { programme: "BACHELOR OF BUSINESS INFORMATION TECHNOLOGY" } }),
+          ]),
+        }),
+      ],
+      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+    });
+  }
+  {
+    const name = "KIPROP ONE PRINCIPAL";
+    fixtures.push({
+      name: "alevel-one-principal",
+      description: "KACE/A-Level with only 1 principal pass — below the 2-principal degree route → flag + human review (held).",
+      emails: [
+        email({
+          id: "email-al-1", threadId: "thread-al", from: "kiprop.principal@student.example.org", fromName: "Kiprop Principal",
+          subject: "A level results",
+          body: "Please find my advanced level results attached.",
+          receivedAt: "2026-09-15T12:00:00Z",
+          attachments: await Promise.all([
+            att({ filename: "al-results.pdf", docType: "academic_cert", name, spec: { examSystem: "ALEVEL", subjects: { MATHEMATICS: "B" }, subsidiaries: 1 } }),
+            att({ filename: "al-id.pdf", docType: "id", name, spec: { idNumber: "33990011" } }),
+            att({ filename: "al-form.pdf", docType: "application_form", name }),
+          ]),
+        }),
+      ],
+      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["grade_below_requirement"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+    });
+  }
+  {
+    const name = "MWANGI SECOND UPPER";
+    fixtures.push({
+      name: "degree-mba-route",
+      description: "MBA applicant with a Second Class Honours (Upper Division) degree → meets the postgraduate route → auto-acknowledged.",
+      emails: [
+        email({
+          id: "email-mba-1", threadId: "thread-mba", from: "mwangi.mba@student.example.org", fromName: "Mwangi Mba",
+          subject: "MBA application",
+          body: "Attached are my degree transcript and application documents for the MBA.",
+          receivedAt: "2026-09-15T13:00:00Z",
+          attachments: await Promise.all([
+            att({ filename: "mba-transcript.pdf", docType: "academic_cert", name, spec: { examSystem: "DEGREE", classAwarded: "SECOND CLASS HONOURS (UPPER DIVISION)" } }),
+            att({ filename: "mba-id.pdf", docType: "id", name, spec: { idNumber: "34101112" } }),
+            att({ filename: "mba-form.pdf", docType: "application_form", name, spec: { programme: "MASTER OF BUSINESS ADMINISTRATION" } }),
+          ]),
+        }),
+      ],
+      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+    });
+  }
+
   return fixtures;
 }

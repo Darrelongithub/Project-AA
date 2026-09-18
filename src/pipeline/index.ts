@@ -30,7 +30,7 @@ import type {
 import { recordDocuments } from "../matching";
 import { resolveIdentity } from "../matching/identity";
 import { extractAttachment } from "../extraction/extract";
-import { decide, docLabel, normalizeName } from "../rules";
+import { checkQualificationSystems, decide, docLabel, normalizeName } from "../rules";
 import { gate } from "../gate";
 import { categorizeEmail, priorityForCategory } from "../categorize";
 import { extractPhone, inferIntake, inferProgramme } from "../enrich";
@@ -247,7 +247,17 @@ export async function processEmail(
   // changes never retroactively move an applicant's goalposts.
   const applicantNow = repo.getApplicant(applicant.id)!;
   repo.freezeRequirementsSnapshot(applicantNow);
+  repo.freezeStructuredSnapshot(applicantNow);
   const requirements = repo.effectiveRequirements(repo.getApplicant(applicant.id)!);
+
+  // Structured entry requirements (per qualification system). Checked against
+  // every academic document the applicant sent; anything the course has no
+  // configured route for goes to a human — never auto-judged either way.
+  // (When nothing is configured anywhere the engine stays silent.)
+  const entryBlocks = repo.effectiveBlocks(repo.getApplicant(applicant.id)!);
+  if (entryBlocks.length > 0) {
+    preFlags.push(...checkQualificationSystems(entryBlocks, activeDocs));
+  }
 
   // ── Intake deadline (v3 features 20, 21): late arrival → flag, never an
   //    automatic rejection. ─────────────────────────────────────────────────
