@@ -17,7 +17,7 @@ import { DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, ty
 import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import {
-  admissionsPage, applicantsPage, casePage, composePage, configPage, dashboardPage, loginPage,
+  accountPage, admissionsPage, applicantsPage, casePage, composePage, configPage, dashboardPage, loginPage,
   queuePage, replayPage, settingsPage, staffPage,
 } from "./pages";
 import { avatar, esc, layout } from "./views";
@@ -28,7 +28,7 @@ import { GeminiWatcher } from "../watcher";
 import { buildAdapters, type Adapters } from "../pipeline/adapters";
 import type { PipelineContext as PCtx } from "../pipeline/adapters";
 import { log } from "../util/log";
-import { hashPassword } from "../util/password";
+import { hashPassword, verifyPassword } from "../util/password";
 import { INSTITUTION, emailBanner } from "../branding";
 import { admissionPack, applicationPack, creditTransferPack, PACK_DIR, PACK_SLOTS } from "../pack";
 import { EXAM_SYSTEMS, SUBJECT_CATALOG } from "../config";
@@ -152,7 +152,7 @@ export function createApp(deps: WebDeps): Express {
     csrfCheck,
     express.raw({ type: ["image/jpeg", "image/png"], limit: "1mb" }),
     (req, res) => {
-      const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#branding`;
+      const back = (m: string) => `/config?tab=replies&msg=${encodeURIComponent(m)}#branding`;
       const buf = req.body as Buffer;
       if (!Buffer.isBuffer(buf) || buf.length < 1024) return res.redirect(back("Banner image missing or too small."));
       if (buf.length > 900 * 1024) return res.redirect(back("Banner too large — keep it under 900 KB."));
@@ -269,16 +269,21 @@ export function createApp(deps: WebDeps): Express {
     res.send(admissionsPage(c(req), String(req.query.stage ?? "all")));
   });
 
+  // Realm guard: a case is only visible to accounts in the SAME realm —
+  // live admins never open mock cases, demo accounts never open live ones.
+  const sameRealm = (req: Request, a: { demo?: number } | null): boolean =>
+    Boolean(a) && (a!.demo ?? 0) === (req.staff!.demo ?? 0);
+
   app.get("/case/:id", requireLogin, (req, res) => {
     const a = repo.getApplicant(Number(req.params.id));
-    if (!a) return res.status(404).send("Case not found.");
+    if (!a || !sameRealm(req, a)) return res.status(404).send("Case not found.");
     res.send(casePage(c(req), a, req.query.msg ? String(req.query.msg) : undefined));
   });
 
   /** Decision replay — the step-by-step chain behind any flag/verdict. */
   app.get("/case/:id/replay", requireLogin, (req, res) => {
     const a = repo.getApplicant(Number(req.params.id));
-    if (!a) return res.status(404).send("Case not found.");
+    if (!a || !sameRealm(req, a)) return res.status(404).send("Case not found.");
     res.send(replayPage(c(req), a));
   });
 
@@ -618,6 +623,44 @@ export function createApp(deps: WebDeps): Express {
     res.redirect("/#alerts");
   });
 
+  // ── Account (self-service, every signed-in user) ─────────────────────────
+
+  app.get("/account", requireLogin, (req, res) =>
+    res.send(accountPage(c(req), req.query.msg ? String(req.query.msg) : undefined))
+  );
+
+  const accountMsg = (m: string) => `/account?msg=${encodeURIComponent(m)}`;
+
+  app.post("/account/username", requireLogin, csrfCheck, (req, res) => {
+    const next = String(req.body.username ?? "").trim();
+    if (next.length < 3) return res.redirect(accountMsg("Usernames need at least 3 characters."));
+    const clash = repo.getStaffByUsername(next);
+    if (clash && clash.id !== req.staff!.id) return res.redirect(accountMsg(`“${next}” is already taken by another account.`));
+    repo.setStaffUsername(req.staff!.id, next);
+    repo.audit(null, next, "account_username_changed", `was “${req.staff!.username}”`);
+    res.redirect(accountMsg("Username updated."));
+  });
+
+  app.post("/account/password", requireLogin, csrfCheck, (req, res) => {
+    const me = repo.getStaffByUsername(req.staff!.username);
+    if (!me) return res.redirect(accountMsg("Account not found."));
+    const current = String(req.body.current ?? "");
+    const next = String(req.body.next ?? "");
+    const confirm = String(req.body.confirm ?? "");
+    if (!verifyPassword(current, me.password_hash)) return res.redirect(accountMsg("Your current password was incorrect."));
+    if (next.length < 8) return res.redirect(accountMsg("New password must be at least 8 characters."));
+    if (next !== confirm) return res.redirect(accountMsg("New passwords did not match."));
+    repo.setStaffPassword(me.id, hashPassword(next));
+    repo.audit(null, me.username, "account_password_changed", "self-service password change");
+    res.redirect(accountMsg("Password changed."));
+  });
+
+  app.post("/account/theme", requireLogin, csrfCheck, (req, res) => {
+    const t = req.body.theme === "dark" ? "dark" : "light";
+    res.setHeader("Set-Cookie", `theme=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${365 * 86400}`);
+    res.redirect(accountMsg(`Theme set to ${t} mode.`));
+  });
+
   // ── Settings (manager+) ──────────────────────────────────────────────────
 
   // 'it' role: cases + configuration, but not staff management.
@@ -632,7 +675,8 @@ export function createApp(deps: WebDeps): Express {
         c(req),
         req.query.template ? String(req.query.template) : undefined,
         req.query.msg ? String(req.query.msg) : undefined,
-        req.query.reqs ? String(req.query.reqs) : undefined
+        req.query.reqs ? String(req.query.reqs) : undefined,
+        req.query.tab ? String(req.query.tab) : undefined
       ))
   );
 
@@ -762,7 +806,7 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Gmail connect (OAuth code flow; tokens stored in Settings) ───────────
 
-  const settingsBack = (msg: string) => `/config?msg=${encodeURIComponent(msg)}#gmail`;
+  const settingsBack = (msg: string) => `/config?tab=replies&msg=${encodeURIComponent(msg)}#gmail`;
 
   app.post("/settings/gmail/credentials", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
     repo.setSetting("gmail_address", String(req.body.gmail_address ?? "").trim());
@@ -878,7 +922,7 @@ export function createApp(deps: WebDeps): Express {
   rebuildAdapters();
 
   app.post("/settings/gemini", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, async (req, res) => {
-    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#gemini`;
+    const back = (m: string) => `/config?tab=replies&msg=${encodeURIComponent(m)}#gemini`;
     const key = String(req.body.gemini_api_key ?? "").trim();
     const model = String(req.body.gemini_model ?? "gemini-1.5-flash").trim() || "gemini-1.5-flash";
     if (req.body.clear !== undefined) {
@@ -1018,7 +1062,7 @@ export function createApp(deps: WebDeps): Express {
   app.post("/settings/template", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
     const key = String(req.body.key ?? "");
     const existing = repo.getTemplate(key);
-    const back = (m: string) => `/config?template=${encodeURIComponent(key)}&msg=${encodeURIComponent(m)}#templates`;
+    const back = (m: string) => `/config?tab=replies&template=${encodeURIComponent(key)}&msg=${encodeURIComponent(m)}#templates`;
     if (!existing) return res.redirect(back("Unknown template — nothing saved."));
     const name = String(req.body.name ?? "").trim();
     const subject = String(req.body.subject ?? "").trim();

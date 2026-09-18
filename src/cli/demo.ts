@@ -46,6 +46,11 @@ async function main(): Promise<void> {
   const result = await runSimulation({ dbPath, disableOcr: process.env.DISABLE_OCR === "1" });
   console.log(`demo: simulation finished — ${result.passedChecks}/${result.totalChecks} checks passed`);
 
+  // Realm separation: EVERY applicant created by the simulation is mock data.
+  // Flag it so the live `admin` account never sees it, and the demo accounts
+  // (demo_admin / demo_user) only ever see this mock set.
+  repo.markDemoRealm();
+
   // ── Manual touches so the demo feels like a working office ──────────────
   const queued = repo.queueView();
   const demoUser = repo.getStaffByUsername("demo_user");

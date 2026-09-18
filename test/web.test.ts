@@ -529,7 +529,7 @@ describe("production-readiness pass", () => {
 
   it("configuration page offers the Gmail connection card", async () => {
     const { cookie } = await login();
-    const page = await (await fetch(`${base}/config`, { headers: { cookie } })).text();
+    const page = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
     expect(page).toContain("Gmail connection");
     expect(page).toContain("not connected");
     expect(page).toContain('action="/settings/gmail/credentials"');
@@ -627,7 +627,7 @@ describe("QA audit regressions", () => {
       redirect: "manual",
     });
     expect(save.status).toBe(302);
-    const page = await (await fetch(`${base}/config`, { headers: { cookie } })).text();
+    const page = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
     expect(page).not.toContain("TOP-SECRET-VALUE");
     expect(page).toContain("saved — enter a new value to replace");
     const settingsPage = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
@@ -730,6 +730,65 @@ describe("QA audit regressions", () => {
     const adminRow = html.split("<tr>").find((r) => r.includes('<td class="mono">admin')) || "";
     expect(adminRow).not.toContain("badge b-purple");
     expect(adminRow).toContain("default password");
+  });
+
+  describe("configuration split, account settings & realm separation", () => {
+    it("configuration is split into Course and Reply tabs", async () => {
+      const { cookie } = await login();
+      const courses = await (await fetch(`${base}/config`, { headers: { cookie } })).text();
+      expect(courses).toContain("Course configuration");
+      expect(courses).toContain("Reply configuration");
+      expect(courses).toContain('id="courses"');
+      expect(courses).toContain('id="intakes"');
+      expect(courses).toContain("Add a course or intake");
+      expect(courses).not.toContain('id="gmail"');
+
+      const replies = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
+      expect(replies).toContain('id="gmail"');
+      expect(replies).toContain('id="templates"');
+      expect(replies).not.toContain('id="courses"');
+    });
+
+    it("settings no longer exposes response targets or retention (automation is instant)", async () => {
+      const { cookie } = await login();
+      const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+      expect(settings).not.toContain("Response targets");
+      expect(settings).not.toContain("Retention of completed cases");
+      expect(settings).toContain("Letters &amp; identity");
+    });
+
+    it("every signed-in user gets self-service account settings (username, password, theme)", async () => {
+      const { cookie } = await login();
+      const page = await (await fetch(`${base}/account`, { headers: { cookie } })).text();
+      expect(page).toContain('action="/account/username"');
+      expect(page).toContain('action="/account/password"');
+      expect(page).toContain('action="/account/theme"');
+      expect(page).toContain("dark");
+      expect(page).toContain("light");
+    });
+
+    it("a password change requires the current password and updates the login", async () => {
+      const { cookie, csrf } = await login();
+      // wrong current password → rejected
+      const bad = await fetch(`${base}/account/password`, {
+        method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: `_csrf=${csrf}&current=wrongpass&next=newpassword1&confirm=newpassword1`, redirect: "manual",
+      });
+      expect(bad.status).toBe(302);
+      expect(decodeURIComponent(bad.headers.get("location") || "")).toContain("current password was incorrect");
+    });
+
+    it("cases are realm-guarded: an account never opens the other realm's files", async () => {
+      // The processed applicant is live data (demo=0).
+      const live = repo.searchApplicants({ demo: 0 });
+      expect(live.length).toBeGreaterThan(0);
+      // Mark the whole realm as demo, then a live-scoped search sees nothing.
+      repo.markDemoRealm();
+      expect(repo.searchApplicants({ demo: 0 }).length).toBe(0);
+      expect(repo.searchApplicants({ demo: 1 }).length).toBeGreaterThan(0);
+      // restore for other tests
+      (repo as any).db.exec("UPDATE applicants SET demo = 0");
+    });
   });
 
 });

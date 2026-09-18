@@ -234,7 +234,7 @@ describe("web: admissions, compose, gemini slot", () => {
   });
 
   it("gemini slot exists and validates a junk grade rule politely", async () => {
-    const config = await (await fetch(`${base}/config`, { headers: { cookie: auth.cookie } })).text();
+    const config = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie: auth.cookie } })).text();
     expect(config).toContain('id="gemini"');
     expect(config).toContain("Gemini API key");
     expect(config).toContain('action="/settings/gemini"');

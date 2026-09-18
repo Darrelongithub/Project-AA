@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS applicants (
   followup_rung  INTEGER NOT NULL DEFAULT 0,
   followup_next_at TEXT,
   followup_base_at TEXT,
+  demo           INTEGER NOT NULL DEFAULT 0,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (email_address, thread_id)
@@ -140,7 +141,8 @@ CREATE TABLE IF NOT EXISTS documents (
   received_at       TEXT NOT NULL,
   sha256            TEXT,
   is_duplicate      INTEGER NOT NULL DEFAULT 0,
-  duplicate_of      INTEGER REFERENCES documents(id)
+  duplicate_of      INTEGER REFERENCES documents(id),
+  confidence_score  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_documents_applicant ON documents(applicant_id, document_type);
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(sha256);
@@ -335,6 +337,11 @@ function migrate(db: Database.Database): void {
   // Transfer applicants (credit from another institution) must also submit
   // the credit transfer form.
   addColumn("applicants", "transfer", "INTEGER NOT NULL DEFAULT 0");
+  // Realm separation: seeded (mock) applicants are flagged so the live admin
+  // dashboard never shows demo data, and demo accounts only see demo data.
+  addColumn("applicants", "demo", "INTEGER NOT NULL DEFAULT 0");
+  // Numeric PDF readability/confidence (0-100); auto-send requires >= 75.
+  addColumn("documents", "confidence_score", "INTEGER NOT NULL DEFAULT 0");
   // Migrate any legacy min-points rules into a best-effort grade equivalent
   // so old databases keep meaningful rules (points → the KCSE grade ladder).
   try {

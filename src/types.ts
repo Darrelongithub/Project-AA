@@ -236,6 +236,8 @@ export interface DocumentRecord {
   extracted_text: string;
   extracted_fields: ExtractedFields;
   confidence: Confidence;
+  /** Numeric readability/confidence score 0-100 (auto-send requires >= 75). */
+  confidence_score?: number;
   superseded_by: number | null;
   received_at: string;
   sha256?: string;
@@ -317,6 +319,8 @@ export interface ExtractionResult {
   text: string;
   fields: ExtractedFields;
   confidence: Confidence;
+  /** Numeric readability/confidence 0-100. >=75 is required to auto-pass. */
+  confidence_score?: number;
   sha256: string;
   duplicateOf?: number | null;
 }
@@ -353,6 +357,8 @@ export interface ApplicantRow {
   intake: string | null;
   /** Applying with prior credit from another institution (0/1). */
   transfer: number;
+  /** Realm flag: 1 = seeded demo applicant, 0 = live data (0/1). */
+  demo: number;
   priority: Priority;
   assigned_to: number | null;
   lifecycle: LifecycleStage;

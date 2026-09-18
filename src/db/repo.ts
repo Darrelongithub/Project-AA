@@ -38,6 +38,8 @@ export interface ApplicantSearchQuery {
   programme?: string;
   intake?: string;
   limit?: number;
+  /** Realm scope: 0 = live only, 1 = demo only, undefined = all. */
+  demo?: number;
 }
 
 /** Per-staff workload + responsiveness metrics for the Team page. */
@@ -527,6 +529,7 @@ export class Repo {
     extracted_text: string;
     extracted_fields: ExtractedFields;
     confidence: Confidence;
+    confidence_score?: number;
     received_at: string;
     sha256?: string;
     is_duplicate?: boolean;
@@ -536,9 +539,9 @@ export class Repo {
       .prepare(
         `INSERT INTO documents
            (applicant_id, document_type, source_email_id, extraction_method,
-            extracted_text, extracted_fields, confidence, received_at,
+            extracted_text, extracted_fields, confidence, confidence_score, received_at,
             sha256, is_duplicate, duplicate_of)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         d.applicant_id,
@@ -548,6 +551,7 @@ export class Repo {
         d.extracted_text,
         JSON.stringify(d.extracted_fields ?? {}),
         d.confidence,
+        d.confidence_score ?? 0,
         d.received_at,
         d.sha256 ?? null,
         d.is_duplicate ? 1 : 0,
@@ -589,6 +593,7 @@ export class Repo {
       extracted_text: r.extracted_text,
       extracted_fields: JSON.parse(r.extracted_fields || "{}"),
       confidence: r.confidence,
+      confidence_score: r.confidence_score ?? 0,
       superseded_by: r.superseded_by,
       received_at: r.received_at,
       sha256: r.sha256 ?? undefined,
@@ -711,6 +716,10 @@ export class Repo {
     return this.db
       .prepare("SELECT id, username, display_name, role, active, demo FROM staff_users ORDER BY id")
       .all() as StaffUser[];
+  }
+
+  setStaffUsername(id: number, username: string): void {
+    this.db.prepare("UPDATE staff_users SET username = ? WHERE id = ?").run(username, id);
   }
 
   setStaffPassword(id: number, passwordHash: string): void {
@@ -959,7 +968,7 @@ export class Repo {
   // finished / unfinished / pending are the three buckets staff think in;
   // awaiting_review inside pending is the classic "human queue".
 
-  stageCounts(): {
+  stageCounts(demo?: number): {
     finished: number;
     unfinished: number;
     pending: number;
@@ -972,7 +981,11 @@ export class Repo {
     completed: number;
     total: number;
   } {
-    const rows = this.db.prepare("SELECT lifecycle, COUNT(*) AS n FROM applicants GROUP BY lifecycle").all() as Array<{
+    const demoSql = demo === undefined ? "" : " WHERE demo = ?";
+    const demoParams: unknown[] = demo === undefined ? [] : [demo];
+    const rows = this.db
+      .prepare(`SELECT lifecycle, COUNT(*) AS n FROM applicants${demoSql} GROUP BY lifecycle`)
+      .all(...demoParams) as Array<{
       lifecycle: string;
       n: number;
     }>;
@@ -1007,7 +1020,7 @@ export class Repo {
       .get(applicantId) as { actor: string; at: string } | undefined;
   }
 
-  todayStats(): { emailsToday: number; docsToday: number; completedToday: number } {
+  todayStats(demo?: number): { emailsToday: number; docsToday: number; completedToday: number } {
     // date('now') is UTC — in UTC+3 the "today" counters would reset at 03:00
     // local. Compute THIS machine's local day boundaries instead.
     const start = new Date();
@@ -1015,16 +1028,20 @@ export class Repo {
     const end = new Date(start.getTime() + 24 * 3600_000);
     const lo = start.toISOString();
     const hi = end.toISOString();
-    const one = (sql: string) => (this.db.prepare(sql).get(lo, hi) as { n: number }).n;
+    const dp: unknown[] = demo === undefined ? [] : [demo];
+    const pred = demo === undefined ? "" : " AND a.demo = ?";
+    const one = (sql: string) => (this.db.prepare(sql).get(lo, hi, ...dp) as { n: number }).n;
     return {
-      emailsToday: one("SELECT COUNT(*) AS n FROM emails WHERE direction = 'in' AND at >= ? AND at < ?"),
-      docsToday: one("SELECT COUNT(*) AS n FROM documents WHERE received_at >= ? AND received_at < ?"),
-      completedToday: one("SELECT COUNT(*) AS n FROM status_history WHERE to_status = 'completed' AND at >= ? AND at < ?"),
+      emailsToday: one(`SELECT COUNT(*) AS n FROM emails e JOIN applicants a ON a.id = e.applicant_id WHERE e.direction = 'in' AND e.at >= ? AND e.at < ?${pred}`),
+      docsToday: one(`SELECT COUNT(*) AS n FROM documents d JOIN applicants a ON a.id = d.applicant_id WHERE d.received_at >= ? AND d.received_at < ?${pred}`),
+      completedToday: one(`SELECT COUNT(*) AS n FROM status_history h JOIN applicants a ON a.id = h.applicant_id WHERE h.to_status = 'completed' AND h.at >= ? AND h.at < ?${pred}`),
     };
   }
 
   /** The human work queue (feature 11): cases whose latest decision wasn't auto-resolved. */
-  queueView(): Array<ApplicantRow & { computed_status: string; reasoning: string; auto_sent: boolean; decided_at: string; flag_summary: string }> {
+  queueView(demo?: number): Array<ApplicantRow & { computed_status: string; reasoning: string; auto_sent: boolean; decided_at: string; flag_summary: string }> {
+    const demoSql = demo === undefined ? "" : " AND a.demo = ?";
+    const demoParams: unknown[] = demo === undefined ? [] : [demo];
     const rows = this.db
       .prepare(
         `SELECT a.*, d.computed_status, d.reasoning, d.auto_sent, d.timestamp AS decided_at
@@ -1039,12 +1056,12 @@ export class Repo {
              -- when a blocking flag is active or a draft is held for approval.
              OR EXISTS (SELECT 1 FROM flags f WHERE f.applicant_id = a.id AND f.active = 1 AND f.type != 'duplicate_submission')
              OR EXISTS (SELECT 1 FROM outbox o WHERE o.applicant_id = a.id AND o.mode = 'queued')
-           )
+           )${demoSql}
          ORDER BY
            CASE a.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
            d.id`
       )
-      .all() as any[];
+      .all(...demoParams) as any[];
     // Flags for the whole page in ONE query (was: one query per row — the
     // queue page and CSV export fired hundreds of statements).
     const flagMap = new Map<number, string>();
@@ -1071,6 +1088,10 @@ export class Repo {
   searchApplicants(opts: ApplicantSearchQuery): ApplicantRow[] {
     const where: string[] = [];
     const params: unknown[] = [];
+    if (opts.demo !== undefined) {
+      where.push("demo = ?");
+      params.push(opts.demo);
+    }
     if (opts.q) {
       // Phone matching: compare against the raw column, the digits-only form,
       // and the domestic form (leading 254 shown as 0) so "0700111" finds
@@ -1120,19 +1141,30 @@ export class Repo {
 
   // ── Dashboard analytics (feature 30) ─────────────────────────────────────
 
-  dashboardStats(): Record<string, number | string> {
+  dashboardStats(demo?: number): Record<string, number | string> {
+    // Realm scope: every applicant-derived count filters by the caller's demo
+    // flag so live admins never see seeded (mock) data and vice versa.
+    const pred = demo === undefined ? "" : " AND a.demo = ?";
+    const dp: unknown[] = demo === undefined ? [] : [demo];
     const one = (sql: string, p: unknown[] = []) => (this.db.prepare(sql).get(...p) as { n: number }).n;
-    const applications = one("SELECT COUNT(*) AS n FROM applicants");
-    const documents = one("SELECT COUNT(*) AS n FROM documents WHERE is_duplicate = 0");
-    const autoHandled = one("SELECT COUNT(*) AS n FROM decision_logs WHERE auto_sent = 1");
-    const humanReview = one("SELECT COUNT(*) AS n FROM applicants WHERE lifecycle = 'awaiting_review'");
-    const incomplete = one(
-      "SELECT COUNT(*) AS n FROM applicants WHERE lifecycle IN ('application_received','documents_received') AND triage = 'Red'"
+    const applications = one(`SELECT COUNT(*) AS n FROM applicants a WHERE 1=1${pred}`, dp);
+    const documents = one(
+      `SELECT COUNT(*) AS n FROM documents d JOIN applicants a ON a.id = d.applicant_id WHERE d.is_duplicate = 0${pred}`,
+      dp
     );
-    const completed = one("SELECT COUNT(*) AS n FROM applicants WHERE lifecycle = 'completed'");
+    const autoHandled = one(
+      `SELECT COUNT(*) AS n FROM decision_logs d JOIN applicants a ON a.id = d.applicant_id WHERE d.auto_sent = 1${pred}`,
+      dp
+    );
+    const humanReview = one(`SELECT COUNT(*) AS n FROM applicants a WHERE a.lifecycle = 'awaiting_review'${pred}`, dp);
+    const incomplete = one(
+      `SELECT COUNT(*) AS n FROM applicants a WHERE a.lifecycle IN ('application_received','documents_received') AND a.triage = 'Red'${pred}`,
+      dp
+    );
+    const completed = one(`SELECT COUNT(*) AS n FROM applicants a WHERE a.lifecycle = 'completed'${pred}`, dp);
     const overdue = one(
-      "SELECT COUNT(*) AS n FROM applicants WHERE sla_due_at IS NOT NULL AND sla_handled_at IS NULL AND sla_due_at < ? AND lifecycle NOT IN ('completed','verification')",
-      [new Date().toISOString()]
+      `SELECT COUNT(*) AS n FROM applicants a WHERE a.sla_due_at IS NOT NULL AND a.sla_handled_at IS NULL AND a.sla_due_at < ? AND a.lifecycle NOT IN ('completed','verification')${pred}`,
+      [new Date().toISOString(), ...dp]
     );
     // Avg time from email receipt → automated decision (minutes), last 7 days.
     // (Previously had no date filter and silently averaged all-time.)
@@ -1140,30 +1172,33 @@ export class Repo {
       .prepare(
         `SELECT AVG((julianday(d.timestamp) - julianday(e.at)) * 24 * 60) AS m
          FROM decision_logs d
+         JOIN applicants a ON a.id = d.applicant_id
          JOIN emails e ON e.message_id = d.triggering_email_id AND e.direction = 'in'
-         WHERE d.auto_sent = 1 AND d.timestamp > datetime('now', '-7 days')`
+         WHERE d.auto_sent = 1 AND d.timestamp > datetime('now', '-7 days')${pred}`
       )
-      .get() as { m: number | null };
+      .get(...dp) as { m: number | null };
     const avgResponseMin = avgRow?.m && avgRow.m > 0 ? Math.round(avgRow.m * 10) / 10 : 0;
     // Avg time from queue → first staff action (hours).
     const avgReview = this.db
       .prepare(
         `SELECT AVG((julianday(h.at) - julianday(d.timestamp)) * 24) AS h
          FROM status_history h
+         JOIN applicants a ON a.id = h.applicant_id
          JOIN (SELECT applicant_id, MAX(id) AS max_id FROM decision_logs WHERE auto_sent = 0 GROUP BY applicant_id) dl
            ON dl.applicant_id = h.applicant_id
          JOIN decision_logs d ON d.id = dl.max_id
-         WHERE h.actor <> 'system' AND h.at >= d.timestamp`
+         WHERE h.actor <> 'system' AND h.at >= d.timestamp${pred}`
       )
-      .get() as { h: number | null };
+      .get(...dp) as { h: number | null };
     const avgReviewHours = avgReview?.h && avgReview.h > 0 ? Math.round(avgReview.h * 10) / 10 : 0;
     return { applications, documents, autoHandled, humanReview, incomplete, completed, overdue, avgResponseMin, avgReviewHours };
   }
 
   // ── Export (feature 38) ──────────────────────────────────────────────────
 
-  allApplicants(): ApplicantRow[] {
-    return this.db.prepare("SELECT * FROM applicants ORDER BY id").all() as ApplicantRow[];
+  allApplicants(demo?: number): ApplicantRow[] {
+    if (demo === undefined) return this.db.prepare("SELECT * FROM applicants ORDER BY id").all() as ApplicantRow[];
+    return this.db.prepare("SELECT * FROM applicants WHERE demo = ? ORDER BY id").all(demo) as ApplicantRow[];
   }
 
   // ═══════════════════════════ v3 additions ═══════════════════════════════
@@ -1257,21 +1292,24 @@ export class Repo {
    *   outgoing reply on their assigned cases
    * - admissionsCompleted: distinct cases they moved to "completed"
    */
-  staffStats(): StaffStatsRow[] {
+  staffStats(demo?: number): StaffStatsRow[] {
     const staff = this.listStaff();
-    const qAssigned = this.db.prepare("SELECT COUNT(*) AS c FROM applicants WHERE assigned_to = ?");
+    const demoSql = demo === undefined ? "" : " AND a.demo = ?";
+    const dp: unknown[] = demo === undefined ? [] : [demo];
+    const qAssigned = this.db.prepare(`SELECT COUNT(*) AS c FROM applicants a WHERE a.assigned_to = ?${demoSql}`);
     const qReceived = this.db.prepare(
       `SELECT COUNT(*) AS c FROM emails e
        JOIN applicants a ON a.id = e.applicant_id
-       WHERE e.direction = 'in' AND a.assigned_to = ?`
+       WHERE e.direction = 'in' AND a.assigned_to = ?${demoSql}`
     );
     const qSent = this.db.prepare(
       `SELECT COUNT(*) AS c FROM audit_log
        WHERE actor = ? AND event IN ('email_sent_manual','human_override')`
     );
     const qCompleted = this.db.prepare(
-      `SELECT COUNT(DISTINCT applicant_id) AS c FROM status_history
-       WHERE actor = ? AND to_status = 'completed'`
+      `SELECT COUNT(DISTINCT h.applicant_id) AS c FROM status_history h
+       JOIN applicants a ON a.id = h.applicant_id
+       WHERE h.actor = ? AND h.to_status = 'completed'${demoSql}`
     );
     const qAvg = this.db.prepare(
       `SELECT AVG((julianday(o.at) - julianday(i.at)) * 1440.0) AS mins
@@ -1281,14 +1319,14 @@ export class Repo {
          AND o.at = (SELECT MIN(o2.at) FROM emails o2
                      WHERE o2.applicant_id = i.applicant_id
                        AND o2.direction = 'out' AND o2.at > i.at)
-       WHERE i.direction = 'in' AND a.assigned_to = ?`
+       WHERE i.direction = 'in' AND a.assigned_to = ?${demoSql}`
     );
     return staff.map((s) => {
-      const assigned = (qAssigned.get(s.id) as { c: number }).c;
-      const received = (qReceived.get(s.id) as { c: number }).c;
+      const assigned = (qAssigned.get(s.id, ...dp) as { c: number }).c;
+      const received = (qReceived.get(s.id, ...dp) as { c: number }).c;
       const sent = (qSent.get(s.username) as { c: number }).c;
-      const completed = (qCompleted.get(s.username) as { c: number }).c;
-      const avg = qAvg.get(s.id) as { mins: number | null };
+      const completed = (qCompleted.get(s.username, ...dp) as { c: number }).c;
+      const avg = qAvg.get(s.id, ...dp) as { mins: number | null };
       return {
         id: s.id,
         username: s.username,
@@ -1467,17 +1505,24 @@ export class Repo {
       .all() as never[];
   }
 
-  accuracyStats(): Record<string, number> {
-    const one = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
+  accuracyStats(demo?: number): Record<string, number> {
+    const dp: unknown[] = demo === undefined ? [] : [demo];
+    const pred = demo === undefined ? "" : " AND a.demo = ?";
+    const one = (sql: string) => (this.db.prepare(sql).get(...dp) as { n: number }).n;
     return {
-      greenCases: one("SELECT COUNT(*) AS n FROM decision_logs WHERE computed_status = 'Green'"),
-      watcherCatches: one("SELECT COUNT(*) AS n FROM audit_log WHERE event = 'watcher_downgrade'"),
-      humanOverrides: one("SELECT COUNT(*) AS n FROM audit_log WHERE event = 'human_override'"),
-      sendErrors: one("SELECT COUNT(*) AS n FROM audit_log WHERE event = 'send_failed'"),
-      autoSends: one("SELECT COUNT(*) AS n FROM emails WHERE direction = 'out' AND auto = 1"),
-      humanSends: one("SELECT COUNT(*) AS n FROM emails WHERE direction = 'out' AND auto = 0"),
-      reopened: one("SELECT COUNT(*) AS n FROM audit_log WHERE event = 'case_reopened'"),
+      greenCases: one(`SELECT COUNT(*) AS n FROM decision_logs d JOIN applicants a ON a.id = d.applicant_id WHERE d.computed_status = 'Green'${pred}`),
+      watcherCatches: one(`SELECT COUNT(*) AS n FROM audit_log l JOIN applicants a ON a.id = l.applicant_id WHERE l.event = 'watcher_downgrade'${pred}`),
+      humanOverrides: one(`SELECT COUNT(*) AS n FROM audit_log l JOIN applicants a ON a.id = l.applicant_id WHERE l.event = 'human_override'${pred}`),
+      sendErrors: one(`SELECT COUNT(*) AS n FROM audit_log l JOIN applicants a ON a.id = l.applicant_id WHERE l.event = 'send_failed'${pred}`),
+      autoSends: one(`SELECT COUNT(*) AS n FROM emails e JOIN applicants a ON a.id = e.applicant_id WHERE e.direction = 'out' AND e.auto = 1${pred}`),
+      humanSends: one(`SELECT COUNT(*) AS n FROM emails e JOIN applicants a ON a.id = e.applicant_id WHERE e.direction = 'out' AND e.auto = 0${pred}`),
+      reopened: one(`SELECT COUNT(*) AS n FROM audit_log l JOIN applicants a ON a.id = l.applicant_id WHERE l.event = 'case_reopened'${pred}`),
     };
+  }
+
+  /** Mark every applicant as part of the seeded demo realm (used by `npm run demo`). */
+  markDemoRealm(): void {
+    this.db.exec("UPDATE applicants SET demo = 1");
   }
 
   // ── Data retention (feature 38) ──────────────────────────────────────────

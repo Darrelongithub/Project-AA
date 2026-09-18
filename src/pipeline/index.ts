@@ -29,7 +29,7 @@ import type {
 } from "../types";
 import { recordDocuments } from "../matching";
 import { resolveIdentity } from "../matching/identity";
-import { extractAttachment } from "../extraction/extract";
+import { extractAttachment, MIN_AUTO_PASS_SCORE } from "../extraction/extract";
 import { checkQualificationSystems, decide, docLabel, normalizeName } from "../rules";
 import { gate } from "../gate";
 import { categorizeEmail, priorityForCategory } from "../categorize";
@@ -158,6 +158,7 @@ export async function processEmail(
         extracted_text: res.text,
         extracted_fields: res.fields,
         confidence: res.confidence,
+        confidence_score: res.confidence_score,
         received_at: email.receivedAt,
         sha256: res.sha256,
         is_duplicate: true,
@@ -319,7 +320,11 @@ export async function processEmail(
   const activeBlockingFlags = repo
     .activeFlags(applicant.id)
     .filter((f) => f.type !== "duplicate_submission");
-  const allDocsHigh = activeDocs.every((d) => d.confidence === "high");
+  // Numeric readability gate: every document must reach the auto-pass score.
+  // (Legacy DBs without the score fall back to the tier — high ⇒ pass.)
+  const allDocsHigh = activeDocs.every(
+    (d) => (d.confidence_score || (d.confidence === "high" ? 100 : 0)) >= MIN_AUTO_PASS_SCORE
+  );
   const cleanMissingCase =
     finalStatus === "Red" &&
     rulesOut.missing.length > 0 &&

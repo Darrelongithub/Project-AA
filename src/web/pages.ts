@@ -11,7 +11,7 @@ import { packManifest } from "../pack";
 import { verifyPassword } from "../util/password";
 import {
   avatar, categoryBadge, confidenceBadge, crest, esc, flagLabel, flowLine, fmtDate, fmtTime, gaugeRow,
-  heroClock, layout, lifecycleBadge, lifecycleStepper, priorityBadge, slaText, triageBadge, type Theme,
+  heroClock, layout, lifecycleBadge, lifecycleStepper, priorityBadge, readabilityScore, slaText, triageBadge, type Theme,
 } from "./views";
 
 interface Ctx {
@@ -100,14 +100,16 @@ function greeting(): string {
 
 function adminDashboard(c: Ctx): string {
   const { repo } = c;
-  const s = repo.dashboardStats();
-  const stage = repo.stageCounts();
+  const realm = c.user.demo; // live admins see only live data; demo accounts only mock data.
+  const s = repo.dashboardStats(realm);
+  const stage = repo.stageCounts(realm);
   const audit = repo.recentAudit(12);
-  const team = repo.staffStats();
+  const team = repo.staffStats(realm);
+  const staff = repo.listStaff().filter((m) => m.active);
   const alerts = repo.notificationsFor(c.user.id, 6);
   const programmes = repo.listProgrammes();
   const rules = repo.listRules();
-  const all = repo.allApplicants();
+  const all = repo.allApplicants(realm);
   const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
   const globalMode = repo.getSetting("automation_mode", "auto");
@@ -115,6 +117,15 @@ function adminDashboard(c: Ctx): string {
   const applications = Number(s.applications);
   const completed = Number(s.completed);
   const completion = applications > 0 ? Math.round((completed / applications) * 100) : null;
+
+  // Inline owner picker — assigning a course no longer needs a trip to Configuration.
+  const inlineAssign = (p: { code: string }) =>
+    `<form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <input type="hidden" name="programme" value="${esc(p.code)}">
+      <select name="owner" style="width:auto;min-width:150px"><option value="">Pick a staff member…</option>${staff.map((m) => `<option value="${m.id}">${esc(m.display_name)} (${capFirst(m.role)})</option>`).join("")}</select>
+      <button class="btn small ghost">Assign</button>
+    </form>`;
 
   const courseRows = groupBySchool(programmes)
     .map(([school, rows]) => `<tr class="schoolrow"><td colspan="4">${esc(school)}</td></tr>` + rows
@@ -129,7 +140,7 @@ function adminDashboard(c: Ctx): string {
         const n = all.filter((a) => a.programme === p.code).length;
         return `<tr>
           <td><b>${esc(p.code)}</b> <span class="muted small">${esc(p.name)}</span></td>
-          <td>${p.owner_name ? esc(p.owner_name) : `<span class="muted">unassigned · <a href="/config#courses">assign</a></span>`}</td>
+          <td>${p.owner_name ? `${esc(p.owner_name)} <a class="small" href="/config#courses">change</a>` : inlineAssign(p)}</td>
           <td class="small">${reqText}</td>
           <td>${n}</td>
         </tr>`;
@@ -177,7 +188,7 @@ function adminDashboard(c: Ctx): string {
     `Overview — ${c.institution}`,
     "dashboard",
     `
-<div class="hero">
+<div class="hero hero-center">
   <div>
     <div class="kicker">Administration</div>
     <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}.</h1>
@@ -275,11 +286,12 @@ export function dashboardPage(c: Ctx): string {
 
 function officerDashboard(c: Ctx): string {
   const { repo } = c;
-  const s = repo.dashboardStats();
-  const stage = repo.stageCounts();
-  const today = repo.todayStats();
-  const accuracy = repo.accuracyStats();
-  const queue = repo.queueView();
+  const realm = c.user.demo;
+  const s = repo.dashboardStats(realm);
+  const stage = repo.stageCounts(realm);
+  const today = repo.todayStats(realm);
+  const accuracy = repo.accuracyStats(realm);
+  const queue = repo.queueView(realm);
   const unanswered = repo.unansweredCases();
   const target = Number(repo.getSetting("unanswered_target_hours", "4"));
   const categories = repo.categoryCounts();
@@ -450,7 +462,7 @@ function officerDashboard(c: Ctx): string {
 // ── Queue (feature 11) ─────────────────────────────────────────────────────
 
 export function queuePage(c: Ctx, filter: string): string {
-  let rows = c.repo.queueView();
+  let rows = c.repo.queueView(c.user.demo);
   if (filter === "urgent") rows = rows.filter((r) => r.priority === "urgent");
   if (filter === "overdue") rows = rows.filter((r) => r.sla_due_at && !r.sla_handled_at && r.sla_due_at < new Date().toISOString());
 
@@ -507,11 +519,12 @@ const STAGE_TABS: Array<{ key: string; label: string }> = [
 
 export function admissionsPage(c: Ctx, stage: string): string {
   const { repo } = c;
-  const counts = repo.stageCounts();
+  const realm = c.user.demo;
+  const counts = repo.stageCounts(realm);
   const start = new Date(); start.setHours(0, 0, 0, 0);
   // ONE query for today's enquiry applicants — never one per applicant.
   const enquiryIds = repo.enquiryApplicantIdsToday(start.toISOString());
-  const all = repo.allApplicants();
+  const all = repo.allApplicants(realm);
   const enquiriesToday = all.filter((a) => enquiryIds.has(a.id));
 
   const staffById = new Map(repo.listStaff().map((m) => [m.id, m.display_name]));
@@ -598,6 +611,7 @@ export function applicantsPage(
     filter: (q.filter as never) || "all",
     programme: q.programme || undefined,
     intake: q.intake || undefined,
+    demo: c.user.demo,
   });
   const programmes = repo.listProgrammes();
   const intakes = repo.listIntakes();
@@ -645,7 +659,7 @@ ${(() => {
       return `/applicants${qs ? `?${qs}` : ""}`;
     };
     const count = (f: string): number =>
-      repo.searchApplicants({ ...q, filter: f === "all" ? undefined : (f as NonNullable<ApplicantSearchQuery["filter"]>), limit: 100000 }).length;
+      repo.searchApplicants({ ...q, filter: f === "all" ? undefined : (f as NonNullable<ApplicantSearchQuery["filter"]>), limit: 100000, demo: c.user.demo }).length;
     return `<div class="tabs">${filters
       .map(([f, label]) => `<a href="${esc(link(f))}" class="${current === f ? "on" : ""}">${label}<span class="cnt">${count(f)}</span></a>`)
       .join("")}</div>`;
@@ -769,7 +783,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
       if (r.meanGrade) gradeBits.push(`min ${esc(r.meanGrade)}`);
       if (r.subjectGrades) gradeBits.push(esc(r.subjectGrades));
       return doc
-        ? `<div><span class="ok">✓</span> <span>${esc(docLabel(r.document_type))} <span class="muted small">(${esc(doc.extraction_method)} · ${doc.confidence})</span>${gradeBits.length ? `<br><span class="muted small" style="margin-left:23px">rule: ${gradeBits.join(" · ")}</span>` : ""}</span></div>`
+        ? `<div><span class="ok">✓</span> <span>${esc(docLabel(r.document_type))} <span class="muted small">(${doc.confidence_score ?? 0}% readable · ${esc(doc.extraction_method)})</span>${gradeBits.length ? `<br><span class="muted small" style="margin-left:23px">rule: ${gradeBits.join(" · ")}</span>` : ""}</span></div>`
         : `<div><span class="no">✗</span> <span>${esc(docLabel(r.document_type))}${gradeBits.length ? ` <span class="muted small">— rule: ${gradeBits.join(" · ")}</span>` : ""}</span></div>`;
     })
     .join("");
@@ -789,7 +803,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
         <td class="mono small">#${d.id}</td>
         <td>${esc(docLabel(d.document_type))}<br><span class="muted small">${fields || "no fields extracted"}</span></td>
         <td>${status}</td>
-        <td>${confidenceBadge(d.confidence)}<br><span class="muted small">${esc(d.extraction_method)}</span></td>
+        <td>${readabilityScore(d.confidence_score)}<br><span class="muted small">${esc(d.extraction_method)} · ${d.confidence}</span></td>
         <td class="small">${esc(fmtDate(d.received_at))}<br><span class="muted">email ${esc(d.source_email_id)}</span></td>
         <td><details class="excerpt"><summary class="small">text</summary><pre>${esc(d.extracted_text.slice(0, 1200))}</pre></details></td>
       </tr>`;
@@ -906,7 +920,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
 
     <div class="card">
       <h2>Documents (${allDocs.length} received, ${activeDocs.length} active)</h2>
-      <table><tr><th>#</th><th>Type &amp; extracted fields</th><th>State</th><th>Confidence</th><th>Received</th><th></th></tr>
+      <table><tr><th>#</th><th>Type &amp; extracted fields</th><th>State</th><th>PDF readability</th><th>Received</th><th></th></tr>
       ${docRows || `<tr><td colspan="6" class="muted">No documents received yet.</td></tr>`}</table>
     </div>
 
@@ -1130,20 +1144,14 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
   <p class="small muted">Note: with global mode set to draft, per-category switches take effect once global returns to auto.</p>
 </div>
 
-<div class="card" id="targets">
-  <h2>Response targets &amp; retention</h2>
+<div class="card" id="letters">
+  <h2>Letters &amp; identity</h2>
+  <p class="small muted" style="margin-top:-6px">Details that appear on generated letters and outgoing mail. Response timing is fully automated — replies go out the moment a decision is made, so there are no target hours or retention dials to tune.</p>
   <form method="post" action="/settings/general">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
       ${settingInput("ref_prefix", "Reference prefix")}
-      ${settingInput("sla_target_hours", "Response target (hours)")}
-      ${settingInput("escalation_hours", "Escalate after (hours)")}
       ${settingInput("from_name", "From name")}
-    </div>
-    <div class="formrow">
-      ${settingInput("unanswered_target_hours", "Unanswered-email target (hours)")}
-      ${settingInput("followup_ladder_days", "Follow-up ladder (days, e.g. 3,7,10)")}
-      ${settingInput("retention_days", "Retention of completed cases (days)")}
     </div>
     <div class="formrow">
       ${settingInput("reg_date", "Registration date (admission letter)")}
@@ -1155,6 +1163,62 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
   );
 }
 
+// ── Account (self-service settings, available to every signed-in user) ─────
+
+export function accountPage(c: Ctx, msg?: string): string {
+  const u = c.user;
+  const theme: Theme = c.theme === "dark" ? "dark" : "light";
+  return head(
+    c,
+    "Account",
+    "account",
+    `
+<h1>Account settings</h1>
+<div class="sub">Your sign-in and appearance. These apply only to your account.</div>
+${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(msg)}</div>` : ""}
+
+<div class="card" id="profile">
+  <h2>Username</h2>
+  <form method="post" action="/account/username" class="formrow" style="align-items:end">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div><label>Username</label><input name="username" value="${esc(u.username)}" required minlength="3" maxlength="40" autocomplete="username"></div>
+    <div style="flex:0"><button class="btn">Update username</button></div>
+  </form>
+  <p class="small muted" style="margin-top:6px">This is the name you sign in with.</p>
+</div>
+
+<div class="card" id="password">
+  <h2>Password</h2>
+  <form method="post" action="/account/password">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      <div><label>Current password</label><input type="password" name="current" required autocomplete="current-password"></div>
+      <div><label>New password</label><input type="password" name="next" required minlength="8" autocomplete="new-password"></div>
+      <div><label>Confirm new password</label><input type="password" name="confirm" required minlength="8" autocomplete="new-password"></div>
+    </div>
+    <p><button class="btn">Change password</button></p>
+  </form>
+</div>
+
+<div class="card" id="appearance">
+  <h2>Appearance</h2>
+  <p class="small muted" style="margin-top:-6px">Choose how the console looks. You can also flip it at any time with the sun/moon button in the top bar.</p>
+  <form method="post" action="/account/theme" class="formrow" style="align-items:end">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div><label>Theme</label><select name="theme">
+      <option value="light" ${theme === "light" ? "selected" : ""}>Light</option>
+      <option value="dark" ${theme === "dark" ? "selected" : ""}>Dark</option>
+    </select></div>
+    <div style="flex:0"><button class="btn">Apply theme</button></div>
+  </form>
+</div>
+
+<div class="card" id="role">
+  <h2>Your role</h2>
+  <p class="small">You are signed in as <b>${esc(u.display_name)}</b> (${esc(capFirst(u.role))}).${u.demo ? " This is a demo account that works with the sample dataset." : ""} Some areas — such as Configuration, Settings and Staff management — are only available to administrators and managers.</p>
+</div>`
+  );
+}
 
 // ── Entry requirements editor (structured, per qualification system) ──────
 
@@ -1303,7 +1367,7 @@ function documentsPackCard(c: Ctx): string {
 </script>`;
 }
 
-export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, reqsTarget?: string): string {
+export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
   const rules = repo.listRules();
@@ -1360,20 +1424,35 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, re
   const gRefresh = settings["gmail_refresh_token"] ?? "";
   const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
 
-  return head(
-    c,
-    "Configuration",
-    "config",
-    `
-<h1>Configuration</h1>
-<div class="sub">Courses, requirements, templates and integrations — changes apply to newly processed email immediately.</div>
-${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+  const tab = tabChoice === "replies" ? "replies" : "courses";
+  const tabBar = `<div class="tabs" style="margin:0 0 20px">
+    <a href="/config?tab=courses" class="${tab === "courses" ? "on" : ""}">Course configuration</a>
+    <a href="/config?tab=replies" class="${tab === "replies" ? "on" : ""}">Reply configuration</a>
+  </div>`;
 
+  const intakesCard = `<div class="card" id="intakes">
+  <h2>Intake deadlines</h2>
+  <p class="small muted" style="margin-top:-6px">Submissions arriving after the deadline are flagged <b>late_submission</b> for a human — the system never auto-rejects on deadline alone.</p>
+  <table><tr><th>Intake</th><th>Deadline</th><th></th></tr>
+    ${c.repo.listIntakeRows().map((i) => `<tr>
+      <td>${esc(i.name)}</td>
+      <td><form method="post" action="/settings/intake-deadline" style="display:flex;gap:6px;margin:0">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <input type="hidden" name="name" value="${esc(i.name)}">
+        <input type="date" name="deadline" value="${esc(i.deadline ? i.deadline.slice(0, 10) : "")}" style="width:auto">
+        <button class="btn small ghost">Save</button>
+      </form></td>
+      <td class="small muted">${i.deadline ? "" : "no deadline set"}</td>
+    </tr>`).join("")}
+  </table>
+</div>`;
+
+  const courseHtml = `
 <div class="card nopad" id="courses">
   <div class="card-head"><h2>Courses &amp; ownership</h2></div>
-  <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone. Assign the responsible officer per course — they appear on the administration overview.</p>
+  <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone — assign the responsible officer here or straight from the administration overview. The notes column is free-text reference; the <b>enforced</b> subject-and-grade rules for each course live in the entry-requirements editor below.</p>
   ${programmes.length
-    ? `<table><tr><th>Programme</th><th>Entry requirements (editable — they change over time)</th><th>Handled by</th></tr>${courseRows}</table>`
+    ? `<table><tr><th>Programme</th><th>Course details &amp; reference notes</th><th>Handled by</th></tr>${courseRows}</table>`
     : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
   <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
     <h2 id="entryreqs">Entry requirements by qualification</h2>
@@ -1391,16 +1470,21 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
       <div style="flex:2"><label>&nbsp;</label><span class="small muted">Grade checks live in the entry-requirements editor above — this table only controls which documents must be present.</span></div>
       <div style="flex:0"><label>&nbsp;</label><button class="btn">Add rule</button></div>
     </form>
+    <h2 style="margin-top:26px" id="addcourse">Add a course or intake</h2>
+    <p class="small muted" style="margin-top:-6px">Create a new programme — it appears immediately in the picker above, in course ownership and across the admissions pipeline — or add another intake for existing courses.</p>
     <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
       <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
       <div><label>New programme code</label><input type="text" name="prog_code" placeholder="e.g. MED"></div>
       <div style="flex:2"><label>Programme name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
       <div><label>New intake</label><input type="text" name="intake" placeholder="e.g. May 2027"></div>
-      <div style="flex:0"><label>&nbsp;</label><button class="btn ghost">Add</button></div>
+      <div style="flex:0"><label>&nbsp;</label><button class="btn">Add course</button></div>
     </form>
   </div>
 </div>
 
+${intakesCard}`;
+
+  const replyHtml = `
 ${documentsPackCard(c)}
 
 <div class="card" id="gemini">
@@ -1446,27 +1530,11 @@ ${documentsPackCard(c)}
   <p class="small muted">Receiving works both ways: staff replies and automated replies are recorded on the case, and anything the applicant sends lands here within a minute of arriving in the mailbox (or immediately after <b>Sync now</b>).</p>
 </div>
 
-<div class="card" id="intakes">
-  <h2>Intake deadlines</h2>
-  <p class="small muted" style="margin-top:-6px">Submissions arriving after the deadline are flagged <b>late_submission</b> for a human — the system never auto-rejects on deadline alone.</p>
-  <table><tr><th>Intake</th><th>Deadline</th><th></th></tr>
-    ${c.repo.listIntakeRows().map((i) => `<tr>
-      <td>${esc(i.name)}</td>
-      <td><form method="post" action="/settings/intake-deadline" style="display:flex;gap:6px;margin:0">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-        <input type="hidden" name="name" value="${esc(i.name)}">
-        <input type="date" name="deadline" value="${esc(i.deadline ? i.deadline.slice(0, 10) : "")}" style="width:auto">
-        <button class="btn small ghost">Save</button>
-      </form></td>
-      <td class="small muted">${i.deadline ? "" : "no deadline set"}</td>
-    </tr>`).join("")}
-  </table>
-</div>
-
 <div class="card" id="templates">
   <h2>Email templates</h2>
   <p class="small muted" style="margin-top:-6px">Placeholders: <span class="mono">{ref} {name} {first_name} {missing_docs} {missing_docs_section} {checklist} {status} {institution} {programme} {reg_date} {orientation_dates}</span></p>
   <form method="get" action="/config" class="formrow">
+    <input type="hidden" name="tab" value="replies">
     <div style="flex:2"><label>Template</label><select name="template" onchange="this.form.submit()">${templates
       .map((t) => `<option value="${esc(t.key)}" ${selectedTemplate === t.key ? "selected" : ""}>${esc(t.name)} (${esc(t.key)})</option>`)
       .join("")}</select></div>
@@ -1514,7 +1582,19 @@ ${documentsPackCard(c)}
     <a class="btn ghost small" href="/export/queue.csv">Review queue</a>
     <a class="btn ghost small" href="/export/audit.csv">Audit log</a>
   </p>
-</div>`
+</div>`;
+
+  return head(
+    c,
+    "Configuration",
+    "config",
+    `
+<h1>Configuration</h1>
+<div class="sub">Courses, requirements, deadlines and reply behaviour — changes apply to newly processed email immediately.</div>
+${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+${tabBar}
+${tab === "courses" ? courseHtml : replyHtml}
+`
   );
 }
 
@@ -1549,7 +1629,7 @@ export function staffPage(c: Ctx, flash?: string): string {
     return Boolean(full && !full.demo && verifyPassword(known, full.password_hash));
   };
 
-  const stats = repo.staffStats();
+  const stats = repo.staffStats(c.user.demo);
   const totals = stats.reduce(
     (acc, r) => ({ received: acc.received + r.emailsReceived, sent: acc.sent + r.emailsSent, completed: acc.completed + r.admissionsCompleted }),
     { received: 0, sent: 0, completed: 0 }

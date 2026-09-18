@@ -25,6 +25,28 @@ export interface ExtractDeps {
   ocr?: (image: Buffer, ext?: "png" | "jpg") => Promise<string | null>;
 }
 
+/**
+ * The numeric PDF readability gate. A document must score at or above this to
+ * count toward an automatic (no-human) pass; below it the case stays with a
+ * reviewer. The score is anchored to the confidence tier so the two can never
+ * disagree: high ⇒ ≥75, medium ⇒ 55–74, low ⇒ ≤45.
+ */
+export const MIN_AUTO_PASS_SCORE = 75;
+
+export function readabilityScore(confidence: Confidence, text: string): number {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return confidence === "high" ? 85 : confidence === "medium" ? 60 : 20;
+  const q = assessTextQuality(text);
+  const lengthSat = Math.min(1, q.length / 400);
+  const vocabSat = Math.min(1, q.distinctWords / 25);
+  let score = Math.round(100 * (0.5 * q.letterRatio + 0.3 * lengthSat + 0.2 * vocabSat));
+  if (q.maxRepeatRun > 20) score = Math.min(score, 40);
+  if (confidence === "high") score = Math.max(score, 85);
+  else if (confidence === "medium") score = Math.min(Math.max(score, 55), 74);
+  else score = Math.min(score, 45);
+  return Math.max(5, Math.min(100, score));
+}
+
 function finish(
   filename: string,
   text: string,
@@ -41,6 +63,7 @@ function finish(
     fields,
     // An unrecognised document can never be high-confidence.
     confidence: document_type === "unknown" ? "low" : confidence,
+    confidence_score: readabilityScore(document_type === "unknown" ? "low" : confidence, text),
   };
 }
 
@@ -71,6 +94,7 @@ export async function extractAttachment(
       text: "",
       fields: {},
       confidence: "low",
+      confidence_score: 15,
       sha256,
     };
   }
@@ -132,6 +156,7 @@ export async function extractAttachment(
       text: v.text || "",
       fields,
       confidence,
+      confidence_score: readabilityScore(confidence, v.text || ""),
       sha256,
     };
   }
@@ -147,6 +172,7 @@ export async function extractAttachment(
     text: "",
     fields: {},
     confidence: "low",
+    confidence_score: 15,
     sha256,
   };
 }

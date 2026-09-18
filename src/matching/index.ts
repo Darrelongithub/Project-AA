@@ -47,6 +47,7 @@ export function recordDocuments(
       extracted_text: r.text,
       extracted_fields: r.fields,
       confidence: r.confidence,
+      confidence_score: r.confidence_score,
       received_at: email.receivedAt,
       sha256: r.sha256,
     });
