@@ -33,7 +33,7 @@ import { extractAttachment } from "../extraction/extract";
 import { checkQualificationSystems, decide, docLabel, normalizeName } from "../rules";
 import { gate } from "../gate";
 import { categorizeEmail, priorityForCategory } from "../categorize";
-import { extractPhone, inferIntake, inferProgramme } from "../enrich";
+import { extractPhone, inferIntake, inferProgramme, inferTransfer } from "../enrich";
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
 import { INSTITUTION, emailBanner } from "../branding";
@@ -186,7 +186,7 @@ export async function processEmail(
   // ── Enrich programme/intake from email + document text (feature 2) ──────
   {
     const current = repo.getApplicant(applicant.id)!;
-    const patch: { programme?: string; intake?: string; full_name?: string } = {};
+    const patch: { programme?: string; intake?: string; full_name?: string; transfer?: number } = {};
 
     // Prefer the name printed on official documents over the email From name.
     const docName = activeDocs
@@ -212,6 +212,9 @@ export async function processEmail(
         const i = inferIntake(corpus, intakes);
         if (i) patch.intake = i;
       }
+      // Transfer applicants (credit from another institution) must also
+      // submit the credit transfer form — detected from their own words.
+      if (!current.transfer && inferTransfer(corpus)) patch.transfer = 1;
     }
     // Course routing: once the programme is known, the case lands with that
     // course's assigned officer — automatically, and only when the case is

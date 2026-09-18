@@ -22,7 +22,7 @@ export interface PackSlot {
   key: string;
   file: string;
   pretty: string;
-  pack: "application" | "admission";
+  pack: "application" | "admission" | "transfer";
   purpose: string;
 }
 
@@ -36,7 +36,15 @@ export const PACK_SLOTS: PackSlot[] = [
   { key: "fee-structure-2026", file: "fee-structure-2026.pdf", pretty: "Riara University Fee Structure 2026.pdf", pack: "admission", purpose: "Admission pack — fee structure" },
   { key: "sponsorship-form", file: "sponsorship-form.pdf", pretty: "RU Sponsorship Form.pdf", pack: "admission", purpose: "Admission pack — sponsorship" },
   { key: "orientation-programme-2026", file: "orientation-programme-2026.pdf", pretty: "September 2026 Orientation Programmes.pdf", pack: "admission", purpose: "Admission pack — orientation" },
+  { key: "credit-transfer-form", file: "credit-transfer-form.pdf", pretty: "Riara University Credit Transfer Form.pdf", pack: "transfer", purpose: "For applicants transferring credit from another institution" },
 ];
+
+/** Sent to applicants who are transferring with prior credit. */
+export function creditTransferPack(): PackFile[] {
+  return [
+    read("credit-transfer-form.pdf", "Riara University Credit Transfer Form.pdf"),
+  ].filter((f): f is PackFile => f !== null);
+}
 
 export const PACK_DIR = path.join(process.cwd(), "data", "pack");
 

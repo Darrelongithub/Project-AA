@@ -30,7 +30,7 @@ import type { PipelineContext as PCtx } from "../pipeline/adapters";
 import { log } from "../util/log";
 import { hashPassword } from "../util/password";
 import { INSTITUTION, emailBanner } from "../branding";
-import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS } from "../pack";
+import { admissionPack, applicationPack, creditTransferPack, PACK_DIR, PACK_SLOTS } from "../pack";
 import { EXAM_SYSTEMS, SUBJECT_CATALOG } from "../config";
 import type { CourseLevel, SystemBlock } from "../types";
 import * as fs from "fs";

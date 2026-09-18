@@ -332,6 +332,9 @@ function migrate(db: Database.Database): void {
   // Structured entry requirements (per qualification system) + their freeze.
   addColumn("applicants", "requirements_structured", "TEXT");
   addColumn("programmes", "level", "TEXT NOT NULL DEFAULT 'degree'");
+  // Transfer applicants (credit from another institution) must also submit
+  // the credit transfer form.
+  addColumn("applicants", "transfer", "INTEGER NOT NULL DEFAULT 0");
   // Migrate any legacy min-points rules into a best-effort grade equivalent
   // so old databases keep meaningful rules (points → the KCSE grade ladder).
   try {

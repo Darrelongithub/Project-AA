@@ -967,6 +967,11 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
           <input type="hidden" name="kind" value="admission">
           <button class="btn">Send admission pack</button>
         </form>
+        <form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the credit transfer form to this applicant?')" style="margin:0">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          <input type="hidden" name="kind" value="transfer">
+          <button class="btn ghost">Send credit transfer form</button>
+        </form>
       </div>
     </div>` : ""}
 
@@ -1270,6 +1275,9 @@ function documentsPackCard(c: Ctx): string {
     <table><tr><th>Document</th><th>Used for</th><th>Size</th><th></th><th>Replace (PDF)</th></tr>${rows(app)}</table>
     <h3 style="margin-top:18px">Admission pack</h3>
     <table><tr><th>Document</th><th>Used for</th><th>Size</th><th></th><th>Replace (PDF)</th></tr>${rows(adm)}</table>
+    <h3 style="margin-top:18px">Transfer applicants</h3>
+    <p class="small muted" style="margin-top:-4px">Applicants transferring credit from another institution must return this form with their file; it is required on their checklist automatically, and staff can send it from any case.</p>
+    <table><tr><th>Document</th><th>Used for</th><th>Size</th><th></th><th>Replace (PDF)</th></tr>${rows(manifest.filter((m) => m.pack === "transfer"))}</table>
   </div>
 </div>
 <script>

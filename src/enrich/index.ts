@@ -68,6 +68,14 @@ export function inferProgramme(
   return null;
 }
 
+/** Transfer applicants mention credit transfer / exemptions from another
+ * institution. Conservative on purpose — a stray "transfer" (bank transfer,
+ * fee transfer) must not flip an applicant into the transfer track. */
+export function inferTransfer(text: string): boolean {
+  if (!text) return false;
+  return /credit\s+transfer|transfer\s+(?:of\s+)?(?:my\s+)?credits?|transferring\s+(?:from|to|into)|transfer\s+(?:application|student|entry)|course\s+exemption|exempt(?:ions?)?\s+(?:from|for)|prior\s+credits?\b/i.test(text);
+}
+
 /** Rough intake inference from phrases like "september intake"/"january 2027". */
 export function inferIntake(text: string, intakes: string[]): string | null {
   if (!text) return null;

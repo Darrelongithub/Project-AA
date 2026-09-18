@@ -60,6 +60,7 @@ export interface DocSpec {
   subsidiaries?: number;
   diplomaTitle?: string;
   degreeTitle?: string;
+  previousInstitution?: string;
   extraLines?: string[];
 }
 
@@ -175,6 +176,17 @@ export function docLines(type: string, spec: DocSpec): string[] {
         `MEAN GRADE: ${spec.meanGrade ?? "B"}`,
         `YEAR: ${spec.year ?? "2017"}`,
         "INDEX NO: 10438211",
+        ...(spec.extraLines ?? []),
+      ];
+    case "credit_transfer_form":
+      return [
+        "RIARA UNIVERSITY — OFFICE OF ADMISSIONS",
+        "CREDIT TRANSFER APPLICATION FORM",
+        "",
+        `NAME OF APPLICANT: ${spec.name}`,
+        `PREVIOUS INSTITUTION: ${spec.previousInstitution ?? "KENYATTA UNIVERSITY"}`,
+        `PROGRAMME APPLIED FOR: ${spec.programme ?? "BACHELOR OF BUSINESS ADMINISTRATION"}`,
+        `YEAR OF ENTRY: ${year}`,
         ...(spec.extraLines ?? []),
       ];
     case "id":

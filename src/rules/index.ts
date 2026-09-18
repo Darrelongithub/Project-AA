@@ -296,6 +296,7 @@ const DOC_LABELS: Record<DocType, string> = {
   kcpe_cert: "KCPE Certificate",
   birth_cert: "Birth Certificate",
   application_form: "Application Form",
+  credit_transfer_form: "Credit Transfer Form",
   unknown: "Unknown document",
 };
 

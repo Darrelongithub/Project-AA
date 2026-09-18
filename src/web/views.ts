@@ -814,7 +814,7 @@ ${opts.content}
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" type="image/png" href="/assets/favicon?v=2">
+<link rel="icon" type="image/png" href="/assets/favicon?v=3">
 ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
 <title>${esc(opts.title)}</title>
 <style>${CSS}</style>

@@ -13,6 +13,7 @@ export type DocType =
   | "kcpe_cert"
   | "birth_cert"
   | "application_form"
+  | "credit_transfer_form"
   | "unknown";
 
 export const DOC_TYPES: DocType[] = [
@@ -21,6 +22,7 @@ export const DOC_TYPES: DocType[] = [
   "kcpe_cert",
   "birth_cert",
   "application_form",
+  "credit_transfer_form",
   "unknown",
 ];
 
@@ -349,6 +351,8 @@ export interface ApplicantRow {
   phone: string | null;
   programme: string | null;
   intake: string | null;
+  /** Applying with prior credit from another institution (0/1). */
+  transfer: number;
   priority: Priority;
   assigned_to: number | null;
   lifecycle: LifecycleStage;

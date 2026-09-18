@@ -706,5 +706,50 @@ export async function buildFixtures(): Promise<Fixture[]> {
     });
   }
 
+  // ── Credit-transfer fixtures ──────────────────────────────────────────────
+  {
+    const name = "NAOMI TRANSFER OKONKWO";
+    fixtures.push({
+      name: "transfer-complete",
+      description: "Applicant transferring credit includes the credit transfer form → complete file → auto-acknowledged.",
+      emails: [
+        email({
+          id: "email-tr-ok-1", threadId: "thread-tr-ok", from: "naomi.transfer@student.example.org", fromName: "Naomi Okonkwo",
+          subject: "Credit transfer application",
+          body: "I am applying for credit transfer from my previous university. Attached are my documents and the completed credit transfer form.",
+          receivedAt: "2026-09-16T09:00:00Z",
+          attachments: await Promise.all([
+            att({ filename: "tr-ok-academic.pdf", docType: "academic_cert", name }),
+            att({ filename: "tr-ok-id.pdf", docType: "id", name, spec: { idNumber: "35221144" } }),
+            att({ filename: "tr-ok-form.pdf", docType: "application_form", name }),
+            att({ filename: "tr-ok-ctf.pdf", docType: "credit_transfer_form", name, spec: { previousInstitution: "STRATHMORE UNIVERSITY" } }),
+          ]),
+        }),
+      ],
+      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+    });
+  }
+  {
+    const name = "PETER TRANSFER MWANGI";
+    fixtures.push({
+      name: "transfer-missing-form",
+      description: "Transfer applicant who forgot the credit transfer form → it appears on the missing list (held request).",
+      emails: [
+        email({
+          id: "email-tr-miss-1", threadId: "thread-tr-miss", from: "peter.transfer@student.example.org", fromName: "Peter Mwangi",
+          subject: "Application for admission — transferring credits",
+          body: "Please consider my application. I am transferring from another institution and would like my credits considered.",
+          receivedAt: "2026-09-16T10:00:00Z",
+          attachments: await Promise.all([
+            att({ filename: "tr-miss-academic.pdf", docType: "academic_cert", name }),
+            att({ filename: "tr-miss-id.pdf", docType: "id", name, spec: { idNumber: "35332255" } }),
+            att({ filename: "tr-miss-form.pdf", docType: "application_form", name }),
+          ]),
+        }),
+      ],
+      expected: { finalStatus: "Red", lifecycle: "documents_received", autoSent: false, autoKind: "missing_docs", flagTypes: [], superseded: 0, duplicates: 0, missing: ["credit_transfer_form"], category: "application", priority: "normal" },
+    });
+  }
+
   return fixtures;
 }

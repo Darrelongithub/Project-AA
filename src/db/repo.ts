@@ -139,6 +139,7 @@ export class Repo {
         | "sla_due_at"
         | "sla_handled_at"
         | "escalated"
+        | "transfer"
       >
     >
   ): void {
@@ -147,6 +148,7 @@ export class Repo {
     const ALLOWED = new Set([
       "full_name", "phone", "programme", "intake", "priority", "assigned_to",
       "lifecycle", "triage", "sla_due_at", "sla_handled_at", "escalated",
+      "transfer",
     ]);
     const keys = Object.keys(patch) as Array<keyof typeof patch>;
     if (keys.length === 0) return;
@@ -471,13 +473,20 @@ export class Repo {
         );
       }
     }
-    return this.resolveRequirements(a.programme, a.intake);
+    const reqs = this.resolveRequirements(a.programme, a.intake);
+    if (a.transfer === 1 && !reqs.some((r) => r.document_type === "credit_transfer_form")) {
+      reqs.push({ document_type: "credit_transfer_form", required: true });
+    }
+    return reqs;
   }
 
-  /** Freeze the current requirement set onto the applicant on first triage. */
+  /** Freeze the current requirement set onto the applicant on first triage.
+   * effectiveRequirements (not raw resolveRequirements) so applicant-level
+   * additions — like the credit transfer form for transfer applicants — are
+   * captured in the frozen set too. */
   freezeRequirementsSnapshot(a: ApplicantRow): void {
     if (a.requirements_snapshot) return;
-    const snapshot = this.resolveRequirements(a.programme, a.intake);
+    const snapshot = this.effectiveRequirements(a);
     this.db
       .prepare("UPDATE applicants SET requirements_snapshot = ? WHERE id = ?")
       .run(JSON.stringify(snapshot), a.id);

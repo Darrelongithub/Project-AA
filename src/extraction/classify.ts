@@ -13,6 +13,7 @@ interface Rule {
 // Order matters: application forms often mention "KCSE points", so they must
 // be checked before the academic-certificate rules.
 const RULES: Rule[] = [
+  { type: "credit_transfer_form", pattern: /credit\s+transfer|transfer\s+(?:of\s+)?credit|transfer\s+(?:application|admission)\s+form|request\s+for\s+transfer/i },
   { type: "application_form", pattern: /application\s+form/i },
   { type: "kcpe_cert", pattern: /kenya\s+certificate\s+of\s+primary\s+education|\bkcpe\b/i },
   { type: "birth_cert", pattern: /certificate\s+of\s+birth|birth\s+certificate/i },
