@@ -8,6 +8,8 @@ import type { Repo } from "./repo";
 import { DEFAULT_INTAKES, DEFAULT_PROGRAMMES, DEFAULT_REQUIREMENTS, DEFAULT_SETTINGS, DEFAULT_STRUCTURED_BASE, DEFAULT_STRUCTURED_COURSES } from "../config";
 import { hashPassword } from "../util/password";
 import { defaultEmailBanner } from "../pack";
+import { blockToNodes, CATALOGUE_SEED } from "../admissions/convert";
+import type { CourseLevel, RuleNode } from "../types";
 
 export const TEMPLATE_SEEDS: Array<{ key: string; name: string; subject: string; body: string }> = [
   {
@@ -147,6 +149,48 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
       repo.upsertSystemBlock(c.programme, level, c.block);
     }
     repo.setSetting("structured_requirements_seeded", "v1-published-set");
+  }
+  // Admissions rules engine (round 18): subject catalogue + machine-evaluable
+  // rule trees per (programme, qualification system). Seeded once — after that
+  // the rules belong to the staff and are versioned per activation.
+  const setCount = (repo.db.prepare("SELECT COUNT(*) AS n FROM admission_rules").get() as { n: number }).n;
+  if (setCount === 0) {
+    repo.seedCatalogue(CATALOGUE_SEED);
+    const insertSet = repo.db.prepare(
+      "INSERT INTO admission_rules (programme, level, system, version, status, created_by) VALUES (?,?,?,1,'active','seed')"
+    );
+    const insertNode = repo.db.prepare(
+      "INSERT INTO admission_rule_nodes (set_id, parent_id, kind, logic, field, subject, comparator, value, position) VALUES (?,?,?,?,?,?,?,?,?)"
+    );
+    const seedTree = (programme: string | null, level: CourseLevel, system: string, nodes: RuleNode[]): void => {
+      const res = insertSet.run(programme, level, system);
+      const setId = Number(res.lastInsertRowid);
+      const write = (n: RuleNode, parentId: number | null): void => {
+        const r = insertNode.run(
+          setId, parentId, n.kind, n.kind === "group" ? (n.logic ?? "AND") : null,
+          n.kind === "condition" ? (n.field ?? "mean_grade") : null,
+          n.kind === "condition" ? (n.subject ?? null) : null,
+          ">=", n.kind === "condition" ? (n.value ?? null) : null, n.position ?? 0
+        );
+        for (const c of n.children ?? []) write(c, Number(r.lastInsertRowid));
+      };
+      for (const n of nodes) write(n, null);
+    };
+    const SYSTEM_MAP: Record<string, string | null> = {
+      KCSE: "KCSE", IGCSE: "IGCSE", ALEVEL: "ALEVEL", IB: "IB",
+      DIPLOMA: "DIPLOMA", DEGREE: "DEGREE", PREUNI: null, // no automated PREUNI route — humans decide it
+    };
+    for (const b of DEFAULT_STRUCTURED_BASE) {
+      const sys = SYSTEM_MAP[b.block.system];
+      if (!sys) continue;
+      seedTree(null, b.level, sys, blockToNodes(b.block));
+    }
+    for (const c of DEFAULT_STRUCTURED_COURSES) {
+      const sys = SYSTEM_MAP[c.block.system];
+      if (!sys) continue;
+      const level = DEFAULT_PROGRAMMES.find((p) => p.code === c.programme)?.level ?? "degree";
+      seedTree(c.programme, level, sys, blockToNodes(c.block));
+    }
   }
   // Base requirements (only if table is empty — don't clobber staff edits)
   const ruleCount = (repo.db.prepare("SELECT COUNT(*) AS n FROM requirement_rules").get() as { n: number }).n;

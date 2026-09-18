@@ -29,8 +29,8 @@ beforeAll(async () => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
   // Test fixtures: a real officer and manager (production-style, not demo).
-  repo.createStaff("manager", "Mary Mwangi (Manager)", hashPassword("manager123"), "manager");
-  repo.createStaff("jane", "Jane Wairimu (Officer)", hashPassword("jane123"), "officer");
+  repo.createStaff("manager", "Mary Mwangi (User)", hashPassword("manager123"), "user");
+  repo.createStaff("jane", "Jane Wairimu (User)", hashPassword("jane123"), "user");
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
 
   sender = new MockSender();
@@ -125,12 +125,14 @@ describe("web console", () => {
     const res = await fetch(`${base}/`, { headers: { cookie } });
     const html = await res.text();
     expect(res.status).toBe(200);
-    expect(html).toContain("Courses &amp; ownership");
-    expect(html).toContain("Recent activity");
+    expect(html).toContain("Team performance");
+    expect(html).toContain("Completed files &amp; approvals");
     expect(html).toContain("System");
+    // Round 18: ownership moved to Staff Configuration; activity feed removed.
+    expect(html).not.toContain("Courses &amp; ownership");
+    expect(html).not.toContain("Recent activity");
     expect(html).not.toContain("What needs my attention");
-    // Admin navigation is separated from casework.
-    expect(html).not.toContain('href="/queue" class="active"');
+    expect(html).toContain("Staff Configuration");
     expect(html).toContain("Configuration");
   });
 
@@ -262,19 +264,22 @@ describe("web console", () => {
     expect(anon.status).toBe(302);
   });
 
-  it("casework is separated from administration at the route level", async () => {
+  it("separation is by dataset realm, and both roles reach the queues", async () => {
+    // Admin: /queue is now an alias for the Human Review queue.
     const { cookie } = await login();
-    for (const path of ["/queue", "/applicants"]) {
-      const res = await fetch(`${base}${path}`, { headers: { cookie }, redirect: "manual" });
-      expect(res.status).toBe(302);
-      expect(res.headers.get("location")).toBe("/");
-    }
-    const search = await fetch(`${base}/api/search?q=webtest`, { headers: { cookie } });
-    const j = (await search.json()) as { applicants: unknown[] };
-    expect(j.applicants.length).toBe(0);
-    // Officers still reach the casework pages.
+    const redir = await fetch(`${base}/queue`, { headers: { cookie }, redirect: "manual" });
+    expect(redir.status).toBe(302);
+    expect(redir.headers.get("location")).toContain("/applicants?queue=human_review");
+    const page = await (await fetch(`${base}/applicants`, { headers: { cookie } })).text();
+    expect(page).toContain("Queues");
+    // Search is realm-scoped, never role-blocked: live admin finds live cases.
+    const search = await fetch(`${base}/api/search?q=${encodeURIComponent(ref)}`, { headers: { cookie } });
+    const j = (await search.json()) as { applicants: Array<{ ref_number: string }> };
+    expect(j.applicants.length).toBe(1);
+    expect(j.applicants[0].ref_number).toBe(ref);
+    // Users reach the same queues.
     const { cookie: janeCookie } = await loginAs("jane", "jane123");
-    const ok = await fetch(`${base}/queue`, { headers: { cookie: janeCookie } });
+    const ok = await fetch(`${base}/applicants`, { headers: { cookie: janeCookie } });
     expect(ok.status).toBe(200);
   });
   it("exports applicants CSV (manager+)", async () => {
@@ -394,18 +399,24 @@ describe("web console v3", () => {
 });
 
 describe("production-readiness pass", () => {
-  it("applicants page shows symmetrical filter tabs with live counts", async () => {
+  it("applicants page shows the five operational queues with live counts", async () => {
     const { cookie } = await loginAs("jane", "jane123");
     const page = await (await fetch(`${base}/applicants`, { headers: { cookie } })).text();
-    expect(page).toContain('class="tabs"');
-    for (const label of ["All applicants", "Awaiting documents", "Needs human review", "Complete", "Overdue"]) {
+    expect(page).toContain('class="queue-tabs"');
+    for (const label of [
+      "Completed / Verification",
+      "Waiting for Documents",
+      "Human Review Required",
+      "Admissions / Decision",
+      "Enquiries &amp; Communication",
+    ]) {
       expect(page).toContain(label);
     }
-    // Tabs are real links to filtered views and keep working with counts.
-    expect(page).toContain("/applicants?filter=human_review");
-    const filtered = await (await fetch(`${base}/applicants?filter=human_review`, { headers: { cookie } })).text();
-    expect(filtered).toContain('class="tabs"');
-    expect(filtered).toContain("filtered");
+    // The Human Review queue is the default landing; subchips say "why".
+    expect(page).toContain("/applicants?queue=human_review");
+    expect(page).toContain("Requirement not satisfied");
+    const filtered = await (await fetch(`${base}/applicants?queue=waiting_documents`, { headers: { cookie } })).text();
+    expect(filtered).toContain("Missing documents");
   });
 
   it("case draft UI hides INTERNAL boilerplate and refuses to send it", async () => {
@@ -707,7 +718,7 @@ describe("QA audit regressions", () => {
   it("keeps demo accounts separate: flagged, badged, and never flagged as default-password risks", async () => {
     // Demo-dataset accounts (as `npm run demo` creates them).
     repo.createStaff("demo_admin", "Darrel", hashPassword("demo123"), "admin", true);
-    repo.createStaff("demo_user", "Jane Wairimu", hashPassword("demo123"), "officer", true);
+    repo.createStaff("demo_user", "Jane Wairimu", hashPassword("demo123"), "user", true);
     expect(repo.getStaffByUsername("demo_user")?.demo).toBe(1);
     expect(repo.getStaffByUsername("jane")?.demo ?? 0).toBe(0);
 

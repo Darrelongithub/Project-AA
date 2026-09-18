@@ -40,7 +40,7 @@ async function main(): Promise<void> {
   // The plain `admin` account created by seedDefaults is the REAL
   // administrator: same database, no demo flag, no mock ownership.
   repo.createStaff("demo_admin", "Darrel", hashPassword("demo123"), "admin", true);
-  repo.createStaff("demo_user", "Jane Wairimu", hashPassword("demo123"), "officer", true);
+  repo.createStaff("demo_user", "Jane Wairimu", hashPassword("demo123"), "user", true);
 
   console.log(`demo: running simulation against ${dbPath} …`);
   const result = await runSimulation({ dbPath, disableOcr: process.env.DISABLE_OCR === "1" });

@@ -475,6 +475,45 @@ summary { color: var(--purple2); }
 input:checked + span, .chk { accent-color: var(--purple2); }
 .tabs a .cnt { opacity: .7; font-weight: 800; margin-left: 6px; font-variant-numeric: tabular-nums; }
 
+/* ── Round 18: queue tabs, chips, rule builder, evaluation panel ───────── */
+.queue-tabs { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 18px; }
+.stat-mini { flex: 1; min-width: 150px; border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; background: var(--card); text-decoration: none; color: inherit; transition: all .15s; }
+.stat-mini:hover { border-color: var(--purple3); text-decoration: none; }
+.stat-mini.sel { border-color: var(--purple2); background: var(--lav); box-shadow: 0 2px 8px -3px color-mix(in srgb, var(--purple2) 55%, transparent); }
+.stat-mini .n { font-family: var(--display); font-size: 26px; line-height: 1.1; font-variant-numeric: tabular-nums; display: block; }
+.stat-mini.sel .n { color: var(--purple); }
+.stat-mini .l { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .09em; font-weight: 700; margin-top: 3px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--line2); }
+.chip { padding: 5px 13px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted); font-weight: 700; font-size: 12px; text-decoration: none; }
+.chip:hover { color: var(--purple); border-color: var(--purple3); text-decoration: none; }
+.chip.sel { background: var(--purple); border-color: var(--purple); color: #fff; }
+.inline { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 0 0 16px; }
+.inline > input, .inline > select { width: auto; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.ctr { text-align: center; }
+.ruletable { width: 100%; border-collapse: collapse; margin-top: 8px; }
+.ruletable th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); font-weight: 800; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.ruletable td { padding: 8px 10px; border-bottom: 1px solid var(--line2); font-size: 13.5px; }
+.ruletable tr:last-child td { border-bottom: none; }
+.mk { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; flex: none; }
+.mk.ok { background: var(--green-bg); color: var(--green); }
+.mk.no { background: var(--red-bg); color: var(--red); }
+.mk.opt { background: var(--card2); color: var(--muted); }
+.routing-block { border-radius: 10px; padding: 14px 18px; border: 1px solid var(--line); font-size: 13.5px; }
+.routing-block.b-green { background: var(--green-bg); border-color: var(--green-line); color: var(--green); }
+.routing-block.b-orange { background: var(--orange-bg); border-color: var(--orange-line); color: var(--orange); }
+.routing-block.b-blue { background: var(--blue-bg); border-color: var(--blue-line); color: var(--blue); }
+.routing-block.b-red { background: var(--red-bg); border-color: var(--red-line); color: var(--red); }
+.routing-block.b-purple { background: var(--lav); border-color: var(--lav-line); color: var(--purple); }
+.routing-block .small, .routing-block .muted { color: inherit; opacity: .8; }
+.decision-form { margin-top: 14px; border: 1px dashed var(--line); border-radius: 10px; padding: 16px 18px; }
+.decision-form .row > select, .decision-form .row > input { width: auto; flex: 1; min-width: 180px; margin: 0; }
+.btn.danger { background: var(--red); border-color: var(--red); color: #fff; }
+.btn.danger:hover { filter: brightness(.94); color: #fff; }
+.node-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line2); }
+.node-row select, .node-row input { width: auto; margin: 0; }
+.node-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 6px 0; }
+
 /* ── Activity / alert feeds ────────────────────────────────────────────── */
 .feed { padding: 6px 0; }
 .feed-row { display: flex; gap: 14px; align-items: baseline; padding: 9px 24px; border-bottom: 1px solid var(--line2); font-size: 13px; }
@@ -858,17 +897,10 @@ export function layout(opts: {
   if (opts.user) {
     paletteLinks.push({ label: "Overview", hint: "home", href: "/", keys: "dashboard home overview" });
     paletteLinks.push({ label: "Admissions", hint: "pipeline stages", href: "/admissions", keys: "admissions applications pipeline levels received checked review completed" });
-    if (opts.user.role !== "admin") {
+    paletteLinks.push({ label: "Queues", hint: "queues", href: "/applicants", keys: "queues cases review waiting documents human decision enquiries applicants" });
+    if (opts.user.role === "admin") {
       paletteLinks.push(
-        { label: "Review queue", hint: "queue", href: "/queue", keys: "queue review human" },
-        { label: "Applicants", hint: "search", href: "/applicants", keys: "applicants cases search list" }
-      );
-    }
-    if (opts.user.role === "admin" || opts.user.role === "manager") {
-      paletteLinks.push({ label: "Staff", hint: "team", href: "/staff", keys: "staff team accounts performance" });
-    }
-    if (opts.user.role !== "officer") {
-      paletteLinks.push(
+        { label: "Staff Configuration", hint: "team", href: "/staff", keys: "staff team accounts performance courses ownership" },
         { label: "Configuration", hint: "setup", href: "/config", keys: "courses requirements gmail templates intakes" },
         { label: "Settings", hint: "app", href: "/settings", keys: "settings automation targets retention" }
       );
@@ -885,15 +917,10 @@ export function layout(opts: {
     const nav: Array<{ href: string; label: string; active: string }> = [
       { href: "/", label: "Overview", active: "dashboard" },
       { href: "/admissions", label: "Admissions", active: "admissions" },
-      ...(role !== "admin"
+      { href: "/applicants", label: "Queues", active: "applicants" },
+      ...(role === "admin"
         ? [
-            { href: "/queue", label: "Review Queue", active: "queue" },
-            { href: "/applicants", label: "Applicants", active: "applicants" },
-          ]
-        : []),
-      ...(role === "admin" || role === "manager" ? [{ href: "/staff", label: "Staff", active: "staff" }] : []),
-      ...(role === "admin" || role === "manager" || role === "it"
-        ? [
+            { href: "/staff", label: "Staff Configuration", active: "staff" },
             { href: "/config", label: "Configuration", active: "config" },
             { href: "/settings", label: "Settings", active: "settings" },
           ]

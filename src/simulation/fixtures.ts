@@ -87,7 +87,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
 
@@ -167,7 +167,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
 
@@ -200,7 +200,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 1, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 1, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
 
@@ -427,7 +427,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
 
@@ -604,7 +604,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
     const name = "WANJIRU IGCS APPLICANT";
     fixtures.push({
       name: "igcse-qualified-bba",
-      description: "IGCSE applicant for BBA with 6 passes at C or better → meets the 5-credit route → auto-acknowledged.",
+      description: "IGCSE applicant for BBA with 6 passes at C or better → meets the 5-credit route → auto-admitted (admission letter sent).",
       emails: [
         email({
           id: "email-igcse-ok-1", threadId: "thread-igcse-ok", from: "wanjiru.igcse@student.example.org", fromName: "Wanjiru Igcse",
@@ -618,7 +618,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
   {
@@ -646,7 +646,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
     const name = "KAMAU IB TWENTYSEVEN";
     fixtures.push({
       name: "ib-degree-route",
-      description: "IB Diploma with 27 points (≥ 24) for BBIT → qualifies through the university-wide IB route → auto-acknowledged.",
+      description: "IB Diploma with 27 points (≥ 24) for BBIT → qualifies through the university-wide IB route → auto-admitted (admission letter sent).",
       emails: [
         email({
           id: "email-ib-1", threadId: "thread-ib", from: "kamau.ib@student.example.org", fromName: "Kamau Ib",
@@ -660,7 +660,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
   {
@@ -688,7 +688,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
     const name = "MWANGI SECOND UPPER";
     fixtures.push({
       name: "degree-mba-route",
-      description: "MBA applicant with a Second Class Honours (Upper Division) degree → meets the postgraduate route → auto-acknowledged.",
+      description: "MBA applicant with a Second Class Honours (Upper Division) degree → recognised degree route → auto-admitted (admission letter sent).",
       emails: [
         email({
           id: "email-mba-1", threadId: "thread-mba", from: "mwangi.mba@student.example.org", fromName: "Mwangi Mba",
@@ -702,7 +702,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
 
@@ -711,7 +711,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
     const name = "NAOMI TRANSFER OKONKWO";
     fixtures.push({
       name: "transfer-complete",
-      description: "Applicant transferring credit includes the credit transfer form → complete file → auto-acknowledged.",
+      description: "Applicant transferring credit includes the credit transfer form → complete file → auto-admitted (admission letter sent).",
       emails: [
         email({
           id: "email-tr-ok-1", threadId: "thread-tr-ok", from: "naomi.transfer@student.example.org", fromName: "Naomi Okonkwo",
@@ -726,7 +726,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
   {

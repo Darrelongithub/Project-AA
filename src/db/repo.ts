@@ -7,6 +7,8 @@
 import * as crypto from "crypto";
 import type { Database } from "better-sqlite3";
 import type {
+  AdmissionRuleSet,
+  AdmissionSystem,
   ApplicantRow,
   Programme,
   Classification,
@@ -24,6 +26,7 @@ import type {
   Priority,
   RequirementRule,
   RequirementSetEntry,
+  RuleNode,
   StaffUser,
   SystemBlock,
   CourseLevel,
@@ -49,6 +52,7 @@ export interface StaffStatsRow {
   display_name: string;
   role: string;
   active: number;
+  demo: number;
   assignedCases: number;
   emailsReceived: number;
   emailsSent: number;
@@ -142,6 +146,14 @@ export class Repo {
         | "sla_handled_at"
         | "escalated"
         | "transfer"
+        | "req_result"
+        | "routing"
+        | "routing_reason"
+        | "admission_decision"
+        | "admission_route"
+        | "decision_by"
+        | "decision_reason"
+        | "decision_at"
       >
     >
   ): void {
@@ -150,7 +162,9 @@ export class Repo {
     const ALLOWED = new Set([
       "full_name", "phone", "programme", "intake", "priority", "assigned_to",
       "lifecycle", "triage", "sla_due_at", "sla_handled_at", "escalated",
-      "transfer",
+      "transfer", "req_result", "routing", "routing_reason",
+      "admission_decision", "admission_route", "decision_by", "decision_reason",
+      "decision_at",
     ]);
     const keys = Object.keys(patch) as Array<keyof typeof patch>;
     if (keys.length === 0) return;
@@ -835,21 +849,34 @@ export class Repo {
       .run(staffId, applicantId, kind, message);
   }
 
-  notificationsFor(staffId: number, limit = 50): Array<{ id: number; kind: string; message: string; read: number; at: string; applicant_id: number | null }> {
+  /**
+   * Realm separation: a notification about a demo applicant is only ever
+   * shown to demo accounts, and vice versa (broadcasts without an applicant
+   * are visible to everyone).
+   */
+  notificationsFor(staffId: number, limit = 50, demo?: number): Array<{ id: number; kind: string; message: string; read: number; at: string; applicant_id: number | null }> {
+    const realmSql = demo === undefined ? "" : " AND (n.applicant_id IS NULL OR a.demo = ?)";
+    const params: unknown[] = demo === undefined ? [staffId, limit] : [staffId, demo, limit];
     return this.db
       .prepare(
-        `SELECT id, kind, message, read, at, applicant_id FROM notifications
-         WHERE staff_id IS NULL OR staff_id = ?
-         ORDER BY id DESC LIMIT ?`
+        `SELECT n.id AS id, n.kind AS kind, n.message AS message, n.read AS read, n.at AS at, n.applicant_id AS applicant_id
+         FROM notifications n LEFT JOIN applicants a ON a.id = n.applicant_id
+         WHERE (n.staff_id IS NULL OR n.staff_id = ?)${realmSql}
+         ORDER BY n.id DESC LIMIT ?`
       )
-      .all(staffId, limit) as never[];
+      .all(...params) as never[];
   }
 
-  unreadCount(staffId: number): number {
+  unreadCount(staffId: number, demo?: number): number {
+    const realmSql = demo === undefined ? "" : " AND (n.applicant_id IS NULL OR a.demo = ?)";
+    const params: unknown[] = demo === undefined ? [staffId] : [staffId, demo];
     return (
       this.db
-        .prepare("SELECT COUNT(*) AS n FROM notifications WHERE (staff_id IS NULL OR staff_id = ?) AND read = 0")
-        .get(staffId) as { n: number }
+        .prepare(
+          `SELECT COUNT(*) AS n FROM notifications n LEFT JOIN applicants a ON a.id = n.applicant_id
+           WHERE (n.staff_id IS NULL OR n.staff_id = ?) AND n.read = 0${realmSql}`
+        )
+        .get(...params) as { n: number }
     ).n;
   }
 
@@ -931,6 +958,49 @@ export class Repo {
     return this.db
       .prepare("SELECT subject, body, mode FROM outbox WHERE applicant_id = ? ORDER BY id DESC LIMIT 1")
       .get(applicantId) as never;
+  }
+
+  /** Direction of each applicant's most recent email — one query, for queues. */
+  lastEmailDirections(ids: number[]): Map<number, "in" | "out"> {
+    if (ids.length === 0) return new Map();
+    const rows = this.db
+      .prepare(
+        `SELECT e.applicant_id AS applicant_id, e.direction AS direction FROM emails e
+         JOIN (SELECT applicant_id, MAX(id) AS max_id FROM emails
+               WHERE applicant_id IN (${ids.map(() => "?").join(",")}) GROUP BY applicant_id) m
+           ON m.max_id = e.id`
+      )
+      .all(...ids) as Array<{ applicant_id: number; direction: "in" | "out" }>;
+    return new Map(rows.map((r) => [r.applicant_id, r.direction]));
+  }
+
+  /** Human-readable reason from each applicant's LATEST evaluation — one query. */
+  latestEvaluationReasons(ids: number[]): Map<number, string> {
+    if (ids.length === 0) return new Map();
+    const rows = this.db
+      .prepare(
+        `SELECT e.applicant_id AS applicant_id, e.reason AS reason FROM evaluations e
+         JOIN (SELECT applicant_id, MAX(id) AS max_id FROM evaluations
+               WHERE applicant_id IN (${ids.map(() => "?").join(",")}) GROUP BY applicant_id) m
+           ON m.max_id = e.id`
+      )
+      .all(...ids) as Array<{ applicant_id: number; reason: string }>;
+    const out = new Map<number, string>();
+    for (const r of rows) if (r.reason) out.set(r.applicant_id, r.reason);
+    return out;
+  }
+
+  /** Active document counts per applicant — one query, for queues. */
+  docCounts(ids: number[]): Map<number, number> {
+    if (ids.length === 0) return new Map();
+    const rows = this.db
+      .prepare(
+        `SELECT applicant_id, COUNT(*) AS n FROM documents
+         WHERE superseded_by IS NULL AND is_duplicate = 0 AND applicant_id IN (${ids.map(() => "?").join(",")})
+         GROUP BY applicant_id`
+      )
+      .all(...ids) as Array<{ applicant_id: number; n: number }>;
+    return new Map(rows.map((r) => [r.applicant_id, r.n]));
   }
 
   /** Latest QUEUED draft awaiting a human [Send]/[Edit]/[Discard] decision. */
@@ -1049,7 +1119,13 @@ export class Repo {
          JOIN (SELECT applicant_id, MAX(id) AS max_id FROM decision_logs GROUP BY applicant_id) latest
            ON latest.max_id = d.id
          JOIN applicants a ON a.id = d.applicant_id
-         WHERE a.lifecycle NOT IN ('completed','verification')
+         WHERE (
+             a.lifecycle NOT IN ('completed','verification')
+             -- Completed files stay out of the review queue UNLESS something
+             -- still needs a human: a held draft or an active blocking flag.
+             OR EXISTS (SELECT 1 FROM flags f2 WHERE f2.applicant_id = a.id AND f2.active = 1 AND f2.type != 'duplicate_submission')
+             OR EXISTS (SELECT 1 FROM outbox o2 WHERE o2.applicant_id = a.id AND o2.mode = 'queued')
+           )
            AND (
              d.auto_sent = 0
              -- A case whose latest decision auto-sent still needs a human
@@ -1333,6 +1409,7 @@ export class Repo {
         display_name: s.display_name,
         role: s.role,
         active: s.active,
+        demo: s.demo ?? 0,
         assignedCases: assigned,
         emailsReceived: received,
         emailsSent: sent,
@@ -1530,11 +1607,294 @@ export class Repo {
   /** Fully remove an applicant's data (used after archiving). */
   deleteApplicantFull(applicantId: number): void {
     const tx = this.db.transaction(() => {
-      for (const t of ["documents", "flags", "emails", "notes", "tasks", "decision_logs", "status_history", "audit_log", "outbox", "applicant_threads", "portal_otps", "portal_sessions", "notifications"]) {
+      for (const t of ["documents", "flags", "emails", "notes", "tasks", "decision_logs", "status_history", "audit_log", "outbox", "applicant_threads", "portal_otps", "portal_sessions", "notifications", "evaluations"]) {
         this.db.prepare(`DELETE FROM ${t} WHERE applicant_id = ?`).run(applicantId);
       }
       this.db.prepare("DELETE FROM applicants WHERE id = ?").run(applicantId);
     });
     tx();
+  }
+
+  // ═══ Admissions rules engine (round 18) ══════════════════════════════════
+
+  // ── Subject catalogue (centrally managed, never duplicated per course) ──
+
+  listSubjectCatalogue(system?: string): Array<{ id: number; system: string; name: string; active: number }> {
+    const rows = system === undefined
+      ? this.db.prepare("SELECT * FROM subject_catalogue ORDER BY system, name").all()
+      : this.db.prepare("SELECT * FROM subject_catalogue WHERE system = ? ORDER BY name").all(system);
+    return rows as never[];
+  }
+
+  addCatalogueSubject(system: string, name: string): void {
+    this.db
+      .prepare("INSERT OR IGNORE INTO subject_catalogue (system, name) VALUES (?, ?)")
+      .run(system, name.trim());
+  }
+
+  setCatalogueActive(id: number, active: boolean): void {
+    this.db.prepare("UPDATE subject_catalogue SET active = ? WHERE id = ?").run(active ? 1 : 0, id);
+  }
+
+  seedCatalogue(entries: Array<{ system: string; name: string }>): void {
+    const tx = this.db.transaction(() => {
+      for (const e of entries) this.addCatalogueSubject(e.system, e.name);
+    });
+    tx();
+  }
+
+  // ── Requirement sets (versioned trees per programme × system) ────────────
+
+  private rowToSet(r: Record<string, unknown>): AdmissionRuleSet {
+    return {
+      id: r.id as number,
+      programme: (r.programme as string | null) ?? null,
+      level: (r.level ?? "degree") as CourseLevel,
+      system: r.system as AdmissionSystem,
+      version: r.version as number,
+      status: r.status as AdmissionRuleSet["status"],
+      created_by: r.created_by as string,
+      created_at: r.created_at as string,
+    };
+  }
+
+  listRuleSets(filter: { programme?: string | null; status?: string; system?: string } = {}): AdmissionRuleSet[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filter.programme !== undefined) {
+      if (filter.programme === null) where.push("programme IS NULL");
+      else { where.push("programme = ?"); params.push(filter.programme); }
+    }
+    if (filter.status) { where.push("status = ?"); params.push(filter.status); }
+    if (filter.system) { where.push("system = ?"); params.push(filter.system); }
+    const rows = this.db
+      .prepare(`SELECT * FROM admission_rules ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY programme IS NULL, programme, system, version DESC`)
+      .all(...params) as Array<Record<string, unknown>>;
+    return rows.map((r) => this.rowToSet(r));
+  }
+
+  getRuleSet(id: number): AdmissionRuleSet | undefined {
+    const r = this.db.prepare("SELECT * FROM admission_rules WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    if (!r) return undefined;
+    return this.rowToSet(r);
+  }
+
+  getRuleSetNodes(setId: number): RuleNode[] {
+    const rows = this.db
+      .prepare("SELECT * FROM admission_rule_nodes WHERE set_id = ? ORDER BY position, id")
+      .all(setId) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as number,
+      set_id: r.set_id as number,
+      parent_id: (r.parent_id as number | null) ?? null,
+      kind: r.kind as RuleNode["kind"],
+      logic: (r.logic as RuleNode["logic"]) ?? undefined,
+      field: (r.field as RuleNode["field"]) ?? undefined,
+      subject: (r.subject as string | null) ?? null,
+      comparator: ">=",
+      value: (r.value as string | null) ?? null,
+      position: r.position as number,
+    }));
+  }
+
+  /** Assemble the node rows of one set into a tree (children arrays). */
+  getRuleTree(setId: number): RuleNode[] {
+    const flat = this.getRuleSetNodes(setId);
+    const byId = new Map<number, RuleNode>();
+    for (const n of flat) byId.set(n.id!, { ...n, children: n.kind === "group" ? [] : undefined });
+    const roots: RuleNode[] = [];
+    for (const n of flat) {
+      const node = byId.get(n.id!)!;
+      const pid = n.parent_id;
+      if (typeof pid === "number" && byId.has(pid)) byId.get(pid)!.children!.push(node);
+      else roots.push(node);
+    }
+    return roots;
+  }
+
+  /**
+   * The active requirement sets for a programme: course-specific sets win
+   * per qualification system; otherwise the university-wide defaults for the
+   * programme's level apply.
+   */
+  activeSetsForProgramme(programme: string | null): AdmissionRuleSet[] {
+    const row = programme
+      ? (this.db.prepare("SELECT level FROM programmes WHERE code = ?").get(programme.toUpperCase()) as { level?: string } | undefined)
+      : undefined;
+    const level = (row?.level ?? "degree") as CourseLevel;
+    const base = this.listRuleSets({ programme: null, status: "active" }).filter((s) => s.level === level);
+    const course = programme ? this.listRuleSets({ programme: programme.toUpperCase(), status: "active" }) : [];
+    const merged = new Map<string, AdmissionRuleSet>();
+    for (const s of base) merged.set(s.system, s);
+    for (const s of course) merged.set(s.system, s);
+    for (const s of merged.values()) s.nodes = this.getRuleTree(s.id);
+    return [...merged.values()];
+  }
+
+  /** The draft set for editing ( programme | level | system ), if any. */
+  getDraftSet(programme: string | null, level: CourseLevel, system: string): AdmissionRuleSet | undefined {
+    const r = programme === null
+      ? this.db.prepare("SELECT * FROM admission_rules WHERE programme IS NULL AND level = ? AND system = ? AND status = 'draft'").get(level, system)
+      : this.db.prepare("SELECT * FROM admission_rules WHERE programme = ? AND level = ? AND system = ? AND status = 'draft'").get(programme, level, system);
+    return r ? this.rowToSet(r as Record<string, unknown>) : undefined;
+  }
+
+  private copyNodes(fromSetId: number, toSetId: number): void {
+    const flat = this.getRuleSetNodes(fromSetId);
+    const idMap = new Map<number, number>();
+    const insert = this.db.prepare(
+      "INSERT INTO admission_rule_nodes (set_id, parent_id, kind, logic, field, subject, comparator, value, position) VALUES (?,?,?,?,?,?,?,?,?)"
+    );
+    // First pass: create rows with parent NULL; second pass: relink parents.
+    for (const n of flat) {
+      const res = insert.run(toSetId, null, n.kind, n.logic ?? null, n.field ?? null, n.subject ?? null, n.comparator ?? ">=", n.value ?? null, n.position ?? 0);
+      idMap.set(n.id!, Number(res.lastInsertRowid));
+    }
+    const relink = this.db.prepare("UPDATE admission_rule_nodes SET parent_id = ? WHERE id = ?");
+    for (const n of flat) {
+      const pid = n.parent_id;
+      const newParent = typeof pid === "number" ? idMap.get(pid) : undefined;
+      const newSelf = idMap.get(n.id!);
+      if (newParent !== undefined && newSelf !== undefined) relink.run(newParent, newSelf);
+    }
+  }
+
+  /**
+   * Get (or create) the editable draft for one route. Creating copies the
+   * currently active rules so staff always edit a full, working set — the
+   * ACTIVE set keeps judging applicants until the draft is activated.
+   */
+  ensureDraftSet(programme: string | null, level: CourseLevel, system: AdmissionSystem, user: string): AdmissionRuleSet {
+    const existing = this.getDraftSet(programme, level, system);
+    if (existing) return existing;
+    const active = this.listRuleSets({ programme, status: "active", system }).find((s) => s.level === level);
+    const nextVersion = active ? active.version + 1 : 1;
+    const res = this.db
+      .prepare("INSERT INTO admission_rules (programme, level, system, version, status, created_by) VALUES (?,?,?,?, 'draft', ?)")
+      .run(programme, level, system, nextVersion, user);
+    const id = Number(res.lastInsertRowid);
+    if (active) this.copyNodes(active.id, id);
+    return this.getRuleSet(id)!;
+  }
+
+  addRuleNode(setId: number, parentId: number | null, kind: "group" | "condition", logic?: "AND" | "OR" | "NOT"): number {
+    const pos = (this.db
+      .prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM admission_rule_nodes WHERE set_id = ? AND parent_id IS ?")
+      .get(setId, parentId) as { p: number }).p;
+    const res = this.db
+      .prepare(
+        "INSERT INTO admission_rule_nodes (set_id, parent_id, kind, logic, field, comparator, position) VALUES (?,?,?,?,?,?,?)"
+      )
+      .run(setId, parentId, kind, kind === "group" ? (logic ?? "AND") : null, kind === "condition" ? "mean_grade" : null, kind === "condition" ? ">=" : null, pos);
+    return Number(res.lastInsertRowid);
+  }
+
+  updateRuleNode(nodeId: number, patch: Partial<Pick<RuleNode, "logic" | "field" | "subject" | "comparator" | "value">>): void {
+    const cur = this.db.prepare("SELECT logic, field, subject, comparator, value FROM admission_rule_nodes WHERE id = ?").get(nodeId) as
+      | { logic: string | null; field: string | null; subject: string | null; comparator: string; value: string | null }
+      | undefined;
+    if (!cur) return;
+    this.db
+      .prepare("UPDATE admission_rule_nodes SET logic = ?, field = ?, subject = ?, comparator = ?, value = ? WHERE id = ?")
+      .run(
+        patch.logic ?? cur.logic,
+        patch.field ?? cur.field,
+        patch.subject !== undefined ? patch.subject : cur.subject,
+        patch.comparator ?? cur.comparator,
+        patch.value !== undefined ? patch.value : cur.value,
+        nodeId
+      );
+  }
+
+  moveRuleNode(nodeId: number, parentId: number | null): void {
+    this.db.prepare("UPDATE admission_rule_nodes SET parent_id = ? WHERE id = ?").run(parentId, nodeId);
+  }
+
+  deleteRuleNode(nodeId: number): void {
+    // FK ON DELETE CASCADE handles descendants.
+    this.db.prepare("DELETE FROM admission_rule_nodes WHERE id = ?").run(nodeId);
+  }
+
+  /** Activate a draft: it becomes the new version; the old active retires. */
+  activateDraftSet(setId: number): AdmissionRuleSet | undefined {
+    const set = this.getRuleSet(setId);
+    if (!set || set.status !== "draft") return undefined;
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE admission_rules SET status = 'retired'
+           WHERE status = 'active' AND system = ? AND level = ?
+             AND (programme IS ?)`
+        )
+        .run(set.system, set.level, set.programme);
+      this.db.prepare("UPDATE admission_rules SET status = 'active', created_at = datetime('now') WHERE id = ?").run(setId);
+    });
+    tx();
+    return this.getRuleSet(setId);
+  }
+
+  discardDraftSet(setId: number): void {
+    const set = this.getRuleSet(setId);
+    if (!set || set.status !== "draft") return;
+    this.db.prepare("DELETE FROM admission_rules WHERE id = ?").run(setId); // cascades nodes
+  }
+
+  /** Freeze the current rule sets onto the applicant on first evaluation. */
+  freezeAdmissionSets(a: ApplicantRow): AdmissionRuleSet[] {
+    if (a.admission_rules_frozen) {
+      try {
+        return JSON.parse(a.admission_rules_frozen) as AdmissionRuleSet[];
+      } catch {
+        this.audit(a.id, "system", "admission_rules_snapshot_corrupt", "frozen rule sets failed to parse — re-frozen from live rules; human should verify");
+      }
+    }
+    const sets = this.activeSetsForProgramme(a.programme);
+    this.db
+      .prepare("UPDATE applicants SET admission_rules_frozen = ? WHERE id = ?")
+      .run(JSON.stringify(sets), a.id);
+    return sets;
+  }
+
+  // ── Evaluations ────────────────────────────────────────────────────────────
+
+  insertEvaluation(row: {
+    applicant_id: number;
+    set_id: number | null;
+    programme: string | null;
+    system: string | null;
+    set_version: number | null;
+    result: string;
+    routing: string;
+    reason: string;
+    reason_code: string;
+    detail: string;
+    rule_snapshot: string;
+  }): number {
+    const res = this.db
+      .prepare(
+        `INSERT INTO evaluations (applicant_id, set_id, programme, system, set_version, result, routing, reason, reason_code, detail, rule_snapshot)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(row.applicant_id, row.set_id, row.programme, row.system, row.set_version, row.result, row.routing, row.reason, row.reason_code, row.detail, row.rule_snapshot);
+    return Number(res.lastInsertRowid);
+  }
+
+  latestEvaluation(applicantId: number): (import("../types").EvaluationReport & { id: number }) | null {
+    const r = this.db
+      .prepare("SELECT * FROM evaluations WHERE applicant_id = ? ORDER BY id DESC LIMIT 1")
+      .get(applicantId) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    try {
+      const report = JSON.parse(String(r.detail)) as import("../types").EvaluationReport;
+      return { ...report, id: r.id as number };
+    } catch {
+      return null;
+    }
+  }
+
+  evaluationsForApplicant(applicantId: number): Array<{ id: number; result: string; routing: string; reason: string; evaluated_at: string; set_version: number | null; system: string | null }> {
+    return this.db
+      .prepare("SELECT id, result, routing, reason, evaluated_at, set_version, system FROM evaluations WHERE applicant_id = ? ORDER BY id DESC LIMIT 50")
+      .all(applicantId) as never[];
   }
 }

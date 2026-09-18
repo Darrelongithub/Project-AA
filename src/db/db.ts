@@ -209,7 +209,7 @@ CREATE TABLE IF NOT EXISTS staff_users (
   username      TEXT NOT NULL UNIQUE,
   display_name  TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  role          TEXT NOT NULL DEFAULT 'officer',   -- admin | manager | officer
+  role          TEXT NOT NULL DEFAULT 'user',      -- admin | user (round 18)
   active        INTEGER NOT NULL DEFAULT 1,
   demo          INTEGER NOT NULL DEFAULT 0,        -- 1 = seeded demo-dataset account
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
@@ -277,6 +277,62 @@ CREATE TABLE IF NOT EXISTS outbox (
   mode         TEXT NOT NULL,          -- 'auto' | 'queued'
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ══ Admissions rules engine (round 18) ══════════════════════════════════════
+-- Machine-evaluable requirement trees, versioned per (programme, system).
+-- programme NULL = university-wide default for the level.
+
+CREATE TABLE IF NOT EXISTS subject_catalogue (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  system TEXT NOT NULL,               -- which qualification system it belongs to
+  name   TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (system, name)
+);
+
+CREATE TABLE IF NOT EXISTS admission_rules (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  programme  TEXT,                    -- NULL = university-wide default
+  level      TEXT NOT NULL DEFAULT 'degree',
+  system     TEXT NOT NULL,           -- KCSE|IGCSE|IB|ALEVEL|KACE|EACE|DIPLOMA|PROFCERT|DEGREE|OTHER
+  version    INTEGER NOT NULL DEFAULT 1,
+  status     TEXT NOT NULL DEFAULT 'draft',   -- draft|active|retired
+  created_by TEXT NOT NULL DEFAULT 'system',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (programme, level, system, version)
+);
+
+CREATE TABLE IF NOT EXISTS admission_rule_nodes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  set_id     INTEGER NOT NULL REFERENCES admission_rules(id) ON DELETE CASCADE,
+  parent_id  INTEGER REFERENCES admission_rule_nodes(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL,           -- 'group' | 'condition'
+  logic      TEXT,                    -- AND|OR|NOT (groups)
+  field      TEXT,                    -- mean_grade|subject|credits|… (conditions)
+  subject    TEXT,
+  comparator TEXT DEFAULT '>=',
+  value      TEXT,
+  position   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_rule_nodes_set ON admission_rule_nodes(set_id);
+
+-- Every evaluation run is stored: reproducible from the frozen rule snapshot.
+CREATE TABLE IF NOT EXISTS evaluations (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  applicant_id INTEGER NOT NULL REFERENCES applicants(id),
+  set_id       INTEGER,
+  programme    TEXT,
+  system       TEXT,
+  set_version  INTEGER,
+  result       TEXT NOT NULL,         -- passed|failed|missing_data|needs_verification
+  routing      TEXT NOT NULL,         -- auto_admit|human_review|waiting_documents
+  reason       TEXT NOT NULL DEFAULT '',
+  reason_code  TEXT NOT NULL DEFAULT '',
+  detail       TEXT NOT NULL DEFAULT '{}',  -- JSON EvaluationReport
+  rule_snapshot TEXT NOT NULL DEFAULT '[]', -- frozen rules used (reproducibility)
+  evaluated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_evaluations_applicant ON evaluations(applicant_id);
 `;
 
 export function openDb(file: string): Database.Database {
@@ -342,6 +398,20 @@ function migrate(db: Database.Database): void {
   addColumn("applicants", "demo", "INTEGER NOT NULL DEFAULT 0");
   // Numeric PDF readability/confidence (0-100); auto-send requires >= 75.
   addColumn("documents", "confidence_score", "INTEGER NOT NULL DEFAULT 0");
+  // Round 18 — admissions engine: eligibility, routing and the admission
+  // decision are stored as SEPARATE concepts (never one giant status field).
+  addColumn("applicants", "req_result", "TEXT");
+  addColumn("applicants", "routing", "TEXT");
+  addColumn("applicants", "routing_reason", "TEXT");
+  addColumn("applicants", "admission_rules_frozen", "TEXT");
+  addColumn("applicants", "admission_decision", "TEXT NOT NULL DEFAULT 'undecided'");
+  addColumn("applicants", "admission_route", "TEXT");
+  addColumn("applicants", "decision_by", "TEXT");
+  addColumn("applicants", "decision_reason", "TEXT");
+  addColumn("applicants", "decision_at", "TEXT");
+  // Round 18 — exactly two roles: admin and user. Legacy roles collapse into
+  // 'user' (they keep their accounts; permissions are re-derived from role).
+  db.exec("UPDATE staff_users SET role = 'user' WHERE role NOT IN ('admin','user')");
   // Migrate any legacy min-points rules into a best-effort grade equivalent
   // so old databases keep meaningful rules (points → the KCSE grade ladder).
   try {

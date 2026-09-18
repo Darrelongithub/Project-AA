@@ -106,11 +106,10 @@ export const EMAIL_CATEGORY_LABELS: Record<EmailCategory, string> = {
 export type Priority = "normal" | "high" | "urgent";
 
 /**
- * Roles (v3): officer (cases) < it (cases + configuration) < manager < admin.
- * 'it' exists so technical staff can tune automation & retention without
- * getting staff-management powers.
+ * Roles (round 18): exactly two. `admin` administers the system
+ * (configuration, staff, packs, exports); `user` works cases.
  */
-export type StaffRole = "admin" | "manager" | "it" | "officer";
+export type StaffRole = "admin" | "user";
 
 export interface StaffUser {
   id: number;
@@ -195,6 +194,97 @@ export interface RequirementRule extends RequirementSetEntry {
   programme: string | null; // null = all programmes
   intake: string | null; // null = all intakes
 }
+
+// ── Admissions rules engine (round 18) ─────────────────────────────────────
+// Machine-evaluable requirement trees per (programme, qualification system).
+// Failure of a published rule NEVER rejects — it routes to human review.
+
+/** Qualification routes the engine can evaluate. */
+export type AdmissionSystem =
+  | "KCSE" | "IGCSE" | "IB" | "ALEVEL" | "KACE" | "EACE"
+  | "DIPLOMA" | "PROFCERT" | "DEGREE" | "OTHER";
+
+export const ADMISSION_SYSTEMS: AdmissionSystem[] = [
+  "KCSE", "IGCSE", "IB", "ALEVEL", "KACE", "EACE",
+  "DIPLOMA", "PROFCERT", "DEGREE", "OTHER",
+];
+
+/** What a condition compares. */
+export type RuleField =
+  | "mean_grade" | "subject" | "credits" | "principals"
+  | "subsidiaries" | "points" | "gpa" | "class";
+
+/** One node of a requirement tree. Groups combine children; conditions compare one value. */
+export interface RuleNode {
+  id?: number;
+  set_id?: number;
+  parent_id?: number | null;
+  kind: "group" | "condition";
+  /** Groups only: how children combine. */
+  logic?: "AND" | "OR" | "NOT";
+  /** Conditions only. */
+  field?: RuleField;
+  subject?: string | null;
+  comparator?: ">=";
+  value?: string | null;
+  position?: number;
+  children?: RuleNode[];
+}
+
+/** Versioned requirement set for one (programme, qualification system) route. */
+export interface AdmissionRuleSet {
+  id: number;
+  programme: string | null; // null = university-wide default for `level`
+  level: CourseLevel;
+  system: AdmissionSystem;
+  version: number;
+  status: "draft" | "active" | "retired";
+  created_by: string;
+  created_at: string;
+  nodes?: RuleNode[];
+}
+
+/** Leaf-level outcome of one condition. */
+export interface LeafOutcome {
+  label: string;
+  required: string;
+  applicantValue: string | null;
+  status: "passed" | "failed" | "undetermined";
+  /** Why undetermined: missing input, unreadable/low-confidence extraction… */
+  cause: "ok" | "missing_field" | "low_confidence" | "no_route";
+  via?: string; // OR-groups: which alternative satisfied the rule
+}
+
+/** Group-level outcome (for rendering "Subject alternative ✓ via Physics"). */
+export interface GroupOutcome {
+  label: string;
+  status: "passed" | "failed" | "undetermined";
+  via?: string;
+}
+
+export type RequirementResult = "passed" | "failed" | "missing_data" | "needs_verification";
+export type AdmissionRouting = "auto_admit" | "human_review" | "waiting_documents";
+
+/** Full, storable report of one evaluation run. */
+export interface EvaluationReport {
+  result: RequirementResult;
+  routing: AdmissionRouting;
+  reason: string;
+  reasonCode: string;
+  system: AdmissionSystem | null;
+  setId: number | null;
+  setVersion: number | null;
+  leaves: LeafOutcome[];
+  groups: GroupOutcome[];
+  rulesSatisfied: number;
+  rulesTotal: number;
+  missingDocuments: string[];
+  blockingFlags: string[];
+  evaluatedAt: string;
+  frozenAt: string | null;
+}
+
+export type AdmissionDecision = "undecided" | "auto_admitted" | "admitted_after_review" | "not_admitted";
 
 // ── Documents & extraction ─────────────────────────────────────────────────
 
@@ -373,6 +463,22 @@ export interface ApplicantRow {
   followup_next_at: string | null;
   /** When the ladder was armed; rungs fire at base + ladder[n] days. */
   followup_base_at: string | null;
+  // ── Admissions engine (round 18): eligibility, routing and decision are
+  //    SEPARATE concepts — never one giant status field. ──────────────────
+  /** Latest evaluation result: passed|failed|missing_data|needs_verification. */
+  req_result: string | null;
+  /** Latest automated routing: auto_admit|human_review|waiting_documents. */
+  routing: string | null;
+  /** Machine-readable "why is it here" code for the queue subcategories. */
+  routing_reason: string | null;
+  /** Frozen rule sets this applicant is judged by (JSON AdmissionRuleSet[]). */
+  admission_rules_frozen: string | null;
+  admission_decision: AdmissionDecision;
+  /** automated | human — how the decision came about. */
+  admission_route: string | null;
+  decision_by: string | null;
+  decision_reason: string | null;
+  decision_at: string | null;
   created_at: string;
   updated_at: string;
 }

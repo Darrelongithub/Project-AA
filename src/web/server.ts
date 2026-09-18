@@ -16,9 +16,11 @@ import type { ApplicantRow, LifecycleStage } from "../types";
 import { DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type DocType, type EmailCategory } from "../types";
 import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
+import { evaluateAdmission } from "../admissions/evaluate";
+import { ADMISSION_SYSTEMS, type AdmissionSystem, type CourseLevel, type RuleField } from "../types";
 import {
   accountPage, admissionsPage, applicantsPage, casePage, composePage, configPage, dashboardPage, loginPage,
-  queuePage, replayPage, settingsPage, staffPage,
+  replayPage, settingsPage, staffPage,
 } from "./pages";
 import { avatar, esc, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
@@ -32,7 +34,7 @@ import { hashPassword, verifyPassword } from "../util/password";
 import { INSTITUTION, emailBanner } from "../branding";
 import { admissionPack, applicationPack, creditTransferPack, PACK_DIR, PACK_SLOTS } from "../pack";
 import { EXAM_SYSTEMS, SUBJECT_CATALOG } from "../config";
-import type { CourseLevel, SystemBlock } from "../types";
+import type { SystemBlock } from "../types";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -78,7 +80,7 @@ export function createApp(deps: WebDeps): Express {
   const c = (req: Request) => ({
     repo,
     user: req.staff!,
-    unread: repo.unreadCount(req.staff!.id),
+    unread: repo.unreadCount(req.staff!.id, req.staff!.demo),
     csrf: req.csrfToken ?? "",
     theme: req.theme,
     institution: instName(),
@@ -148,7 +150,7 @@ export function createApp(deps: WebDeps): Express {
   app.post(
     "/config/branding/banner",
     requireLogin,
-    requireRole("admin", "manager", "it"),
+    requireRole("admin"),
     csrfCheck,
     express.raw({ type: ["image/jpeg", "image/png"], limit: "1mb" }),
     (req, res) => {
@@ -234,26 +236,18 @@ export function createApp(deps: WebDeps): Express {
 
   app.get("/", requireLogin, (req, res) => res.send(dashboardPage(c(req))));
 
-  // Admins are separated from casework — even direct URLs bounce to Overview.
-  const noCaseworkForAdmins = (req: Request, res: Response): boolean => {
-    if (req.staff?.role === "admin") {
-      res.redirect("/");
-      return true;
-    }
-    return false;
-  };
-
+  // Round 18: five operational queues replace the old top-level categories.
+  // The legacy /queue link lands on the Human Review queue.
   app.get("/queue", requireLogin, (req, res) => {
-    if (noCaseworkForAdmins(req, res)) return;
-    res.send(queuePage(c(req), String(req.query.filter ?? "all")));
+    res.redirect(`/applicants?queue=human_review${req.query.filter === "urgent" ? "&priority=urgent" : ""}`);
   });
 
   app.get("/applicants", requireLogin, (req, res) => {
-    if (noCaseworkForAdmins(req, res)) return;
     res.send(
       applicantsPage(c(req), {
         search: req.query.q ? String(req.query.q) : undefined,
-        filter: req.query.filter ? String(req.query.filter) : "all",
+        queue: req.query.queue ? String(req.query.queue) : undefined,
+        sub: req.query.sub ? String(req.query.sub) : undefined,
         programme: req.query.programme ? String(req.query.programme) : undefined,
         intake: req.query.intake ? String(req.query.intake) : undefined,
       })
@@ -446,7 +440,7 @@ export function createApp(deps: WebDeps): Express {
   });
 
   /** Official document packs: the application pack, or the full admission pack. */
-  app.post("/case/:id/send-pack", requireLogin, requireRole("admin", "manager"), csrfCheck, async (req, res) => {
+  app.post("/case/:id/send-pack", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
     const id = Number(req.params.id);
     const a = repo.getApplicant(id);
     if (!a) return res.status(404).send("Case not found.");
@@ -591,7 +585,7 @@ export function createApp(deps: WebDeps): Express {
    * Re-categorise the latest incoming email after review (managers/admins).
    * Audit-logged; the next sync routes its documents with the new category.
    */
-  app.post("/case/:id/category", requireLogin, requireRole("admin", "manager"), csrfCheck, (req, res) => {
+  app.post("/case/:id/category", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const id = Number(req.params.id);
     const a = repo.getApplicant(id);
     if (!a) return res.status(404).send("Case not found.");
@@ -604,6 +598,63 @@ export function createApp(deps: WebDeps): Express {
     }
     staffAction(req, id, "category_changed", `latest incoming email → ${cat}`);
     res.redirect(backToCase(id, `Latest email re-categorised as ${EMAIL_CATEGORY_LABELS[cat as EmailCategory]}.`));
+  });
+
+  /**
+   * Human review resolution (round 18): a person decides a case the automated
+   * path could not — special consideration, an approved exception, an
+   * alternative qualification, or a decline. Recorded as a HUMAN decision,
+   * always separately from anything automated.
+   */
+  app.post("/case/:id/admission-decision", requireLogin, csrfCheck, (req, res) => {
+    const id = Number(req.params.id);
+    const a = repo.getApplicant(id);
+    if (!a || !sameRealm(req, a)) return res.status(404).send("Case not found.");
+    const decision = String(req.body.decision ?? "");
+    const reason = String(req.body.reason ?? "").trim();
+    if (decision !== "admit" && decision !== "decline") {
+      return res.redirect(backToCase(id, "Choose admit or decline — nothing was recorded."));
+    }
+    if (!reason) {
+      return res.redirect(backToCase(id, "A reason is required for every human admission decision — it goes on the audit trail."));
+    }
+    const ROUTES: Record<string, string> = {
+      alternative_qualification: "Alternative qualification",
+      approved_exception: "Approved exception",
+      special_consideration: "Special consideration",
+      documented_pathway: "Documented pathway",
+      standard_review: "Standard review",
+    };
+    const route = decision === "admit" ? (ROUTES[String(req.body.route ?? "")] ?? "Standard review") : "Standard review";
+    const outcome = decision === "admit" ? "admitted_after_review" : "not_admitted";
+    repo.updateApplicant(id, {
+      admission_decision: outcome,
+      admission_route: "human",
+      decision_by: req.staff!.username,
+      decision_reason: `${route}: ${reason}`,
+      decision_at: new Date().toISOString(),
+    });
+    // The file is closed either way; the decision field says HOW it closed.
+    repo.setLifecycle(id, "completed", req.staff!.username,
+      decision === "admit" ? `admitted after human review (${route})` : "not admitted after human review");
+    repo.audit(id, req.staff!.username, "human_admission_decision",
+      `${decision === "admit" ? "Admitted after Human Review" : "Not Admitted after Human Review"} · reviewer: ${req.staff!.display_name} · ${route} · reason: ${reason}`);
+    repo.notify("review_needed", `${a.ref_number}: ${decision === "admit" ? "admitted" : "not admitted"} after human review by ${req.staff!.display_name}`, id);
+    res.redirect(backToCase(id, decision === "admit"
+      ? `Recorded: Admitted after Human Review (${route}).`
+      : "Recorded: Not Admitted after Human Review."));
+  });
+
+  /** Re-run the admissions evaluation on demand (new documents arrived etc.). */
+  app.post("/case/:id/reevaluate", requireLogin, csrfCheck, (req, res) => {
+    const id = Number(req.params.id);
+    const a = repo.getApplicant(id);
+    if (!a || !sameRealm(req, a)) return res.status(404).send("Case not found.");
+    const flags = repo.activeFlags(id).filter((f) => f.type !== "duplicate_submission");
+    const result = evaluateAdmission(repo, id, flags);
+    repo.syncFlags(id, [...flags, ...result.derivedFlags]);
+    repo.audit(id, req.staff!.username, "evaluation_rerun", `re-evaluated on request → ${result.report.result}/${result.report.routing}`);
+    res.redirect(backToCase(id, `Evaluation re-run: ${result.report.result.replace(/_/g, " ")} → ${result.report.routing.replace(/_/g, " ")}.`));
   });
 
   // ── Team performance (staff listener) ────────────────────────────────────
@@ -664,24 +715,25 @@ export function createApp(deps: WebDeps): Express {
   // ── Settings (manager+) ──────────────────────────────────────────────────
 
   // 'it' role: cases + configuration, but not staff management.
-  app.get("/settings", requireLogin, requireRole("admin", "manager", "it"), (req, res) =>
+  app.get("/settings", requireLogin, requireRole("admin"), (req, res) =>
     res.send(settingsPage(c(req), req.query.msg ? String(req.query.msg) : undefined))
   );
 
   // Configuration: courses, requirements, Gmail, intakes, templates, exports.
-  app.get("/config", requireLogin, requireRole("admin", "manager", "it"), (req, res) =>
+  app.get("/config", requireLogin, requireRole("admin"), (req, res) =>
     res.send(
       configPage(
         c(req),
         req.query.template ? String(req.query.template) : undefined,
         req.query.msg ? String(req.query.msg) : undefined,
         req.query.reqs ? String(req.query.reqs) : undefined,
-        req.query.tab ? String(req.query.tab) : undefined
+        req.query.tab ? String(req.query.tab) : undefined,
+        req.query.system ? String(req.query.system) : undefined
       ))
   );
 
   // Assign who handles a course (shown on the administration overview).
-  app.post("/config/course-owner", requireLogin, requireRole("admin", "manager"), csrfCheck, (req, res) => {
+  app.post("/config/course-owner", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const programme = String(req.body.programme ?? "").trim();
     const ownerRaw = String(req.body.owner ?? "").trim();
     const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#courses`;
@@ -699,7 +751,7 @@ export function createApp(deps: WebDeps): Express {
   // Editable course fields: entry requirements (and name/school) change over
   // time — they are data, not code. New applicants are judged by the rules in
   // force when THEY applied (requirement snapshots); edits affect new cases.
-  app.post("/config/programme/edit", requireLogin, requireRole("admin", "manager"), csrfCheck, (req, res) => {
+  app.post("/config/programme/edit", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const programme = String(req.body.programme ?? "").trim();
     const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#courses`;
     if (!programme || !repo.programmeByCode(programme)) return res.redirect(back("Unknown course."));
@@ -713,7 +765,7 @@ export function createApp(deps: WebDeps): Express {
   });
 
   // Structured entry requirements — one qualification-system block per save.
-  app.post("/config/entry-requirements", requireLogin, requireRole("admin", "manager"), csrfCheck, (req, res) => {
+  app.post("/config/entry-requirements", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const target = String(req.body.target ?? "").trim();
     const back = (m: string) => `/config?msg=${encodeURIComponent(m)}&reqs=${encodeURIComponent(target)}#entryreqs`;
     const system = String(req.body.system ?? "").trim() as SystemBlock["system"];
@@ -775,6 +827,106 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(back(`Entry requirements saved for ${meta.label} — new applicants are checked against them immediately.`));
   });
 
+  // ══ Requirements Configuration (round 18) ════════════════════════════════
+  // Machine-evaluable rule trees per (programme × qualification system),
+  // edited visually — no code, no raw expressions. Draft → preview → activate.
+
+  /** Parse a `reqs` target ("BASE:degree" | programme code) + system. */
+  const reqsTarget = (req: Request): { programme: string | null; level: CourseLevel; system: AdmissionSystem; back: (m: string) => string } | null => {
+    const target = String(req.body.target ?? req.query.target ?? "").trim();
+    const system = String(req.body.system ?? req.query.system ?? "").trim() as AdmissionSystem;
+    const isBase = target.startsWith("BASE:");
+    const level = (isBase ? target.slice(5) : repo.programmeByCode(target)?.level ?? "degree") as CourseLevel;
+    const programme = isBase ? null : target.toUpperCase();
+    const back = (m: string) =>
+      `/config?tab=requirements&msg=${encodeURIComponent(m)}&reqs=${encodeURIComponent(target)}&system=${encodeURIComponent(system)}#reqbuilder`;
+    if (!ADMISSION_SYSTEMS.includes(system)) return null;
+    if (!["degree", "diploma", "certificate", "postgrad"].includes(level)) return null;
+    if (!isBase && !repo.programmeByCode(programme!)) return null;
+    return { programme, level, system, back };
+  };
+
+  app.post("/config/requirements/node-add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const t = reqsTarget(req);
+    if (!t) return res.redirect("/config?tab=requirements");
+    const set = repo.ensureDraftSet(t.programme, t.level, t.system, req.staff!.username);
+    const kind = String(req.body.kind) === "group" ? "group" : "condition";
+    const parentId = req.body.parent ? Number(req.body.parent) : null;
+    const nodeId = repo.addRuleNode(set.id, parentId && parentId > 0 ? parentId : null, kind, "AND");
+    repo.audit(null, req.staff!.username, "requirements_draft_changed", `${t.programme ?? "base"} ${t.system}: ${kind} added (draft v${set.version})`);
+    res.redirect(t.back(kind === "group" ? "Group added — set its AND/OR/NOT and conditions." : "Condition added — pick the field and minimum."));
+  });
+
+  app.post("/config/requirements/node-save", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const t = reqsTarget(req);
+    if (!t) return res.redirect("/config?tab=requirements");
+    const nodeId = Number(req.body.node);
+    const logicRaw = String(req.body.logic ?? "");
+    const patch: Parameters<Repo["updateRuleNode"]>[1] = {};
+    if (["AND", "OR", "NOT"].includes(logicRaw)) patch.logic = logicRaw as "AND" | "OR" | "NOT";
+    if (typeof req.body.field === "string" && req.body.field) patch.field = req.body.field as RuleField;
+    if (typeof req.body.subject === "string") patch.subject = req.body.subject.trim() || null;
+    if (typeof req.body.value === "string") {
+      const v = req.body.value.trim();
+      patch.value = v || null;
+    }
+    if (Object.keys(patch).length === 0) return res.redirect(t.back("Nothing to save."));
+    // Subject conditions need a subject; grade/number conditions need a value.
+    repo.updateRuleNode(nodeId, patch);
+    res.redirect(t.back("Rule updated in the draft — preview it, then activate."));
+  });
+
+  app.post("/config/requirements/node-delete", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const t = reqsTarget(req);
+    if (!t) return res.redirect("/config?tab=requirements");
+    const nodeId = Number(req.body.node);
+    repo.deleteRuleNode(nodeId);
+    res.redirect(t.back("Rule removed from the draft."));
+  });
+
+  app.post("/config/requirements/activate", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const t = reqsTarget(req);
+    if (!t) return res.redirect("/config?tab=requirements");
+    const draft = repo.getDraftSet(t.programme, t.level, t.system);
+    if (!draft) return res.redirect(t.back("No draft to activate."));
+    if ((repo.getRuleSetNodes(draft.id)).length === 0) {
+      return res.redirect(t.back("The draft has no rules — add at least one condition before activating."));
+    }
+    const activated = repo.activateDraftSet(draft.id)!;
+    repo.audit(null, req.staff!.username, "requirements_activated",
+      `${t.programme ?? `${t.level} (university-wide)`} · ${t.system} · requirement set v${activated.version} activated`);
+    res.redirect(t.back(`Requirement set v${activated.version} is now ACTIVE for ${t.programme ?? `all ${t.level} programmes`} (${t.system}). New evaluations use it; historical cases keep their frozen version.`));
+  });
+
+  app.post("/config/requirements/discard", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const t = reqsTarget(req);
+    if (!t) return res.redirect("/config?tab=requirements");
+    const draft = repo.getDraftSet(t.programme, t.level, t.system);
+    if (draft) repo.discardDraftSet(draft.id);
+    res.redirect(t.back("Draft discarded — the active requirement set is unchanged."));
+  });
+
+  app.post("/config/requirements/catalogue-add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const system = String(req.body.system ?? "").trim();
+    const name = String(req.body.name ?? "").trim();
+    const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#catalogue`;
+    if (!ADMISSION_SYSTEMS.includes(system as AdmissionSystem)) return res.redirect(back("Unknown qualification system."));
+    if (!name) return res.redirect(back("Subject name was empty."));
+    repo.addCatalogueSubject(system, name);
+    repo.audit(null, req.staff!.username, "catalogue_changed", `${system}: subject "${name}" added`);
+    res.redirect(back(`Subject "${name}" added to the ${system} catalogue.`));
+  });
+
+  app.post("/config/requirements/catalogue-toggle", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const id = Number(req.body.id);
+    const row = repo.listSubjectCatalogue().find((r) => r.id === id);
+    if (row) {
+      repo.setCatalogueActive(id, row.active !== 1);
+      repo.audit(null, req.staff!.username, "catalogue_changed", `${row.system}: "${row.name}" ${row.active !== 1 ? "restored" : "retired"}`);
+    }
+    res.redirect(`/config?tab=requirements#catalogue`);
+  });
+
   // Official pack files: download (staff) + replace (raw PDF upload).
   app.get("/pack/:key", requireLogin, (req, res) => {
     const slot = PACK_SLOTS.find((x) => x.key === req.params.key);
@@ -788,7 +940,7 @@ export function createApp(deps: WebDeps): Express {
   app.post(
     "/config/pack/replace",
     requireLogin,
-    requireRole("admin", "manager", "it"),
+    requireRole("admin"),
     csrfCheck,
     express.raw({ type: "application/pdf", limit: "12mb" }),
     (req, res) => {
@@ -808,7 +960,7 @@ export function createApp(deps: WebDeps): Express {
 
   const settingsBack = (msg: string) => `/config?tab=replies&msg=${encodeURIComponent(msg)}#gmail`;
 
-  app.post("/settings/gmail/credentials", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+  app.post("/settings/gmail/credentials", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     repo.setSetting("gmail_address", String(req.body.gmail_address ?? "").trim());
     repo.setSetting("gmail_client_id", String(req.body.gmail_client_id ?? "").trim());
     // Secret is write-only in the UI: kept if the field is left blank.
@@ -818,7 +970,7 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(settingsBack("Gmail credentials saved — now press “Connect with Google”."));
   });
 
-  app.get("/settings/gmail/connect", requireLogin, requireRole("admin", "manager", "it"), (req, res) => {
+  app.get("/settings/gmail/connect", requireLogin, requireRole("admin"), (req, res) => {
     const clientId = repo.getSetting("gmail_client_id", "");
     if (!clientId) return res.redirect(settingsBack("Save the OAuth client ID and secret first."));
     const state = crypto.randomBytes(16).toString("hex");
@@ -835,7 +987,7 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(url.toString());
   });
 
-  app.get("/settings/gmail/callback", requireLogin, requireRole("admin", "manager", "it"), async (req, res) => {
+  app.get("/settings/gmail/callback", requireLogin, requireRole("admin"), async (req, res) => {
     const state = String(req.query.state ?? "");
     if (!state || state !== repo.getSetting("gmail_oauth_state", "")) {
       return res.redirect(settingsBack("OAuth state mismatch — try connecting again."));
@@ -872,7 +1024,7 @@ export function createApp(deps: WebDeps): Express {
     }
   });
 
-  app.post("/settings/gmail/disconnect", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+  app.post("/settings/gmail/disconnect", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     repo.setSetting("gmail_refresh_token", "");
     repo.audit(null, req.staff!.username, "gmail_disconnected", "");
     res.redirect(settingsBack("Gmail disconnected — live fetching stopped."));
@@ -881,7 +1033,7 @@ export function createApp(deps: WebDeps): Express {
   // Manual "Sync now": pull the inbox immediately instead of waiting for the
   // next 60s poll. Errors are surfaced verbatim on the config page — a broken
   // connection is never silently ignored.
-  app.post("/settings/gmail/sync", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, async (req, res) => {
+  app.post("/settings/gmail/sync", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
     if (!gmailSync) {
       return res.redirect(settingsBack("No live mailbox — connect Gmail first."));
     }
@@ -921,7 +1073,7 @@ export function createApp(deps: WebDeps): Express {
   // Boot with a key that was saved earlier (server restarts keep it working).
   rebuildAdapters();
 
-  app.post("/settings/gemini", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, async (req, res) => {
+  app.post("/settings/gemini", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
     const back = (m: string) => `/config?tab=replies&msg=${encodeURIComponent(m)}#gemini`;
     const key = String(req.body.gemini_api_key ?? "").trim();
     const model = String(req.body.gemini_model ?? "gemini-1.5-flash").trim() || "gemini-1.5-flash";
@@ -951,7 +1103,7 @@ export function createApp(deps: WebDeps): Express {
     }
   });
 
-  app.post("/settings/general", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+  app.post("/settings/general", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     // Blank identity fields keep their current value (an empty ref prefix
     // would break ref generation); numbers are validated.
     const ignored: string[] = [];
@@ -986,14 +1138,14 @@ export function createApp(deps: WebDeps): Express {
     );
   });
 
-  app.post("/settings/automation/global", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+  app.post("/settings/automation/global", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const mode = String(req.body.mode ?? "auto") === "draft" ? "draft" : "auto";
     repo.setSetting("automation_mode", mode);
     repo.audit(null, req.staff!.username, "automation_changed", `global automation mode → ${mode}`);
     res.redirect("/settings");
   });
 
-  app.post("/settings/automation/category", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+  app.post("/settings/automation/category", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const cat = String(req.body.category ?? "");
     const mode = String(req.body.mode ?? "auto") === "draft" ? "draft" : "auto";
     if (cat) {
@@ -1003,7 +1155,7 @@ export function createApp(deps: WebDeps): Express {
     res.redirect("/settings");
   });
 
-  app.post("/settings/intake-deadline", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+  app.post("/settings/intake-deadline", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const name = String(req.body.name ?? "").trim();
     const deadline = String(req.body.deadline ?? "").trim();
     if (name) {
@@ -1021,7 +1173,7 @@ export function createApp(deps: WebDeps): Express {
 
   // Requirement rules now speak GRADES (mean grade + subject lines) — the way
   // the university actually publishes entry requirements. No numeric points.
-  app.post("/settings/rules/add", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+  app.post("/settings/rules/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const docType = String(req.body.document_type);
     // Anything outside the known document types would store a rule that can
     // never match — silently. Reject it instead of pretending.
@@ -1045,13 +1197,13 @@ export function createApp(deps: WebDeps): Express {
     res.redirect("/config#courses");
   });
 
-  app.post("/settings/rules/delete", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+  app.post("/settings/rules/delete", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     repo.deleteRule(Number(req.body.id));
     repo.audit(null, req.staff!.username, "requirements_changed", `rule #${req.body.id} removed`);
     res.redirect("/config#courses");
   });
 
-  app.post("/settings/lists/add", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+  app.post("/settings/lists/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const added: string[] = [];
     if (req.body.prog_code && req.body.prog_name) { repo.addProgramme(String(req.body.prog_code), String(req.body.prog_name)); added.push("programme"); }
     if (req.body.intake) { repo.addIntake(String(req.body.intake)); added.push("intake"); }
@@ -1059,7 +1211,7 @@ export function createApp(deps: WebDeps): Express {
     res.redirect("/config?msg=" + encodeURIComponent(added.length ? `Added ${added.join(" and ")}.` : "Nothing to add — fill in a programme code and name, or an intake.") + "#courses");
   });
 
-  app.post("/settings/template", requireLogin, requireRole("admin", "manager", "it"), csrfCheck, (req, res) => {
+  app.post("/settings/template", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const key = String(req.body.key ?? "");
     const existing = repo.getTemplate(key);
     const back = (m: string) => `/config?tab=replies&template=${encodeURIComponent(key)}&msg=${encodeURIComponent(m)}#templates`;
@@ -1076,14 +1228,14 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Staff management (admin) ─────────────────────────────────────────────
 
-  app.get("/staff", requireLogin, requireRole("admin", "manager"), (req, res) =>
+  app.get("/staff", requireLogin, requireRole("admin"), (req, res) =>
     res.send(staffPage(c(req), req.query.msg ? String(req.query.msg) : undefined))
   );
 
   app.post("/staff/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const username = String(req.body.username ?? "").trim();
     const password = String(req.body.password ?? "");
-    const role = ["admin", "manager", "officer", "it"].includes(String(req.body.role)) ? String(req.body.role) : "officer";
+    const role = String(req.body.role) === "admin" ? "admin" : "user";
     const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
     if (!username) return res.redirect(staffMsg("Username is required."));
     if (!/^[a-z0-9_.-]{2,32}$/i.test(username)) return res.redirect(staffMsg("Username may contain letters, digits, dots, dashes and underscores (2–32 chars)."));
@@ -1133,7 +1285,7 @@ export function createApp(deps: WebDeps): Express {
     res.send(body);
   };
 
-  app.get("/export/applicants.csv", requireLogin, requireRole("admin", "manager", "it"), (_req, res) => {
+  app.get("/export/applicants.csv", requireLogin, requireRole("admin"), (_req, res) => {
     const rows = repo.allApplicants();
     csv(
       res,
@@ -1149,7 +1301,7 @@ export function createApp(deps: WebDeps): Express {
     );
   });
 
-  app.get("/export/queue.csv", requireLogin, requireRole("admin", "manager", "it"), (_req, res) => {
+  app.get("/export/queue.csv", requireLogin, requireRole("admin"), (_req, res) => {
     const rows = repo.queueView();
     csv(
       res,
@@ -1159,7 +1311,7 @@ export function createApp(deps: WebDeps): Express {
     );
   });
 
-  app.get("/export/audit.csv", requireLogin, requireRole("admin", "manager", "it"), (_req, res) => {
+  app.get("/export/audit.csv", requireLogin, requireRole("admin"), (_req, res) => {
     const rows = repo.recentAudit(10000);
     csv(res, "audit.csv", ["at", "actor", "event", "detail", "applicant_id"], rows.map((r) => [r.at, r.actor, r.event, r.detail, r.applicant_id]));
   });
@@ -1167,17 +1319,12 @@ export function createApp(deps: WebDeps): Express {
 
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
-  /** Command-palette search API (v4). */
+  /** Command-palette search API (v4). Realm-scoped like every other list. */
   app.get("/api/search", requireLogin, (req, res) => {
-    // Casework search is separated from administration.
-    if (req.staff?.role === "admin") {
-      res.json({ applicants: [] });
-      return;
-    }
     const q = String(req.query.q ?? "").trim();
     if (!q) return res.json({ applicants: [] });
     res.json({
-      applicants: repo.searchApplicants({ q, limit: 8 }).map((a) => ({
+      applicants: repo.searchApplicants({ q, limit: 8, demo: req.staff!.demo }).map((a) => ({
         id: a.id,
         ref_number: a.ref_number,
         name: a.full_name ?? "",

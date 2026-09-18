@@ -3,8 +3,11 @@
  * Single source of truth: nothing is rendered that isn't in the DB.
  */
 import type { ApplicantSearchQuery, Repo } from "../db/repo";
-import type { ApplicantRow, CourseLevel, DocType, Programme, StaffUser, SystemBlock } from "../types";
-import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
+import type { AdmissionSystem, ApplicantRow, CourseLevel, DocType, Programme, RuleNode, StaffUser, SystemBlock } from "../types";
+import { ADMISSION_SYSTEMS, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
+import { SYSTEM_LABELS } from "../admissions/systems";
+import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../admissions/queues";
+import { describeRuleTree, interpretRuleTree } from "../admissions/engine";
 import { docLabel } from "../rules";
 import { EXAM_SYSTEMS, SUBJECT_CATALOG } from "../config";
 import { packManifest } from "../pack";
@@ -103,12 +106,8 @@ function adminDashboard(c: Ctx): string {
   const realm = c.user.demo; // live admins see only live data; demo accounts only mock data.
   const s = repo.dashboardStats(realm);
   const stage = repo.stageCounts(realm);
-  const audit = repo.recentAudit(12);
-  const team = repo.staffStats(realm);
-  const staff = repo.listStaff().filter((m) => m.active);
-  const alerts = repo.notificationsFor(c.user.id, 6);
-  const programmes = repo.listProgrammes();
-  const rules = repo.listRules();
+  const team = repo.staffStats(realm).filter((t) => t.demo === realm);
+  const alerts = repo.notificationsFor(c.user.id, 6, realm);
   const all = repo.allApplicants(realm);
   const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
@@ -117,43 +116,6 @@ function adminDashboard(c: Ctx): string {
   const applications = Number(s.applications);
   const completed = Number(s.completed);
   const completion = applications > 0 ? Math.round((completed / applications) * 100) : null;
-
-  // Inline owner picker — assigning a course no longer needs a trip to Configuration.
-  const inlineAssign = (p: { code: string }) =>
-    `<form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-      <input type="hidden" name="programme" value="${esc(p.code)}">
-      <select name="owner" style="width:auto;min-width:150px"><option value="">Pick a staff member…</option>${staff.map((m) => `<option value="${m.id}">${esc(m.display_name)} (${capFirst(m.role)})</option>`).join("")}</select>
-      <button class="btn small ghost">Assign</button>
-    </form>`;
-
-  const courseRows = groupBySchool(programmes)
-    .map(([school, rows]) => `<tr class="schoolrow"><td colspan="4">${esc(school)}</td></tr>` + rows
-      .map((p) => {
-        const specific = rules.filter((r) => r.programme === p.code);
-        const effective = specific.length ? specific : rules.filter((r) => r.programme === null && r.intake === null);
-        const required = effective.filter((r) => r.required).length;
-        const graded = effective.filter((r) => r.meanGrade);
-        const reqText = required
-          ? `${required} required doc${required === 1 ? "" : "s"}${graded.length ? ` · min ${graded.map((r) => esc(r.meanGrade ?? "")).join("/")}` : ""}`
-          : `<span class="muted">base rules apply</span>`;
-        const n = all.filter((a) => a.programme === p.code).length;
-        return `<tr>
-          <td><b>${esc(p.code)}</b> <span class="muted small">${esc(p.name)}</span></td>
-          <td>${p.owner_name ? `${esc(p.owner_name)} <a class="small" href="/config#courses">change</a>` : inlineAssign(p)}</td>
-          <td class="small">${reqText}</td>
-          <td>${n}</td>
-        </tr>`;
-      }).join("")).join("");
-
-  const activityRows = audit
-    .map((e) => `<div class="feed-row">
-      <span class="feed-when">${esc(fmtDate(e.at))}</span>
-      <span class="feed-actor mono">${esc(e.actor)}</span>
-      <span class="feed-event">${esc(e.event)}</span>
-      <span class="feed-detail muted">${esc(e.detail.slice(0, 110))}</span>
-    </div>`)
-    .join("");
 
   // Team performance — the same numbers a staff member sees, per person.
   const teamRows = team
@@ -173,14 +135,30 @@ function adminDashboard(c: Ctx): string {
     .slice(0, 12)
     .map((a) => {
       const appr = repo.approverFor(a.id);
+      const decision = a.admission_decision === "auto_admitted"
+        ? `<span class="badge b-green">auto-admitted</span>`
+        : a.admission_decision === "admitted_after_review"
+          ? `<span class="badge b-purple">admitted after review</span>`
+          : a.admission_decision === "not_admitted"
+            ? `<span class="badge b-red">not admitted</span>`
+            : "";
       return `<tr>
         <td class="mono"><a href="/case/${a.id}">${esc(a.ref_number)}</a></td>
         <td>${esc(a.full_name ?? "—")}</td>
         <td>${esc(a.programme ?? "—")}</td>
-        <td class="small">${esc(appr?.actor ?? "—")}</td>
+        <td class="small">${decision || esc(appr?.actor ?? "—")}</td>
         <td class="small nowrap muted">${esc(fmtDate(appr?.at ?? a.updated_at))}</td>
       </tr>`;
     })
+    .join("");
+
+  const alertRows = alerts
+    .map((n) => `<div class="feed-row ${n.read ? "read" : ""}">
+      <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : n.kind === "auto_admission" ? "b-green" : "b-blue"}">${esc(kindLabel(n.kind))}</span>
+      <span class="feed-msg">${esc(n.message)}</span>
+      ${n.applicant_id ? `<a class="small nowrap" href="/case/${n.applicant_id}">open →</a>` : ""}
+      <span class="feed-when right">${esc(fmtDate(n.at))}</span>
+    </div>`)
     .join("");
 
   return head(
@@ -216,8 +194,17 @@ function adminDashboard(c: Ctx): string {
   ])}
 </section>
 
+<section class="card nopad" id="alerts">
+  <div class="card-head"><h2>Alerts${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
+    ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark all read</button></form>` : ""}
+  </div>
+  ${alerts.length
+    ? `<div class="feed">${alertRows}</div>`
+    : `<div class="empty"><p>No alerts. Escalations and auto-admissions appear here.</p></div>`}
+</section>
+
 <section class="card nopad">
-  <div class="card-head"><h2>Team performance <span class="muted small" style="text-transform:none;letter-spacing:0">— how your staff are working</span></h2><a class="small" href="/staff">staff accounts →</a></div>
+  <div class="card-head"><h2>Team performance <span class="muted small" style="text-transform:none;letter-spacing:0">— how your staff are working</span></h2><a class="small" href="/staff">staff configuration →</a></div>
   ${team.length
     ? `<table><tr><th>Staff member</th><th>Assigned cases</th><th>Emails</th><th>Avg response</th><th>Files completed</th></tr>${teamRows}</table>`
     : `<div class="empty"><p>No staff accounts yet.</p></div>`}
@@ -226,57 +213,22 @@ function adminDashboard(c: Ctx): string {
 <section class="card nopad">
   <div class="card-head"><h2>Completed files &amp; approvals <span class="muted small" style="text-transform:none;letter-spacing:0">— who finished what, and when</span></h2></div>
   ${completedFiles
-    ? `<table><tr><th>Ref</th><th>Applicant</th><th>Course</th><th>Completed by</th><th>When</th></tr>${completedFiles}</table>`
+    ? `<table><tr><th>Ref</th><th>Applicant</th><th>Course</th><th>Decision / completed by</th><th>When</th></tr>${completedFiles}</table>`
     : `<div class="empty"><p>No completed files yet — approvals appear here as cases finish.</p></div>`}
 </section>
 
-<section class="card nopad">
-  <div class="card-head"><h2>Courses &amp; ownership</h2><a class="small" href="/config#courses">manage →</a></div>
-  ${programmes.length
-    ? `<table>
-        <tr><th>Course</th><th>Handled by</th><th>Requirements</th><th>Applicants</th></tr>
-        ${courseRows}
-      </table>`
-    : `<div class="empty">${flowLine(150, 26)}<p>No courses configured yet.</p><a class="btn small" href="/config#courses">Add courses</a></div>`}
-</section>
-
-<div class="cols wide">
-  <section class="card nopad">
-    <div class="card-head"><h2>Recent activity</h2></div>
-    ${audit.length
-      ? `<div class="feed">${activityRows}</div>`
-      : `<div class="empty"><p>No activity yet — it appears here as your team works.</p></div>`}
-  </section>
-  <section class="card">
-    <h2>System</h2>
-    <div class="kv">
-      <div><span>Gmail</span><b>${gmailConnected ? `connected${lastSync ? ` · synced ${esc(fmtDate(lastSync))}` : ""}` : "not connected"} <a class="small" href="/config#gmail">manage</a></b></div>
-      <div><span>Document AI (Gemini)</span><b>${repo.getSetting("gemini_api_key", "") ? "key saved · live" : "not set"} <a class="small" href="/config#gemini">manage</a></b></div>
-      <div><span>Automation</span><b>${globalMode === "draft" ? "draft-first" : "auto"} · <a class="small" href="/settings#automation">change</a></b></div>
-      <div><span>Team</span><b>${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">staff</a></b></div>
-      <div><span>Replies to date</span><b>${(() => { const ac = repo.accuracyStats(); return Number(ac.autoSends) + Number(ac.humanSends); })()}</b></div>
-    </div>
-  </section>
-</div>
-
-<section class="card nopad" id="alerts">
-  <div class="card-head"><h2>Alerts${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
-    ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark all read</button></form>` : ""}
+<section class="card">
+  <h2>System</h2>
+  <div class="kv">
+    <div><span>Gmail</span><b>${gmailConnected ? `connected${lastSync ? ` · synced ${esc(fmtDate(lastSync))}` : ""}` : "not connected"} <a class="small" href="/config#gmail">manage</a></b></div>
+    <div><span>Document AI (Gemini)</span><b>${repo.getSetting("gemini_api_key", "") ? "key saved · live" : "not set"} <a class="small" href="/config#gemini">manage</a></b></div>
+    <div><span>Automation</span><b>${globalMode === "draft" ? "draft-first" : "auto"} · <a class="small" href="/settings#automation">change</a></b></div>
+    <div><span>Team</span><b>${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">staff configuration</a></b></div>
+    <div><span>Replies to date</span><b>${(() => { const ac = repo.accuracyStats(realm); return Number(ac.autoSends) + Number(ac.humanSends); })()}</b></div>
   </div>
-  ${alerts.length
-    ? `<div class="feed">${alerts
-        .map((n) => `<div class="feed-row ${n.read ? "read" : ""}">
-          <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : "b-blue"}">${esc(kindLabel(n.kind))}</span>
-          <span class="feed-msg">${esc(n.message)}</span>
-          ${n.applicant_id ? `<a class="small nowrap" href="/case/${n.applicant_id}">open →</a>` : ""}
-          <span class="feed-when right">${esc(fmtDate(n.at))}</span>
-        </div>`)
-        .join("")}</div>`
-    : `<div class="empty"><p>No alerts. Escalations appear here.</p></div>`}
 </section>`
   );
 }
-
 export function dashboardPage(c: Ctx): string {
   if (c.user.role === "admin") return adminDashboard(c);
   return officerDashboard(c);
@@ -295,7 +247,7 @@ function officerDashboard(c: Ctx): string {
   const unanswered = repo.unansweredCases();
   const target = Number(repo.getSetting("unanswered_target_hours", "4"));
   const categories = repo.categoryCounts();
-  const alerts = repo.notificationsFor(c.user.id, 6);
+  const alerts = repo.notificationsFor(c.user.id, 6, realm);
 
   const activeCount = Number(s.applications) - Number(s.completed);
 
@@ -355,12 +307,23 @@ function officerDashboard(c: Ctx): string {
 
   const alertRows = alerts
     .map((n) => `<div class="feed-row ${n.read ? "read" : ""}">
-      <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : "b-blue"}">${esc(kindLabel(n.kind))}</span>
+      <span class="badge ${n.kind === "escalation" ? "b-red" : n.kind === "review_needed" ? "b-orange" : n.kind === "auto_admission" ? "b-green" : "b-blue"}">${esc(kindLabel(n.kind))}</span>
       <span class="feed-msg">${esc(n.message.replace(/^\u26a0\ufe0f\s*/, ""))}</span>
       ${n.applicant_id ? `<a class="small nowrap" href="/case/${n.applicant_id}">open →</a>` : ""}
       <span class="feed-when right">${esc(fmtDate(n.at))}</span>
     </div>`)
     .join("");
+
+  // Alerts sit IMMEDIATELY after the gauges — the first thing after the
+  // pipeline picture is what needs a human right now.
+  const alertsCard = `<section class="card nopad" id="alerts">
+    <div class="card-head"><h2>Alerts${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
+      ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark all read</button></form>` : ""}
+    </div>
+    ${alerts.length
+      ? `<div class="feed">${alertRows}</div>`
+      : `<div class="empty"><p>No alerts. Escalations and auto-admissions appear here.</p></div>`}
+  </section>`;
 
   return head(
     c,
@@ -395,9 +358,11 @@ function officerDashboard(c: Ctx): string {
   ])}
 </section>
 
+${alertsCard}
+
 <div class="cols wide">
   <section class="card nopad">
-    <div class="card-head"><h2>Needs attention</h2><a class="small" href="/queue">full queue →</a></div>
+    <div class="card-head"><h2>Needs attention</h2><a class="small" href="/applicants?queue=human_review">full queue →</a></div>
     <div>${attentionRows}</div>
   </section>
   <section class="card">
@@ -412,22 +377,12 @@ function officerDashboard(c: Ctx): string {
   </section>
 </div>
 
-<div class="cols wide">
-  <section class="card nopad">
-    <div class="card-head"><h2>What needs my attention</h2></div>
-    ${queue.length
-      ? `<table><tr><th>Ref</th><th>Applicant</th><th>Verdict</th><th>Flags</th><th>SLA</th></tr>${needsAttention}</table>`
-      : `<div class="empty"><p>Queue is empty — every case is handled.</p></div>`}
-  </section>
-  <section class="card nopad" id="alerts">
-    <div class="card-head"><h2>Alerts${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
-      ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark all read</button></form>` : ""}
-    </div>
-    ${alerts.length
-      ? `<div class="feed">${alertRows}</div>`
-      : `<div class="empty"><p>No alerts. Escalations and new review cases appear here.</p></div>`}
-  </section>
-</div>
+<section class="card nopad">
+  <div class="card-head"><h2>What needs my attention</h2><a class="small" href="/applicants?queue=human_review">open the Human Review queue →</a></div>
+  ${queue.length
+    ? `<table><tr><th>Ref</th><th>Applicant</th><th>Verdict</th><th>Flags</th><th>SLA</th></tr>${needsAttention}</table>`
+    : `<div class="empty"><p>Queue is empty — every case is handled.</p></div>`}
+</section>
 
 <div class="cols wide">
   <section class="card nopad">
@@ -459,52 +414,7 @@ function officerDashboard(c: Ctx): string {
   );
 }
 
-// ── Queue (feature 11) ─────────────────────────────────────────────────────
-
-export function queuePage(c: Ctx, filter: string): string {
-  let rows = c.repo.queueView(c.user.demo);
-  if (filter === "urgent") rows = rows.filter((r) => r.priority === "urgent");
-  if (filter === "overdue") rows = rows.filter((r) => r.sla_due_at && !r.sla_handled_at && r.sla_due_at < new Date().toISOString());
-
-  const urgent = rows.filter((r) => r.priority === "urgent").length;
-  const review = rows.length;
-
-  const cards = rows
-    .map((r) => {
-      const overdue = r.sla_due_at && !r.sla_handled_at && r.sla_due_at < new Date().toISOString();
-      return `<div class="card">
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          ${avatar(r.full_name ?? r.ref_number, 38)}
-          <span class="mono" style="font-weight:700;font-size:14px">${esc(r.ref_number)}</span>
-          ${triageBadge(r.computed_status)} ${priorityBadge(r.priority)} ${lifecycleBadge(r.lifecycle)}
-          ${overdue ? `<span class="badge b-red">${esc(slaText(r.sla_due_at, r.sla_handled_at))}</span>` : ""}
-          <span style="margin-left:auto"><a class="btn small" href="/case/${r.id}">Open case →</a></span>
-        </div>
-        <p style="margin:10px 0 2px"><b>${esc(r.full_name ?? "—")}</b> <span class="muted small">&lt;${esc(r.email_address)}&gt; ${r.programme ? `· ${esc(r.programme)}` : ""} ${r.intake ? `· ${esc(r.intake)}` : ""}</span></p>
-        <p class="small muted" style="margin:4px 0 0">${esc(r.flag_summary ? humanizeFlagSummary(r.flag_summary) : "No active flags")}</p>
-      </div>`;
-    })
-    .join("");
-
-  return head(
-    c,
-    "Queue",
-    "queue",
-    `
-<h1>Human review queue</h1>
-<div class="sub">${urgent} urgent · ${review} awaiting review</div>
-<p>
-  <a class="btn small ${filter === "all" ? "" : "ghost"}" href="/queue">All</a>
-  <a class="btn small ${filter === "urgent" ? "" : "ghost"}" href="/queue?filter=urgent">Urgent</a>
-  <a class="btn small ${filter === "overdue" ? "" : "ghost"}" href="/queue?filter=overdue">Overdue</a>
-</p>
-${cards || `<div class="card muted">Queue is empty.</div>`}`
-  );
-}
-
 // ── Admissions: the pipeline split into its levels ──────────────────────────
-// Every dashboard gauge lands here. Staff see who is at each level, open case
-// files, and act without leaving the page.
 
 const STAGE_TABS: Array<{ key: string; label: string }> = [
   { key: "all", label: "All" },
@@ -601,14 +511,40 @@ export function admissionsPage(c: Ctx, stage: string): string {
 
 // ── Applicants (features 2, 18, 19) ────────────────────────────────────────
 
+// ── Operational queues (round 18) ──────────────────────────────────────────
+
+const RESULT_BADGES: Record<string, [string, string]> = {
+  passed: ["Passed", "b-green"],
+  failed: ["Failed", "b-red"],
+  missing_data: ["Missing data", "b-blue"],
+  needs_verification: ["Needs verification", "b-orange"],
+  undetermined: ["Pending", "b-gray"],
+};
+
+const DECISION_BADGES: Record<string, [string, string]> = {
+  undecided: ["Not yet decided", "b-gray"],
+  auto_admitted: ["Auto-admitted", "b-green"],
+  admitted_after_review: ["Admitted after human review", "b-purple"],
+  not_admitted: ["Not admitted", "b-red"],
+};
+
+function resultBadge(result: string | null): string {
+  const [label, cls] = RESULT_BADGES[result ?? ""] ?? [result ?? "—", "b-gray"];
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
+
+function decisionBadge(decision: string): string {
+  const [label, cls] = DECISION_BADGES[decision] ?? [decision, "b-gray"];
+  return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
+
 export function applicantsPage(
   c: Ctx,
-  q: { search?: string; filter?: string; programme?: string; intake?: string }
+  q: { search?: string; queue?: string; sub?: string; programme?: string; intake?: string }
 ): string {
   const { repo } = c;
   const rows = repo.searchApplicants({
     q: q.search,
-    filter: (q.filter as never) || "all",
     programme: q.programme || undefined,
     intake: q.intake || undefined,
     demo: c.user.demo,
@@ -616,18 +552,65 @@ export function applicantsPage(
   const programmes = repo.listProgrammes();
   const intakes = repo.listIntakes();
 
-  const trs = rows
-    .map((r) => `<tr>
+  // Classify every row ONCE, then count and slice by queue.
+  const ids = rows.map((r) => r.id);
+  const directions = repo.lastEmailDirections(ids);
+  const docCounts = repo.docCounts(ids);
+  const evalReasons = repo.latestEvaluationReasons(ids);
+  const placed = rows.map((r) => ({
+    row: r,
+    place: queueOf(r, { lastDirection: directions.get(r.id) ?? null, hasDocuments: (docCounts.get(r.id) ?? 0) > 0 }),
+  }));
+
+  const queueTotals = new Map<QueueKey, number>();
+  for (const qm of QUEUES) queueTotals.set(qm.key, 0);
+  for (const p of placed) queueTotals.set(p.place.queue, (queueTotals.get(p.place.queue) ?? 0) + 1);
+
+  const activeKey: QueueKey = (QUEUES.some((qm) => qm.key === q.queue) ? q.queue : "human_review") as QueueKey;
+  const active = QUEUES.find((qm) => qm.key === activeKey)!;
+  const inActive = placed.filter((p) => p.place.queue === activeKey);
+  const subCounts = new Map<string, number>();
+  for (const p of inActive) subCounts.set(p.place.sub, (subCounts.get(p.place.sub) ?? 0) + 1);
+  // A text search spans EVERY queue — you are looking for a person, not a bucket.
+  const searchMode = Boolean(q.search && q.search.trim());
+  const shown = searchMode
+    ? placed
+    : q.sub && active.subs.some((s) => s.key === q.sub)
+      ? inActive.filter((p) => p.place.sub === q.sub)
+      : inActive;
+
+  const tabs = QUEUES.map((qm) => `
+    <a class="stat-mini ${qm.key === activeKey ? "sel" : ""}" href="/applicants?queue=${qm.key}">
+      <span class="n">${queueTotals.get(qm.key) ?? 0}</span>
+      <span class="l">${esc(qm.label)}</span>
+    </a>`).join("");
+
+  const chips = [
+    `<a class="chip ${!q.sub ? "sel" : ""}" href="/applicants?queue=${activeKey}">All (${inActive.length})</a>`,
+    ...active.subs.map((s) =>
+      `<a class="chip ${q.sub === s.key ? "sel" : ""}" href="/applicants?queue=${activeKey}&sub=${s.key}">${esc(s.label)} (${subCounts.get(s.key) ?? 0})</a>`
+    ),
+  ].join("");
+
+  const toneClass = (tone: string): string =>
+    tone === "green" ? "b-green" : tone === "purple" ? "b-purple" : tone === "orange" ? "b-orange" : tone === "blue" ? "b-blue" : "b-gray";
+
+  const trs = shown
+    .map(({ row: r, place }) => {
+      const detail = evalReasons.get(r.id);
+      const why = detail ? esc(detail.length > 96 ? detail.slice(0, 96) + "…" : detail) : "";
+      const rowQueue = QUEUES.find((qm) => qm.key === place.queue)!;
+      return `<tr>
       <td class="mono"><a href="/case/${r.id}">${esc(r.ref_number)}</a></td>
-      <td><div class="nameline">${avatar(r.full_name ?? r.ref_number, 28)}<span>${esc(r.full_name ?? "—")}</span></div></td>
-      <td class="small">${esc(r.email_address)}${r.phone ? `<br><span class="muted">${esc(r.phone)}</span>` : ""}</td>
-      <td>${esc(r.programme ?? "—")}</td>
-      <td>${esc(r.intake ?? "—")}</td>
-      <td>${lifecycleBadge(r.lifecycle)}</td>
-      <td>${triageBadge(r.triage)}</td>
-      <td>${priorityBadge(r.priority)}</td>
+      <td><div class="nameline">${avatar(r.full_name ?? r.ref_number, 28)}<span>${esc(r.full_name ?? "—")}<br><span class="muted small">${esc(r.email_address)}</span></span></div></td>
+      <td class="small">${esc(r.programme ?? "—")}${r.intake ? `<br><span class="muted">${esc(r.intake)}</span>` : ""}</td>
+      <td class="small"><span class="badge ${toneClass(rowQueue.tone)}">${esc(SUB_LABELS[place.sub] ?? place.sub)}</span><br><span class="muted">${why}</span></td>
+      <td>${resultBadge(r.req_result)}</td>
+      <td>${decisionBadge(r.admission_decision)}</td>
       <td class="small muted nowrap">${esc(fmtDate(r.created_at))}</td>
-    </tr>`)
+      <td><a class="btn small" href="/case/${r.id}">Open</a></td>
+    </tr>`;
+    })
     .join("");
 
   const opt = (v: string, label: string, sel?: string) =>
@@ -635,54 +618,40 @@ export function applicantsPage(
 
   return head(
     c,
-    "Applicants",
+    searchMode ? "Search — Queues" : `${active.label} — Queues`,
     "applicants",
     `
-<h1>Applicants</h1>
-<div class="sub">${rows.length} case file(s)${q.filter && q.filter !== "all" ? " · filtered" : ""}</div>
-${(() => {
-    const filters: Array<[string, string]> = [
-      ["all", "All applicants"],
-      ["awaiting_docs", "Awaiting documents"],
-      ["human_review", "Needs human review"],
-      ["complete", "Complete"],
-      ["overdue", "Overdue"],
-    ];
-    const current = q.filter && q.filter !== "all" ? q.filter : "all";
-    const link = (f: string): string => {
-      const params = new URLSearchParams();
-      if (q.search) params.set("q", q.search);
-      if (q.programme) params.set("programme", q.programme);
-      if (q.intake) params.set("intake", q.intake);
-      if (f !== "all") params.set("filter", f);
-      const qs = params.toString();
-      return `/applicants${qs ? `?${qs}` : ""}`;
-    };
-    const count = (f: string): number =>
-      repo.searchApplicants({ ...q, filter: f === "all" ? undefined : (f as NonNullable<ApplicantSearchQuery["filter"]>), limit: 100000, demo: c.user.demo }).length;
-    return `<div class="tabs">${filters
-      .map(([f, label]) => `<a href="${esc(link(f))}" class="${current === f ? "on" : ""}">${label}<span class="cnt">${count(f)}</span></a>`)
-      .join("")}</div>`;
-  })()}
-<form class="card formrow" method="get" action="/applicants">
-  <div style="flex:2"><label>Search</label><input type="text" name="q" placeholder="Reference, name, email, phone…" value="${esc(q.search ?? "")}"></div>
-  <input type="hidden" name="filter" value="${esc(q.filter ?? "")}">
-  <div><label>Programme</label><select name="programme">${opt("", "All programmes", q.programme || "")}${programmes.map((p) => opt(p.code, `${p.code} — ${p.name}`, q.programme)).join("")}</select></div>
-  <div><label>Intake</label><select name="intake">${opt("", "All intakes", q.intake || "")}${intakes.map((i) => opt(i, i, q.intake)).join("")}</select></div>
-  <div style="flex:0"><label>&nbsp;</label><button class="btn">Apply</button></div>
+<h1>Queues</h1>
+<div class="sub">${searchMode
+    ? `${shown.length} match${shown.length === 1 ? "" : "es"} across all queues.`
+    : `${esc(active.caption)} — the subcategory says why a case is here.`}</div>
+
+<div class="queue-tabs">${tabs}</div>
+
+<form class="inline" method="get" action="/applicants">
+  <input type="hidden" name="queue" value="${esc(activeKey)}">
+  <input name="q" value="${esc(q.search ?? "")}" placeholder="Search name, email, reference…">
+  <select name="programme"><option value="">All programmes</option>${programmes.map((p) => opt(p.code, p.name, q.programme)).join("")}</select>
+  <select name="intake"><option value="">All intakes</option>${intakes.map((i) => opt(i, i, q.intake)).join("")}</select>
+  <button class="btn ghost">Filter</button>
+  ${c.user.role === "admin" ? `<a class="btn small ghost" href="/applicants/export.csv">Export CSV</a>` : ""}
 </form>
-<div class="card">
-<table>
-  <tr><th>Ref</th><th>Name</th><th>Contact</th><th>Prog.</th><th>Intake</th><th>Lifecycle</th><th>Triage</th><th>Priority</th><th>Opened</th></tr>
-  ${trs || `<tr><td colspan="9" class="muted">No applicants match.</td></tr>`}
-</table>
-</div>`
+
+<section class="card">
+  ${searchMode ? "" : `<div class="chips">${chips}</div>`}
+  ${shown.length
+    ? `<table>
+        <tr><th>Ref</th><th>Applicant</th><th>Programme</th><th>Why it's here</th><th>Requirement result</th><th>Admission decision</th><th>Opened</th><th></th></tr>
+        ${trs}
+      </table>`
+    : searchMode
+      ? `<div class="empty"><h3>No matches</h3><p>Nothing matches that search in this dataset.</p></div>`
+      : `<div class="empty"><h3>Nothing in this queue</h3><p>Cases move here automatically as their situation changes.</p></div>`}
+</section>`
   );
 }
 
-// ── Case file (feature 12) ─────────────────────────────────────────────────
 
-/** Flags mentioned in a decision-log reasoning block ("[type] detail" lines). */
 function reasoningFlags(reasoning: string): Set<string> {
   const out = new Set<string>();
   for (const line of reasoning.split("\n")) {
@@ -746,6 +715,107 @@ function humanizeFlagSummary(summary: string): string {
   return summary.split(",").map((t) => t.trim()).filter(Boolean).map(flagLabel).join(", ");
 }
 
+// ── Admission eligibility panel (round 18) ─────────────────────────────────
+// Structured evaluation: per-rule rows (applicant value vs required), the
+// automated routing verdict, and the human-decision form. The word "rejected"
+// never appears anywhere — a failed rule means HUMAN REVIEW, nothing else.
+
+const ROUTING_TEXT: Record<string, [string, string, string]> = {
+  auto_admit: ["b-green", "Auto-admit", "Every configured requirement is satisfied — the system may progress this file and send the admission letter."],
+  human_review: ["b-orange", "Human Review Required", "The automated path cannot decide this case. A person must review it before anything is decided."],
+  waiting_documents: ["b-blue", "Waiting for Documents", "Missing information is waiting on the applicant — absence is never interpreted as failure."],
+};
+
+function evaluationPanel(c: Ctx, a: ApplicantRow): string {
+  const { repo } = c;
+  const ev = repo.latestEvaluation(a.id);
+  const programme = a.programme ? repo.programmeByCode(a.programme) : undefined;
+  const ctxLine = `${programme ? `${esc(programme.code)} ${esc(programme.name)}` : esc(a.programme ?? "No programme yet")}${a.intake ? ` · ${esc(a.intake)}` : ""}`;
+
+  if (!ev) {
+    const requirements = repo.effectiveRequirements(a);
+    const activeDocs = repo.listDocuments(a.id, { activeOnly: true });
+    const required = requirements.filter((r) => r.required);
+    const supplied = required.filter((r) => activeDocs.some((d) => d.document_type === r.document_type)).length;
+    return `<section class="sec">
+      <div class="sec-head"><h2>Admission eligibility</h2>${resultBadge(a.req_result)}</div>
+      <p class="sec-sub">${ctxLine} — no evaluation has run yet. It starts automatically once documents arrive.</p>
+      ${required.length ? `<div class="req-progress ${supplied >= required.length ? "full" : ""}"><span class="big">${supplied} / ${required.length}</span><span class="cap">required documents supplied</span></div>` : ""}
+    </section>`;
+  }
+
+  const sysLabel = ev.system ? (SYSTEM_LABELS[ev.system] ?? ev.system) : null;
+  const leafRows = ev.leaves
+    .map((l) => {
+      const mk = l.status === "passed" ? `<span class="mk ok">✓</span>` : l.status === "failed" ? `<span class="mk no">✕</span>` : `<span class="mk opt">?</span>`;
+      const note = l.via ? ` <span class="muted small">via ${esc(l.via)}</span>` : "";
+      return `<tr><td>${esc(l.label)}${note}</td><td>${esc(l.required)}</td><td>${esc(l.applicantValue ?? "—")}</td><td class="ctr">${mk}</td></tr>`;
+    })
+    .join("");
+  const groupRows = ev.groups
+    .filter((g) => g.via)
+    .map((g) => `<div class="small muted" style="margin-top:4px">Group alternative satisfied: <b>${esc(g.via)}</b> (${esc(g.label)})</div>`)
+    .join("");
+  const missingDocs = ev.missingDocuments.length
+    ? `<div class="small" style="margin-top:8px">Still missing: ${ev.missingDocuments.map((m) => `<span class="badge b-blue">${esc(m)}</span>`).join(" ")}</div>`
+    : "";
+  const blocking = ev.blockingFlags.length
+    ? `<div class="small" style="margin-top:8px">Blocking flags: ${ev.blockingFlags.map((f) => `<span class="badge b-orange">${esc(flagLabel(f))}</span>`).join(" ")}</div>`
+    : "";
+  const [toneCls, toneLabel, toneText] = ROUTING_TEXT[ev.routing] ?? ROUTING_TEXT.human_review;
+  const reasonLine = ev.routing !== "auto_admit" && ev.reason ? `<div style="margin-top:6px"><b>Why:</b> ${esc(ev.reason)}</div>` : "";
+
+  const decided = a.admission_decision !== "undecided";
+  const decisionBlock = decided
+    ? `<div class="routing-block ${a.admission_decision === "not_admitted" ? "b-red" : a.admission_decision === "auto_admitted" ? "b-green" : "b-purple"}">
+        <b>${esc((DECISION_BADGES[a.admission_decision] ?? [a.admission_decision])[0])}</b>
+        · ${a.admission_route === "human" ? "decided by a person" : "decided automatically"}${a.decision_by ? ` — ${esc(a.decision_by)}` : ""}
+        ${a.decision_reason ? `<div class="small" style="margin-top:4px">${esc(a.decision_reason)}</div>` : ""}
+       </div>`
+    : ev.routing !== "auto_admit"
+      ? `<form class="decision-form" method="post" action="/case/${a.id}/admission-decision">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          <h3 style="margin:0 0 8px">Human decision</h3>
+          <p class="small muted" style="margin:0 0 10px">The automated path stopped here. If the applicant should still be admitted — alternative qualification, approved exception, special consideration, documented pathway — record it below. It is stored as a HUMAN decision, separately from anything automated, with your name on the audit trail.</p>
+          <div class="row">
+            <select name="route">
+              <option value="alternative_qualification">Alternative qualification</option>
+              <option value="approved_exception">Approved exception</option>
+              <option value="special_consideration">Special consideration</option>
+              <option value="documented_pathway">Documented pathway</option>
+              <option value="standard_review">Standard review</option>
+            </select>
+            <input name="reason" required placeholder="Reason — recorded on the audit trail" style="flex:1">
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button class="btn" name="decision" value="admit">Admit after Human Review</button>
+            <button class="btn danger" name="decision" value="decline">Not Admitted</button>
+          </div>
+        </form>`
+      : "";
+
+  return `<section class="sec">
+    <div class="sec-head"><h2>Admission eligibility</h2>
+      <div>${resultBadge(ev.result)} ${decisionBadge(a.admission_decision)}</div>
+    </div>
+    <p class="sec-sub">${ctxLine}${sysLabel ? ` · ${esc(sysLabel)}` : ""}${ev.setVersion ? ` · requirement set v${ev.setVersion}${ev.frozenAt ? ` (frozen ${esc(fmtDate(ev.frozenAt))})` : ""}` : ""}</p>
+    ${ev.leaves.length
+      ? `<table class="ruletable"><tr><th>Rule</th><th>Required</th><th>Applicant</th><th class="ctr">Result</th></tr>${leafRows}</table>${groupRows}`
+      : `<p class="small muted">No individual rules were evaluated in this run.</p>`}
+    ${missingDocs}${blocking}
+    <div class="routing-block ${toneCls}" style="margin-top:14px">
+      <b>Automated routing: ${esc(toneLabel)}</b><span class="small muted" style="margin-left:8px">${esc(ev.evaluatedAt ? fmtDate(ev.evaluatedAt) : "")}</span>
+      <div style="margin-top:4px">${esc(toneText)}</div>
+      ${reasonLine}
+    </div>
+    ${decisionBlock}
+    <div class="row" style="margin-top:12px;justify-content:space-between">
+      <span class="small muted">Evaluations are reproducible from the stored rule version and applicant data — ${ev.frozenAt ? "this case keeps its frozen set; configuration changes only affect future evaluations." : "no requirement set has been frozen yet."}</span>
+      <form method="post" action="/case/${a.id}/reevaluate" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Re-run evaluation</button></form>
+    </div>
+  </section>`;
+}
+
 export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { subject: string; body: string } | null): string {
   const { repo } = c;
   const requirements = repo.effectiveRequirements(a);
@@ -774,7 +844,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
   const programme = a.programme ? repo.programmeByCode(a.programme) : undefined;
   const staffById = new Map(staff.map((m) => [m.id, m.display_name]));
   const handledBy = a.assigned_to ? staffById.get(a.assigned_to) : programme?.owner_name ?? null;
-  const isMgr = c.user.role === "admin" || c.user.role === "manager";
+  const isMgr = c.user.role === "admin";
 
   const staffOptions = staff.map((s) => `<option value="${s.id}" ${a.assigned_to === s.id ? "selected" : ""}>${esc(s.display_name)}</option>`).join("");
   const tplOptions = templates.map((t) => `<option value="${esc(t.key)}">${esc(t.name)}</option>`).join("");
@@ -947,27 +1017,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       </div>
     </section>
 
-    <!-- Admission requirements -->
-    <section class="sec">
-      <div class="sec-head"><h2>Admission requirements</h2></div>
-      <p class="sec-sub">What this applicant needs, and what has been supplied${programme ? ` — <b>${esc(programme.code)} ${esc(programme.name)}</b>` : ""}.</p>
-      <div class="req-cols">
-        <div>
-          <h3 style="margin:0 0 6px;font-size:13px">Required</h3>
-          <ul class="req-list">${requiredReqs.map((r) => reqItem(r, false)).join("") || `<li class="muted">No required documents configured.</li>`}</ul>
-        </div>
-        <div>
-          <h3 style="margin:0 0 6px;font-size:13px">Optional</h3>
-          <ul class="req-list">${optionalReqs.map((r) => reqItem(r, true)).join("") || `<li class="muted">No optional documents.</li>`}</ul>
-        </div>
-      </div>
-      <div class="req-progress ${requiredReqs.length > 0 && requiredSupplied >= requiredReqs.length ? "full" : ""}">
-        <span class="big">${requiredSupplied} / ${requiredReqs.length}</span>
-        <span class="cap">required documents supplied</span>
-      </div>
-      ${programme?.entry_requirements ? `<details style="margin-top:16px"><summary class="small" style="cursor:pointer;font-weight:700">View published entry requirements</summary><p class="small muted" style="margin:8px 0 0">${esc(programme.entry_requirements)} <span class="muted">— editable in Configuration.</span></p></details>` : ""}
-      <p class="small muted" style="margin-top:14px">${a.requirements_snapshot ? "Judged by the requirement set frozen at first triage (rule changes don't move goalposts)." : `Resolved for ${esc(a.programme ?? "all programmes")} / ${esc(a.intake ?? "all intakes")}`} — grade rules are editable in Configuration.</p>
-    </section>
+    ${evaluationPanel(c, a)}
 
     <!-- Document checklist -->
     <section class="sec">
@@ -1145,7 +1195,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
         ${triageBadge(lastDecision.computed_status)}
         <span class="small muted">${lastDecision.auto_sent ? "auto-sent" : "human review required"}</span>
       </div>
-      <p class="small muted" style="margin:0 0 10px">Orange means a person must review this case — it is never an automatic approval or rejection.</p>
+      <p class="small muted" style="margin:0 0 10px">Orange means a person must review this case — it is never an automatic decision either way.</p>
       <details><summary class="small" style="cursor:pointer;font-weight:700">View reasoning</summary>
         <pre style="white-space:pre-wrap;font-size:12.5px;margin:8px 0 0">${esc(lastDecision.reasoning)}</pre>
       </details>
@@ -1489,7 +1539,173 @@ function documentsPackCard(c: Ctx): string {
 </script>`;
 }
 
-export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string): string {
+// ── Requirements Configuration (round 18) ─────────────────────────────────
+// Structured, machine-evaluable rules per (programme × qualification system).
+// Visual builder only — no code, no raw expressions. Draft → preview → activate.
+
+const FIELD_LABELS: Record<string, string> = {
+  mean_grade: "Mean grade",
+  subject: "Subject grade",
+  credits: "Total credits",
+  principals: "Principal passes",
+  subsidiaries: "Subsidiary passes",
+  points: "Total points",
+  gpa: "GPA",
+  class: "Degree class",
+};
+
+/** Recursive visual builder for one node of the rule tree. */
+function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, depth: number, subjects: string[]): string {
+  const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
+  const targetFields = `<input type="hidden" name="target" value="${esc(target)}"><input type="hidden" name="system" value="${esc(system)}">`;
+  const pad = depth * 18;
+
+  if (node.kind === "group") {
+    const logicForm = `<form class="node-row" method="post" action="/config/requirements/node-save" style="margin-left:${pad}px">
+      ${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}">
+      <span class="badge b-purple">Group</span>
+      <select name="logic" style="width:auto">
+        ${["AND", "OR", "NOT"].map((l) => `<option value="${l}" ${node.logic === l ? "selected" : ""}>${l === "NOT" ? "NOT (none of)" : l}</option>`).join("")}
+      </select>
+      <button class="btn small ghost" title="Save group logic">Save</button>
+    </form>`;
+    const addButtons = `<div class="node-add" style="margin-left:${pad + 18}px">
+      <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${targetFields}<input type="hidden" name="parent" value="${node.id}"><input type="hidden" name="kind" value="condition"><button class="btn small ghost">+ Condition</button></form>
+      <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${targetFields}<input type="hidden" name="parent" value="${node.id}"><input type="hidden" name="kind" value="group"><button class="btn small ghost">+ Subgroup</button></form>
+      <form method="post" action="/config/requirements/node-delete" style="margin:0" onsubmit="return confirm('Remove this group and everything inside it?')">${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}"><button class="btn small ghost" style="color:#A11F2E">Remove group</button></form>
+    </div>`;
+    const children = (node.children ?? []).map((ch) => ruleNodeEditor(c, target, system, ch, depth + 1, subjects)).join("");
+    return `${logicForm}${addButtons}${children}`;
+  }
+
+  const isSubject = node.field === "subject";
+  const subjectSelect = isSubject
+    ? `<select name="subject" style="width:auto;min-width:160px" title="Subject">
+        <option value="">— subject —</option>
+        ${subjects.map((s) => `<option value="${esc(s)}" ${node.subject === s ? "selected" : ""}>${esc(s)}</option>`).join("")}
+      </select>`
+    : "";
+  return `<form class="node-row" method="post" action="/config/requirements/node-save" style="margin-left:${pad}px">
+    ${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}">
+    <span class="mk ${node.value ? "ok" : "opt"}">${node.value ? "✓" : "…"}</span>
+    <select name="field" style="width:auto" title="What is checked">
+      ${Object.entries(FIELD_LABELS).map(([k, v]) => `<option value="${k}" ${node.field === k ? "selected" : ""}>${v}</option>`).join("")}
+    </select>
+    ${subjectSelect}
+    <span class="muted small">≥</span>
+    <input type="hidden" name="comparator" value=">=">
+    <input name="value" value="${esc(node.value ?? "")}" placeholder="e.g. C+ / 12 / 3.0" style="width:130px;margin:0">
+    <button class="btn small ghost">Save</button>
+    <form method="post" action="/config/requirements/node-delete" style="margin:0" onsubmit="return confirm('Remove this condition?')">${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}"><button class="btn small ghost" style="color:#A11F2E">✕</button></form>
+  </form>`;
+}
+
+function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): string {
+  const { repo } = c;
+  const programmes = repo.listProgrammes();
+
+  const system = (reqsSystem && (ADMISSION_SYSTEMS as readonly string[]).includes(reqsSystem) ? reqsSystem : "KCSE") as AdmissionSystem;
+  const targetOptions = [
+    ["BASE:degree", "University-wide default — Degree"],
+    ["BASE:diploma", "University-wide defaults — Diploma"],
+    ["BASE:certificate", "University-wide defaults — Certificate"],
+    ["BASE:postgrad", "University-wide defaults — Postgraduate"],
+    ...programmes.map((p) => [p.code, `${p.code} · ${p.name}`] as [string, string]),
+  ];
+  const target = reqsTarget && targetOptions.some(([v]) => v === reqsTarget) ? reqsTarget : "BASE:degree";
+  const isBase = target.startsWith("BASE:");
+  const level = (isBase ? target.slice(5) : repo.programmeByCode(target)?.level ?? "degree") as CourseLevel;
+  const programme = isBase ? null : target.toUpperCase();
+
+  const active = repo.listRuleSets({ programme, status: "active", system }).find((s) => s.level === level);
+  const draft = repo.getDraftSet(programme, level, system);
+  const shown = draft ?? active;
+  const shownTree = shown ? repo.getRuleTree(shown.id) : [];
+  const catalogue = repo.listSubjectCatalogue(system).filter((s) => s.active === 1);
+  const subjects = catalogue.map((s) => s.name);
+  const sysLabel = SYSTEM_LABELS[system] ?? system;
+
+  const targetBar = `<form class="inline" method="get" action="/config" id="reqbuilder" style="margin-bottom:18px">
+    <input type="hidden" name="tab" value="requirements">
+    <label class="small muted">Programme</label>
+    <select name="reqs" onchange="this.form.submit()">
+      ${targetOptions.map(([v, l]) => `<option value="${esc(v)}" ${target === v ? "selected" : ""}>${esc(l)}</option>`).join("")}
+    </select>
+    <label class="small muted">Qualification system</label>
+    <select name="system" onchange="this.form.submit()">
+      ${ADMISSION_SYSTEMS.map((s) => `<option value="${s}" ${system === s ? "selected" : ""}>${esc(SYSTEM_LABELS[s])}</option>`).join("")}
+    </select>
+  </form>`;
+
+  const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
+  const tf = `<input type="hidden" name="target" value="${esc(target)}"><input type="hidden" name="system" value="${esc(system)}">`;
+
+  const versionNote = shown
+    ? shown.status === "draft"
+      ? `<span class="badge b-orange">DRAFT v${shown.version}</span> <span class="small muted">based on active v${shown.version - 1} — not yet judging anyone</span>`
+      : `<span class="badge b-green">ACTIVE v${shown.version}</span> <span class="small muted">edits create a draft; the active set keeps judging until you activate the replacement</span>`
+    : `<span class="badge b-gray">NO SET YET</span>`;
+
+  const builder = shown ? `
+    <div class="node-add" style="margin-bottom:10px">
+      <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${tf}<input type="hidden" name="kind" value="condition"><button class="btn small ghost">+ Top-level condition</button></form>
+      <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${tf}<input type="hidden" name="kind" value="group"><button class="btn small ghost">+ Top-level group</button></form>
+    </div>
+    ${shownTree.length ? shownTree.map((n) => ruleNodeEditor(c, target, system, n, 0, subjects)).join("") : `<p class="small muted">No rules yet — add a condition (e.g. Mean grade ≥ C+) or a group (OR-alternatives).</p>`}
+  ` : `<p class="small muted">No requirement set exists for this programme/system yet — add a first rule to create a draft.</p>
+    <form method="post" action="/config/requirements/node-add" style="margin:10px 0 0">${csrf}${tf}<input type="hidden" name="kind" value="condition"><button class="btn small">Start a rule set</button></form>`;
+
+  const preview = shown ? `
+    <h3 style="margin:0 0 6px;font-size:13px">Preview before activation</h3>
+    <p class="small" style="margin:0 0 8px"><b>Rule rendering:</b> ${esc(describeRuleTree(shownTree))}</p>
+    <p class="small" style="margin:0 0 12px"><b>What it means:</b> ${esc(interpretRuleTree(shownTree, sysLabel))}</p>
+    ${draft ? `<div class="row">
+      <form method="post" action="/config/requirements/activate" style="margin:0" onsubmit="return confirm('Activate draft v${draft.version}? New evaluations will use it; historical cases keep their frozen version.')">${csrf}${tf}<button class="btn">Activate draft v${draft.version}</button></form>
+      <form method="post" action="/config/requirements/discard" style="margin:0" onsubmit="return confirm('Discard the draft? The active requirement set stays as it is.')">${csrf}${tf}<button class="btn ghost">Discard draft</button></form>
+    </div>` : `<p class="small muted" style="margin:0">Nothing to activate — you are looking at the active set.</p>`}
+  ` : "";
+
+  const allCatalogue = repo.listSubjectCatalogue();
+  const systemsWithSubjects = ADMISSION_SYSTEMS.filter((s) => allCatalogue.some((r) => r.system === s));
+  const catalogueRows = systemsWithSubjects.map((s) => {
+    const items = allCatalogue.filter((r) => r.system === s);
+    return `<details ${s === system ? "open" : ""} style="margin-bottom:8px">
+      <summary style="cursor:pointer;font-weight:700;font-size:13px">${esc(SYSTEM_LABELS[s])} <span class="muted small">(${items.length})</span></summary>
+      <table style="margin-top:6px"><tr><th>Subject</th><th>Status</th><th></th></tr>
+        ${items.map((r) => `<tr>
+          <td>${esc(r.name)}</td>
+          <td>${r.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-gray">retired</span>`}</td>
+          <td><form method="post" action="/config/requirements/catalogue-toggle" style="margin:0">${csrf}<input type="hidden" name="id" value="${r.id}"><button class="btn small ghost">${r.active ? "Retire" : "Restore"}</button></form></td>
+        </tr>`).join("")}
+      </table>
+    </details>`;
+  }).join("");
+
+  return `
+<section class="card">
+  <h2>Entry requirements <span class="muted small" style="text-transform:none;letter-spacing:0">— structured rules the engine can evaluate, per qualification route</span></h2>
+  <p class="small muted" style="margin-top:-4px">Rules are built visually with AND / OR / NOT groups — never as code. Drafts are previewed below before activation; activated sets are versioned, and historical cases keep the version they were evaluated against.</p>
+  ${targetBar}
+  ${versionNote}
+  <div style="margin-top:14px">${builder}</div>
+</section>
+
+${shown ? `<section class="card" id="reqpreview">${preview}</section>` : ""}
+
+<section class="card" id="catalogue">
+  <h2>Subject catalogue <span class="muted small" style="text-transform:none;letter-spacing:0">— managed centrally, shared by every programme</span></h2>
+  ${catalogueRows || `<p class="small muted">The catalogue is empty.</p>`}
+  <form class="inline" method="post" action="/config/requirements/catalogue-add" style="margin-top:10px">
+    ${csrf}
+    <select name="system" style="width:auto">${ADMISSION_SYSTEMS.map((s) => `<option value="${s}" ${s === system ? "selected" : ""}>${esc(SYSTEM_LABELS[s])}</option>`).join("")}</select>
+    <input name="name" placeholder="New subject name" style="max-width:260px">
+    <button class="btn ghost">Add subject</button>
+  </form>
+</section>`;
+}
+
+export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsSystem?: string): string {
+
   const { repo } = c;
   const settings = repo.allSettings();
   const rules = repo.listRules();
@@ -1546,8 +1762,9 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, re
   const gRefresh = settings["gmail_refresh_token"] ?? "";
   const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
 
-  const tab = tabChoice === "replies" ? "replies" : "courses";
+  const tab = tabChoice === "requirements" ? "requirements" : tabChoice === "replies" ? "replies" : "courses";
   const tabBar = `<div class="tabs" style="margin:0 0 20px">
+    <a href="/config?tab=requirements" class="${tab === "requirements" ? "on" : ""}">Requirements</a>
     <a href="/config?tab=courses" class="${tab === "courses" ? "on" : ""}">Course configuration</a>
     <a href="/config?tab=replies" class="${tab === "replies" ? "on" : ""}">Reply configuration</a>
   </div>`;
@@ -1572,16 +1789,16 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, re
   const courseHtml = `
 <div class="card nopad" id="courses">
   <div class="card-head"><h2>Courses &amp; ownership</h2></div>
-  <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone — assign the responsible officer here or straight from the administration overview. The notes column is free-text reference; the <b>enforced</b> subject-and-grade rules for each course live in the entry-requirements editor below.</p>
+  <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone — assign the responsible officer here. The notes column is free-text reference; the <b>enforced</b> subject-and-grade rules for each course live in the <a href="/config?tab=requirements">Requirements tab</a>.</p>
   ${programmes.length
     ? `<table><tr><th>Programme</th><th>Course details &amp; reference notes</th><th>Handled by</th></tr>${courseRows}</table>`
     : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
   <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
-    <h2 id="entryreqs">Entry requirements by qualification</h2>
-    ${entryRequirementsEditor(c, programmes, reqsTarget && reqsTarget.length ? reqsTarget : "BASE:degree")}
+    <h2 id="entryreqs">Entry requirements</h2>
+    <p class="small muted" style="margin-top:-2px">Entry requirements are now structured, machine-evaluable rules — built visually per programme and qualification system, with a preview before activation. <a href="/config?tab=requirements">Open the Requirements tab →</a></p>
 
-    <h2 style="margin-top:20px">Requirement rules (all courses)</h2>
-    <p class="small muted" style="margin-top:-6px">Most specific rule wins: programme+intake → programme → intake → base (all).</p>
+    <h2 style="margin-top:20px">Required documents (all courses)</h2>
+    <p class="small muted" style="margin-top:-6px">Which documents must be present before evaluation runs. Most specific rule wins: programme+intake → programme → intake → base (all).</p>
     <table><tr><th>Programme</th><th>Intake</th><th>Document</th><th>Required?</th><th>Grades</th><th></th></tr>${ruleRows}</table>
     <form method="post" action="/settings/rules/add" class="formrow" style="margin-top:14px">
       <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -1589,7 +1806,7 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, re
       <div><label>Intake</label><select name="intake"><option value="">All intakes</option>${intakes.map((i) => `<option value="${esc(i)}">${esc(i)}</option>`).join("")}</select></div>
       <div><label>Document</label><select name="document_type">${(["academic_cert", "kcpe_cert", "id", "birth_cert", "application_form"] as DocType[]).map((d) => `<option value="${d}">${esc(docLabel(d))}</option>`).join("")}</select></div>
       <div><label>Required</label><select name="required"><option value="1">required</option><option value="0">optional</option></select></div>
-      <div style="flex:2"><label>&nbsp;</label><span class="small muted">Grade checks live in the entry-requirements editor above — this table only controls which documents must be present.</span></div>
+      <div style="flex:2"><label>&nbsp;</label><span class="small muted">Grade rules live in the Requirements tab — this table only controls which documents must be present.</span></div>
       <div style="flex:0"><label>&nbsp;</label><button class="btn">Add rule</button></div>
     </form>
     <h2 style="margin-top:26px" id="addcourse">Add a course or intake</h2>
@@ -1715,7 +1932,7 @@ ${documentsPackCard(c)}
 <div class="sub">Courses, requirements, deadlines and reply behaviour — changes apply to newly processed email immediately.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 ${tabBar}
-${tab === "courses" ? courseHtml : replyHtml}
+${tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : tab === "courses" ? courseHtml : replyHtml}
 `
   );
 }
@@ -1797,20 +2014,41 @@ ${repo.listStaff().some((st) => onDefaultPassword(st.username))
     <div><label>Username</label><input type="text" name="username" required></div>
     <div><label>Display name</label><input type="text" name="display_name" required></div>
     <div><label>Password</label><input type="password" name="password" required></div>
-    <div><label>Role</label><select name="role"><option value="officer">officer</option><option value="it">it</option><option value="manager">manager</option><option value="admin">admin</option></select></div>
+    <div><label>Role</label><select name="role"><option value="user" selected>user</option><option value="admin">admin</option></select></div>
     <div style="flex:0"><label>&nbsp;</label><button class="btn">Create</button></div>
   </form>
-  <p class="small muted" style="margin-bottom:0">Roles: <b>admin</b> (everything) · <b>manager</b> (cases + configuration) · <b>officer</b> (cases only) · <b>it</b> (cases + automation/settings, no staff management)</p>
+  <p class="small muted" style="margin-bottom:0">Roles: <b>admin</b> (everything — configuration, settings, staff, cases) · <b>user</b> (cases, replies and queues).</p>
 </section>`
     : `<p class="small muted">Account management is limited to administrators — you are seeing the team report only.</p>`;
 
+  // Courses & ownership — moved here from the overview (round 18).
+  const staffList = repo.listStaff().filter((m) => m.active);
+  const assignForm = (p: { code: string; owner_id: number | null }) =>
+    `<form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <input type="hidden" name="programme" value="${esc(p.code)}">
+      <select name="owner" style="width:auto;min-width:190px">
+        <option value="">Unassigned</option>
+        ${staffList.map((m) => `<option value="${m.id}" ${p.owner_id === m.id ? "selected" : ""}>${esc(m.display_name)} (${capFirst(m.role)})</option>`).join("")}
+      </select>
+      <button class="btn small ghost">Assign</button>
+    </form>`;
+  const programmes = repo.listProgrammes();
+  const courseRows = groupBySchool(programmes)
+    .map(([school, rows]) => `<tr class="schoolrow"><td colspan="3">${esc(school)}</td></tr>` + rows
+      .map((p) => `<tr>
+        <td><b>${esc(p.code)}</b><br><span class="small muted">${esc(p.name)}</span></td>
+        <td class="small muted">${esc(p.entry_requirements ? (p.entry_requirements.length > 110 ? p.entry_requirements.slice(0, 110) + "…" : p.entry_requirements) : "—")} <a class="small" href="/config?tab=courses">edit</a></td>
+        <td>${assignForm(p)}</td>
+      </tr>`).join("")).join("");
+
   return head(
     c,
-    "Staff",
+    "Staff Configuration",
     "staff",
     `
-<h1>Staff</h1>
-<div class="sub">Who handles what — workload, responsiveness and accounts.</div>
+<h1>Staff Configuration</h1>
+<div class="sub">Who handles what — workload, responsiveness, accounts and course ownership.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 
 <div class="cols wide">
@@ -1832,7 +2070,15 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
   </section>
 </div>
 
-${accountsSection}`
+${accountsSection}
+
+<section class="card nopad">
+  <div class="card-head"><h2>Courses &amp; ownership</h2><a class="small" href="/config?tab=courses">course details →</a></div>
+  <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone — assign the responsible person here. Course details, notes and adding new courses live in Configuration.</p>
+  ${programmes.length
+    ? `<table><tr><th>Programme</th><th>Published entry requirements</th><th>Handled by</th></tr>${courseRows}</table>`
+    : `<div class="empty"><p>No courses yet — add the first one in Configuration.</p></div>`}
+</section>`
   );
 }
 

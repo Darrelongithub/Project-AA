@@ -106,8 +106,9 @@ describe("identity matching (features 4, 5, 34)", () => {
 
   it("pipeline: completed case + new substantive email → SAME case reopened", async () => {
     const first = await processEmail(mkEmail("u1", "tu-a", "uma@example.org", { attachments: await fullSet("UMA WANJIRU MUTURI") }), ctx);
-    expect(first.lifecycle).toBe("documents_checked");
-    repo.setLifecycle(first.applicantId, "completed", "manager", "test");
+    // Round 18: a clean, fully qualified file is auto-admitted straight to
+    // "completed" — so reopen behaviour is exercised against that state.
+    expect(first.lifecycle).toBe("completed");
 
     const res = await processEmail(
       mkEmail("u2", "tu-b", "uma@example.org", { attachments: [await mkAtt("i2.pdf", "id", "UMA WANJIRU MUTURI", { idNumber: "99988877" })] }),
