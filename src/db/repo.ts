@@ -621,6 +621,14 @@ export class Repo {
   }
 
   private rowToDocument(r: any): DocumentRecord {
+    // The row's JSON is OURS, but a corrupt DB must degrade one document —
+    // never take down every listDocuments() call in the system.
+    let extractedFields: Record<string, unknown> = {};
+    try {
+      extractedFields = JSON.parse(r.extracted_fields || "{}");
+    } catch {
+      extractedFields = {};
+    }
     return {
       id: r.id,
       applicant_id: r.applicant_id,
@@ -628,7 +636,7 @@ export class Repo {
       source_email_id: r.source_email_id,
       extraction_method: r.extraction_method,
       extracted_text: r.extracted_text,
-      extracted_fields: JSON.parse(r.extracted_fields || "{}"),
+      extracted_fields: extractedFields,
       confidence: r.confidence,
       confidence_score: r.confidence_score ?? 0,
       superseded_by: r.superseded_by,

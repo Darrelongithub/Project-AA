@@ -44,7 +44,9 @@ export function isValidCachedVision(v: unknown): v is VisionExtraction {
     typeof v === "object" &&
     typeof (v as any).document_type === "string" &&
     typeof (v as any).text === "string" &&
-    ["high", "medium", "low"].includes((v as any).confidence)
+    ["high", "medium", "low"].includes((v as any).confidence) &&
+    typeof (v as any).fields === "object" &&
+    (v as any).fields !== null
   );
 }
 

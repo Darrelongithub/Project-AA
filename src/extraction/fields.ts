@@ -29,7 +29,9 @@ export function cleanExtractedName(raw: string): string | null {
 }
 
 const POINTS_RE = [
-  /(?:KCPE|KCSE)\s*(?:TOTAL|POINTS|MARKS)?\s*[:\-]?\s*(\d{2,3})\s*(?:POINTS|MARKS)?/i,
+  // A digit BOUNDARY after the capture is load-bearing: without it,
+  // "KCSE 2026" truncated to "202" and read as 202 points.
+  /(?:KCPE|KCSE)\s*(?:TOTAL\s*)?(?:POINTS|MARKS)?\s*[:\-]?\s*(\d{2,3})\b(?!\d)/i,
   /(\d{3})\s*(?:KCPE\s*)?(?:POINTS|MARKS)/i,
 ];
 
@@ -153,7 +155,7 @@ export function extractFields(text: string): ExtractedFields {
   }
 
   // Exam index number (document intelligence field, v3 feature 6).
-  const indexNo = text.match(/INDEX\s*(?:NO|NUMBER)\.?\s*[:\-]?\s*([0-9][0-9A-Z\/\-]{3,})/i);
+  const indexNo = text.match(/INDEX\s*(?:NO|NUMBER)\.?\s*[:\-]?\s*([0-9][0-9A-Z\/\-]{4,})/i);
   if (indexNo) fields.indexNumber = indexNo[1].toUpperCase().trim();
 
   const year = text.match(YEAR_RE);
@@ -182,7 +184,7 @@ export function extractFields(text: string): ExtractedFields {
       ibSubjects[prettifySubject(m[1])] = m[2];
     }
     if (Object.keys(ibSubjects).length) fields.subjectGrades = { ...(fields.subjectGrades ?? {}), ...ibSubjects };
-  } else if (/GCE\s+ADVANCED\s+LEVEL|ADVANCED\s+LEVEL\s+(?:EXAMINATION|RESULTS?|CERTIFICATE)|ADVANCED\s+LEVEL|\bKACE\b|\bEAACE\b|A[-\s]LEVEL/.test(up)) {
+  } else if (/GCE\s+ADVANCED\s+LEVEL|ADVANCED\s+LEVEL\s+(?:EXAMINATION|RESULTS?|CERTIFICATE)|ADVANCED\s+LEVELS?(?!\s+OF\b)|\bKACE\b|\bEAACE\b|\bA[\s-]LEVELS?(?!\s+OF\b)/.test(up)) {
     fields.examSystem = "ALEVEL";
     // Principal passes: subjects listed with a grade A–E. Subsidiary passes
     // are marked explicitly on the slip.

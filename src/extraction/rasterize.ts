@@ -72,8 +72,10 @@ export interface RasterPage {
 export interface RasterReport {
   /** Pages actually rendered and handed to the callback. */
   rendered: number;
-  /** Pages dropped by the pixel cap or the page cap. */
+  /** Pages dropped because they exceed the pixel cap even at minimum scale. */
   skipped: number;
+  /** Pages beyond the per-document page cap (never attempted). */
+  overCap: number;
   /** True when the time budget ended the run early. */
   timedOut: boolean;
 }
@@ -109,7 +111,7 @@ export async function rasterizePdf(
 ): Promise<RasterReport> {
   const o = { ...RASTER_DEFAULTS, ...opts };
   const started = Date.now();
-  const report: RasterReport = { rendered: 0, skipped: 0, timedOut: false };
+  const report: RasterReport = { rendered: 0, skipped: 0, overCap: 0, timedOut: false };
 
   const canvasFactory = {
     create(width: number, height: number): { canvas: Canvas; context: CanvasRenderingContext2D } {
@@ -136,7 +138,7 @@ export async function rasterizePdf(
 
   try {
     const count = Math.min(doc.numPages, o.maxPages);
-    report.skipped += Math.max(0, doc.numPages - count);
+    report.overCap += Math.max(0, doc.numPages - count);
     for (let p = 1; p <= count; p++) {
       if (Date.now() - started > o.timeoutMs) {
         report.timedOut = true;

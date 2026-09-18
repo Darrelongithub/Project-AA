@@ -334,8 +334,10 @@ export async function extractAttachment(
           log(`extraction: ${att.filename} → rasterised ${report.rendered} page(s) + Tesseract OCR`);
           const notes: string[] = [];
           if (truncNote) notes.push(truncNote);
-          else if (report.rendered < inspection.numPages) {
-            notes.push(`Rendered ${report.rendered} of ${inspection.numPages} pages (per-document limit).`);
+          else if (report.overCap > 0) {
+            notes.push(`Rendered ${report.rendered} of ${inspection.numPages} pages (per-document page limit).`);
+          } else if (report.rendered < inspection.numPages) {
+            notes.push(`Rendered ${report.rendered} of ${inspection.numPages} pages.`);
           }
           if (report.skipped > 0) notes.push(`${report.skipped} page(s) were too large to render.`);
           if (report.timedOut) notes.push("Rendering stopped at the time limit; later pages were not read.");
