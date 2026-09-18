@@ -204,7 +204,8 @@ describe("web: admissions, compose, gemini slot", () => {
   it("case page shows the status level next to the name and keeps the work areas", async () => {
     const a = mkApplicant({});
         const page = await (await fetch(`${base}/case/${a.id}`, { headers: { cookie: auth.cookie } })).text();
-    expect(page).toContain("Details &amp; what they applied for");
+    expect(page).toContain("Applicant overview");
+    expect(page).toContain("Applied programme");
     expect(page).toContain("Email history");
     expect(page).toContain("Audit log");
     expect(page).toContain("Status history");

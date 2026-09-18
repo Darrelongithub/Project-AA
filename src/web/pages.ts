@@ -774,77 +774,109 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
   const programme = a.programme ? repo.programmeByCode(a.programme) : undefined;
   const staffById = new Map(staff.map((m) => [m.id, m.display_name]));
   const handledBy = a.assigned_to ? staffById.get(a.assigned_to) : programme?.owner_name ?? null;
+  const isMgr = c.user.role === "admin" || c.user.role === "manager";
 
-  const checklist = requirements
-    .filter((r) => r.required)
-    .map((r) => {
-      const doc = activeDocs.find((d) => d.document_type === r.document_type);
-      const gradeBits: string[] = [];
-      if (r.meanGrade) gradeBits.push(`min ${esc(r.meanGrade)}`);
-      if (r.subjectGrades) gradeBits.push(esc(r.subjectGrades));
-      return doc
-        ? `<div><span class="ok">✓</span> <span>${esc(docLabel(r.document_type))} <span class="muted small">(${doc.confidence_score ?? 0}% readable · ${esc(doc.extraction_method)})</span>${gradeBits.length ? `<br><span class="muted small" style="margin-left:23px">rule: ${gradeBits.join(" · ")}</span>` : ""}</span></div>`
-        : `<div><span class="no">✗</span> <span>${esc(docLabel(r.document_type))}${gradeBits.length ? ` <span class="muted small">— rule: ${gradeBits.join(" · ")}</span>` : ""}</span></div>`;
-    })
-    .join("");
+  const staffOptions = staff.map((s) => `<option value="${s.id}" ${a.assigned_to === s.id ? "selected" : ""}>${esc(s.display_name)}</option>`).join("");
+  const tplOptions = templates.map((t) => `<option value="${esc(t.key)}">${esc(t.name)}</option>`).join("");
+  const nextStage = LIFECYCLE_ORDER[LIFECYCLE_ORDER.indexOf(a.lifecycle) + 1];
+  const lastDecision = decisions.at(-1);
 
-  const docRows = allDocs
-    .map((d) => {
-      const fields = Object.entries(d.extracted_fields)
-        .filter(([, v]) => v !== null && v !== undefined && v !== "" && JSON.stringify(v) !== "{}")
-        .map(([k, v]) => `${esc(k)}: <b>${esc(typeof v === "object" ? Object.entries(v as Record<string, string>).map(([sk, sv]) => `${sk} ${sv}`).join(", ") : String(v))}</b>`)
-        .join(" · ");
-      const status = d.is_duplicate
+  // ── Admission requirements: needed vs supplied, at a glance ──────────────
+  const reqByType = new Map(requirements.map((r) => [r.document_type, r]));
+  const present = (dt: string) => activeDocs.some((d) => d.document_type === dt);
+  const ruleText = (r: (typeof requirements)[number]): string => {
+    const bits: string[] = [];
+    if (r.meanGrade) bits.push(`min ${esc(r.meanGrade)}`);
+    if (r.subjectGrades) bits.push(esc(r.subjectGrades));
+    return bits.join(" · ");
+  };
+  const requiredReqs = requirements.filter((r) => r.required);
+  const optionalReqs = requirements.filter((r) => !r.required);
+  const requiredSupplied = requiredReqs.filter((r) => present(r.document_type)).length;
+  const reqItem = (r: (typeof requirements)[number], optional: boolean): string => {
+    const got = present(r.document_type);
+    const mk = got ? `<span class="mk ok">✓</span>` : optional ? `<span class="mk opt">–</span>` : `<span class="mk no">✗</span>`;
+    const rule = ruleText(r);
+    return `<li>${mk}<span>${esc(docLabel(r.document_type))}</span>${rule ? `<span class="rule">${rule}</span>` : ""}</li>`;
+  };
+
+  // ── Document checklist: every received document, expandable ──────────────
+  const docRowsHtml = allDocs
+    .map((d, ix) => {
+      const req = reqByType.get(d.document_type);
+      const reqBadge = req
+        ? req.required
+          ? `<span class="badge b-purple">Required</span>`
+          : `<span class="badge b-gray">Optional</span>`
+        : `<span class="badge b-gray">—</span>`;
+      const state = d.is_duplicate
         ? `<span class="badge b-gray">duplicate of #${d.duplicate_of}</span>`
         : d.superseded_by
           ? `<span class="badge b-gray">superseded by #${d.superseded_by}</span>`
-          : `<span class="badge b-purple">active</span>`;
-      return `<tr>
-        <td class="mono small">#${d.id}</td>
-        <td>${esc(docLabel(d.document_type))}<br><span class="muted small">${fields || "no fields extracted"}</span></td>
-        <td>${status}</td>
-        <td>${readabilityScore(d.confidence_score)}<br><span class="muted small">${esc(d.extraction_method)} · ${d.confidence}</span></td>
-        <td class="small">${esc(fmtDate(d.received_at))}<br><span class="muted">email ${esc(d.source_email_id)}</span></td>
-        <td><details class="excerpt"><summary class="small">text</summary><pre>${esc(d.extracted_text.slice(0, 1200))}</pre></details></td>
+          : `<span class="badge b-green">Received</span>`;
+      const fields = Object.entries(d.extracted_fields)
+        .filter(([, v]) => v !== null && v !== undefined && v !== "" && JSON.stringify(v) !== "{}")
+        .map(([k, v]) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(typeof v === "object" ? Object.entries(v as Record<string, string>).map(([sk, sv]) => `${sk} ${sv}`).join(", ") : String(v))}</div></div>`)
+        .join("");
+      const raw = d.extracted_text.trim();
+      return `<tr class="doc-main" data-doc="${ix}">
+        <td><span class="doc-name"><span class="chev">▸</span>${esc(docLabel(d.document_type))}</span></td>
+        <td>${reqBadge}</td>
+        <td>${state}</td>
+        <td>${readabilityScore(d.confidence_score)}</td>
+        <td class="small nowrap">${esc(fmtDate(d.received_at))}</td>
+      </tr>
+      <tr class="doc-detail" id="doc-${ix}">
+        <td colspan="5">
+          <div class="kv2">
+            <div><div class="k">Status</div><div class="v">${d.is_duplicate ? `Duplicate of #${d.duplicate_of}` : d.superseded_by ? `Superseded by #${d.superseded_by}` : "Active"}</div></div>
+            <div><div class="k">Document #</div><div class="v mono">#${d.id}</div></div>
+            <div><div class="k">Source email</div><div class="v mono">${esc(d.source_email_id)}</div></div>
+            <div><div class="k">Extraction</div><div class="v">${esc(d.extraction_method)} · ${esc(d.confidence)} confidence</div></div>
+          </div>
+          <div class="kv2" style="margin-bottom:14px">${fields || `<div><div class="k">Extracted fields</div><div class="v muted">no fields extracted</div></div>`}</div>
+          <div class="k" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);font-weight:800;margin-bottom:6px">Raw extraction</div>
+          ${raw ? `<pre class="raw">${esc(raw.slice(0, 1400))}</pre>` : `<p class="small muted" style="margin:0">No readable text extracted.</p>`}
+        </td>
       </tr>`;
     })
     .join("");
 
-  const emailCards = emails
-    .map((e) => `<div class="emailcard ${e.direction === "out" ? "out" : ""}">
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <span class="badge ${e.direction === "in" ? "b-blue" : "b-purple"}">${e.direction === "in" ? "← from applicant" : "→ to applicant"}</span>
-        ${categoryBadge(e.category)}
-        ${e.channel && e.channel !== "email" ? `<span class="badge b-blue">via ${esc(e.channel)}</span>` : ""}
-        ${e.auto ? `<span class="badge b-gray">automated</span>` : ""}
-        <span class="small muted" style="margin-left:auto" title="${esc(fmtDate(e.at))}"><span data-rel="${esc(e.at)}">${esc(fmtDate(e.at))}</span></span>
-      </div>
-      <p style="margin:10px 0 0"><b>${esc(e.subject)}</b></p>
-      <pre>${esc(e.body.slice(0, 900))}</pre>
-    </div>`)
+  // ── Communication timeline ─────────────────────────────────────────────────
+  const emailItems = [...emails]
     .reverse()
+    .map((e) => `<details class="mail-item ${e.direction === "out" ? "out" : ""}">
+      <summary>
+        <span class="badge ${e.direction === "in" ? "b-blue" : "b-purple"}">${e.direction === "in" ? "← From applicant" : "→ To applicant"}</span>
+        ${categoryBadge(e.category)}
+        ${e.auto ? `<span class="badge b-gray">automated</span>` : ""}
+        ${e.channel && e.channel !== "email" ? `<span class="badge b-blue">via ${esc(e.channel)}</span>` : ""}
+        <span class="m-sub">${esc(e.subject)}</span>
+        <span class="m-when" title="${esc(fmtDate(e.at))}">${esc(fmtDate(e.at))}</span>
+      </summary>
+      <div class="m-body"><pre>${esc(e.body)}</pre></div>
+    </details>`)
     .join("");
 
-  const flagRows = flags.length
-    ? flags.map((f) => `<li><span class="badge ${f.type === "watcher_flag" ? "b-red" : "b-orange"}">${esc(flagLabel(f.type))}</span> ${esc(f.detail)}</li>`).join("")
-    : `<li class="muted">No active flags.</li>`;
-
+  // ── Activity & audit trail (tabbed) ────────────────────────────────────────
   const historyRows = history
     .map((h) => `<tr><td class="small nowrap">${esc(fmtDate(h.at))}</td><td>${esc(LIFECYCLE_LABELS[(h.from_status as never)] ?? h.from_status ?? "—")} → <b>${esc(LIFECYCLE_LABELS[(h.to_status as never)] ?? h.to_status)}</b></td><td class="mono small">${esc(h.actor)}</td><td class="small">${esc(h.reason)}</td></tr>`)
     .join("");
-
   const auditRows = audit
     .map((ev) => `<div class="ev"><span class="t"><span data-rel="${esc(ev.at)}">${esc(fmtDate(ev.at))}</span> · ${esc(ev.actor)}</span><br><b>${esc(ev.event)}</b> — ${esc(ev.detail)}</div>`)
     .join("");
+  const activityHtml = audit
+    .slice()
+    .reverse()
+    .map((ev) => `<div style="padding:10px 0;border-bottom:1px dashed var(--line);font-size:13px">
+      <span class="small muted">${esc(fmtDate(ev.at))} · ${esc(ev.actor)}</span><br>
+      <b>${esc(capFirst(ev.event.replace(/_/g, " ")))}</b>${ev.detail ? ` <span class="muted">— ${esc(ev.detail)}</span>` : ""}
+    </div>`)
+    .join("") || `<p class="muted">No activity yet.</p>`;
 
   const noteCards = notes
     .map((n) => `<div class="note"><div>${esc(n.body)}</div><div class="meta">${esc(n.display_name ?? "system")} · ${esc(fmtDate(n.at))}</div></div>`)
     .join("");
-
-  const lastDecision = decisions.at(-1);
-  const staffOptions = staff.map((s) => `<option value="${s.id}" ${a.assigned_to === s.id ? "selected" : ""}>${esc(s.display_name)}</option>`).join("");
-  const tplOptions = templates.map((t) => `<option value="${esc(t.key)}">${esc(t.name)}</option>`).join("");
-  const nextStage = LIFECYCLE_ORDER[LIFECYCLE_ORDER.indexOf(a.lifecycle) + 1];
 
   return head(
     c,
@@ -852,154 +884,203 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
     "applicants",
     `
 ${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
-<div class="hero">
-  <div class="row">
-    ${avatar(a.full_name ?? a.ref_number, 58)}
-    <div style="min-width:0">
-      <h1 style="margin:0;display:flex;align-items:center;gap:14px;flex-wrap:wrap">${esc(a.full_name ?? "Unknown applicant")}${lifecycleBadge(a.lifecycle)}</h1>
-      <div class="sub" style="margin:4px 0 8px"><span class="mono">${esc(a.ref_number)}</span> · opened ${esc(fmtDate(a.created_at))}${handledBy ? ` · handled by <b>${esc(handledBy)}</b>` : ""}</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        ${triageBadge(a.triage)} ${priorityBadge(a.priority)}
+
+<!-- Level 1 — applicant identity -->
+<div class="case-head">
+  <div class="who">
+    ${avatar(a.full_name ?? a.ref_number, 56)}
+    <div class="ident">
+      <h1>${esc(a.full_name ?? "Unknown applicant")}</h1>
+      <div class="ref-line">
+        <span class="mono">${esc(a.ref_number)}</span><span class="sep">·</span>
+        ${programme ? `<span><b>${esc(programme.code)}</b> ${esc(programme.name)}</span><span class="sep">·</span>` : ""}
+        <span>${esc(a.intake ?? "intake to be confirmed")}</span><span class="sep">·</span>
+        <span>opened ${esc(fmtDate(a.created_at))}</span>
+        ${handledBy ? `<span class="sep">·</span><span>handled by <b>${esc(handledBy)}</b></span>` : ""}
+      </div>
+      <div class="state-row">
+        <span class="small muted" style="margin-right:2px">Status</span>
+        ${lifecycleBadge(a.lifecycle)}
+        ${triageBadge(a.triage)}
+        ${priorityBadge(a.priority)}
         ${a.escalated ? `<span class="badge b-red">escalated</span>` : ""}
       </div>
     </div>
-    <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap" class="no-print">
-      <a class="btn ghost small" href="/case/${a.id}/replay">Decision replay</a>
-      <button class="btn ghost small" onclick="window.print()">Print case brief</button>
-    </div>
+  </div>
+  <div class="head-actions no-print">
+    <a class="btn ghost small" href="/case/${a.id}/replay">Decision replay</a>
+    <button class="btn ghost small" onclick="window.print()">Print case brief</button>
+    <form method="post" action="/case/${a.id}/assign" class="ops-inline" style="margin:0">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <select name="staff_id" style="max-width:160px"><option value="">Assign to…</option>${staffOptions}</select>
+      <button class="btn small">Assign</button>
+    </form>
   </div>
 </div>
-${lifecycleStepper(a.lifecycle)}
+
+<!-- Lifecycle progress -->
+<div class="stepper-band">${lifecycleStepper(a.lifecycle)}</div>
 
 ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${changed}</div>` : ""}
 
 <div class="case-grid">
   <div class="case-main">
 
-    <div class="card">
-      <h2>Details &amp; what they applied for</h2>
-      <dl class="kv" style="margin-top:6px">
-        <dt>Name</dt><dd>${esc(a.full_name ?? "—")}</dd>
-        <dt>Email</dt><dd>${esc(a.email_address)}</dd>
-        <dt>Phone</dt><dd>${esc(a.phone ?? "—")}</dd>
-        <dt>Applied for</dt><dd>${programme ? `<b>${esc(programme.code)} — ${esc(programme.name)}</b>${programme.school ? `<br><span class="muted small">${esc(programme.school)}</span>` : ""}` : `<span class="muted">not identified yet — the latest email decides it</span>`}</dd>
-        <dt>Intake</dt><dd>${esc(a.intake ?? "—")}</dd>
-        <dt>Reference no.</dt><dd class="mono">${esc(a.ref_number)}</dd>
-        <dt>Current level</dt><dd>${lifecycleBadge(a.lifecycle)} <span class="muted small">moved through ${history.length} change${history.length === 1 ? "" : "s"}</span></dd>
-        <dt>Threads</dt><dd>${threads.length} linked conversation${threads.length === 1 ? "" : "s"}</dd>
-        <dt>Follow-up ladder</dt><dd>${a.followup_next_at ? `rung ${a.followup_rung} — next reminder ${esc(fmtDate(a.followup_next_at))}` : "not armed"}</dd>
-        <dt>SLA</dt><dd>${a.sla_due_at ? `${esc(slaText(a.sla_due_at, a.sla_handled_at))} (due ${esc(fmtDate(a.sla_due_at))})` : "—"}</dd>
-        <dt>Assigned to</dt><dd>
-          <form method="post" action="/case/${a.id}/assign" style="display:flex;gap:6px">
-            <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-            <select name="staff_id" style="max-width:220px"><option value="">Unassigned</option>${staffOptions}</select>
-            <button class="btn small">Assign</button>
-          </form>
-        </dd>
-        <dt>Priority</dt><dd>
-          <form method="post" action="/case/${a.id}/priority" style="display:flex;gap:6px">
-            <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-            <select name="priority" style="max-width:140px">${["normal", "high", "urgent"].map((p) => `<option value="${p}" ${a.priority === p ? "selected" : ""}>${p}</option>`).join("")}</select>
-            <button class="btn small">Set</button>
-          </form>
-        </dd>
-      </dl>
-      ${programme?.entry_requirements ? `<p class="small muted" style="margin:14px 0 0"><b>Published entry requirements for ${esc(programme.code)}:</b> ${esc(programme.entry_requirements)} <span class="muted">— editable in Configuration.</span></p>` : ""}
-    </div>
+    <!-- Applicant details -->
+    <section class="sec">
+      <div class="sec-head"><h2>Applicant overview</h2></div>
+      <div class="meta-grid">
+        <div class="field"><span class="lbl">Name</span><span class="val">${esc(a.full_name ?? "—")}</span></div>
+        <div class="field"><span class="lbl">Email</span><span class="val"><a href="mailto:${esc(a.email_address)}">${esc(a.email_address)}</a></span></div>
+        <div class="field"><span class="lbl">Phone</span><span class="val">${esc(a.phone ?? "—")}</span></div>
+        <div class="field"><span class="lbl">Applied programme</span><span class="val">${programme ? `${esc(programme.code)} — ${esc(programme.name)}` : `<span class="muted">not identified yet — the latest email decides it</span>`}</span></div>
+        <div class="field"><span class="lbl">School</span><span class="val">${programme?.school ? esc(programme.school) : "—"}</span></div>
+        <div class="field"><span class="lbl">Intake</span><span class="val">${esc(a.intake ?? "—")}</span></div>
+        <div class="field"><span class="lbl">Reference number</span><span class="val mono">${esc(a.ref_number)}</span></div>
+        <div class="field"><span class="lbl">Current level</span><span class="val">${lifecycleBadge(a.lifecycle)} <span class="muted small" style="font-weight:500">moved through ${history.length} change${history.length === 1 ? "" : "s"}</span></span></div>
+      </div>
+      <div class="op-strip">
+        <div class="op"><span class="lbl">Threads</span><span class="val">${threads.length} linked conversation${threads.length === 1 ? "" : "s"}</span></div>
+        <div class="op"><span class="lbl">Follow-up ladder</span><span class="val">${a.followup_next_at ? `rung ${a.followup_rung} — next reminder ${esc(fmtDate(a.followup_next_at))}` : "not armed"}</span></div>
+        <div class="op"><span class="lbl">SLA</span><span class="val">${a.sla_due_at ? `${esc(slaText(a.sla_due_at, a.sla_handled_at))} (due ${esc(fmtDate(a.sla_due_at))})` : "—"}</span></div>
+        <div class="op"><span class="lbl">Assigned to</span><span class="val">${handledBy ? esc(handledBy) : "unassigned"}</span></div>
+      </div>
+    </section>
 
-    <div class="card">
-      <h2>Document checklist</h2>
-      <div class="checklist" style="margin-top:6px">${checklist}</div>
+    <!-- Admission requirements -->
+    <section class="sec">
+      <div class="sec-head"><h2>Admission requirements</h2></div>
+      <p class="sec-sub">What this applicant needs, and what has been supplied${programme ? ` — <b>${esc(programme.code)} ${esc(programme.name)}</b>` : ""}.</p>
+      <div class="req-cols">
+        <div>
+          <h3 style="margin:0 0 6px;font-size:13px">Required</h3>
+          <ul class="req-list">${requiredReqs.map((r) => reqItem(r, false)).join("") || `<li class="muted">No required documents configured.</li>`}</ul>
+        </div>
+        <div>
+          <h3 style="margin:0 0 6px;font-size:13px">Optional</h3>
+          <ul class="req-list">${optionalReqs.map((r) => reqItem(r, true)).join("") || `<li class="muted">No optional documents.</li>`}</ul>
+        </div>
+      </div>
+      <div class="req-progress ${requiredReqs.length > 0 && requiredSupplied >= requiredReqs.length ? "full" : ""}">
+        <span class="big">${requiredSupplied} / ${requiredReqs.length}</span>
+        <span class="cap">required documents supplied</span>
+      </div>
+      ${programme?.entry_requirements ? `<details style="margin-top:16px"><summary class="small" style="cursor:pointer;font-weight:700">View published entry requirements</summary><p class="small muted" style="margin:8px 0 0">${esc(programme.entry_requirements)} <span class="muted">— editable in Configuration.</span></p></details>` : ""}
       <p class="small muted" style="margin-top:14px">${a.requirements_snapshot ? "Judged by the requirement set frozen at first triage (rule changes don't move goalposts)." : `Resolved for ${esc(a.programme ?? "all programmes")} / ${esc(a.intake ?? "all intakes")}`} — grade rules are editable in Configuration.</p>
-    </div>
+    </section>
 
-    <div class="card">
-      <h2>Email history <span class="muted small" style="text-transform:none;letter-spacing:0">— everything exchanged with ${esc(a.full_name ?? "this applicant")}</span></h2>
-      ${emailCards || `<p class="muted">No emails recorded.</p>`}
-    </div>
+    <!-- Document checklist -->
+    <section class="sec">
+      <div class="sec-head"><h2>Document checklist</h2><span class="small muted">${allDocs.length} received · ${activeDocs.length} active</span></div>
+      <table class="doctable">
+        <thead><tr><th>Document</th><th>Required</th><th>Status</th><th>Readability</th><th>Received</th></tr></thead>
+        <tbody>${docRowsHtml || `<tr><td colspan="5" class="muted">No documents received yet.</td></tr>`}</tbody>
+      </table>
+      <p class="small muted" style="margin:14px 0 0">Select a row to see its extracted fields, provenance and raw text.</p>
+    </section>
 
-    <div class="card">
-      <h2>Documents (${allDocs.length} received, ${activeDocs.length} active)</h2>
-      <table><tr><th>#</th><th>Type &amp; extracted fields</th><th>State</th><th>PDF readability</th><th>Received</th><th></th></tr>
-      ${docRows || `<tr><td colspan="6" class="muted">No documents received yet.</td></tr>`}</table>
-    </div>
+    <!-- Communication history -->
+    <section class="sec">
+      <div class="sec-head"><h2>Email history</h2><span class="small muted">everything exchanged with ${esc(a.full_name ?? "this applicant")}</span></div>
+      ${emailItems || `<p class="muted">No emails recorded.</p>`}
+    </section>
 
-    <div class="cols">
-      <div class="card">
-        <h2>Status history</h2>
+    <!-- Activity & audit trail -->
+    <section class="sec">
+      <div class="sec-head"><h2>Activity &amp; audit trail</h2></div>
+      <div class="mini-tabs" data-tabs>
+        <button class="on" data-tab="act" type="button">Activity</button>
+        <button data-tab="stat" type="button">Status history</button>
+        <button data-tab="aud" type="button">Audit log</button>
+      </div>
+      <div class="tabpane on" id="tab-act">${activityHtml}</div>
+      <div class="tabpane" id="tab-stat">
         <table><tr><th>When</th><th>Change</th><th>By</th><th>Why</th></tr>
         ${historyRows || `<tr><td colspan="4" class="muted">No changes recorded.</td></tr>`}</table>
       </div>
-      <div class="card">
-        <h2>Audit log</h2>
-        <div class="timeline">${auditRows || `<p class="muted">Empty.</p>`}</div>
-      </div>
-    </div>
+      <div class="tabpane" id="tab-aud"><div class="timeline">${auditRows || `<p class="muted">Empty.</p>`}</div></div>
+    </section>
   </div>
 
   <div class="case-side no-print">
 
-    <div class="card">
+    <!-- Primary actions -->
+    <div class="ops-card">
       <h2>Actions</h2>
-      <div class="actionlist">
-        ${nextStage ? `<form method="post" action="/case/${a.id}/action" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn" name="action" value="advance">Advance → ${esc(LIFECYCLE_LABELS[nextStage])}</button></form>` : ""}
-        ${a.lifecycle !== "completed" ? `<form method="post" action="/case/${a.id}/action" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost" name="action" value="complete">Mark completed</button></form>` : ""}
-        <a class="btn ghost" href="/case/${a.id}/compose?template=missing_documents">Request missing documents <span class="muted small">→ ready template</span></a>
+      <div class="ops-primary">
+        <a class="btn" href="/case/${a.id}/compose?template=missing_documents">Request missing documents</a>
+      </div>
+      <div class="ops-secondary">
         <a class="btn ghost" href="/case/${a.id}/compose?template=status_answer">Answer status question</a>
         <a class="btn ghost" href="/case/${a.id}/compose?template=ack_received">Acknowledge receipt</a>
       </div>
-      <p class="small muted" style="margin:10px 0 0">Every action opens a <b>ready, pre-filled reply</b> — nothing is sent until you press Send.</p>
+      <hr class="ops-divider">
+      <div class="ops-secondary">
+        ${nextStage ? `<form method="post" action="/case/${a.id}/action" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost" name="action" value="advance">Advance → ${esc(LIFECYCLE_LABELS[nextStage])}</button></form>` : ""}
+        ${a.lifecycle !== "completed" ? `<form method="post" action="/case/${a.id}/action" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost" name="action" value="complete">Mark completed</button></form>` : ""}
+      </div>
+      <hr class="ops-divider">
+      <form method="post" action="/case/${a.id}/priority" class="ops-inline" style="margin:0">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <select name="priority" style="flex:1">${["normal", "high", "urgent"].map((p) => `<option value="${p}" ${a.priority === p ? "selected" : ""}>${p} priority</option>`).join("")}</select>
+        <button class="btn small ghost">Set</button>
+      </form>
+      <p class="small muted" style="margin:12px 0 0">Every action opens a <b>ready, pre-filled reply</b> — nothing is sent until you press Send.</p>
     </div>
 
-    <div class="card">
+    <!-- Response composer -->
+    <div class="ops-card">
       <h2>Responses</h2>
-      <p class="small muted">Pick a reply template — it is rendered with this applicant's details. Preview first; nothing is sent without your click.</p>
+      <p class="ops-sub">Pick a reply template — it is rendered with this applicant's details. Preview first; nothing is sent without your click.</p>
+      ${preview ? `<div class="resp-preview"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>` : ""}
       <form method="post" action="/case/${a.id}/send">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-        <label>Template</label><select name="template">${tplOptions}</select>
-        <div style="display:flex;gap:8px;margin-top:12px">
+        <label>Template</label>
+        <select name="template">${tplOptions}</select>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
           <button class="btn ghost" name="preview" value="1">Preview</button>
           <button class="btn" onclick="return confirm('Send this reply now?')">Send now</button>
         </div>
       </form>
-      ${preview ? `<div class="resp-preview"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>` : ""}
       <p class="small muted" style="margin-top:12px">Or open any template in the full composer: ${templates.slice(0, 3).map((t) => `<a href="/case/${a.id}/compose?template=${esc(t.key)}">${esc(t.name)}</a>`).join(" · ")}</p>
       <p class="small muted" style="margin:6px 0 0">Auto-response toggles per category live in <a href="/settings#automation">Settings → Automation</a>. Current modes: ${esc(autoSummary || "defaults")}</p>
     </div>
 
-    ${c.user.role === "admin" || c.user.role === "manager" ? `<div class="card" id="packs">
-      <h2>Official document packs</h2>
-      <p class="small muted" style="margin-top:-6px">The <b>application pack</b> (application form + brochure) goes to anyone who asks about applying. The <b>admission pack</b> sends the official admission letter with all seven accompanying documents.</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
+    ${isMgr ? `<div class="ops-card" id="packs">
+      <h2>Official packs</h2>
+      <details style="margin-bottom:12px"><summary class="small" style="cursor:pointer;font-weight:700">What's included?</summary>
+        <p class="small muted" style="margin:6px 0 0">The <b>application pack</b> (application form + brochure) goes to anyone who asks about applying. The <b>admission pack</b> sends the official admission letter with its accompanying documents. The <b>credit transfer form</b> goes to transferring applicants.</p>
+      </details>
+      <div class="ops-secondary">
         <form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the application pack — form and brochure attached?')" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-          <input type="hidden" name="kind" value="application">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="kind" value="application">
           <button class="btn">Send application pack</button>
         </form>
-        <form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the admission pack — letter plus seven documents?')" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-          <input type="hidden" name="kind" value="admission">
+        <form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the admission pack — letter plus accompanying documents?')" style="margin:0">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="kind" value="admission">
           <button class="btn">Send admission pack</button>
         </form>
         <form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the credit transfer form to this applicant?')" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-          <input type="hidden" name="kind" value="transfer">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="kind" value="transfer">
           <button class="btn ghost">Send credit transfer form</button>
         </form>
       </div>
     </div>` : ""}
 
-    ${outbox ? `<div class="card" style="border-left:6px solid var(--orange)">
+    ${outbox ? `<div class="ops-card draft-card">
       <h2>Draft held for approval <span class="heldnote">not sent</span></h2>
       <p class="small muted">${draftView && draftView.held
         ? "The system is holding this reply pending your review — there is no suggested text yet, so write the response below."
         : "The system prepared this reply but did not send it — approve, edit, or discard."}</p>
+      <details style="margin:6px 0 10px"><summary class="small" style="cursor:pointer;font-weight:700">Preview draft</summary>
+        <div class="resp-preview" style="margin-top:8px"><b>${esc(outbox.subject)}</b>\n\n${esc(draftView ? draftView.text : outbox.body)}</div>
+      </details>
       <form method="post" action="/case/${a.id}/draft">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
         <label>Subject</label>
         <input type="text" name="subject" value="${esc(outbox.subject)}">
         <label>Body</label>
-        <textarea name="body" style="min-height:160px" placeholder="Write the reply to the applicant…">${esc(draftView ? draftView.text : outbox.body)}</textarea>
+        <textarea name="body" style="min-height:130px" placeholder="Write the reply to the applicant…">${esc(draftView ? draftView.text : outbox.body)}</textarea>
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
           <button class="btn" name="decision" value="send">Send</button>
           <button class="btn ghost" name="decision" value="edit">Save changes</button>
@@ -1008,7 +1089,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       </form>
     </div>` : ""}
 
-    <div class="card">
+    <div class="ops-card">
       <h2>Tasks</h2>
       ${tasks.length ? tasks.map((t) => `<div class="taskrow ${t.done ? "done" : ""}">
         <form method="post" action="/case/${a.id}/task/toggle" style="margin:0">
@@ -1026,37 +1107,78 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       </form>
     </div>
 
-    <div class="card">
+    <div class="ops-card">
       <h2>Flags</h2>
-      <ul style="margin:0;padding-left:18px">${flagRows}</ul>
+      ${flags.length ? flags.map((f) => `<div class="flag-item ${f.type === "watcher_flag" ? "red" : ""}">
+        <span class="badge ${f.type === "watcher_flag" ? "b-red" : "b-orange"}">${esc(flagLabel(f.type))}</span>
+        <span class="fd">${esc(f.detail)}<span class="human">Human decision required.</span></span>
+      </div>`).join("") : `<p class="muted small">No active flags.</p>`}
     </div>
 
-    <div class="card">
-      <h2>Internal notes <span class="muted small">(not visible to applicant)</span></h2>
+    <div class="ops-card">
+      <h2>Internal notes</h2>
+      <span class="note-banner">Internal · not visible to applicant</span>
       ${noteCards || `<p class="muted small">No notes yet.</p>`}
       <form method="post" action="/case/${a.id}/note">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
         <label>Add note</label>
         <textarea name="body" style="min-height:60px" placeholder="e.g. Applicant called. Waiting for original certificate."></textarea>
-        <p><button class="btn small">Save note</button></p>
+        <p style="margin-top:8px"><button class="btn small">Add note</button></p>
       </form>
     </div>
 
-    ${c.user.role === "admin" || c.user.role === "manager" ? `<div class="card">
-      <h2>Re-categorise latest incoming email</h2>
-      <p class="small muted">If triage put the newest email in the wrong bucket, move it after your review. The change is recorded in the audit trail${latestIncoming ? ` — currently <b>${esc(latestIncoming.category ?? "uncategorised")}</b>` : ""}.</p>
-      <form method="post" action="/case/${a.id}/category" class="formrow" style="align-items:end">
+    ${isMgr ? `<div class="ops-card">
+      <h2>Re-categorise</h2>
+      <p class="ops-sub">If triage put the newest incoming email in the wrong bucket, move it after your review. Recorded in the audit trail${latestIncoming ? ` — currently <b>${esc(latestIncoming.category ?? "uncategorised")}</b>` : ""}.</p>
+      <form method="post" action="/case/${a.id}/category" class="ops-inline" style="align-items:center;margin:0">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-        <div style="flex:2"><label>Category</label><select name="category">
+        <select name="category" style="flex:1">
           ${Object.entries(EMAIL_CATEGORY_LABELS).map(([k, v]) => `<option value="${k}" ${latestIncoming?.category === k ? "selected" : ""}>${v}</option>`).join("")}
-        </select></div>
-        <div style="flex:0"><button class="btn ghost">Save category</button></div>
+        </select>
+        <button class="btn ghost small">Save</button>
       </form>
     </div>` : ""}
 
-    ${lastDecision ? `<div class="card"><h2>Latest triage reasoning (${esc(lastDecision.computed_status)}${lastDecision.auto_sent ? ", auto-sent" : ", queued"})</h2><pre style="white-space:pre-wrap;font-size:12.5px">${esc(lastDecision.reasoning)}</pre></div>` : ""}
+    ${lastDecision ? `<div class="ops-card">
+      <h2>Latest triage</h2>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        ${triageBadge(lastDecision.computed_status)}
+        <span class="small muted">${lastDecision.auto_sent ? "auto-sent" : "human review required"}</span>
+      </div>
+      <p class="small muted" style="margin:0 0 10px">Orange means a person must review this case — it is never an automatic approval or rejection.</p>
+      <details><summary class="small" style="cursor:pointer;font-weight:700">View reasoning</summary>
+        <pre style="white-space:pre-wrap;font-size:12.5px;margin:8px 0 0">${esc(lastDecision.reasoning)}</pre>
+      </details>
+    </div>` : ""}
   </div>
-</div>`
+</div>
+<script>
+(function () {
+  // Expandable document rows.
+  document.querySelectorAll(".doctable tr.doc-main").forEach(function (tr) {
+    tr.addEventListener("click", function () {
+      var d = document.getElementById("doc-" + tr.getAttribute("data-doc"));
+      if (!d) return;
+      var on = d.classList.toggle("on");
+      tr.classList.toggle("open", on);
+    });
+  });
+  // Activity / Status history / Audit log tabs.
+  document.querySelectorAll("[data-tabs]").forEach(function (bar) {
+    var btns = bar.querySelectorAll("button");
+    btns.forEach(function (b) {
+      b.addEventListener("click", function () {
+        btns.forEach(function (x) { x.classList.remove("on"); });
+        b.classList.add("on");
+        var sec = bar.parentElement;
+        sec.querySelectorAll(".tabpane").forEach(function (p) { p.classList.remove("on"); });
+        var pane = document.getElementById("tab-" + b.getAttribute("data-tab"));
+        if (pane) pane.classList.add("on");
+      });
+    });
+  });
+})();
+</script>`
   );
 }
 

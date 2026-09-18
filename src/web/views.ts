@@ -493,7 +493,7 @@ input:checked + span, .chk { accent-color: var(--purple2); }
 .empty p { margin: 0 0 14px; font-size: 14px; }
 
 /* ── Case file components ──────────────────────────────────────────────── */
-.case-grid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(320px, 4fr); gap: 36px; align-items: start; }
+.case-grid { display: grid; grid-template-columns: minmax(0, 13fr) minmax(300px, 7fr); gap: 32px; align-items: start; }
 .case-main > .card { margin-bottom: 36px; padding: 32px 34px; }
 .case-main .card h2 { margin-bottom: 18px; }
 .case-main dl.kv { gap: 14px 28px; }
@@ -603,10 +603,130 @@ details > summary { list-style: none; } details > summary::-webkit-details-marke
   html { scroll-behavior: auto; }
   #splash { display: none !important; }
 }
+/* ── Case file: premium admissions operations dashboard ─────────────────── */
+/* Identity header — the applicant is unmistakable in two seconds. */
+.case-head { display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; padding: 26px 30px; margin: 8px 0 16px; border: 1px solid var(--lav-line); border-radius: 14px; background: linear-gradient(115deg, color-mix(in srgb, var(--lav) 52%, var(--card)) 0%, var(--card) 58%); box-shadow: var(--shadow); }
+.case-head .who { display: flex; gap: 18px; align-items: center; min-width: 0; flex: 1; }
+.case-head .ident { min-width: 0; }
+.case-head h1 { margin: 0 0 7px; font-size: 31px; line-height: 1.08; }
+.case-head .ref-line { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 13px; margin: 0 0 11px; }
+.case-head .ref-line .sep { color: var(--line); }
+.case-head .state-row { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+.case-head .head-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-left: auto; }
+.case-head .head-actions .btn { white-space: nowrap; }
+
+/* Horizontal lifecycle stepper — progress at a glance, not a wall of buttons. */
+.stepper-band { background: var(--card); border: 1px solid color-mix(in srgb, var(--lav-line) 55%, var(--line)); border-radius: 12px; padding: 20px 26px 18px; margin-bottom: 26px; box-shadow: var(--shadow); }
+.stepper-band .stepper { margin: 0; justify-content: space-between; }
+.stepper .step { font-size: 12px; font-weight: 700; color: color-mix(in srgb, var(--muted) 55%, transparent); }
+.stepper .step .dot { width: 26px; height: 26px; background: var(--card2); color: var(--muted); border: 1px solid var(--line); transition: all .2s; }
+.stepper .step.done { color: var(--muted); }
+.stepper .step.done .dot { background: var(--green-bg); color: var(--green); border-color: var(--green-line); }
+.stepper .step.current { color: var(--purple); font-weight: 800; }
+.stepper .step.current .dot { background: linear-gradient(160deg, var(--purple2), var(--purple)); color: #fff; border-color: transparent; box-shadow: 0 0 0 4px var(--lav), 0 2px 8px -2px color-mix(in srgb, var(--purple2) 60%, transparent); }
+.stepper .step-line { flex: 1; min-width: 14px; height: 2px; background: var(--line); margin: 0 10px; }
+@media (max-width: 760px) { .stepper-band .stepper { justify-content: flex-start; } .stepper .step-line { min-width: 8px; margin: 0 5px; } }
+
+/* Section shells — page → section → content, no card-in-card nesting. */
+.sec { background: var(--card); border: 1px solid color-mix(in srgb, var(--lav-line) 55%, var(--line)); border-radius: 13px; padding: 26px 30px; margin-bottom: 26px; box-shadow: var(--shadow); }
+.sec > .sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+.sec > .sec-head h2 { margin: 0; }
+.sec .sec-sub { color: var(--muted); font-size: 12.5px; margin: -10px 0 16px; }
+.case-main .sec.tight { padding: 22px 26px; }
+
+/* Enterprise metadata grid — labels above values, never a form. */
+.meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 20px 34px; }
+.meta-grid .field .lbl { display: block; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .13em; color: var(--muted); margin-bottom: 5px; }
+.meta-grid .field .val { font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.meta-grid .field .val .sub { display: block; color: var(--muted); font-weight: 500; font-size: 12.5px; margin-top: 2px; }
+.op-strip { display: flex; gap: 30px; flex-wrap: wrap; margin-top: 22px; padding-top: 20px; border-top: 1px dashed var(--line); }
+.op-strip .op .lbl { display: block; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .13em; color: var(--muted); margin-bottom: 4px; }
+.op-strip .op .val { font-size: 13.5px; font-weight: 600; }
+
+/* Admission requirements summary. */
+.req-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
+@media (max-width: 700px) { .req-cols { grid-template-columns: 1fr; } }
+.req-list { margin: 0; padding: 0; list-style: none; }
+.req-list li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line2); font-size: 13.5px; font-weight: 600; }
+.req-list li:last-child { border-bottom: none; }
+.req-list .mk { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; flex: none; }
+.req-list .mk.ok { background: var(--green-bg); color: var(--green); }
+.req-list .mk.no { background: var(--red-bg); color: var(--red); }
+.req-list .mk.opt { background: var(--card2); color: var(--muted); }
+.req-list .rule { color: var(--muted); font-weight: 500; font-size: 12px; margin-left: auto; text-align: right; }
+.req-progress { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-radius: 10px; background: var(--lav); border: 1px solid var(--lav-line); margin-top: 20px; }
+.req-progress .big { font-family: var(--display); font-size: 30px; line-height: 1; color: var(--purple); font-variant-numeric: tabular-nums; }
+.req-progress .cap { font-size: 12.5px; font-weight: 600; color: var(--purple); }
+.req-progress.full .big { color: var(--green); }
+.req-progress.full { background: var(--green-bg); border-color: var(--green-line); }
+.req-progress.full .cap { color: var(--green); }
+
+/* Document checklist table — the evidence at the centre of the page. */
+.doctable { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.doctable th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); font-weight: 800; padding: 10px 14px 12px; border-bottom: 1px solid var(--line); }
+.doctable td { padding: 13px 14px; border-bottom: 1px solid var(--line2); vertical-align: middle; }
+.doctable tr.doc-main { cursor: pointer; transition: background .12s; }
+.doctable tr.doc-main:hover td { background: var(--card2); }
+.doctable .doc-name { font-weight: 700; display: flex; align-items: center; gap: 10px; }
+.doctable .chev { color: var(--muted); transition: transform .18s; flex: none; }
+.doctable tr.open .chev { transform: rotate(90deg); color: var(--purple); }
+.doctable tr.doc-detail { display: none; }
+.doctable tr.doc-detail.on { display: table-row; }
+.doctable tr.doc-detail td { background: var(--card2); padding: 18px 22px; border-bottom: 1px solid var(--line); }
+.doc-detail .kv2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 24px; margin-bottom: 14px; }
+.doc-detail .kv2 .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .11em; color: var(--muted); font-weight: 800; margin-bottom: 3px; }
+.doc-detail .kv2 .v { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.doc-detail .raw { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 11.5px; color: var(--muted); white-space: pre-wrap; max-height: 220px; overflow: auto; margin: 0; font-family: var(--mono); }
+@media (max-width: 700px) { .doctable th:nth-child(5), .doctable td:nth-child(5) { display: none; } }
+
+/* Communication timeline. */
+.mail-item { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 12px; background: var(--card); overflow: hidden; }
+.mail-item.out { background: color-mix(in srgb, var(--lav) 40%, var(--card)); border-color: var(--lav-line); }
+.mail-item > summary { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 13px 16px; cursor: pointer; list-style: none; }
+.mail-item > summary::-webkit-details-marker { display: none; }
+.mail-item > summary:hover { background: var(--card2); }
+.mail-item .m-sub { font-weight: 700; font-size: 13.5px; flex: 1; min-width: 160px; }
+.mail-item .m-when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.mail-item .m-body { padding: 4px 16px 16px; }
+.mail-item .m-body pre { white-space: pre-wrap; font-size: 12.5px; color: var(--ink); background: var(--card2); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 0; font-family: inherit; line-height: 1.6; max-height: 340px; overflow: auto; }
+
+/* Activity tabs (Activity / Status history / Audit log). */
+.mini-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+.mini-tabs button { background: none; border: none; border-bottom: 2px solid transparent; padding: 9px 14px; font-family: inherit; font-size: 12.5px; font-weight: 700; color: var(--muted); cursor: pointer; letter-spacing: .02em; }
+.mini-tabs button:hover { color: var(--ink); }
+.mini-tabs button.on { color: var(--purple); border-bottom-color: var(--purple2); }
+.tabpane { display: none; }
+.tabpane.on { display: block; }
+
+/* Right-column operations. */
+.ops-card { background: var(--card); border: 1px solid color-mix(in srgb, var(--lav-line) 55%, var(--line)); border-radius: 13px; padding: 22px 24px; margin-bottom: 22px; box-shadow: var(--shadow); }
+.ops-card h2 { margin-bottom: 14px; }
+.ops-card .ops-sub { color: var(--muted); font-size: 12px; margin: -8px 0 14px; }
+.ops-primary .btn { width: 100%; justify-content: flex-start; }
+.ops-secondary { display: grid; gap: 8px; margin-top: 10px; }
+.ops-secondary .btn { width: 100%; justify-content: flex-start; }
+.ops-divider { border: none; border-top: 1px dashed var(--line); margin: 16px 0; }
+.ops-inline { display: flex; gap: 8px; align-items: center; }
+.ops-inline select { flex: 1; }
+
+/* Flags — visible, not dominating. */
+.flag-item { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 9px; border: 1px solid var(--orange-line); background: var(--orange-bg); margin-bottom: 10px; }
+.flag-item.red { border-color: var(--red-line); background: var(--red-bg); }
+.flag-item .fd { font-size: 13px; line-height: 1.5; }
+.flag-item .fd .human { display: block; color: var(--muted); font-size: 11.5px; margin-top: 3px; font-weight: 600; }
+
+/* Draft held for approval — obviously unsent. */
+.draft-card { border-left: 4px solid var(--orange); }
+.draft-card .heldnote { margin-left: 8px; }
+
+/* Internal notes — the boundary with the applicant is unmistakable. */
+.note-banner { display: inline-flex; align-items: center; gap: 7px; background: var(--gold-bg); color: var(--gold); border: 1px solid color-mix(in srgb, var(--gold) 35%, transparent); border-radius: 6px; padding: 3px 10px; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 12px; }
+
 @media print {
   .sitehead, .no-print, .flash, .palette, #splash, .demobar { display: none !important; }
   body { background: #fff; }
   .card { box-shadow: none; border-color: #ccc; break-inside: avoid; }
+  .sec, .ops-card, .stepper-band, .case-head { box-shadow: none; border-color: #ccc; break-inside: avoid; }
 }
 
 `;
