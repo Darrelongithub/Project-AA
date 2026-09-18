@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
 
   const gmail = new GmailClient(cfg.gmail);
-  const adapters = buildAdapters(cfg, new GmailSender(gmail));
+  const adapters = buildAdapters(cfg, new GmailSender(gmail), repo);
   const ctx: PipelineContext = {
     repo,
     adapters,

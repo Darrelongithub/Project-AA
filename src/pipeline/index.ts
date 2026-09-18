@@ -30,6 +30,8 @@ import type {
 import { recordDocuments } from "../matching";
 import { resolveIdentity } from "../matching/identity";
 import { extractAttachment, MIN_AUTO_PASS_SCORE } from "../extraction/extract";
+import { consistencyCheck } from "../extraction/crosscheck";
+import { readBackText, documentIssuesText } from "../extraction/feedback";
 import { decide, docLabel, normalizeName } from "../rules";
 import { evaluateAdmission, downgradeRoutingForWatcher } from "../admissions/evaluate";
 import { SYSTEM_LABELS } from "../admissions/systems";
@@ -39,7 +41,7 @@ import { extractPhone, inferIntake, inferProgramme, inferTransfer } from "../enr
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
 import { INSTITUTION, emailBanner } from "../branding";
-import { admissionPack, applicationPack } from "../pack";
+import { admissionPack, applicationPack, takePackIssues } from "../pack";
 import type { SendExtras } from "./adapters";
 import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
@@ -165,6 +167,7 @@ export async function processEmail(
         sha256: res.sha256,
         is_duplicate: true,
         duplicate_of: dup.id,
+        extraction_note: res.failure_reason ?? "",
       });
       repo.audit(
         applicant.id,
@@ -186,6 +189,41 @@ export async function processEmail(
   recordDocuments(repo, applicant.id, email, extractions);
   let activeDocs = repo.listDocuments(applicant.id, { activeOnly: true });
 
+  // ── Cross-document consistency (confidence v2) ───────────────────────────
+  // Real files agree with themselves: names match across documents (allowing
+  // initials/order/case) and a DOB printed twice is the same date. Where they
+  // disagree, the contradicting document loses its auto-pass trust and a
+  // human is told exactly what conflicts.
+  const cons = consistencyCheck(
+    activeDocs.map((d) => ({
+      id: d.id,
+      document_type: d.document_type,
+      confidence_score: d.confidence_score ?? 0,
+      name: (d.extracted_fields?.name as string | undefined) ?? null,
+      dateOfBirth: (d.extracted_fields?.dateOfBirth as string | undefined) ?? null,
+    }))
+  );
+  if (!cons.nameConsistent || !cons.dobConsistent) {
+    // Name contradictions are ALSO detected by the rules layer, whose
+    // human-worded flag (incl. the "possible typo" phrasing) stays the
+    // one staff see; here we add the DATE-OF-BIRTH check it doesn't do.
+    if (!cons.dobConsistent) {
+      preFlags.push({ type: "identity_check", detail: `date of birth differs between documents: ${cons.issues.join("; ")}` });
+    }
+    repo.audit(applicant.id, "system", "cross_doc_inconsistency", cons.issues.join("; "));
+    for (const outlierId of [...new Set([...cons.nameOutliers, ...cons.dobOutliers])]) {
+      const doc = activeDocs.find((d) => d.id === outlierId);
+      if (!doc) continue;
+      const capped = Math.min(doc.confidence_score ?? 0, 55);
+      repo.updateDocumentConfidence(outlierId, {
+        confidence_score: capped,
+        confidence: capped >= MIN_AUTO_PASS_SCORE ? "high" : "medium",
+        extraction_note: `Contradicts other documents on file: ${cons.issues[0]}`,
+      });
+    }
+    activeDocs = repo.listDocuments(applicant.id, { activeOnly: true });
+  }
+
   // ── Enrich programme/intake from email + document text (feature 2) ──────
   {
     const current = repo.getApplicant(applicant.id)!;
@@ -202,6 +240,7 @@ export async function processEmail(
         .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
         .join(" ");
     }
+
 
     if (!current.programme || !current.intake) {
       const corpus = [email.subject, email.body, ...activeDocs.map((d) => d.extracted_text.slice(0, 800))].join("\n");
@@ -479,6 +518,8 @@ export async function processEmail(
       : undefined,
     regDate: repo.getSetting("reg_date", ""),
     orientationDates: repo.getSetting("orientation_dates", ""),
+    readBack: readBackText(activeDocs),
+    documentIssues: documentIssuesText(activeDocs),
   };
 
   // Auto-admitted applicants get the official admission letter (with the full
@@ -529,6 +570,13 @@ export async function processEmail(
         banner: tplRow?.include_banner === 0 ? null : emailBanner(repo),
         attachments: willAutoAdmit ? admissionPack() : autoKind === "docs_request" ? applicationPack() : [],
       };
+      // A pack that went out missing files is a silent failure no more:
+      // audit it and tell staff which file is gone.
+      const packProblems = takePackIssues();
+      if (packProblems.length) {
+        repo.audit(applicant.id, "system", "pack_incomplete", packProblems.join("; "));
+        repo.notify("review_needed", `${applicantNow.ref_number}: outgoing pack is incomplete — ${packProblems[0]}`, applicant.id);
+      }
       await adapters.sender.send(applicantNow.email_address, draft.subject, draft.body, email.threadId, extras);
       repo.insertEmail({
         applicant_id: applicant.id,

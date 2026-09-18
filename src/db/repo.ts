@@ -13,6 +13,7 @@ import type {
   Programme,
   Classification,
   Confidence,
+  DeadLetter,
   DecisionLogEntry,
   DerivedFlag,
   DocType,
@@ -31,6 +32,8 @@ import type {
   SystemBlock,
   CourseLevel,
 } from "../types";
+import type { VisionCacheStore } from "../extraction/gemini";
+import type { VisionExtraction } from "../types";
 
 const nowIso = () => new Date().toISOString();
 
@@ -548,14 +551,15 @@ export class Repo {
     sha256?: string;
     is_duplicate?: boolean;
     duplicate_of?: number | null;
+    extraction_note?: string;
   }): number {
     const res = this.db
       .prepare(
         `INSERT INTO documents
            (applicant_id, document_type, source_email_id, extraction_method,
             extracted_text, extracted_fields, confidence, confidence_score, received_at,
-            sha256, is_duplicate, duplicate_of)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            sha256, is_duplicate, duplicate_of, extraction_note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         d.applicant_id,
@@ -569,9 +573,27 @@ export class Repo {
         d.received_at,
         d.sha256 ?? null,
         d.is_duplicate ? 1 : 0,
-        d.duplicate_of ?? null
+        d.duplicate_of ?? null,
+        d.extraction_note ?? ""
       );
     return Number(res.lastInsertRowid);
+  }
+
+  /**
+   * Re-score a document after cross-document consistency checks (confidence
+   * v2): the score, tier and the human-readable note travel together.
+   */
+  updateDocumentConfidence(
+    docId: number,
+    patch: { confidence?: Confidence; confidence_score?: number; extraction_note?: string }
+  ): void {
+    const sets: string[] = [];
+    const args: unknown[] = [];
+    if (patch.confidence !== undefined) { sets.push("confidence = ?"); args.push(patch.confidence); }
+    if (patch.confidence_score !== undefined) { sets.push("confidence_score = ?"); args.push(patch.confidence_score); }
+    if (patch.extraction_note !== undefined) { sets.push("extraction_note = ?"); args.push(patch.extraction_note); }
+    if (!sets.length) return;
+    this.db.prepare(`UPDATE documents SET ${sets.join(", ")} WHERE id = ?`).run(...args, docId);
   }
 
   /** Active (non-superseded, non-duplicate) documents for an applicant. */
@@ -613,6 +635,7 @@ export class Repo {
       sha256: r.sha256 ?? undefined,
       is_duplicate: r.is_duplicate,
       duplicate_of: r.duplicate_of,
+      extraction_note: r.extraction_note ?? "",
     };
   }
 
@@ -944,6 +967,11 @@ export class Repo {
 
   markProcessed(emailId: string, threadId: string): void {
     this.db.prepare("INSERT OR IGNORE INTO processed_emails (email_id, thread_id) VALUES (?, ?)").run(emailId, threadId);
+  }
+
+  /** Dead-letter retry: let the next poll see the message again. */
+  unmarkProcessed(emailId: string): void {
+    this.db.prepare("DELETE FROM processed_emails WHERE email_id = ?").run(emailId);
   }
 
   // ── Outbox / human queue ─────────────────────────────────────────────────
@@ -1896,5 +1924,178 @@ export class Repo {
     return this.db
       .prepare("SELECT id, result, routing, reason, evaluated_at, set_version, system FROM evaluations WHERE applicant_id = ? ORDER BY id DESC LIMIT 50")
       .all(applicantId) as never[];
+  }
+
+  // ── Vision cache (round 19) ──────────────────────────────────────────────
+  // Gemini results cached by content SHA-256 so the same bytes are never paid
+  // for twice; a dead vision model can replay the last-known reading instead
+  // of failing the document.
+
+  visionCacheGet(sha256: string): VisionExtraction | null {
+    const r = this.db.prepare("SELECT result_json FROM gemini_cache WHERE sha256 = ?").get(sha256) as
+      | { result_json: string }
+      | undefined;
+    if (!r) return null;
+    try {
+      return JSON.parse(r.result_json) as VisionExtraction;
+    } catch {
+      return null;
+    }
+  }
+
+  visionCacheSet(sha256: string, result: VisionExtraction): void {
+    this.db
+      .prepare(
+        `INSERT INTO gemini_cache (sha256, result_json) VALUES (?, ?)
+         ON CONFLICT(sha256) DO UPDATE SET result_json = excluded.result_json`
+      )
+      .run(sha256, JSON.stringify(result));
+  }
+
+  visionCallsToday(): number {
+    const today = new Date().toISOString().slice(0, 10);
+    const key = `gemini_calls_${today}`;
+    const val = this.getSetting(key, "0");
+    const n = Number(val);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  noteVisionCall(): void {
+    const today = new Date().toISOString().slice(0, 10);
+    const key = `gemini_calls_${today}`;
+    this.setSetting(key, String(this.visionCallsToday() + 1));
+  }
+
+  /** Adapter factory: hands the extraction layer a DB-backed cache store. */
+  visionCacheStore(): VisionCacheStore {
+    return {
+      get: (sha) => this.visionCacheGet(sha),
+      set: (sha, r) => this.visionCacheSet(sha, r),
+      callsToday: () => this.visionCallsToday(),
+      noteCall: () => this.noteVisionCall(),
+    };
+  }
+
+  // ── Dead-letter queue (round 19) ─────────────────────────────────────────
+  // Poison mail accumulates attempts here; after DEAD_LETTER_MAX_ATTEMPTS it
+  // is parked (dead=1) and surfaced to a human instead of being retried
+  // forever.
+
+  deadLetterMaxAttempts(): number {
+    const n = Number(this.getSetting("dead_letter_max_attempts", "5"));
+    return Number.isFinite(n) && n > 0 ? n : 5;
+  }
+
+  recordDeadLetter(input: {
+    message_id: string;
+    subject: string;
+    from_addr: string;
+    error: string;
+  }): { attempts: number; dead: boolean; id: number } {
+    const existing = this.db
+      .prepare("SELECT * FROM dead_letters WHERE message_id = ?")
+      .get(input.message_id) as (DeadLetter & { dead: number }) | undefined;
+    if (existing) {
+      const attempts = existing.attempts + 1;
+      const dead = attempts >= this.deadLetterMaxAttempts() ? 1 : existing.dead;
+      this.db
+        .prepare(
+          `UPDATE dead_letters SET attempts = ?, error = ?, dead = ?, updated_at = datetime('now') WHERE id = ?`
+        )
+        .run(attempts, input.error, dead, existing.id);
+      return { attempts, dead: dead === 1, id: existing.id };
+    }
+    const attempts = 1;
+    const dead = attempts >= this.deadLetterMaxAttempts() ? 1 : 0;
+    const res = this.db
+      .prepare(
+        `INSERT INTO dead_letters (message_id, subject, from_addr, error, attempts, dead)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(input.message_id, input.subject, input.from_addr, input.error, attempts, dead);
+    return { attempts, dead: dead === 1, id: Number(res.lastInsertRowid) };
+  }
+
+  listDeadLetters(onlyDead = true): DeadLetter[] {
+    const sql = onlyDead
+      ? "SELECT * FROM dead_letters WHERE dead = 1 ORDER BY updated_at DESC"
+      : "SELECT * FROM dead_letters ORDER BY updated_at DESC";
+    return this.db.prepare(sql).all() as DeadLetter[];
+  }
+
+  /**
+   * Park a message permanently (known-unprocessable, e.g. oversized mail):
+   * no retry budget, straight to the human queue.
+   */
+  parkDeadLetter(input: {
+    message_id: string;
+    subject: string;
+    from_addr: string;
+    error: string;
+  }): DeadLetter {
+    const max = this.deadLetterMaxAttempts();
+    this.db
+      .prepare(
+        `INSERT INTO dead_letters (message_id, subject, from_addr, error, attempts, dead)
+         VALUES (?, ?, ?, ?, ?, 1)
+         ON CONFLICT(message_id) DO UPDATE SET
+           error = excluded.error, attempts = excluded.attempts, dead = 1, updated_at = datetime('now')`
+      )
+      .run(input.message_id, input.subject, input.from_addr, input.error, max);
+    return this.db
+      .prepare("SELECT * FROM dead_letters WHERE message_id = ?")
+      .get(input.message_id) as DeadLetter;
+  }
+
+  /** Reset a parked letter so the next poll retries it. */
+  resetDeadLetter(id: number): void {
+    this.db
+      .prepare(`UPDATE dead_letters SET dead = 0, attempts = 0, updated_at = datetime('now') WHERE id = ?`)
+      .run(id);
+  }
+
+  removeDeadLetter(id: number): void {
+    this.db.prepare("DELETE FROM dead_letters WHERE id = ?").run(id);
+  }
+
+  getDeadLetter(id: number): DeadLetter | undefined {
+    return this.db.prepare("SELECT * FROM dead_letters WHERE id = ?").get(id) as DeadLetter | undefined;
+  }
+
+  clearDeadLetterByMessage(messageId: string): void {
+    this.db.prepare("DELETE FROM dead_letters WHERE message_id = ?").run(messageId);
+  }
+
+  // ── Case routing helpers (round 19) ──────────────────────────────────────
+
+  /**
+   * Open cases for a programme that have NO human owner yet. When a course
+   * owner changes, these can flow to the new owner automatically — but a
+   * case somebody already picked up is never re-routed behind their back.
+   */
+  openUnassignedCasesForProgramme(programme: string): ApplicantRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM applicants
+         WHERE programme = ? AND assigned_to IS NULL AND lifecycle <> 'completed'
+         ORDER BY id`
+      )
+      .all(programme) as ApplicantRow[];
+    return rows;
+  }
+
+  /** Every open case (any programme, any realm) — for bulk re-evaluation. */
+  openApplicantIds(): number[] {
+    const rows = this.db
+      .prepare(`SELECT id FROM applicants WHERE lifecycle <> 'completed' ORDER BY id`)
+      .all() as Array<{ id: number }>;
+    return rows.map((r) => r.id);
+  }
+
+  isDeadLetter(messageId: string): boolean {
+    const r = this.db
+      .prepare("SELECT dead FROM dead_letters WHERE message_id = ?")
+      .get(messageId) as { dead: number } | undefined;
+    return Boolean(r?.dead);
   }
 }

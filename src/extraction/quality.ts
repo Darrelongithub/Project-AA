@@ -2,7 +2,13 @@
  * Extraction-quality heuristics. Pure functions — the gate between
  * extraction tiers. "Good" means: enough text, mostly letters, real words.
  * Anything else falls through to the next (more expensive) tier.
+ *
+ * Round 19: thresholds are DOCUMENT-TYPE AWARE. A birth certificate or an ID
+ * card legitimately carries very little text — judging it by transcript
+ * standards sent genuine short documents to Gemini for no reason. Academic
+ * results keep the strict gate because half-read grade tables are dangerous.
  */
+import type { DocType } from "../types";
 
 export interface QualityReport {
   ok: boolean;
@@ -20,6 +26,28 @@ export interface QualityThresholds {
   minDistinctWords?: number;
   minAvgWordLength?: number;
   maxRepeatRun?: number;
+}
+
+/**
+ * Per-document-type gates. `unknown` keeps the strict defaults: we do not
+ * loosen the bar for text we cannot even place.
+ */
+export function thresholdsFor(docType?: DocType | null): QualityThresholds {
+  switch (docType) {
+    case "birth_cert":
+    case "id":
+      // Short by nature: a clean ID page may be ~15 words.
+      return { minLength: 15, minLetterRatio: 0.55, minDistinctWords: 3, minAvgWordLength: 3.0, maxRepeatRun: 20 };
+    case "kcpe_cert":
+      return { minLength: 25, minLetterRatio: 0.55, minDistinctWords: 4, minAvgWordLength: 3.5, maxRepeatRun: 20 };
+    case "application_form":
+      return { minLength: 30, minLetterRatio: 0.55, minDistinctWords: 5, minAvgWordLength: 3.5, maxRepeatRun: 20 };
+    case "credit_transfer_form":
+      return { minLength: 30, minLetterRatio: 0.55, minDistinctWords: 5, minAvgWordLength: 3.5, maxRepeatRun: 20 };
+    default:
+      // academic_cert, unknown — the strict original gate.
+      return { minLength: 40, minLetterRatio: 0.6, minDistinctWords: 5, minAvgWordLength: 4.0, maxRepeatRun: 20 };
+  }
 }
 
 export function assessTextQuality(
@@ -79,7 +107,15 @@ export function assessTextQuality(
   };
 }
 
-export function isGoodText(text: string | null | undefined): boolean {
+/**
+ * Classify FIRST, then judge by that document type's bar. A birth
+ * certificate with 20 clean words is good text; the same 20 words on a
+ * "result slip" is not.
+ */
+export function isGoodText(
+  text: string | null | undefined,
+  docType?: DocType | null
+): boolean {
   if (!text) return false;
-  return assessTextQuality(text).ok;
+  return assessTextQuality(text, thresholdsFor(docType)).ok;
 }

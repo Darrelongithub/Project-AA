@@ -25,6 +25,10 @@ export interface DraftContext {
   programme?: string;
   regDate?: string;
   orientationDates?: string;
+  /** "We read your KCSE as mean grade B+…" — applicant-friendly read-back. */
+  readBack?: string;
+  /** "We couldn't read page 2 — please re-scan…" — per-document issues. */
+  documentIssues?: string;
 }
 
 export interface Draft {
@@ -63,6 +67,8 @@ export function renderTemplate(
     "{programme}": ctx.programme?.trim() || "your programme",
     "{reg_date}": ctx.regDate?.trim() || "the announced registration date",
     "{orientation_dates}": ctx.orientationDates?.trim() || "the announced orientation dates",
+    "{read_back}": ctx.readBack?.trim() || "",
+    "{document_issues}": ctx.documentIssues?.trim() || "",
   };
   let s = subject;
   let b = body;

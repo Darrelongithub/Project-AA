@@ -5,7 +5,27 @@
 import type { ExtractedFields } from "../types";
 
 const NAME_RE =
-  /^(?:NAME(?:\s+OF\s+(?:APPLICANT|STUDENT|HOLDER))?|APPLICANT(?:\s+NAME)?|FULL\s+NAME)\s*[:\-]\s*(.+)$/im;
+  /^(?:FULL\s+NAME|NAME\s+OF\s+(?:APPLICANT|STUDENT|HOLDER|CANDIDATE|DECEASED|CHILD)|APPLICANT(?:'S)?\s+NAME|CANDIDATE(?:\s+NAME)?|STUDENT(?:\s+NAME)?|HOLDER(?:'S)?\s+NAME|NAME)\s*[:\-]\s*(.+)$/im;
+
+/** Honorifics and salutations that leak into captured names. */
+const NAME_TITLE_RE = /^(MR|MRS|MS|MISS|DR|PROF|REV|HON)\.?\s+/i;
+
+/**
+ * Normalise a captured name: "KAMAU, JOHN" → "JOHN KAMAU", titles stripped,
+ * whitespace collapsed. Pure formatting — the identity layer still decides
+ * whether names match.
+ */
+export function cleanExtractedName(raw: string): string | null {
+  let n = (raw || "").trim().replace(/\s+/g, " ");
+  n = n.replace(/[\u2013\u2014]/g, "-");
+  const comma = n.match(/^([^,]{1,40}),\s*([^,]{1,40})$/);
+  if (comma) n = `${comma[2]} ${comma[1]}`; // family-first → given-first
+  n = n.replace(NAME_TITLE_RE, "");
+  n = n.replace(/\b\d+\b/g, "").replace(/\s+/g, " ").trim();
+  if (n.length < 3 || n.length > 80) return null;
+  if (!/[A-Za-z]/.test(n)) return null;
+  return n;
+}
 
 const POINTS_RE = [
   /(?:KCPE|KCSE)\s*(?:TOTAL|POINTS|MARKS)?\s*[:\-]?\s*(\d{2,3})\s*(?:POINTS|MARKS)?/i,
@@ -44,7 +64,13 @@ function normalizeGradeLetter(letter: string, word?: string): string {
   if (w === "minus") return `${letter.toUpperCase()}-`;
   return letter.toUpperCase();
 }
-const ID_NO_RE = /(?:ID|IDENTITY)\s*(?:NO|NUMBER|CARD\s*NO)\.?\s*[:\-]?\s*(\d{6,10})/i;
+/**
+ * ID / passport numbers. Labels end at a word boundary; a separator is
+ * required before the value (otherwise "NATIONAL IDENTITY CARD" would
+ * capture "ENTITY"); the value must contain a digit (words never do).
+ */
+const ID_NO_RE =
+  /\b(?:NATIONAL\s+ID(?:ENTITY)?(?:\s+CARD)?|PASSPORT|IDENTITY\s*CARD|ID\s*CARD|ID)\s*(?:NO|NUMBER|NBR|CARD\s*NO)?\.?\s*(?:[:#\-]\s*|\s+)(?=[A-Z0-9/\-]*\d)([A-Z0-9][A-Z0-9\-/]{4,14})\b/i;
 const YEAR_RE = /(?:YEAR|INDEX\s+YEAR|EXAM(?:INATION)?\s+YEAR)\s*[:\-]?\s*(19|20)\d{2}/i;
 
 export function extractFields(text: string): ExtractedFields {
@@ -53,8 +79,8 @@ export function extractFields(text: string): ExtractedFields {
 
   const name = text.match(NAME_RE);
   if (name) {
-    const cleaned = name[1].trim().replace(/\s+/g, " ");
-    if (cleaned.length >= 3 && cleaned.length <= 80) fields.name = cleaned;
+    const cleaned = cleanExtractedName(name[1]);
+    if (cleaned) fields.name = cleaned;
   }
 
   for (const re of POINTS_RE) {
@@ -95,7 +121,13 @@ export function extractFields(text: string): ExtractedFields {
   if (Object.keys(subjects).length) fields.subjectGrades = subjects;
 
   const idNo = text.match(ID_NO_RE);
-  if (idNo) fields.idNumber = idNo[1];
+  if (idNo) fields.idNumber = idNo[1].toUpperCase().trim();
+
+  // Date of birth — cross-checked between documents by the confidence layer.
+  const dob = text.match(
+    /(?:DATE\s+OF\s+BIRTH|DOB|BORN\s+ON|DAY\s+OF\s+BIRTH)\s*[:\-]?\s*(\d{1,2}[\/\-.]\d{1,2}[\/\-.](?:19|20)\d{2}|(?:19|20)\d{2}[\/\-.]\d{1,2}[\/\-.]\d{1,2}|\d{1,2}(?:ST|ND|RD|TH)?\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\s*,?\s*(?:19|20)\d{2})/i
+  );
+  if (dob) fields.dateOfBirth = dob[1].toUpperCase().replace(/\s+/g, " ").trim();
 
   // Exam index number (document intelligence field, v3 feature 6).
   const indexNo = text.match(/INDEX\s*(?:NO|NUMBER)\.?\s*[:\-]?\s*([0-9][0-9A-Z\/\-]{3,})/i);
@@ -114,7 +146,9 @@ export function extractFields(text: string): ExtractedFields {
     fields.examSystem = "KCSE";
   } else if (/INTERNATIONAL\s+BACCALAUREATE|\bIB\s+DIPLOMA\b/.test(up)) {
     fields.examSystem = "IB";
-    const pts = up.match(/(?:TOTAL\s+POINTS?|IB\s+POINTS?|DIPLOMA\s+POINTS?)\s*[:\-]?\s*(\d{1,2})/);
+    const pts =
+      up.match(/(?:TOTAL\s+POINTS?|IB\s+POINTS?|DIPLOMA\s+POINTS?|POINTS\s+AWARDED|SCORE)\s*[:\-]?\s*(\d{1,2})(?:\s*\/\s*45)?/) ||
+      up.match(/(\d{2})\s*\/\s*45(?:\s+POINTS?)?/);
     if (pts) {
       const n = parseInt(pts[1], 10);
       if (n >= 0 && n <= 45) fields.ibPoints = n;
@@ -125,14 +159,23 @@ export function extractFields(text: string): ExtractedFields {
       ibSubjects[prettifySubject(m[1])] = m[2];
     }
     if (Object.keys(ibSubjects).length) fields.subjectGrades = { ...(fields.subjectGrades ?? {}), ...ibSubjects };
-  } else if (/GCE\s+ADVANCED\s+LEVEL|ADVANCED\s+LEVEL\s+EXAMINATION|\bKACE\b|\bEAACE\b|A-LEVEL/.test(up)) {
+  } else if (/GCE\s+ADVANCED\s+LEVEL|ADVANCED\s+LEVEL\s+(?:EXAMINATION|RESULTS?|CERTIFICATE)|ADVANCED\s+LEVEL|\bKACE\b|\bEAACE\b|A[-\s]LEVEL/.test(up)) {
     fields.examSystem = "ALEVEL";
     // Principal passes: subjects listed with a grade A–E. Subsidiary passes
     // are marked explicitly on the slip.
+    // Combo form first: "GRADES: A*AA" / "GRADE COMBINATION A* A A".
+    const combo = up.match(/(?:GRADES?|COMBINATION)\s*[:\-]?\s*(A\*?\s*(?:A\*?\s*|[B-E]\s*){2,4})(?:\s|$)/);
     let principals = 0;
     let subsidiaries = 0;
     const principalSubjects: Record<string, string> = {};
-    for (const m of up.matchAll(/\b(ENGLISH|KISWAHILI|MATHEMATICS|BIOLOGY|CHEMISTRY|PHYSICS|HISTORY|GEOGRAPHY|ECONOMICS|COMPUTER(?:\s+SCIENCE)?|FRENCH|LITERATURE|DIVINITY|AGRICULTURE)\s*[:\-]\s*([A-E])\b/g)) {
+    if (combo) {
+      const letters = combo[1].match(/A\*|A|[B-E]/g);
+      if (letters && letters.length >= 2) {
+        principals = letters.length;
+        fields.meanGrade = letters.join("");
+      }
+    }
+    for (const m of up.matchAll(/\b(ENGLISH|KISWAHILI|MATHEMATICS|BIOLOGY|CHEMISTRY|PHYSICS|HISTORY|GEOGRAPHY|ECONOMICS|COMPUTER(?:\s+SCIENCE)?|FRENCH|LITERATURE|DIVINITY|AGRICULTURE)\s*[:\-]\s*(A\*|[A-E])(?![A-Z])/g)) {
       principals++;
       principalSubjects[prettifySubject(m[1])] = m[2];
     }
@@ -148,12 +191,15 @@ export function extractFields(text: string): ExtractedFields {
     fields.examSystem = "IGCSE";
     // Subject grades A*–G; a "credit" is any pass at C or better.
     const igSubjects: Record<string, string> = {};
-    for (const m of up.matchAll(/\b(ENGLISH(?:\s+LANGUAGE)?|KISWAHILI|MATHEMATICS|BIOLOGY|CHEMISTRY|PHYSICS|HISTORY|GEOGRAPHY|ECONOMICS|BUSINESS\s+STUDIES|COMPUTER(?:\s+SCIENCE)?|FRENCH|SPANISH|LITERATURE|ACCOUNTING)\s*[:\-]\s*(A\*|[A-G])\b/g)) {
+    for (const m of up.matchAll(/\b(ENGLISH(?:\s+LANGUAGE)?|KISWAHILI|MATHEMATICS|BIOLOGY|CHEMISTRY|PHYSICS|HISTORY|GEOGRAPHY|ECONOMICS|BUSINESS\s+STUDIES|COMPUTER(?:\s+SCIENCE)?|FRENCH|SPANISH|LITERATURE|ACCOUNTING)\s*[:\-]\s*(A\*|[A-G]|[1-9])(?![A-Z0-9])/g)) {
       igSubjects[prettifySubject(m[1])] = m[2];
     }
     if (Object.keys(igSubjects).length) {
       fields.subjectGrades = { ...(fields.subjectGrades ?? {}), ...igSubjects };
-      fields.credits = Object.values(igSubjects).filter((g) => ["A*", "A", "B", "C"].includes(g)).length;
+      // A*-C or numeric 9-4 both count as credits.
+      fields.credits = Object.values(igSubjects).filter((g) =>
+        ["A*", "A", "B", "C"].includes(g) || (/^[1-9]$/.test(g) && parseInt(g, 10) >= 4)
+      ).length;
     }
   } else if (/PRE-?UNIVERSITY|BRIDGING\s+(?:PROGRAMME|CERTIFICATE)/.test(up)) {
     fields.examSystem = "PREUNI";
@@ -174,7 +220,7 @@ export function extractFields(text: string): ExtractedFields {
   else if (/SECOND\s+CLASS\s+(UPPER|UPPER\s+DIVISION)/.test(up)) fields.classAwarded = "Second Class Honours (Upper Division)";
   else if (/SECOND\s+CLASS\s+(LOWER|LOWER\s+DIVISION)/.test(up)) fields.classAwarded = "Second Class Honours (Lower Division)";
   else {
-    const cls = up.match(/(?:OVERALL\s+(?:GRADE|RESULT)|CLASSIFICATION|AWARD)\s*[:\-]\s*(DISTINCTION|CREDIT|MERIT|PASS)/);
+    const cls = up.match(/(?:OVERALL\s+(?:GRADE|RESULT)|FINAL\s+(?:RESULT|GRADE)|CLASSIFICATION|AWARD)\s*[:\-]\s*(DISTINCTION|CREDIT|MERIT|PASS)/);
     if (cls) fields.classAwarded = cls[1][0] + cls[1].slice(1).toLowerCase();
   }
 

@@ -17,6 +17,8 @@ export interface AppConfig {
     clientId: string;
     clientSecret: string;
     refreshToken: string;
+    /** Gmail label to watch instead of the inbox (optional). */
+    label?: string;
   };
   ingestLookbackDays: number;
   disableOcr: boolean;
@@ -48,6 +50,7 @@ export function loadConfig(): AppConfig {
           clientId: env.GMAIL_OAUTH_CLIENT_ID!,
           clientSecret: env.GMAIL_OAUTH_CLIENT_SECRET!,
           refreshToken: env.GMAIL_OAUTH_REFRESH_TOKEN!,
+          label: env.GMAIL_LABEL || undefined,
         }
       : undefined,
     ingestLookbackDays: Number(env.INGEST_LOOKBACK_DAYS || 2),

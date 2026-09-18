@@ -7,12 +7,43 @@
  * MockVisionAdapter keeps tests/simulation deterministic: it returns the
  * sidecar `mockVision` payload attached to simulated attachments (i.e. it
  * simulates what the real model would have read).
+ *
+ * Round 19 — resilience wrappers:
+ *   - VisionUnavailableError distinguishes "the vision model is unavailable"
+ *     (timeout / API error / budget / open circuit) from "the document was
+ *     read and nothing came back". The pipeline turns the former into an
+ *     explicit human-review reason instead of a generic failure.
+ *   - BudgetedVisionAdapter adds a SHA-256 result cache (the same bytes are
+ *     never paid for twice), a daily call budget, and a circuit breaker that
+ *     stops hammering a dead API.
  */
+import * as crypto from "crypto";
 import type { Attachment, DocType, VisionExtraction } from "../types";
 import { DOC_TYPES } from "../types";
 
 export interface VisionAdapter {
   extractDocument(att: Attachment): Promise<VisionExtraction | null>;
+}
+
+/** Why the vision tier could not run — surfaced verbatim to staff. */
+export type VisionFailureKind = "timeout" | "api" | "budget" | "circuit";
+
+export class VisionUnavailableError extends Error {
+  kind: VisionFailureKind;
+  constructor(kind: VisionFailureKind, message: string) {
+    super(message);
+    this.kind = kind;
+    this.name = "VisionUnavailableError";
+  }
+}
+
+/** Persistence behind the vision cache + daily budget (repo implements). */
+export interface VisionCacheStore {
+  get(sha256: string): VisionExtraction | null;
+  set(sha256: string, result: VisionExtraction): void;
+  /** Paid vision calls made today (UTC day). */
+  callsToday(): number;
+  noteCall(): void;
 }
 
 export function parseVisionJson(raw: string): VisionExtraction | null {
@@ -108,8 +139,10 @@ export class GeminiVisionAdapter implements VisionAdapter {
         "gemini vision call"
       );
       return parseVisionJson(res.response.text());
-    } catch {
-      return null;
+    } catch (e) {
+      const msg = (e as Error)?.message || String(e);
+      if (/timed out/i.test(msg)) throw new VisionUnavailableError("timeout", `Vision model timed out (${VISION_TIMEOUT_MS / 1000}s)`);
+      throw new VisionUnavailableError("api", `Vision model call failed: ${msg.slice(0, 200)}`);
     }
   }
 
@@ -135,5 +168,82 @@ export class MockVisionAdapter implements VisionAdapter {
    */
   async extractDocument(att: Attachment): Promise<VisionExtraction | null> {
     return att.mockVision ?? null;
+  }
+}
+
+
+/**
+ * Wraps any VisionAdapter with a content-hash cache, a daily call budget and
+ * a circuit breaker. Cache hits never consume budget. A parsed-null response
+ * is also cached (the model saw it and read nothing — re-asking costs money
+ * for the same answer).
+ */
+export class BudgetedVisionAdapter implements VisionAdapter {
+  constructor(
+    private inner: VisionAdapter,
+    private store: VisionCacheStore,
+    private dailyBudget: number = Number(process.env.GEMINI_DAILY_BUDGET || 100),
+    private circuitThreshold = 3,
+    private circuitCooldownMs = 5 * 60_000
+  ) {}
+
+  private consecutiveFailures = 0;
+  private circuitOpenedAt: number | null = null;
+
+  circuitState(): { open: boolean; failures: number } {
+    return { open: this.isCircuitOpen(), failures: this.consecutiveFailures };
+  }
+
+  private isCircuitOpen(): boolean {
+    if (this.circuitOpenedAt === null) return false;
+    if (Date.now() - this.circuitOpenedAt >= this.circuitCooldownMs) {
+      // Half-open: allow one probe through.
+      this.circuitOpenedAt = null;
+      this.consecutiveFailures = 0;
+      return false;
+    }
+    return true;
+  }
+
+  async extractDocument(att: Attachment): Promise<VisionExtraction | null> {
+    const sha = crypto.createHash("sha256").update(att.content).digest("hex");
+
+    // 1 — cache first: identical bytes were already read (or already read
+    //     as nothing). Zero cost, zero API risk.
+    const cached = this.store.get(sha);
+    if (cached) return cached;
+
+    // 2 — budget: refuse to overspend; the document goes to a human.
+    if (this.store.callsToday() >= this.dailyBudget) {
+      throw new VisionUnavailableError(
+        "budget",
+        `Daily vision-model budget exhausted (${this.dailyBudget} calls) — document queued for human review`
+      );
+    }
+
+    // 3 — circuit: don't hammer an API that keeps failing.
+    if (this.isCircuitOpen()) {
+      throw new VisionUnavailableError(
+        "circuit",
+        "Vision model unavailable (circuit open after repeated failures) — document queued for human review"
+      );
+    }
+
+    try {
+      this.store.noteCall();
+      const v = await this.inner.extractDocument(att);
+      this.consecutiveFailures = 0;
+      // Cache BOTH outcomes: a reading, and a confirmed "read as nothing".
+      this.store.set(sha, v ?? { document_type: "unknown", text: "", fields: {}, confidence: "low" });
+      return v;
+    } catch (e) {
+      if (e instanceof VisionUnavailableError) {
+        this.consecutiveFailures++;
+        if (this.consecutiveFailures >= this.circuitThreshold && this.circuitOpenedAt === null) {
+          this.circuitOpenedAt = Date.now();
+        }
+      }
+      throw e;
+    }
   }
 }

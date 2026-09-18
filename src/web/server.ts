@@ -25,14 +25,14 @@ import {
 import { avatar, esc, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
 import { processEmail } from "../pipeline";
-import { GeminiVisionAdapter } from "../extraction/gemini";
+import { BudgetedVisionAdapter, GeminiVisionAdapter } from "../extraction/gemini";
 import { GeminiWatcher } from "../watcher";
 import { buildAdapters, type Adapters } from "../pipeline/adapters";
 import type { PipelineContext as PCtx } from "../pipeline/adapters";
 import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { INSTITUTION, emailBanner } from "../branding";
-import { admissionPack, applicationPack, creditTransferPack, PACK_DIR, PACK_SLOTS } from "../pack";
+import { admissionPack, applicationPack, creditTransferPack, PACK_DIR, PACK_SLOTS, takePackIssues } from "../pack";
 import { EXAM_SYSTEMS, SUBJECT_CATALOG } from "../config";
 import type { SystemBlock } from "../types";
 import * as fs from "fs";
@@ -463,6 +463,11 @@ export function createApp(deps: WebDeps): Express {
       orientationDates: repo.getSetting("orientation_dates", ""),
     });
     const attachments = isAdmission ? admissionPack() : applicationPack();
+    // Missing pack files must never be a silent gap in a real send.
+    const packProblems = takePackIssues();
+    if (packProblems.length) {
+      repo.audit(id, req.staff!.username, "pack_incomplete", packProblems.join("; "));
+    }
     try {
       await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
         banner: tpl.include_banner === 0 ? null : emailBanner(repo),
@@ -479,9 +484,12 @@ export function createApp(deps: WebDeps): Express {
     });
     staffAction(req, id, isAdmission ? "admission_pack_sent" : "application_pack_sent",
       `${attachments.length} document(s): "${rendered.subject}"`);
-    res.redirect(backToCase(id, isAdmission
+    const packWarn = packProblems.length
+      ? ` ⚠ ${packProblems.length} pack file(s) missing — see audit.`
+      : "";
+    res.redirect(backToCase(id, (isAdmission
       ? `Admission pack sent — letter plus ${attachments.length} documents.`
-      : "Application pack sent — form and brochure attached."));
+      : "Application pack sent — form and brochure attached.") + packWarn));
   });
 
   // Compose: an action (e.g. "Request missing documents") or any template
@@ -657,6 +665,48 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(backToCase(id, `Evaluation re-run: ${result.report.result.replace(/_/g, " ")} → ${result.report.routing.replace(/_/g, " ")}.`));
   });
 
+  /**
+   * Round 19: after a rule change, re-run the evaluation across every OPEN
+   * case in one click instead of opening them one by one. Cases keep the
+   * requirement set they were frozen under — this simply re-applies it.
+   */
+  app.post("/config/reevaluate-open", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#rules`;
+    let done = 0;
+    for (const id of repo.openApplicantIds()) {
+      const a = repo.getApplicant(id);
+      if (!a || !sameRealm(req, a)) continue;
+      const flags = repo.activeFlags(id).filter((f) => f.type !== "duplicate_submission");
+      const result = evaluateAdmission(repo, id, flags);
+      repo.syncFlags(id, [...flags, ...result.derivedFlags]);
+      repo.audit(id, req.staff!.username, "evaluation_rerun", `bulk re-evaluation → ${result.report.result}/${result.report.routing}`);
+      done++;
+    }
+    repo.audit(null, req.staff!.username, "bulk_reevaluation", `${done} open case(s) re-evaluated`);
+    res.redirect(back(`Re-evaluated ${done} open case(s) against their frozen rule sets.`));
+  });
+
+  // Dead-letter queue: retry puts a parked message back in front of the next
+  // sync; drop removes it for good (the sender will have to email again).
+  app.post("/config/dead-letter/retry", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#deadletters`;
+    const d = repo.getDeadLetter(Number(req.body.id ?? 0));
+    if (!d) return res.redirect(back("That parked message no longer exists."));
+    repo.resetDeadLetter(d.id);
+    repo.unmarkProcessed(d.message_id);
+    repo.audit(null, req.staff!.username, "dead_letter_retry", `message ${d.message_id} ("${d.subject}") re-queued for ingestion`);
+    res.redirect(back(`"${d.subject || d.message_id}" will be retried on the next sync.`));
+  });
+
+  app.post("/config/dead-letter/delete", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#deadletters`;
+    const d = repo.getDeadLetter(Number(req.body.id ?? 0));
+    if (!d) return res.redirect(back("That parked message no longer exists."));
+    repo.removeDeadLetter(d.id);
+    repo.audit(null, req.staff!.username, "dead_letter_dropped", `message ${d.message_id} ("${d.subject}") dropped by staff`);
+    res.redirect(back(`"${d.subject || d.message_id}" was dropped.`));
+  });
+
   // ── Team performance (staff listener) ────────────────────────────────────
 
   app.get("/team", requireLogin, (_req, res) => res.redirect("/staff"));
@@ -745,7 +795,19 @@ export function createApp(deps: WebDeps): Express {
     repo.assignProgrammeOwner(programme, ownerId);
     const who = ownerId !== null ? repo.getStaff(ownerId)?.display_name ?? `#${ownerId}` : "nobody (unassigned)";
     repo.audit(null, req.staff!.username, "course_owner_changed", `${programme} → ${who}`);
-    res.redirect(back(`Course ${programme} now handled by ${who}.`));
+
+    // Round 19: an owner change should not leave open, unowned cases behind.
+    // Cases a human already picked up are never re-routed automatically.
+    let routed = 0;
+    if (ownerId !== null) {
+      for (const c of repo.openUnassignedCasesForProgramme(programme)) {
+        repo.updateApplicant(c.id, { assigned_to: ownerId });
+        repo.audit(c.id, req.staff!.username, "case_routed", `assigned to ${who} — new owner of ${programme}`);
+        repo.notify("assignment", `${programme} ownership changed: case ${c.ref_number} routed to you`, c.id, ownerId);
+        routed++;
+      }
+    }
+    res.redirect(back(`Course ${programme} now handled by ${who}.${routed ? ` ${routed} open case(s) routed over.` : ""}`));
   });
 
   // Editable course fields: entry requirements (and name/school) change over
@@ -963,6 +1025,9 @@ export function createApp(deps: WebDeps): Express {
   app.post("/settings/gmail/credentials", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     repo.setSetting("gmail_address", String(req.body.gmail_address ?? "").trim());
     repo.setSetting("gmail_client_id", String(req.body.gmail_client_id ?? "").trim());
+    // Which part of the mailbox to watch; blank = the inbox. Applies on the
+    // very next sync — no restart needed.
+    repo.setSetting("gmail_label", String(req.body.gmail_label ?? "").trim());
     // Secret is write-only in the UI: kept if the field is left blank.
     const secret = String(req.body.gmail_client_secret ?? "").trim();
     if (secret) repo.setSetting("gmail_client_secret", secret);
@@ -1060,7 +1125,7 @@ export function createApp(deps: WebDeps): Express {
     try {
       const next: Adapters = {
         ...ctx.adapters,
-        vision: new GeminiVisionAdapter(key, model),
+        vision: new BudgetedVisionAdapter(new GeminiVisionAdapter(key, model), repo.visionCacheStore()),
         watcher: ((w) => (input) => w.watch(input))(new GeminiWatcher(key, model)),
       };
       ctx.adapters = next;

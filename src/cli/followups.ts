@@ -21,7 +21,7 @@ async function main(): Promise<void> {
     const gmail = new GmailClient(cfg.gmail);
     sender = { send: (to, subject, body, threadId) => gmail.sendReply(to, subject, body, threadId) };
   }
-  const ctx: PipelineContext = { repo, adapters: buildAdapters(cfg, sender) };
+  const ctx: PipelineContext = { repo, adapters: buildAdapters(cfg, sender, repo) };
   const sent = await runFollowUpSweep(repo, ctx);
   console.log(`followups: ${sent} reminder(s) sent this sweep.`);
 }

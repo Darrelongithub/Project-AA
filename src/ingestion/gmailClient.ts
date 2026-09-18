@@ -3,11 +3,34 @@
  *
  * Auth: OAuth2 "installed app" style — client id/secret + a refresh token
  * for the test inbox. Only what the pipeline needs is implemented:
- *   - list recent inbox message ids
- *   - fetch one message with attachments
+ *   - list recent message ids (a configurable label, paginated)
+ *   - fetch one message with attachments (inline documents included)
  *   - send a plain-text reply inside a thread
+ *
+ * Round 19 hardening:
+ *   - the mailbox is paginated — more than the first 50 messages are seen;
+ *   - a dedicated label can be watched instead of (or as well as) the inbox;
+ *   - inline images that ARE the document are captured as attachments;
+ *   - a size guard rejects oversized mail BEFORE base64-buffering it.
  */
 import type { IncomingEmail } from "../types";
+import { MAX_ATTACHMENT_BYTES } from "../extraction/extract";
+import { log } from "../util/log";
+
+/** Whole-message cap; above this the mail is parked, never downloaded. */
+export const MAX_EMAIL_BYTES = Number(process.env.GMAIL_MAX_EMAIL_BYTES || 40 * 1024 * 1024);
+
+/** A message too big to process — park it permanently, tell a human. */
+export class EmailTooLargeError extends Error {
+  sizeEstimate: number;
+  constructor(messageId: string, sizeEstimate: number) {
+    super(
+      `message ${messageId} is ~${(sizeEstimate / 1024 / 1024).toFixed(1)} MB — above the ${(MAX_EMAIL_BYTES / 1024 / 1024).toFixed(0)} MB mail cap`
+    );
+    this.sizeEstimate = sizeEstimate;
+    this.name = "EmailTooLargeError";
+  }
+}
 
 /**
  * Header-safe `To`/`Subject` values for raw MIME construction. CR/LF in a
@@ -35,11 +58,15 @@ export class GmailClient {
   private gmail: any;
   readonly address: string;
 
+  readonly label?: string;
+
   constructor(cfg: {
     address: string;
     clientId: string;
     clientSecret: string;
     refreshToken: string;
+    /** Gmail label to watch (default: the inbox). */
+    label?: string;
   }) {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { google } = require("googleapis");
@@ -47,18 +74,47 @@ export class GmailClient {
     oauth2.setCredentials({ refresh_token: cfg.refreshToken });
     this.gmail = google.gmail({ version: "v1", auth: oauth2 });
     this.address = cfg.address;
+    this.label = cfg.label?.trim() || undefined;
   }
 
-  async listRecentMessageIds(lookbackDays: number, maxResults = 50): Promise<string[]> {
-    const res = await this.gmail.users.messages.list({
-      userId: "me",
-      q: `in:inbox newer_than:${lookbackDays}d`,
-      maxResults,
-    });
-    return ((res.data.messages || []) as Array<{ id: string }>).map((m) => m.id);
+  /** Which mailbox region we read from — shown on the Configuration page. */
+  watchTarget(): string {
+    return this.label ? `label:${this.label}` : "in:inbox";
+  }
+
+  async listRecentMessageIds(
+    lookbackDays: number,
+    opts: { perPage?: number; maxPages?: number } = {}
+  ): Promise<string[]> {
+    const perPage = Math.min(opts.perPage ?? 100, 500);
+    const maxPages = opts.maxPages ?? 10;
+    const scope = this.label ? `label:${this.label}` : "in:inbox";
+    const q = `${scope} newer_than:${lookbackDays}d`;
+
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < maxPages; page++) {
+      const res = await this.gmail.users.messages.list({
+        userId: "me",
+        q,
+        maxResults: perPage,
+        ...(pageToken ? { pageToken } : {}),
+      });
+      for (const m of (res.data.messages || []) as Array<{ id: string }>) ids.push(m.id);
+      pageToken = res.data.nextPageToken || undefined;
+      if (!pageToken) break;
+    }
+    return ids;
   }
 
   async fetchEmail(id: string): Promise<IncomingEmail> {
+    // Size guard BEFORE downloading: a 40 MB scan used to be base64-buffered
+    // into memory before anything noticed. Metadata is tiny and carries the
+    // server's own size estimate.
+    const meta = await this.gmail.users.messages.get({ userId: "me", id, format: "metadata" });
+    const sizeEstimate = Number(meta.data.sizeEstimate || 0);
+    if (sizeEstimate > MAX_EMAIL_BYTES) throw new EmailTooLargeError(id, sizeEstimate);
+
     const res = await this.gmail.users.messages.get({ userId: "me", id, format: "full" });
     const msg = res.data;
     const headers: Record<string, string> = {};
@@ -70,12 +126,24 @@ export class GmailClient {
     const nameMatch = fromHeader.match(/^"?\s*([^"<]+?)\s*"?\s*</);
 
     const bodyParts: string[] = [];
-    const attachments: Array<{ filename: string; mimeType: string; attachmentId: string }> = [];
+    const attachments: Array<{ filename: string; mimeType: string; attachmentId: string; size?: number }> = [];
 
     const walk = (part: MimePartNode) => {
-      if (part.filename && part.filename.length > 0 && part.body?.attachmentId) {
-        attachments.push({ filename: part.filename, mimeType: part.mimeType, attachmentId: part.body.attachmentId });
-        return;
+      if (part.body?.attachmentId) {
+        const disposition = (part.headers || []).find((h) => h.name.toLowerCase() === "content-disposition")?.value || "";
+        const isDocumentish = /^(application\/pdf|image\/(png|jpe?g|tiff?))$/i.test(part.mimeType);
+        // Named attachments always; INLINE images of document types too —
+        // phone users paste their scan into the message body itself.
+        const inlineDocument = /inline/i.test(disposition) && isDocumentish;
+        if ((part.filename && part.filename.length > 0) || inlineDocument) {
+          let filename = part.filename && part.filename.length > 0 ? part.filename : "";
+          if (!filename) {
+            const cid = (part.headers || []).find((h) => h.name.toLowerCase() === "content-id")?.value || "";
+            filename = `inline-${cid.replace(/[<>]/g, "") || attachments.length + 1}.${part.mimeType.split("/")[1] || "bin"}`;
+          }
+          attachments.push({ filename, mimeType: part.mimeType, attachmentId: part.body.attachmentId, size: part.body.size });
+          return;
+        }
       }
       if (part.mimeType === "text/plain" && part.body?.data) {
         bodyParts.push(Buffer.from(part.body.data, "base64").toString("utf8"));
@@ -99,18 +167,28 @@ export class GmailClient {
     }
 
     const attachmentBuffers = await Promise.all(
-      attachments.map(async (a) => {
-        const attRes = await this.gmail.users.messages.attachments.get({
-          userId: "me",
-          messageId: id,
-          id: a.attachmentId,
-        });
-        return {
-          filename: a.filename,
-          mimeType: a.mimeType,
-          content: Buffer.from(attRes.data.data, "base64"),
-        };
-      })
+      attachments
+        .filter((a) => {
+          // The extraction layer enforces the same cap on bytes, but an
+          // attachment that DECLARES itself oversized is never downloaded.
+          if ((a.size ?? 0) > MAX_ATTACHMENT_BYTES) {
+            log(`gmail: skipping ${a.filename} — declared ${(a.size! / 1024 / 1024).toFixed(1)} MB exceeds the ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB attachment cap`, "warn");
+            return false;
+          }
+          return true;
+        })
+        .map(async (a) => {
+          const attRes = await this.gmail.users.messages.attachments.get({
+            userId: "me",
+            messageId: id,
+            id: a.attachmentId,
+          });
+          return {
+            filename: a.filename,
+            mimeType: a.mimeType,
+            content: Buffer.from(attRes.data.data, "base64"),
+          };
+        })
     );
 
     return {

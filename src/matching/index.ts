@@ -50,6 +50,7 @@ export function recordDocuments(
       confidence_score: r.confidence_score,
       received_at: email.receivedAt,
       sha256: r.sha256,
+      extraction_note: r.failure_reason ?? "",
     });
     if (r.document_type !== "unknown") {
       repo.supersedeOlder(applicantId, r.document_type, id);

@@ -60,11 +60,26 @@ export function packManifest(): Array<PackSlot & { exists: boolean; bytes: numbe
   });
 }
 
+/**
+ * Missing pack files used to vanish into a log line — a student would get an
+ * admission letter WITHOUT the medical form and nobody would notice. The
+ * pipeline now drains this list after building attachments and writes an
+ * audit entry + staff notification per missing file.
+ */
+let packIssues: string[] = [];
+
+export function takePackIssues(): string[] {
+  const out = packIssues;
+  packIssues = [];
+  return out;
+}
+
 function read(name: string, pretty: string): PackFile | null {
   try {
     return { filename: pretty, mimeType: "application/pdf", content: fs.readFileSync(path.join(PACK_DIR, name)) };
   } catch {
     log(`pack: ${name} not found in data/pack — skipped`, "warn");
+    packIssues.push(`${pretty} (${name}) is missing from data/pack — the outgoing pack is incomplete`);
     return null;
   }
 }

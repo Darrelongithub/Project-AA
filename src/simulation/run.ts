@@ -98,7 +98,7 @@ export async function runSimulation(
   // for diplomas/certificates/postgrad come from seedDefaults.
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
   const sender = new MockSender();
-  const adapters = buildAdapters(cfg, sender);
+  const adapters = buildAdapters(cfg, sender, repo);
   const ctx: PipelineContext = { repo, adapters };
 
   const fixtures = await buildFixtures();

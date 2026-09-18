@@ -208,7 +208,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
   {
     fixtures.push({
       name: "frank-name-mismatch",
-      description: "Names disagree across documents → Orange + name_mismatch flag.",
+      description: "Names disagree across documents → Orange + name_mismatch flag; the contradicting document is capped below the auto-pass line (low_confidence reason code).",
       emails: [
         email({
           id: "email-frank-1", threadId: "thread-frank", from: "frank.ochieng@student.example.org", fromName: "Frank Ochieng",
@@ -223,17 +223,17 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["name_mismatch"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["low_confidence", "name_mismatch"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
 
-  // ── 7. Grace: scanned KCPE → OCR tier → medium confidence → Orange ──────
+  // ── 7. Grace: scanned KCPE → OCR reads cleanly → confidence v2 trusts it ─
   {
     const name = "GRACE AKINYI OTIENO";
     const kcpeLines = docLines("kcpe_cert", { name, kcpePoints: 289, year: "2019" });
     fixtures.push({
       name: "grace-scanned-kcpe",
-      description: "Scanned (image-only) KCPE certificate → OCR tier, medium confidence → Orange.",
+      description: "Scanned (image-only) KCPE certificate → OCR reads every critical field; confidence v2 (good fields + consistent names + mechanical read) trusts it → auto-admitted.",
       emails: [
         email({
           id: "email-grace-1", threadId: "thread-grace", from: "grace.otieno@student.example.org", fromName: "Grace Otieno",
@@ -251,7 +251,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["low_confidence"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
 
@@ -373,7 +373,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["name_mismatch"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["low_confidence", "name_mismatch"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
 

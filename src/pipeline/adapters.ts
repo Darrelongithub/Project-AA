@@ -6,7 +6,7 @@ import type { Repo } from "../db/repo";
 import type { VisionAdapter } from "../extraction/gemini";
 import type { Watcher } from "../watcher";
 import type { AppConfig } from "../config";
-import { GeminiVisionAdapter, MockVisionAdapter } from "../extraction/gemini";
+import { BudgetedVisionAdapter, GeminiVisionAdapter, MockVisionAdapter } from "../extraction/gemini";
 
 export { MockVisionAdapter };
 import { GeminiWatcher, makeHeuristicWatcher } from "../watcher";
@@ -41,12 +41,18 @@ export interface Adapters {
   ocr?: (image: Buffer, ext?: "png" | "jpg") => Promise<string | null>;
 }
 
-export function buildAdapters(cfg: AppConfig, sender: EmailSender): Adapters {
+export function buildAdapters(cfg: AppConfig, sender: EmailSender, repo?: Repo): Adapters {
   const useGemini = cfg.mode === "live" && !!cfg.geminiApiKey;
 
-  const vision: VisionAdapter = useGemini
+  // Live vision gets the resilience wrapper: SHA-256 result cache, daily
+  // budget and a circuit breaker. Mock mode stays unwrapped (no budget to
+  // burn, and tests assert on MockVisionAdapter directly).
+  let vision: VisionAdapter = useGemini
     ? new GeminiVisionAdapter(cfg.geminiApiKey!, cfg.geminiModel)
     : new MockVisionAdapter();
+  if (useGemini && repo) {
+    vision = new BudgetedVisionAdapter(vision, repo.visionCacheStore());
+  }
 
   // Construct the Gemini watcher ONCE — the old lambda re-required the SDK
   // and re-instantiated the model on every single email.

@@ -31,13 +31,14 @@ class DelegatingSender implements EmailSender {
 }
 
 /** Gmail credentials entered in Settings → GmailClient config (or null). */
-function gmailFromSettings(repo: Repo): { address: string; clientId: string; clientSecret: string; refreshToken: string } | null {
+function gmailFromSettings(repo: Repo): { address: string; clientId: string; clientSecret: string; refreshToken: string; label?: string } | null {
   const address = repo.getSetting("gmail_address", "");
   const clientId = repo.getSetting("gmail_client_id", "");
   const clientSecret = repo.getSetting("gmail_client_secret", "");
   const refreshToken = repo.getSetting("gmail_refresh_token", "");
+  const label = repo.getSetting("gmail_label", "").trim() || undefined;
   return address && clientId && clientSecret && refreshToken
-    ? { address, clientId, clientSecret, refreshToken }
+    ? { address, clientId, clientSecret, refreshToken, label }
     : null;
 }
 
@@ -56,7 +57,7 @@ async function main(): Promise<void> {
   }
   const sender = new DelegatingSender(gmail ? new GmailSender(gmail) : new MockSender());
 
-  const adapters = buildAdapters(cfg, sender);
+  const adapters = buildAdapters(cfg, sender, repo);
   const ctx: PipelineContext = { repo, adapters, jsonlPath: cfg.logToFile ? "./logs/decisions.jsonl" : undefined };
   // One ingest pass, usable by BOTH the 60s poll and Configuration → "Sync now".
   const runSyncOnce = async (): Promise<Error | null> => {

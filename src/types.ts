@@ -27,7 +27,7 @@ export const DOC_TYPES: DocType[] = [
 ];
 
 /** "none" = every tier failed (or the attachment was rejected outright). */
-export type ExtractionMethod = "pdf_text" | "ocr" | "gemini_vision" | "none";
+export type ExtractionMethod = "pdf_text" | "ocr" | "pdf_raster" | "gemini_vision" | "none";
 export type Confidence = "high" | "medium" | "low";
 
 /** Blocking flag types feed the rules engine; duplicate_submission is informational. */
@@ -314,6 +314,8 @@ export interface ExtractedFields {
   indexNumber?: string | null;
   examYear?: string | null;
   issueDate?: string | null;
+  /** Date of birth as printed on the document (best-effort normalisation). */
+  dateOfBirth?: string | null;
   [key: string]: unknown;
 }
 
@@ -333,6 +335,21 @@ export interface DocumentRecord {
   sha256?: string;
   is_duplicate?: number;
   duplicate_of?: number | null;
+  /** Why extraction fell short (password-protected, unreadable, partial read…). */
+  extraction_note?: string;
+}
+
+/** A mail that kept failing ingestion; parked after the retry budget. */
+export interface DeadLetter {
+  id: number;
+  message_id: string;
+  subject: string;
+  from_addr: string;
+  error: string;
+  attempts: number;
+  dead: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface DerivedFlag {
@@ -409,8 +426,17 @@ export interface ExtractionResult {
   text: string;
   fields: ExtractedFields;
   confidence: Confidence;
-  /** Numeric readability/confidence 0-100. >=75 is required to auto-pass. */
+  /**
+   * Confidence v2: blend of text quality + presence of the document's
+   * critical fields + system identification. >=75 is required to auto-pass.
+   */
   confidence_score?: number;
+  /**
+   * Human-facing explanation when a document could not be read well enough
+   * (password-protected, corrupt, empty, screenshot-like…). Shown to staff
+   * and quoted, in friendly words, in applicant replies.
+   */
+  failure_reason?: string | null;
   sha256: string;
   duplicateOf?: number | null;
 }

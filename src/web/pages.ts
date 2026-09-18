@@ -883,7 +883,9 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
         ? `<span class="badge b-gray">duplicate of #${d.duplicate_of}</span>`
         : d.superseded_by
           ? `<span class="badge b-gray">superseded by #${d.superseded_by}</span>`
-          : `<span class="badge b-green">Received</span>`;
+          : d.extraction_method === "none"
+            ? `<span class="badge b-orange">Unreadable</span>`
+            : `<span class="badge b-green">Received</span>`;
       const fields = Object.entries(d.extracted_fields)
         .filter(([, v]) => v !== null && v !== undefined && v !== "" && JSON.stringify(v) !== "{}")
         .map(([k, v]) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(typeof v === "object" ? Object.entries(v as Record<string, string>).map(([sk, sv]) => `${sk} ${sv}`).join(", ") : String(v))}</div></div>`)
@@ -903,6 +905,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
             <div><div class="k">Document #</div><div class="v mono">#${d.id}</div></div>
             <div><div class="k">Source email</div><div class="v mono">${esc(d.source_email_id)}</div></div>
             <div><div class="k">Extraction</div><div class="v">${esc(d.extraction_method)} · ${esc(d.confidence)} confidence</div></div>
+            ${d.extraction_note ? `<div><div class="k">Reading note</div><div class="v">${esc(d.extraction_note)}</div></div>` : ""}
           </div>
           <div class="kv2" style="margin-bottom:14px">${fields || `<div><div class="k">Extracted fields</div><div class="v muted">no fields extracted</div></div>`}</div>
           <div class="k" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);font-weight:800;margin-bottom:6px">Raw extraction</div>
@@ -1681,6 +1684,46 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
     </details>`;
   }).join("");
 
+  // Round 19: rule operations — bulk re-evaluation + the parked-mail queue.
+  const deadLetters = repo.listDeadLetters();
+  const dlRows = deadLetters
+    .map(
+      (d) => `<tr>
+      <td>${esc(d.subject || "(unknown subject)")}</td>
+      <td class="small">${esc(d.from_addr || d.message_id)}</td>
+      <td class="small muted">${esc(d.error.slice(0, 140))}${d.error.length > 140 ? "…" : ""}</td>
+      <td>${d.attempts}</td>
+      <td>
+        <span style="display:inline-flex;gap:6px">
+          <form method="post" action="/config/dead-letter/retry" style="margin:0">${csrf}<input type="hidden" name="id" value="${d.id}"><button class="btn small ghost">Retry</button></form>
+          <form method="post" action="/config/dead-letter/delete" style="margin:0" onsubmit="return confirm('Drop this parked message for good? The sender will need to email again.')">${csrf}<input type="hidden" name="id" value="${d.id}"><button class="btn small ghost">Drop</button></form>
+        </span>
+      </td>
+    </tr>`
+    )
+    .join("");
+
+  const opsCard = `
+<section class="card" id="rules-ops">
+  <h2>Rule operations</h2>
+  <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+    <form method="post" action="/config/reevaluate-open" style="margin:0" onsubmit="return confirm('Re-evaluate every open case against its frozen rule set?')">
+      ${csrf}<button class="btn ghost">Re-evaluate all open cases</button>
+    </form>
+    <p class="small muted" style="margin:0;max-width:560px">After changing or activating a rule set, this re-runs the admissions evaluation across every open case. Each case keeps the requirement version it was frozen under — nobody is judged retroactively.</p>
+  </div>
+</section>
+
+<section class="card" id="deadletters">
+  <h2>Parked mail <span class="muted small" style="text-transform:none;letter-spacing:0">— messages that kept failing ingestion, isolated instead of lost</span></h2>
+  ${
+    deadLetters.length
+      ? `<table><tr><th>Message</th><th>From</th><th>Last error</th><th>Attempts</th><th></th></tr>${dlRows}</table>
+         <p class="small muted" style="margin-top:8px">Retry re-runs ingestion for that message on the next sync. Oversized mail stays parked until the sender re-sends smaller files.</p>`
+      : `<p class="small muted">Nothing parked — every message either processed cleanly or has not failed ${repo.deadLetterMaxAttempts()} times.</p>`
+  }
+</section>`;
+
   return `
 <section class="card">
   <h2>Entry requirements <span class="muted small" style="text-transform:none;letter-spacing:0">— structured rules the engine can evaluate, per qualification route</span></h2>
@@ -1701,7 +1744,9 @@ ${shown ? `<section class="card" id="reqpreview">${preview}</section>` : ""}
     <input name="name" placeholder="New subject name" style="max-width:260px">
     <button class="btn ghost">Add subject</button>
   </form>
-</section>`;
+</section>
+
+${opsCard}`;
 }
 
 export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsSystem?: string): string {
@@ -1855,6 +1900,9 @@ ${documentsPackCard(c)}
       <div><label>OAuth client ID</label><input type="text" name="gmail_client_id" value="${esc(gClientId)}" placeholder="…apps.googleusercontent.com"></div>
       <div><label>OAuth client secret</label><input type="password" name="gmail_client_secret" value="" placeholder="${gClientSecret ? "saved — enter a new value to replace" : "GOCSPX-…"}" autocomplete="new-password"></div>
     </div>
+    <div class="formrow" style="margin-top:10px">
+      <div style="flex:2"><label>Mailbox label to watch <span class="muted small">(optional — leave blank for the inbox)</span></label><input type="text" name="gmail_label" value="${esc(settings["gmail_label"] ?? "")}" placeholder="e.g. admissions-intake"></div>
+    </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="btn ghost">Save credentials</button>
       ${gClientId && gClientSecret ? `<a class="btn" href="/settings/gmail/connect">Connect with Google…</a>` : ""}
@@ -1871,7 +1919,7 @@ ${documentsPackCard(c)}
 
 <div class="card" id="templates">
   <h2>Email templates</h2>
-  <p class="small muted" style="margin-top:-6px">Placeholders: <span class="mono">{ref} {name} {first_name} {missing_docs} {missing_docs_section} {checklist} {status} {institution} {programme} {reg_date} {orientation_dates}</span></p>
+  <p class="small muted" style="margin-top:-6px">Placeholders: <span class="mono">{ref} {name} {first_name} {missing_docs} {missing_docs_section} {checklist} {status} {institution} {programme} {reg_date} {orientation_dates} {read_back} {document_issues}</span></p>
   <form method="get" action="/config" class="formrow">
     <input type="hidden" name="tab" value="replies">
     <div style="flex:2"><label>Template</label><select name="template" onchange="this.form.submit()">${templates

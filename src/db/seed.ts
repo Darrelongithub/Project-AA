@@ -45,6 +45,8 @@ We are still missing:
 
 Please send the outstanding item(s) as PDF attachments in reply to this thread. Your file will proceed once it is complete.
 
+{document_issues}
+
 Kind regards,
 {institution} — Admissions Office`,
   },
@@ -78,6 +80,8 @@ Your document checklist:
 {checklist}
 
 {missing_docs_section}
+
+{read_back}
 
 Kind regards,
 {institution} — Admissions Office`,

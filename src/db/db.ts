@@ -142,10 +142,35 @@ CREATE TABLE IF NOT EXISTS documents (
   sha256            TEXT,
   is_duplicate      INTEGER NOT NULL DEFAULT 0,
   duplicate_of      INTEGER REFERENCES documents(id),
-  confidence_score  INTEGER NOT NULL DEFAULT 0
+  confidence_score  INTEGER NOT NULL DEFAULT 0,
+  extraction_note   TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_documents_applicant ON documents(applicant_id, document_type);
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(sha256);
+
+-- Round 19: poison-email isolation. Fetch/processing failures accumulate
+-- attempts; after the retry budget the message is parked (dead = 1) and a
+-- human is notified instead of the batch retrying it forever.
+CREATE TABLE IF NOT EXISTS dead_letters (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id  TEXT NOT NULL UNIQUE,
+  subject     TEXT NOT NULL DEFAULT '',
+  from_addr   TEXT NOT NULL DEFAULT '',
+  error       TEXT NOT NULL DEFAULT '',
+  attempts    INTEGER NOT NULL DEFAULT 1,
+  dead        INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Round 19: Gemini results cached by content hash — the same bytes are never
+-- paid for twice, and the cache lets the circuit breaker replay last-known
+-- readings when the vision model is unavailable.
+CREATE TABLE IF NOT EXISTS gemini_cache (
+  sha256      TEXT PRIMARY KEY,
+  result_json TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS flags (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -398,6 +423,7 @@ function migrate(db: Database.Database): void {
   addColumn("applicants", "demo", "INTEGER NOT NULL DEFAULT 0");
   // Numeric PDF readability/confidence (0-100); auto-send requires >= 75.
   addColumn("documents", "confidence_score", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("documents", "extraction_note", "TEXT NOT NULL DEFAULT ''");
   // Round 18 — admissions engine: eligibility, routing and the admission
   // decision are stored as SEPARATE concepts (never one giant status field).
   addColumn("applicants", "req_result", "TEXT");
