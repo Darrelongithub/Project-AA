@@ -3,7 +3,7 @@
 Statuses: **RED** = failing / not started · **GREEN** = fixed with evidence · **UNVERIFIED** = could not run, reason given.
 
 Baseline before this round: tsc clean · 305/305 vitest · 316/316 simulate.
-Current gate: tsc clean · **352/352 vitest (26 files)** · **simulate 316/316**.
+Current gate: tsc clean · **370/370 vitest (27 files)** · **simulate 316/316**.
 
 ---
 
@@ -208,7 +208,68 @@ are stored as `postgrad` in the catalogue, which the generator reads as the
 masters tier — a PhD tier applies only to programmes explicitly recorded as
 PhD (none currently).
 
-## OR-6 — Course config: every subject × every system, extendable — **RED**
+## OR-6 — Course config: every subject × every system, extendable — **GREEN**
+
+**Repro (before fix):** two problems made the surface untrustworthy. (1)
+**Display ≠ enforce:** the legacy *Entry requirements* editor wrote to the
+`course_requirements` table, but the engine judges files from the structured
+`admission_rules` trees — staff could edit the old form and watch nothing
+change for applicants. (2) **Master's = PhD:** a single `postgrad` level
+meant Master's and PhD files shared one set of university-wide defaults and
+one document checklist tier. Grade values in the builder were free-text
+(a typo like "Cplus" stored fine), the subject catalogue could only be
+retired/restored (never added or renamed), and a school existed only as
+free text on its courses.
+
+**Fixes:**
+- **Levels split** — `CourseLevel` is now `degree | diploma | certificate |
+  masters | phd`; an idempotent forward migration rewrites `programmes`,
+  `admission_rules` and `course_requirements` on open (legacy `postgrad` →
+  `masters`). Requirements tab offers **BASE:masters** and **BASE:phd**
+  university-wide defaults as separate, editable targets; the add-course
+  form takes an explicit level.
+- **Click-to-reveal grade pickers** — condition values render as pickers
+  from the system's own ladder (KCSE A..E, IGCSE A*..G, IB 7..1, A-Level
+  A..E, degree/diploma class ladders); numeric fields get bounded number
+  inputs. `node-save` re-validates against the same ladders — a value the
+  picker could not show is refused, so what you can display is exactly what
+  can be enforced.
+- **Editable catalogues** — subjects can be **added** (duplicates refused
+  with an explicit message, never swallowed), **renamed**, retired and
+  restored per qualification system, all on the Requirements tab.
+- **Schools & courses on one page** — schools are first-class (`schools`
+  table): listed even before they have courses, **renamed in one action**
+  with every course following, and new schools can be added next to the
+  course table.
+- **Display == enforce** — each course row on the Courses tab prints the
+  exact enforced rule trees the engine evaluates (the engine's own
+  `describeRuleTree` over the active sets, marked course-specific vs
+  university-wide fallback); the free-text area is relabelled
+  reference-only. The legacy `/config/entry-requirements` endpoint is
+  replaced by an explicit refusal (no silent write) and its dead UI code is
+  deleted; every qualification system stays reachable per programme.
+
+**Evidence (RED → GREEN):** 18 tests in `test/course-config.test.ts`
+written first — RED pasted in session log (`16 failed | 2 passed`: no
+masters/phd levels, no pickers, no catalogue add/rename, no schools
+endpoints, no enforced summary, legacy endpoint still writing). After the
+fix: **18/18**; full suite **370/370 across 27 files** (including the
+real-Chromium responsive audit at 1280/1024/768/480/360); `tsc --noEmit`
+clean; **simulate 316/316**. Live-run (fresh DB + real server, HTTP):
+setup → 302, login, Courses page shows schools + 23 "Enforced entry
+requirements" summaries + rename/add forms and 0 legacy forms; Requirements
+tab shows 3 KCSE pickers for LLB, `BASE:masters`/`BASE:phd` (no
+`BASE:postgrad`), 11 catalogue-add + 132 rename forms; stale POST to the
+legacy endpoint is refused.
+
+**Interpretations:** "every subject × every system" is satisfied by keeping
+one central subject catalogue per qualification system (fully editable) and
+one builder that reaches every programme × system pair — the structured tree
+remains the single source the engine reads. The free-text course notes field
+is kept (relabelled reference-only) rather than deleted, so no existing
+prospectus wording is lost. Renaming a school is one action by design;
+courses move atomically with it.
+
 ## OR-7 — Templates section — **RED**
 ## OR-8 — Assignment & visibility scoping — **RED**
 
