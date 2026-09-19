@@ -3,6 +3,7 @@
 Statuses: **RED** = failing / not started · **GREEN** = fixed with evidence · **UNVERIFIED** = could not run, reason given.
 
 Baseline before this round: tsc clean · 305/305 vitest · 316/316 simulate.
+Current gate: tsc clean · **352/352 vitest (26 files)** · **simulate 316/316**.
 
 ---
 
@@ -129,7 +130,84 @@ file-backed DB. After the fix: **16/16** in the file; full suite **322/322 tests
 (25 files)**; `tsc --noEmit` clean; `npm run simulate` **316/316 checks across 26
 scenarios — ALL GREEN**; responsive audit still 0 overflows. No restarts needed:
 saved credentials/token/key go live immediately (hot-swap in serve.ts unchanged).
-## OR-5 — Deterministic document-requirement generator — **RED**
+## OR-5 — Deterministic document-requirement generator — **GREEN**
+
+**Repro (before fix):** which documents a file needed was stored in a
+staff-editable table (`requirement_rules`) with a toggles UI
+(*Configuration → Courses → "Required documents (all courses)"* — per-row
+Required/optional selects, Add-rule form, Remove buttons). Nothing verified
+those rows against the university's own rules, and the official
+application-form checklist (pack PDF `data/pack/application-form.pdf`,
+pp3–4) was not the source: an admin could add "kcpe_cert required" or delete
+the leaving certificate and the pipeline would silently obey. Postgraduate
+applicants were also judged by school-leaver evidence, and international
+post-admission items could block a file.
+
+**Source of truth read (as directed):** `pdftotext -f 3 -l 4
+data/pack/application-form.pdf` — checklist items: certified result
+slip/transcripts/leaving certificate; Law applicants only → personal
+statement ≤500 words; Business-degree applicants only → statement of
+objective ≤300 words; transfer cases only → transfer letter; Masters & PhD
+only → undergraduate transcripts & certificate; PhD only → Masters
+transcripts & certificate; passport photo; ID/passport + birth certificate;
+application fee (a fee, not a document).
+
+**Fixes:**
+- `src/documents/matrix.ts` — deterministic generator: level
+  (certificate/diploma/degree vs masters vs phd) × curriculum programme
+  (LLB, BBA) × nationality (Kenyan vs international vs unknown) × route
+  (standard vs transfer). Identity core for **all** levels
+  (application_form, passport_photo, id, birth_cert); exam result slip +
+  leaving certificate only for school-leavers; masters swaps those for the
+  undergraduate transcript + degree certificate, PhD adds the Masters pair.
+  `KENYAN_REQUIRES_KCPE = false` — KCPE is never required. Conditional
+  items are generated as slots to **ask** for, never assumed present.
+  International applicants get student-pass application + foreign
+  qualification equivalence as **non-blocking** post-admission items
+  (`required:false, blocking:false`), so they can never hold up a file.
+- Vocabulary: new DocTypes for prior-degree documents, both statements,
+  transfer form, post-admission items. "Academic certificate" remains a
+  classifier fallback family only and is **banned** as a requirement slot
+  or checklist label. `docs/DOCUMENT_MATRIX.md` documents the whole matrix
+  (contains "KCPE" and lowercase "personal statement", never the banned
+  phrase — pinned by tests).
+- `src/db/repo.ts` — `resolveRequirements`/`effectiveRequirements` now call
+  the generator (CourseLevel `postgrad` maps to the masters tier); the old
+  table is frozen legacy and no longer drives any decision.
+- Removal of staff configurability: the toggles table + add/delete forms are
+  gone from Configuration; stale POSTs to `/settings/rules/{add,delete}`
+  redirect with an explicit "generated deterministically" refusal — no
+  silent success, no hidden write.
+- Requirements tab (`/config?tab=requirements`) renders the live generated
+  matrix per programme level plus the structured grade builder.
+- Extraction pipeline extended end-to-end for every new type (classification
+  rules, field scoring, labels, slot-aware missing-doc extras) so the
+  generator's slots can actually be filled from real attachments.
+- Simulation corpus upgraded to carry full checklist files
+  (`checklistDocs()` helper); MBA route supplies the undergraduate degree
+  certificate with a BCom title so the bachelor's text cannot out-rank the
+  MBA code; programme inference hardened (exact programme codes beat fuzzy
+  name matching; all-generic-names rule requires the programme name's
+  leading **and** trailing word, so "Business" alone no longer pulls cases
+  into BBA).
+
+**Evidence (RED → GREEN):** 30 combinatorial tests in
+`test/document-matrix.test.ts` written first — RED pasted in session log
+(matrix module did not exist: collection failure + `fillSlots` absent).
+During corpus work the simulate harness went 296/316 → 311/316 with pasted
+failures (missing statement slots, MBA resolving to BBA) before landing.
+Final: **352/352 vitest tests across 26 files**; `tsc --noEmit` clean;
+**simulate 316/316 checks across 26 scenarios — ALL GREEN** (MBA applicant
+evaluated at masters level with no school-leaver evidence demanded).
+
+**Interpretations:** the pack PDF's "~and/or other academic certificates"
+row is implemented as the academic-family filling semantics (any grade-bearing
+academic document can fill the school-leaver evidence slots) rather than a
+new document type; the fee line is deliberately not a slot. Programme levels
+are stored as `postgrad` in the catalogue, which the generator reads as the
+masters tier — a PhD tier applies only to programmes explicitly recorded as
+PhD (none currently).
+
 ## OR-6 — Course config: every subject × every system, extendable — **RED**
 ## OR-7 — Templates section — **RED**
 ## OR-8 — Assignment & visibility scoping — **RED**
