@@ -16,7 +16,6 @@ import type {
   AdmissionRouting,
   AdmissionRuleSet,
   AdmissionSystem,
-  ApplicantRow,
   DerivedFlag,
   DocumentRecord,
   EvaluationReport,

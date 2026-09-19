@@ -4,11 +4,6 @@
  */
 import type { EmailCategory } from "../types";
 
-interface Rule {
-  category: EmailCategory;
-  pattern: RegExp;
-}
-
 const COMPLAINT_RE = /\b(complain(?:t|ts|ing)?|grievance|dissatisf\w*|unacceptable|appall\w*|rude|escalat\w*|ombuds\w*)\b/i;
 const FEE_RE = /\b(fee(?:s)?|tuition|payment|invoice|deposit|hesb|helb|billing|arrears)\b/i;
 const MISSING_RE =

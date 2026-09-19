@@ -486,7 +486,6 @@ function checkSubjectRule(req: SubjectRequirement, got: Record<string, string> |
  */
 export function checkSystemBlock(block: SystemBlock, fields: ExtractedFields): DerivedFlag[] {
   const flags: DerivedFlag[] = [];
-  const label = SYSTEM_LABEL[block.system];
   const subs = (fields.subjectGrades ?? null) as Record<string, string> | null;
 
   switch (block.system) {

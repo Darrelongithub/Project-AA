@@ -10,7 +10,7 @@ import * as path from "path";
 import { openDb } from "../db/db";
 import { loadConfig } from "../config";
 import { Repo } from "../db/repo";
-import { DEFAULT_REQUIREMENTS, type AppConfig } from "../config";
+import { type AppConfig } from "../config";
 import { seedDefaults } from "../db/seed";
 import { MockSender, buildAdapters, type PipelineContext } from "../pipeline/adapters";
 import { processEmail } from "../pipeline";

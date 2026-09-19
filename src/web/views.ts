@@ -6,7 +6,6 @@
  * full dark mode, quiet top-header shell, splash entry, command palette, toasts.
  */
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type EmailCategory, type LifecycleStage, type Priority, type StaffUser } from "../types";
-import { LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
 
 export type Theme = "light" | "dark";
 

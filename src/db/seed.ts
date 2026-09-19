@@ -5,7 +5,7 @@
  * console walks the owner through creating their own admin account.
  */
 import type { Repo } from "./repo";
-import { DEFAULT_INTAKES, DEFAULT_PROGRAMMES, DEFAULT_REQUIREMENTS, DEFAULT_SETTINGS, DEFAULT_STRUCTURED_BASE, DEFAULT_STRUCTURED_COURSES } from "../config";
+import { DEFAULT_INTAKES, DEFAULT_PROGRAMMES, DEFAULT_SETTINGS, DEFAULT_STRUCTURED_BASE, DEFAULT_STRUCTURED_COURSES } from "../config";
 import { defaultEmailBanner } from "../pack";
 import { blockToNodes, CATALOGUE_SEED } from "../admissions/convert";
 import type { CourseLevel, RuleNode } from "../types";
