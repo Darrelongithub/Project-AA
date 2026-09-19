@@ -125,6 +125,34 @@ export function fieldScore(fields: ExtractedFields, docType: DocType): number {
     case "application_form":
     case "credit_transfer_form":
       return hasName ? 80 : 20;
+    case "exam_result_slip": {
+      // Carries grades like an academic result document.
+      let s = 0;
+      if (hasAcademic) s += 55;
+      if (hasName) s += 20;
+      if (f.examSystem) s += 10;
+      if (f.examYear) s += 15;
+      return s;
+    }
+    case "undergraduate_transcript":
+    case "masters_transcript": {
+      let s = 0;
+      if (hasAcademic) s += 45;
+      if (hasName) s += 30;
+      return s;
+    }
+    case "leaving_certificate":
+    case "undergraduate_degree_certificate":
+    case "masters_degree_certificate":
+    case "law_personal_statement":
+    case "business_statement_of_objective":
+    case "student_pass_application":
+    case "foreign_qualification_equivalence":
+      // Identity/narrative documents: a clear name is the critical field.
+      return hasName ? 75 : 20;
+    case "passport_photo":
+      // A photo carries little machine-readable text; trust the name line.
+      return hasName ? 70 : 25;
     default:
       return 10; // unknown type: fields alone can't earn trust
   }

@@ -39,6 +39,22 @@ const RULES: Rule[] = [
     pattern:
       /certificate\s+of\s+birth|birth\s+certificate|birth\s+registration|certificate\s+of\s+live\s+birth|live\s+birth\s+certificate|extract\s+from\s+the\s+register\s+of\s+births|registration\s+of\s+birth|register\s+of\s+births|birth\s+entry|births?\s+and\s+deaths\s+registration/i,
   },
+  // OR-5: concrete checklist document types — ordered before the academic
+  // catch-all so each upload lands in its own slot.
+  { type: "law_personal_statement", pattern: /personal\s+statement/i },
+  { type: "business_statement_of_objective", pattern: /statement\s+of\s+objective/i },
+  { type: "passport_photo", pattern: /passport[\s-]?size\s+photo|passport\s+photograph|passport\s+photo\b/i },
+  { type: "masters_degree_certificate", pattern: /master'?s\s+degree\s+certificate|master'?s?\s+(?:degree|graduation)\s+certificate/i },
+  { type: "masters_transcript", pattern: /master'?s\s+(?:academic\s+)?transcript/i },
+  { type: "undergraduate_degree_certificate", pattern: /undergraduate\s+degree\s+certificate|(?:bachelor|bachelors|b\.?sc|b\.?a|bba|llb)\s+(?:degree\s+)?certificate/i },
+  { type: "undergraduate_transcript", pattern: /undergraduate\s+(?:academic\s+)?transcript/i },
+  { type: "leaving_certificate", pattern: /leaving\s+certificate|school\s+leaving/i },
+  // A RESULT SLIP is the specific pre-certificate printout named on the
+  // application-form checklist — not a generic "statement of results", which
+  // stays with the academic family that carries the grades.
+  { type: "exam_result_slip", pattern: /\bresult\s+slip\b|examination\s+result\s+slip/i },
+  { type: "student_pass_application", pattern: /student\s+pass(?!port)|study\s+permit/i },
+  { type: "foreign_qualification_equivalence", pattern: /equivalence\s+certificate|certificate\s+of\s+equivalence/i },
   {
     type: "academic_cert",
     pattern:

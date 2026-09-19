@@ -7,22 +7,51 @@
 
 export type Classification = "Green" | "Orange" | "Red";
 
+/**
+ * OR-5: concrete document catalogue. Vague umbrella types like "academic
+ * certificate" are BANNED as requirement slots — every slot names the exact
+ * document from the application-form checklist (data/pack/application-form.pdf,
+ * pp. 3–4). `academic_cert` survives ONLY as a classifier fallback family
+ * (one upload of unclear academic paperwork); it is never a required slot.
+ */
 export type DocType =
-  | "academic_cert"
-  | "id"
-  | "kcpe_cert"
-  | "birth_cert"
   | "application_form"
+  | "exam_result_slip"
+  | "leaving_certificate"
+  | "passport_photo"
+  | "id"
+  | "birth_cert"
+  | "undergraduate_transcript"
+  | "undergraduate_degree_certificate"
+  | "masters_transcript"
+  | "masters_degree_certificate"
+  | "law_personal_statement"
+  | "business_statement_of_objective"
   | "credit_transfer_form"
+  | "student_pass_application"
+  | "foreign_qualification_equivalence"
+  | "academic_cert"
+  | "kcpe_cert"
   | "unknown";
 
 export const DOC_TYPES: DocType[] = [
-  "academic_cert",
-  "id",
-  "kcpe_cert",
-  "birth_cert",
   "application_form",
+  "exam_result_slip",
+  "leaving_certificate",
+  "passport_photo",
+  "id",
+  "birth_cert",
+  "undergraduate_transcript",
+  "undergraduate_degree_certificate",
+  "masters_transcript",
+  "masters_degree_certificate",
+  "law_personal_statement",
+  "business_statement_of_objective",
   "credit_transfer_form",
+  "student_pass_application",
+  "foreign_qualification_equivalence",
+  "academic_cert",
+  "kcpe_cert",
   "unknown",
 ];
 
@@ -463,6 +492,8 @@ export interface WatcherResult {
 // ── Pipeline result ────────────────────────────────────────────────────────
 
 export interface ApplicantRow {
+  /** OR-5: feeds the deterministic document matrix; null = unknown. */
+  nationality?: string | null;
   id: number;
   ref_number: string;
   email_address: string;
