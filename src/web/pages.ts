@@ -2,6 +2,7 @@
  * Page renderers — every page is built server-side from the database.
  * Single source of truth: nothing is rendered that isn't in the DB.
  */
+import { documentRequirementsFor, type ProgrammeLevel } from "../documents/matrix";
 import type { ApplicantSearchQuery, Repo } from "../db/repo";
 import type { AdmissionSystem, ApplicantRow, CourseLevel, DocType, Programme, RuleNode, StaffUser, SystemBlock } from "../types";
 import { ADMISSION_SYSTEMS, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
@@ -1847,7 +1848,29 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
   }
 </section>`;
 
+  // OR-5: the document checklist is generated deterministically — read-only here.
+  const genLevel: ProgrammeLevel = (level === "postgrad" ? "masters" : level) as ProgrammeLevel;
+  const matrixSpecs = documentRequirementsFor({ level: genLevel, route: "fresh", nationality: "unknown", programmeCode: isBase ? null : target });
+  const matrixRows = matrixSpecs
+    .map(
+      (spec, i) => `<tr>
+      <td class="small muted">${i + 1}</td>
+      <td>${esc(spec.label)}</td>
+      <td>${spec.blocking ? `<span class="badge b-purple">required</span>` : `<span class="badge b-gray">post-admission — never blocks</span>`}</td>
+      <td class="small muted">${esc(spec.conditional ?? "")}</td>
+    </tr>`
+    )
+    .join("");
+  const matrixCard = `
+<section class="card" id="doc-matrix">
+  <h2>Document checklist <span class="muted small" style="text-transform:none;letter-spacing:0">— generated deterministically, not staff-configurable</span></h2>
+  <p class="small muted" style="margin-top:-4px">What an application file must contain is generated deterministically from the official application-form checklist (data/pack/application-form.pdf, pp. 3–4) — level × curriculum × nationality × route. There are no toggles: conditional items are asked for, never assumed, and post-admission items never block a file. Full matrix: <span class="mono">docs/DOCUMENT_MATRIX.md</span>. Shown for <b>${esc(isBase ? `university-wide ${genLevel}` : `${target} (${genLevel})`)}</b>, fresh applicants:</p>
+  <table><tr><th>#</th><th>Document</th><th>Status</th><th>Applies because</th></tr>${matrixRows}</table>
+</section>`;
+
   return `
+${matrixCard}
+
 <section class="card">
   <h2>Entry requirements <span class="muted small" style="text-transform:none;letter-spacing:0">— structured rules the engine can evaluate, per qualification route</span></h2>
   <p class="small muted" style="margin-top:-4px">Rules are built visually with AND / OR / NOT groups — never as code. Drafts are previewed below before activation; activated sets are versioned, and historical cases keep the version they were evaluated against.</p>
@@ -1876,22 +1899,10 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, re
 
   const { repo } = c;
   const settings = repo.allSettings();
-  const rules = repo.listRules();
   const programmes = repo.listProgrammes();
   const intakes = repo.listIntakes();
   const templates = repo.listTemplates();
   const staff = repo.listStaff().filter((m) => m.active);
-
-  const ruleRows = rules
-    .map((r) => `<tr>
-      <td>${r.programme ? esc(r.programme) : "<i>all</i>"}</td>
-      <td>${r.intake ? esc(r.intake) : "<i>all</i>"}</td>
-      <td>${esc(docLabel(r.document_type))}</td>
-      <td>${r.required ? "required" : "optional"}</td>
-      <td>${r.meanGrade ? esc(r.meanGrade) : "—"}${r.subjectGrades ? `<br><span class="muted small">${esc(r.subjectGrades)}</span>` : ""}</td>
-      <td><form method="post" action="/settings/rules/delete"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${r.id}"><button class="btn small ghost">Remove</button></form></td>
-    </tr>`)
-    .join("");
 
   const assignForm = (p: { code: string; owner_id: number | null }) =>
     `<form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
@@ -1966,17 +1977,7 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, re
     <p class="small muted" style="margin-top:-2px">Entry requirements are now structured, machine-evaluable rules — built visually per programme and qualification system, with a preview before activation. <a href="/config?tab=requirements">Open the Requirements tab →</a></p>
 
     <h2 style="margin-top:20px">Required documents (all courses)</h2>
-    <p class="small muted" style="margin-top:-6px">Which documents must be present before evaluation runs. Most specific rule wins: programme+intake → programme → intake → base (all).</p>
-    <table><tr><th>Programme</th><th>Intake</th><th>Document</th><th>Required?</th><th>Grades</th><th></th></tr>${ruleRows}</table>
-    <form method="post" action="/settings/rules/add" class="formrow" style="margin-top:14px">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-      <div><label>Programme</label><select name="programme"><option value="">All programmes</option>${programmes.map((p) => `<option value="${esc(p.code)}">${esc(p.code)}</option>`).join("")}</select></div>
-      <div><label>Intake</label><select name="intake"><option value="">All intakes</option>${intakes.map((i) => `<option value="${esc(i)}">${esc(i)}</option>`).join("")}</select></div>
-      <div><label>Document</label><select name="document_type">${(["academic_cert", "kcpe_cert", "id", "birth_cert", "application_form"] as DocType[]).map((d) => `<option value="${d}">${esc(docLabel(d))}</option>`).join("")}</select></div>
-      <div><label>Required</label><select name="required"><option value="1">required</option><option value="0">optional</option></select></div>
-      <div style="flex:2"><label>&nbsp;</label><span class="small muted">Grade rules live in the Requirements tab — this table only controls which documents must be present.</span></div>
-      <div style="flex:0"><label>&nbsp;</label><button class="btn">Add rule</button></div>
-    </form>
+    <p class="small muted" style="margin-top:-6px">OR-5: which documents a file must contain is <b>generated deterministically</b> from the official application-form checklist (level × curriculum × nationality × route). It is not staff-configurable — there are no toggles. Conditional items are asked for, never assumed; KCPE is never required; post-admission items never block a file. See the live matrix in the <a href="/config?tab=requirements">Requirements tab</a> and <span class="mono">docs/DOCUMENT_MATRIX.md</span>.</p>
     <h2 style="margin-top:26px" id="addcourse">Add a course or intake</h2>
     <p class="small muted" style="margin-top:-6px">Create a new programme — it appears immediately in the picker above, in course ownership and across the admissions pipeline — or add another intake for existing courses.</p>
     <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">

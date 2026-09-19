@@ -16,6 +16,7 @@ import type { ApplicantRow, LifecycleStage } from "../types";
 import { DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type DocType, type EmailCategory } from "../types";
 import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
+import { fillSlots } from "../documents/matrix";
 import { evaluateAdmission } from "../admissions/evaluate";
 import { ADMISSION_SYSTEMS, type AdmissionSystem, type CourseLevel, type RuleField } from "../types";
 import {
@@ -468,7 +469,7 @@ export function createApp(deps: WebDeps): Express {
     const activeDocs = repo.listDocuments(id, { activeOnly: true });
     const requirements = repo.effectiveRequirements(a).filter((r) => r.required);
     const present = activeDocs.map((d) => d.document_type);
-    const missing = requirements.filter((r) => !present.includes(r.document_type));
+    const { missing } = fillSlots(requirements, present);
     const rendered = renderTemplate(tpl.subject, tpl.body, {
       ref: a.ref_number,
       institution: instName(),
@@ -1341,34 +1342,16 @@ export function createApp(deps: WebDeps): Express {
 
   // Requirement rules now speak GRADES (mean grade + subject lines) — the way
   // the university actually publishes entry requirements. No numeric points.
-  app.post("/settings/rules/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const docType = String(req.body.document_type);
-    // Anything outside the known document types would store a rule that can
-    // never match — silently. Reject it instead of pretending.
-    if (!DOC_TYPES.includes(docType as DocType) || docType === "unknown") {
-      return res.redirect("/config?msg=" + encodeURIComponent("Unknown document type — rule not saved.") + "#courses");
-    }
-    const meanGrade = String(req.body.mean_grade ?? "").trim().toUpperCase();
-    if (meanGrade && !/^[A-E][+-]?$/.test(meanGrade)) {
-      return res.redirect("/config?msg=" + encodeURIComponent(`"${meanGrade}" is not a KCSE grade (use A, A-, B+, … E) — rule not saved.`) + "#courses");
-    }
-    const subjectGrades = String(req.body.subject_grades ?? "").trim() || null;
-    repo.upsertRule({
-      programme: req.body.programme ? String(req.body.programme) : null,
-      intake: req.body.intake ? String(req.body.intake) : null,
-      document_type: docType as DocType,
-      required: String(req.body.required) === "1",
-      meanGrade: meanGrade || null,
-      subjectGrades,
-    });
-    repo.audit(null, req.staff!.username, "requirements_changed", `rule saved for ${docType}${meanGrade ? ` (min ${meanGrade})` : ""}`);
-    res.redirect("/config#courses");
+  // OR-5: document requirements are generated deterministically from the
+  // official application-form checklist — they are NOT staff-configurable.
+  // The old add/delete endpoints are gone; a stale POST (bookmark, old
+  // tab, replayed request) must get an explicit refusal, never a silent
+  // success and never a hidden write.
+  app.post("/settings/rules/add", requireLogin, requireRole("admin"), csrfCheck, (_req, res) => {
+    res.redirect("/config?msg=" + encodeURIComponent("Document requirements are generated deterministically from the application-form checklist — they cannot be added by hand. See the Requirements tab.") + "#courses");
   });
-
-  app.post("/settings/rules/delete", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    repo.deleteRule(Number(req.body.id));
-    repo.audit(null, req.staff!.username, "requirements_changed", `rule #${req.body.id} removed`);
-    res.redirect("/config#courses");
+  app.post("/settings/rules/delete", requireLogin, requireRole("admin"), csrfCheck, (_req, res) => {
+    res.redirect("/config?msg=" + encodeURIComponent("Document requirements are generated deterministically from the application-form checklist — they cannot be removed by hand. See the Requirements tab.") + "#courses");
   });
 
   app.post("/settings/lists/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
