@@ -134,11 +134,14 @@ function greeting(): string {
 function adminDashboard(c: Ctx): string {
   const { repo } = c;
   const realm = c.user.demo; // live admins see only live data; demo accounts only mock data.
-  const s = repo.dashboardStats(realm);
-  const stage = repo.stageCounts(realm);
+  // OR-8: admins are never scoped, but the same code path serves scoped
+  // accounts — visibility is decided in ONE place (repo.visibleSchoolsFor).
+  const scope = repo.visibleSchoolsFor(c.user);
+  const s = repo.dashboardStats(realm, scope);
+  const stage = repo.stageCounts(realm, scope);
   const team = repo.staffStats(realm).filter((t) => t.demo === realm);
-  const alerts = repo.notificationsFor(c.user.id, 6, realm);
-  const all = repo.allApplicants(realm);
+  const alerts = repo.notificationsFor(c.user.id, 6, realm, scope);
+  const all = repo.allApplicants(realm, scope);
   const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
   const globalMode = repo.getSetting("automation_mode", "auto");
@@ -269,15 +272,17 @@ export function dashboardPage(c: Ctx): string {
 function officerDashboard(c: Ctx): string {
   const { repo } = c;
   const realm = c.user.demo;
-  const s = repo.dashboardStats(realm);
-  const stage = repo.stageCounts(realm);
-  const today = repo.todayStats(realm);
-  const accuracy = repo.accuracyStats(realm);
-  const queue = repo.queueView(realm);
-  const unanswered = repo.unansweredCases();
+  // OR-8: every number on this page counts ONLY the officer's schools.
+  const scope = repo.visibleSchoolsFor(c.user);
+  const s = repo.dashboardStats(realm, scope);
+  const stage = repo.stageCounts(realm, scope);
+  const today = repo.todayStats(realm, scope);
+  const accuracy = repo.accuracyStats(realm, scope);
+  const queue = repo.queueView(realm, scope);
+  const unanswered = repo.unansweredCases(scope);
   const target = Number(repo.getSetting("unanswered_target_hours", "4"));
-  const categories = repo.categoryCounts();
-  const alerts = repo.notificationsFor(c.user.id, 6, realm);
+  const categories = repo.categoryCounts(scope);
+  const alerts = repo.notificationsFor(c.user.id, 6, realm, scope);
 
   const activeCount = Number(s.applications) - Number(s.completed);
 
@@ -460,11 +465,13 @@ const STAGE_TABS: Array<{ key: string; label: string }> = [
 export function admissionsPage(c: Ctx, stage: string): string {
   const { repo } = c;
   const realm = c.user.demo;
-  const counts = repo.stageCounts(realm);
+  // OR-8: levels count only this staff member's schools.
+  const scope = repo.visibleSchoolsFor(c.user);
+  const counts = repo.stageCounts(realm, scope);
   const start = new Date(); start.setHours(0, 0, 0, 0);
   // ONE query for today's enquiry applicants — never one per applicant.
-  const enquiryIds = repo.enquiryApplicantIdsToday(start.toISOString());
-  const all = repo.allApplicants(realm);
+  const enquiryIds = repo.enquiryApplicantIdsToday(start.toISOString(), scope);
+  const all = repo.allApplicants(realm, scope);
   const enquiriesToday = all.filter((a) => enquiryIds.has(a.id));
 
   const staffById = new Map(repo.listStaff().map((m) => [m.id, m.display_name]));
@@ -578,6 +585,7 @@ export function applicantsPage(
     programme: q.programme || undefined,
     intake: q.intake || undefined,
     demo: c.user.demo,
+    schools: repo.visibleSchoolsFor(c.user), // OR-8
   });
   const programmes = repo.listProgrammes();
   const intakes = repo.listIntakes();
@@ -2192,6 +2200,41 @@ ${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
 
 // ── Staff (team performance + account management, merged) ──────────────────
 
+// OR-8: the ONE place visibility scopes are edited — a staff × schools
+// matrix. Each row saves the member's ENTIRE school set in a single action;
+// tick nothing and save to restore full visibility.
+function scopeMatrix(c: Ctx): string {
+  const { repo } = c;
+  const schools = repo.listSchools();
+  const members = repo.listStaff().filter((m) => m.active);
+  const rows = members.map((m) => {
+    if (m.role === "admin") {
+      return `<tr>
+        <td><b>${esc(m.display_name)}</b><br><span class="muted small">@${esc(m.username)}</span></td>
+        <td colspan="${schools.length + 1}"><span class="badge b-purple">admin</span> <span class="small muted">always sees every school — admins cannot be scoped</span></td>
+      </tr>`;
+    }
+    const current = new Set(repo.scopesFor(m.id));
+    return `<tr>
+      <td><b>${esc(m.display_name)}</b><br><span class="muted small">@${esc(m.username)}</span></td>
+      <form method="post" action="/staff/scopes"><td colspan="${schools.length + 1}" style="display:table-cell">
+        <div style="display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          <input type="hidden" name="staff_id" value="${m.id}">
+          ${schools.map((s) => `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="schools" value="${esc(s)}" style="width:auto" ${current.has(s) ? "checked" : ""}> ${esc(s)}</label>`).join("")}
+          <button class="btn small ghost">Save scope</button>
+          ${current.size ? "" : `<span class="muted small">no scope — sees everything</span>`}
+        </div>
+      </td></form>
+    </tr>`;
+  }).join("");
+  return `<section class="card nopad" id="scopes">
+    <div class="card-head"><h2>Visibility scope</h2></div>
+    <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the schools each officer handles and press <b>Save scope</b> — one action per person. From then on they see only cases from those schools, everywhere: queues, levels, search, direct links and the API. Untick everything and save to give full visibility back. Schools are managed in <a href="/config?tab=courses#schools">Configuration</a>.</p>
+    ${schools.length ? `<table><tr><th>Staff member</th><th>Schools they may see</th></tr>${rows}</table>` : `<div class="empty"><p>Add a school in Configuration first.</p></div>`}
+  </section>`;
+}
+
 export function staffPage(c: Ctx, flash?: string): string {
   const { repo } = c;
   const isAdmin = c.user.role === "admin";
@@ -2296,6 +2339,8 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
 </div>
 
 ${accountsSection}
+
+${isAdmin ? scopeMatrix(c) : ""}
 
 <section class="card nopad">
   <div class="card-head"><h2>Courses &amp; ownership</h2><a class="small" href="/config?tab=courses">course details →</a></div>

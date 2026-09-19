@@ -324,6 +324,29 @@ export function createApp(deps: WebDeps): Express {
     res.send(admissionsPage(c(req), String(req.query.stage ?? "all")));
   });
 
+  // OR-8: visibility scoping covers EVERY case surface — the case page,
+  // compose, replay and every POST action. Unknown ids and out-of-scope ids
+  // get the SAME refusal, so scoped staff can't probe which cases exist.
+  app.use("/case/:id", requireLogin, (req, res, next) => {
+    const a = repo.getApplicant(Number(req.params.id));
+    if (!a || !repo.applicantVisibleTo(req.staff!, a)) {
+      res.status(403).send(layout({
+        title: "Outside your schools",
+        institution: instName(),
+        user: req.staff,
+        unread: repo.unreadCount(req.staff!.id),
+        csrf: req.csrfToken,
+        content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
+          <h1>This case is outside your assigned schools</h1>
+          <p class="sub">You can only open cases that belong to a school you handle. If this should be yours, ask an administrator to update your visibility scope.</p>
+          <p><a class="btn" href="/applicants">← Back to your queues</a></p>
+        </div>`,
+      }));
+      return;
+    }
+    next();
+  });
+
   // Realm guard: a case is only visible to accounts in the SAME realm —
   // live admins never open mock cases, demo accounts never open live ones.
   const sameRealm = (req: Request, a: { demo?: number } | null): boolean =>
@@ -1483,6 +1506,28 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Staff management (admin) ─────────────────────────────────────────────
 
+  // OR-8: save a staff member's ENTIRE school scope in one action.
+  app.post("/staff/scopes", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const staffId = Number(req.body.staff_id);
+    const member = repo.getStaff(staffId);
+    if (!member) return res.redirect("/staff?msg=" + encodeURIComponent("Unknown staff member — nothing saved."));
+    const raw = req.body.schools;
+    const schools = (Array.isArray(raw) ? raw : raw ? [raw] : []).map((x) => String(x).trim()).filter(Boolean);
+    // Only real schools can be scoped — a typo'd school name would silently
+    // hide cases forever otherwise.
+    const known = new Set(repo.listSchools());
+    const unknown = schools.filter((x) => !known.has(x));
+    if (unknown.length) {
+      return res.redirect(`/staff?msg=${encodeURIComponent(`Unknown school(s): ${unknown.join(", ")} — nothing saved.`)}#scopes`);
+    }
+    repo.setScopes(staffId, schools);
+    repo.audit(null, req.staff!.username, "scope_changed",
+      `${member.username}: ${schools.length ? schools.join(", ") : "scope cleared (full visibility)"}`);
+    res.redirect(`/staff?msg=${encodeURIComponent(schools.length
+      ? `${member.display_name} now sees: ${schools.join(", ")}.`
+      : `${member.display_name}'s scope cleared — they see all schools again.`)}#scopes`);
+  });
+
   app.get("/staff", requireLogin, requireRole("admin"), (req, res) =>
     res.send(staffPage(c(req), req.query.msg ? String(req.query.msg) : undefined))
   );
@@ -1579,7 +1624,7 @@ export function createApp(deps: WebDeps): Express {
     const q = String(req.query.q ?? "").trim();
     if (!q) return res.json({ applicants: [] });
     res.json({
-      applicants: repo.searchApplicants({ q, limit: 8, demo: req.staff!.demo }).map((a) => ({
+      applicants: repo.searchApplicants({ q, limit: 8, demo: req.staff!.demo, schools: repo.visibleSchoolsFor(req.staff!) }).map((a) => ({
         id: a.id,
         ref_number: a.ref_number,
         name: a.full_name ?? "",
