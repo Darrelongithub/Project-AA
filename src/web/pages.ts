@@ -1378,18 +1378,26 @@ export function composeWindowPage(
   }
 
   // ── Shape 2: the draft ────────────────────────────────────────────────────
+  // Same shape as the case-file composer: one form, ONE submit (Send now), so
+  // Enter sends. Template choice is a link that re-renders the draft — it
+  // never competes with the send button and can never wipe typed text.
   const a = opts.applicant;
   const templates = repo.listTemplates();
   const tpl = opts.templateKey ? templates.find((t) => t.key === opts.templateKey) : undefined;
   const prog = a.programme ? repo.programmeByCode(a.programme) : undefined;
+  const chips = [
+    `<a href="/compose?case=${a.id}" ${!opts.templateKey ? `class="badge b-purple"` : `class="small"`}>Blank message</a>`,
+    ...templates.map((t) =>
+      `<a href="/compose?case=${a.id}&template=${esc(t.key)}" ${opts.templateKey === t.key ? `class="badge b-purple"` : `class="small"`}>${esc(t.name)}</a>`),
+  ].join(" · ");
   return head(c, `Compose — ${a.ref_number}`, "compose", `
 <div class="hero">
   <div class="row">
     ${avatar(a.full_name ?? a.ref_number, 46)}
     <div style="min-width:0">
-      <div class="kicker">New window · compose</div>
+      <div class="kicker">Compose reply · new window${tpl ? ` · ${esc(tpl.name)}` : ""}</div>
       <h1 style="margin:0">${esc(a.full_name ?? a.ref_number)}</h1>
-      <div class="sub" style="margin:2px 0 0">To <b>${esc(a.email_address)}</b>${prog ? ` · ${esc(prog.name)}` : ""} · ${lifecycleBadge(a.lifecycle)} · <a href="/case/${a.id}">open the case file</a></div>
+      <div class="sub" style="margin:2px 0 0">To <b>${esc(a.email_address)}</b>${prog ? ` · ${esc(prog.name)}` : ""} · ${lifecycleBadge(a.lifecycle)} · <a href="/case/${a.id}">← back to the case file</a></div>
     </div>
   </div>
 </div>
@@ -1397,26 +1405,20 @@ export function composeWindowPage(
 <div class="card" style="max-width:880px">
   ${opts.error ? `<div class="flash err" style="position:static;margin-bottom:16px">${esc(opts.error)}</div>` : ""}
   ${opts.flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(opts.flash)}</div>` : ""}
+  <p class="small muted" style="margin-top:0">Everything below is editable — nothing is sent until you press Send. Pick a template to pre-fill the draft:</p>
+  <p style="margin:0 0 14px;line-height:2.1">${chips}</p>
   <form method="post" action="/compose">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <input type="hidden" name="case" value="${a.id}">
-    <div class="formrow" style="align-items:end">
-      <div style="flex:1"><label>Start from a template (optional)</label>
-        <select name="template">
-          <option value="">— blank message —</option>
-          ${templates.map((t) => `<option value="${esc(t.key)}" ${opts.templateKey === t.key ? "selected" : ""}>${esc(t.name)}</option>`).join("")}
-        </select>
-      </div>
-      <div style="flex:0"><button class="btn ghost" name="action" value="prepare">Load into the draft</button></div>
-    </div>
+    <input type="hidden" name="template" value="${esc(tpl?.key ?? "")}">
     <label>Subject</label>
     <input type="text" name="subject" value="${esc(opts.subject ?? "")}">
     <label>Message</label>
     <textarea name="body" style="min-height:340px;font-size:14px;line-height:1.7">${esc(opts.body ?? "")}</textarea>
-    <div style="display:flex;gap:10px;margin-top:18px;align-items:center">
+    <div style="display:flex;gap:10px;margin-top:18px;align-items:center;flex-wrap:wrap">
       <button class="btn">Send now</button>
       <a class="btn ghost" href="/case/${a.id}">Cancel — don’t send</a>
-      ${tpl ? (tpl.include_banner === 0 ? `<span class="muted small">sends without the branded banner</span>` : `<span class="muted small">branded banner is attached automatically</span>`) : ""}
+      ${tpl ? (tpl.include_banner === 0 ? `<span class="muted small">sends without the branded banner</span>` : `<span class="muted small">branded banner is attached automatically</span>`) : `<span class="muted small">branded banner is attached automatically</span>`}
       ${tpl && (tpl.attach_pack === "application" || tpl.attach_pack === "admission") ? `<span class="badge b-purple">${tpl.attach_pack} pack PDFs will be attached</span>` : ""}
     </div>
   </form>

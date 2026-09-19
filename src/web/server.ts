@@ -675,18 +675,10 @@ export function createApp(deps: WebDeps): Express {
     const a = composeCase(req, req.body.case);
     if (a === "refused") return refuseScope(req, res);
     if (!a) return res.redirect("/compose");
+    // Template choice happens via GET (chips re-render the draft); the POST
+    // has exactly one job: send. The template only decides pack + banner.
     const tplKey = String(req.body.template ?? "");
     const tpl = tplKey ? repo.getTemplate(tplKey) : undefined;
-
-    // Prepare step: load the chosen template into the draft, send nothing.
-    if (String(req.body.action ?? "") === "prepare") {
-      const rendered = tpl ? renderFor(a, tpl.subject, tpl.body) : { subject: "", body: "" };
-      return res.send(composeWindowPage(c(req), {
-        applicant: a, templateKey: tpl?.key,
-        subject: rendered.subject, body: rendered.body,
-        flash: tpl ? `Loaded “${tpl.name}” into the draft — edit freely, nothing is sent yet.` : "Blank draft.",
-      }));
-    }
 
     const subject = String(req.body.subject ?? "").trim();
     const body = String(req.body.body ?? "").trim();

@@ -78,18 +78,29 @@ describe("the new-window composer", () => {
     expect(casePage).toContain('target="_blank"'); // new-window affordance on the case file
   });
 
-  it("loads a template into the draft before sending (prepare step)", async () => {
+  it("picks a template via GET and renders it into an editable draft", async () => {
     const a = mkApplicant("prep@example.org");
-    const { base, cookie, csrf } = await startServer();
-    const res = await fetch(`${base}/compose`, {
-      method: "POST", redirect: "manual",
-      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${encodeURIComponent(csrf)}&action=prepare&case=${a.id}&template=ack_received`,
-    });
+    const { base, cookie } = await startServer();
+    const res = await fetch(`${base}/compose?case=${a.id}&template=ack_received`, { headers: { cookie } });
     expect(res.status).toBe(200);
     const page = await res.text();
     expect(page).toContain("Your application documents have been received");
     expect(page).toContain(a.ref_number);
+    // the rendered template must sit in the editable fields
+    expect(page).toMatch(/name="subject" value="[^"]*documents have been received/i);
+  });
+
+  it("has exactly ONE submit button — Send now — so Enter sends, never reloads or wipes", async () => {
+    const a = mkApplicant("enter@example.org");
+    const { base, cookie } = await startServer();
+    const page = await (await fetch(`${base}/compose?case=${a.id}`, { headers: { cookie } })).text();
+    const form = page.match(/<form method="post" action="\/compose">[\s\S]*?<\/form>/);
+    expect(form).toBeTruthy();
+    const submits = (form![0].match(/<button(?![^>]*type="button")[^>]*>/g) ?? []);
+    expect(submits.length).toBe(1);
+    expect(form![0]).toContain("Send now");
+    expect(form![0]).not.toContain('name="action"');
+    expect(page).toContain("ack_received"); // template choice still reachable (as chips/links, outside the form)
   });
 
   it("sends and records the outgoing mail with its pack attachments", async () => {
