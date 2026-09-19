@@ -17,7 +17,8 @@
     "backup": "tsx src/cli/backup.ts",
     "restore": "tsx src/cli/restore.ts",
     "start": "node dist/src/cli/serve.js",
-    "purge-mock": "tsx src/cli/purgeMock.ts"
+    "purge-mock": "tsx src/cli/purgeMock.ts",
+    "stress": "tsx src/cli/stress.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
