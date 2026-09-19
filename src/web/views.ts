@@ -634,7 +634,19 @@ details > summary { list-style: none; } details > summary::-webkit-details-marke
 .crest .logo-w { display: none; }
 [data-theme="dark"] .crest .logo-c { display: none; }
 [data-theme="dark"] .crest .logo-w { display: block; }
+/* OR-3: wide content (tables, strips) scrolls INSIDE its own container —
+   the page itself never grows horizontal scrollbars. */
+section, .card, .loginbox { max-width: 100%; overflow-x: auto; }
+table { max-width: 100%; }
+select, input[type="text"], input[type="password"], input[type="email"], textarea { max-width: 100%; }
+.case-grid > * { min-width: 0; }
 @media (max-width: 900px) { .card table { display: block; overflow-x: auto; } }
+@media (max-width: 480px) {
+  .wrap { padding: 18px 12px 48px; }
+  .head-in { padding: 0 12px; gap: 10px; }
+  .userchip div { display: none; }
+  .kbd { display: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   /* Honour the OS setting: no splash theatre, no animated entrances. */
   *, *::before, *::after { animation-duration: .01ms !important; animation-delay: 0ms !important; transition-duration: .01ms !important; }

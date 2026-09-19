@@ -57,7 +57,29 @@ landed in enquiries).
 **Remaining OR-2 scope (tracked):** "What needs my attention" panel ordering/scoping is
 implemented with OR-8 (role scoping); escalation *who/when* display on the case page is
 verified in the route scan.
-## OR-3 — Responsive UI — **RED**
+## OR-3 — Responsive UI — **GREEN**
+
+**Repro (real Chromium, throwaway DB):** resize audit visited 8 staff pages ×
+5 widths (1280/1024/768/480/360) plus a continuous 1280→320 sweep. Before fix:
+**10 overflowing page/width combinations** — every page at 360px (unwrapped wide
+tables: 465–639px), `/applicants` at 1024px (1145px queue table), `/case` at
+480/360 (529–607px fixed grids). 0 JS errors, so the break was layout, not scripting.
+
+**Root causes:** wide `<table>`s were only given scroll containment inside
+`.card` below 900px; selects and case-page grids had no min-width caps; page
+padding was fixed at desktop values.
+
+**Fixes (views.ts):** universal containment — `section, .card, .loginbox
+{ max-width:100%; overflow-x:auto }` (wide tables scroll inside their own
+container, per the owner's rule), `table/select/input/textarea { max-width:100% }`,
+`.case-grid > * { min-width:0 }`, and a 480px tier for paddings/header chips.
+
+**Evidence:** after fix the same audit reports `0 overflowing page/width
+combinations; 0 JS errors`; permanent regression test `test/responsive.test.ts`
+(real Chromium; skips with a reason if no browser binary) passes. Screenshots in
+`docs/screenshots/*_360.png`. Audit tooling: `scripts/ui-resize-audit.mts`.
+
+**Known low nit:** brand wordmark contrast at tiny widths (polish, not overflow).
 ## OR-4 — Gmail/Gemini connections in Settings, guided, live status — **RED**
 ## OR-5 — Deterministic document-requirement generator — **RED**
 ## OR-6 — Course config: every subject × every system, extendable — **RED**
