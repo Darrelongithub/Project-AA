@@ -21,7 +21,7 @@ import { fillSlots } from "../documents/matrix";
 import { evaluateAdmission } from "../admissions/evaluate";
 import { ADMISSION_SYSTEMS, type AdmissionSystem, type CourseLevel, type RuleField } from "../types";
 import {
-  accountPage, admissionsPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, setupPage,
+  accountPage, admissionsPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, mailPage, mailThreadPage, setupPage,
   replayPage, settingsPage, staffPage, templatesPage,
 } from "./pages";
 import { TEMPLATE_DEFAULTS } from "../db/seed";
@@ -620,12 +620,47 @@ export function createApp(deps: WebDeps): Express {
       orientationDates: repo.getSetting("orientation_dates", ""),
     });
 
+  // ── Gmail-style mail window ─────────────────────────────────────────────────
+  // Every conversation (received AND sent), grouped by thread, newest first.
+  // Incoming mail arrives unread; opening a conversation reads it. Scoped by
+  // school and demo realm exactly like every other case surface.
+  app.get("/mail", requireLogin, (req, res) => {
+    const q = req.query.q !== undefined ? String(req.query.q).trim() : undefined;
+    const unreadOnly = String(req.query.f ?? "") === "unread";
+    const base = { schools: repo.visibleSchoolsFor(req.staff!), demo: req.staff!.demo, q: q || undefined };
+    const threads = repo.mailThreads({ ...base, unreadOnly });
+    res.send(mailPage(c(req), { threads, q, unreadOnly }));
+  });
+
+  app.get("/mail/thread/:tkey", requireLogin, (req, res) => {
+    const tkey = String(req.params.tkey);
+    const emails = repo.emailsForThread(tkey);
+    if (!emails.length) {
+      return res.status(404).send(layout({
+        title: "Conversation not found",
+        institution: instName(),
+        user: req.staff,
+        unread: repo.unreadCount(req.staff!.id),
+        csrf: req.csrfToken,
+        content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
+          <h1>Conversation not found</h1>
+          <p class="sub">That conversation does not exist (or has no messages yet).</p>
+          <p><a class="btn" href="/mail">← Back to mail</a></p>
+        </div>`,
+      }));
+    }
+    const a = emails[0].applicant_id != null ? repo.getApplicant(emails[0].applicant_id) : null;
+    if (!a || !repo.applicantVisibleTo(req.staff!, a)) return refuseScope(req, res, "/mail", "← Back to mail");
+    repo.markThreadRead(tkey);
+    res.send(mailThreadPage(c(req), { applicant: a, emails, tkey }));
+  });
+
   // ── New-window composer ────────────────────────────────────────────────────
   // A standalone compose window: pick the recipient (scoped search), load a
   // template if wanted, edit, send. Same rules as every other send path —
   // scoping enforced on BOTH the open and the send, pack/banner come from the
   // chosen template, attachments recorded on the case history.
-  const refuseScope = (req: Request, res: Response): void => {
+  const refuseScope = (req: Request, res: Response, backHref = "/compose", backLabel = "← Back to the composer"): void => {
     res.status(403).send(layout({
       title: "Outside your schools",
       institution: instName(),
@@ -634,8 +669,8 @@ export function createApp(deps: WebDeps): Express {
       csrf: req.csrfToken,
       content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
         <h1>This case is outside your assigned schools</h1>
-        <p class="sub">You can only compose to cases that belong to a school you handle. If this should be yours, ask an administrator to update your visibility scope.</p>
-        <p><a class="btn" href="/compose">← Back to the composer</a></p>
+        <p class="sub">You can only reach cases that belong to a school you handle. If this should be yours, ask an administrator to update your visibility scope.</p>
+        <p><a class="btn" href="${backHref}">${backLabel}</a></p>
       </div>`,
     }));
   };

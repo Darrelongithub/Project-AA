@@ -442,6 +442,8 @@ export interface EmailRecord {
   at: string;
   /** Outgoing only: JSON array of the filenames that were attached. */
   attachments?: string;
+  /** Mail window: 0 = unread incoming (arrives unread, read on open). */
+  read?: number;
 }
 
 // ── Vision / watcher ───────────────────────────────────────────────────────

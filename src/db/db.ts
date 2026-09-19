@@ -181,7 +181,8 @@ CREATE TABLE IF NOT EXISTS emails (
   auto         INTEGER NOT NULL DEFAULT 0,
   channel      TEXT NOT NULL DEFAULT 'email',
   at           TEXT NOT NULL DEFAULT (datetime('now')),
-  attachments  TEXT NOT NULL DEFAULT ''   -- JSON array of filenames that rode along (outgoing)
+  attachments  TEXT NOT NULL DEFAULT '',  -- JSON array of filenames that rode along (outgoing)
+  read         INTEGER NOT NULL DEFAULT 0 -- mail window: incoming mail arrives unread
 );
 CREATE INDEX IF NOT EXISTS idx_emails_applicant ON emails(applicant_id, at);
 
@@ -470,6 +471,14 @@ function migrate(db: Database.Database): void {
   // runs ONCE EVER (marker-guarded): re-running it on every open would
   // silently resurrect a pack a staff member deliberately switched off —
   // "none" is a legitimate choice, not an unset knob.
+  // Mail window (Gmail-style): incoming mail arrives unread. Existing rows were
+  // already worked in the case views, so backfill them as read; only rows that
+  // arrive from now on start unread. PRAGMA-guarded = safe on fresh databases.
+  const emailCols = db.prepare("PRAGMA table_info(emails)").all() as Array<{ name: string }>;
+  if (!emailCols.some((c) => c.name === "read")) {
+    db.exec(`ALTER TABLE emails ADD COLUMN read INTEGER NOT NULL DEFAULT 0`);
+    db.exec(`UPDATE emails SET read = 1`);
+  }
   const packDefaultsDone = db.prepare("SELECT value FROM settings WHERE key = 'pack_defaults_migrated'").get();
   if (!packDefaultsDone) {
     db.exec(`UPDATE templates SET attach_pack = 'application' WHERE key = 'docs_request' AND attach_pack = 'none'`);

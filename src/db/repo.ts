@@ -776,6 +776,70 @@ export class Repo {
       .all(applicantId) as EmailRecord[];
   }
 
+  // ── Mail window (Gmail-style): conversations grouped by thread ────────────
+  /** A thread key groups a conversation; emails without a thread_id form a
+   *  singleton conversation keyed by their own id. */
+  static threadKeySql(alias: string): string {
+    return `COALESCE(NULLIF(${alias}.thread_id, ''), 'email-' || ${alias}.id)`;
+  }
+
+  /**
+   * Conversation list for the mail window: one row per thread (the latest
+   * email), with message count and unread count. Scoped by school, realm-
+   * filtered by demo, optionally searched and limited to unread threads.
+   * One aggregate query — no N+1.
+   */
+  mailThreads(opts: {
+    schools?: string[] | null; demo?: number; q?: string; unreadOnly?: boolean; limit?: number;
+  }): Array<EmailRecord & { tkey: string; thread_n: number; unread_n: number; a_name: string | null; a_email: string; ref_number: string; programme: string | null; lifecycle: string }> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (opts.demo !== undefined) { where.push("a.demo = ?"); params.push(opts.demo); }
+    const scope = this.scopePred("a", opts.schools);
+    if (scope.sql) { where.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
+    if (opts.q) {
+      const escaped = opts.q.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+      const like = `%${escaped}%`;
+      where.push(`(e.subject LIKE ? ESCAPE '\\' OR e.body LIKE ? ESCAPE '\\' OR a.full_name LIKE ? ESCAPE '\\' OR a.email_address LIKE ? ESCAPE '\\' OR a.ref_number LIKE ? ESCAPE '\\')`);
+      params.push(like, like, like, like, like);
+    }
+    const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+    const unreadOnly = opts.unreadOnly ? " AND agg.unread_n > 0" : "";
+    const sql = `
+      WITH keyed AS (
+        SELECT e.*, COALESCE(NULLIF(e.thread_id, ''), 'email-' || e.id) AS tkey,
+               a.full_name AS a_name, a.email_address AS a_email, a.ref_number AS ref_number,
+               a.programme AS programme, a.lifecycle AS lifecycle
+        FROM emails e JOIN applicants a ON a.id = e.applicant_id
+        ${whereSql}
+      ),
+      agg AS (
+        SELECT tkey, MAX(id) AS last_id, MAX(at) AS last_at, COUNT(*) AS n,
+               SUM(CASE WHEN direction = 'in' AND read = 0 THEN 1 ELSE 0 END) AS unread_n
+        FROM keyed GROUP BY tkey
+      )
+      SELECT k.*, agg.n AS thread_n, agg.unread_n AS unread_n
+      FROM agg JOIN keyed k ON k.id = agg.last_id
+      WHERE 1=1${unreadOnly}
+      ORDER BY agg.last_at DESC, k.id DESC LIMIT ?`;
+    params.push(opts.limit ?? 100);
+    return this.db.prepare(sql).all(...params) as never[];
+  }
+
+  /** Every email in one conversation, oldest first. */
+  emailsForThread(tkey: string): EmailRecord[] {
+    return this.db
+      .prepare(`SELECT e.* FROM emails e WHERE ${Repo.threadKeySql("e")} = ? ORDER BY e.at, e.id`)
+      .all(tkey) as EmailRecord[];
+  }
+
+  /** Opening a conversation reads its incoming mail. */
+  markThreadRead(tkey: string): void {
+    this.db
+      .prepare(`UPDATE emails SET read = 1 WHERE direction = 'in' AND ${Repo.threadKeySql("emails")} = ?`)
+      .run(tkey);
+  }
+
   // ── Staff users & sessions (features 31, 32) ─────────────────────────────
 
   createStaff(username: string, displayName: string, passwordHash: string, role: string, demo = false): void {

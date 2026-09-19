@@ -4,7 +4,7 @@
  */
 import { documentRequirementsFor, type ProgrammeLevel } from "../documents/matrix";
 import type { Repo } from "../db/repo";
-import type { AdmissionSystem, ApplicantRow, CourseLevel, Programme, RuleNode, StaffUser } from "../types";
+import type { AdmissionSystem, ApplicantRow, CourseLevel, EmailRecord, Programme, RuleNode, StaffUser } from "../types";
 import { ADMISSION_SYSTEMS, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
 import { SYSTEM_LABELS } from "../admissions/systems";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../admissions/queues";
@@ -15,7 +15,7 @@ import { EXAM_SYSTEMS } from "../config";
 import { packManifest } from "../pack";
 import {
   avatar, categoryBadge, crest, esc, flagLabel, flowLine, fmtDate, gaugeRow,
-  heroClock, layout, lifecycleBadge, lifecycleStepper, priorityBadge, readabilityScore, slaText, triageBadge, type Theme,
+  heroClock, icon, layout, lifecycleBadge, lifecycleStepper, priorityBadge, readabilityScore, slaText, triageBadge, type Theme,
 } from "./views";
 
 interface Ctx {
@@ -1423,6 +1423,100 @@ export function composeWindowPage(
     </div>
   </form>
 </div>`);
+}
+
+
+/** Gmail-style mail window: every conversation, newest first. */
+export function mailPage(
+  c: Ctx,
+  opts: {
+    threads: Array<{ tkey: string; thread_n: number; unread_n: number; subject: string; body: string; at: string; direction: string; applicant_id: number | null; a_name: string | null; a_email: string; ref_number: string; lifecycle: string }>;
+    q?: string;
+    unreadOnly: boolean;
+  }
+): string {
+  const unreadTotal = opts.unreadOnly ? opts.threads.length : c.repo.mailThreads({ schools: c.repo.visibleSchoolsFor(c.user!), demo: c.user!.demo, unreadOnly: true }).length;
+  const rows = opts.threads.map((t) => {
+    const unread = t.unread_n > 0;
+    const snippet = (t.body || "").replace(/\s+/g, " ").trim();
+    const name = t.a_name ?? t.ref_number;
+    return `<tr style="cursor:pointer" onclick="location.href='/mail/thread/${encodeURIComponent(t.tkey)}'">
+      <td style="width:26px;padding-right:0">${unread ? `<span title="Unread" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--purple)"></span>` : ""}</td>
+      <td style="width:34px">${avatar(name, 28)}</td>
+      <td style="${unread ? "font-weight:700" : ""};white-space:nowrap">${esc(name)}</td>
+      <td style="min-width:0">
+        <span style="${unread ? "font-weight:700" : ""}">${esc(t.subject || "(no subject)")}</span>
+        <span class="muted"> — ${esc(snippet.slice(0, 140))}${snippet.length > 140 ? "…" : ""}</span>
+      </td>
+      <td class="muted small" style="white-space:nowrap">${t.thread_n > 1 ? `(${t.thread_n})` : ""}</td>
+      <td class="muted small" style="white-space:nowrap"><span data-rel="${esc(t.at)}">${esc(t.at.slice(0, 16).replace("T", " "))}</span></td>
+    </tr>`;
+  }).join("");
+  const tab = (href: string, label: string, active: boolean, count?: number) =>
+    `<a href="${href}" class="btn small ${active ? "" : "ghost"}" style="border-radius:999px">${label}${count ? ` (${count})` : ""}</a>`;
+  return head(c, "Mail", "mail", `
+<div class="hero">
+  <div class="row">
+    <div style="min-width:0;flex:1">
+      <div class="kicker">New window · mail</div>
+      <h1 style="margin:0">Mail</h1>
+      <div class="sub" style="margin:2px 0 0">Every conversation with every applicant — received and sent, newest first.</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      ${tab("/mail" + (opts.q ? `?q=${encodeURIComponent(opts.q)}` : ""), "All mail", !opts.unreadOnly)}
+      ${tab("/mail?f=unread" + (opts.q ? `&q=${encodeURIComponent(opts.q)}` : ""), "Unread", opts.unreadOnly, unreadTotal)}
+      <a class="btn" href="/compose" target="_blank" rel="noopener">Compose</a>
+    </div>
+  </div>
+</div>
+<div class="card" style="padding:16px 20px;margin-bottom:16px">
+  <form method="get" action="/mail" class="formrow" style="align-items:end;margin:0">
+    ${opts.unreadOnly ? `<input type="hidden" name="f" value="unread">` : ""}
+    <div style="flex:1"><input type="text" name="q" value="${esc(opts.q ?? "")}" placeholder="Search mail — subject, message, name, email or reference…"></div>
+    <div style="flex:0"><button class="btn">Search</button>${opts.q ? ` <a class="btn ghost" href="${opts.unreadOnly ? "/mail?f=unread" : "/mail"}">Clear</a>` : ""}</div>
+  </form>
+</div>
+<div class="card nopad">
+  ${rows ? `<table>
+    <tbody>${rows}</tbody>
+  </table>` : `<p class="small muted" style="padding:22px 24px;margin:0">${opts.q ? `No mail matches “${esc(opts.q)}”${opts.unreadOnly ? " among unread conversations" : ""}.` : opts.unreadOnly ? "Everything is read — inbox zero." : "No mail yet — conversations appear here as they happen."}</p>`}
+</div>`);
+}
+
+/** One conversation, both directions, oldest first. */
+export function mailThreadPage(c: Ctx, opts: { applicant: ApplicantRow; emails: EmailRecord[]; tkey: string }): string {
+  const a = opts.applicant;
+  const prog = a.programme ? c.repo.programmeByCode(a.programme) : undefined;
+  const msgs = opts.emails.map((e) => {
+    const out = e.direction === "out";
+    let attached: string[] = [];
+    try { attached = e.attachments ? (JSON.parse(e.attachments) as string[]) : []; } catch { attached = []; }
+    return `<div class="card" style="margin-bottom:14px;border-left:3px solid ${out ? "var(--purple)" : "var(--line)"}">
+      <div class="row" style="justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div class="small muted">
+          <span class="badge ${out ? "b-purple" : ""}">${out ? (e.auto ? "Sent · automatic" : "Sent") : "Received"}</span>
+          ${out ? `to <b>${esc(e.to_addr || a.email_address)}</b>` : `from <b>${esc(e.from_addr || a.email_address)}</b>`}
+        </div>
+        <div class="small muted">${esc(e.at.slice(0, 16).replace("T", " "))} UTC</div>
+      </div>
+      <h3 style="margin:10px 0 6px">${esc(e.subject || "(no subject)")}</h3>
+      <div style="white-space:pre-wrap;font-size:14px;line-height:1.7">${esc(e.body)}</div>
+      ${attached.length ? `<p style="margin:12px 0 0">${attached.map((f) => `<span class="badge" style="margin-right:6px">${icon("clip", 11)} ${esc(f)}</span>`).join("")}</p>` : ""}
+    </div>`;
+  }).join("");
+  return head(c, `Mail — ${a.ref_number}`, "mail", `
+<div class="hero">
+  <div class="row">
+    ${avatar(a.full_name ?? a.ref_number, 46)}
+    <div style="min-width:0;flex:1">
+      <div class="kicker">Mail · conversation</div>
+      <h1 style="margin:0">${esc(a.full_name ?? a.ref_number)}</h1>
+      <div class="sub" style="margin:2px 0 0">${esc(a.email_address)}${prog ? ` · ${esc(prog.name)}` : ""} · ${lifecycleBadge(a.lifecycle)} · <a href="/case/${a.id}">open the case file</a></div>
+    </div>
+    <div><a class="btn" href="/compose?case=${a.id}" target="_blank" rel="noopener">Reply in a new window</a></div>
+  </div>
+</div>
+${msgs}`);
 }
 
 
