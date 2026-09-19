@@ -202,3 +202,56 @@ describe("OR-1: the product contains no mock data", () => {
     expect(second.staff).toBe(0);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OR-2 — the status/queue model must follow the pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+import { queueOf } from "../src/admissions/queues";
+import type { ApplicantRow } from "../src/types";
+
+function rowFor(over: Partial<ApplicantRow>): ApplicantRow {
+  return {
+    id: 1, ref_number: "RU-1", email_address: "x@example.com", thread_id: "t",
+    full_name: null, phone: null, programme: null, intake: null, priority: "normal",
+    lifecycle: "application_received", assigned_to: null, escalated: 0,
+    sla_due_at: null, sla_handled_at: null, routing: null, routing_reason: null,
+    admission_decision: "undecided", followup_next_at: null, created_at: "", updated_at: "",
+    demo: 0, nationality: null, applicant_type: null,
+    ...over,
+  } as unknown as ApplicantRow;
+}
+
+describe("OR-2: queue placement follows the pipeline", () => {
+  it("documents received but no routing yet => review path, never an enquiry", () => {
+    const a = rowFor({ lifecycle: "documents_received" });
+    expect(queueOf(a, { hasDocuments: true, lastDirection: null })).toEqual({
+      queue: "human_review",
+      sub: "manual_decision_required",
+    });
+  });
+
+  it("documents checked and awaiting review => still the review path", () => {
+    const a = rowFor({ lifecycle: "awaiting_review" });
+    expect(queueOf(a, { hasDocuments: true, lastDirection: "in" })).toEqual({
+      queue: "human_review",
+      sub: "manual_decision_required",
+    });
+  });
+
+  it("missing documents with a follow-up out => waiting on the applicant, plainly worded", () => {
+    const a = rowFor({ routing: "waiting_documents", routing_reason: "missing_documents", followup_next_at: "2026-09-30T00:00:00Z" });
+    const p = queueOf(a, { hasDocuments: false, lastDirection: "out" });
+    expect(p.queue).toBe("waiting_documents");
+    expect(p.sub).toBe("awaiting_applicant_response");
+  });
+
+  it("an escalated case with documents never drops to enquiries", () => {
+    const a = rowFor({ lifecycle: "documents_checked", escalated: 1 });
+    expect(queueOf(a, { hasDocuments: true, lastDirection: null }).queue).toBe("human_review");
+  });
+
+  it("a true enquiry (no documents, nothing routed) stays in enquiries", () => {
+    const a = rowFor({ lifecycle: "application_received" });
+    expect(queueOf(a, { hasDocuments: false, lastDirection: "in" }).queue).toBe("enquiries");
+  });
+});

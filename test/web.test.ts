@@ -417,7 +417,7 @@ describe("production-readiness pass", () => {
     }
     // The Human Review queue is the default landing; subchips say "why".
     expect(page).toContain("/applicants?queue=human_review");
-    expect(page).toContain("Requirement not satisfied");
+    expect(page).toContain("Entry requirements not met — decide manually");
     const filtered = await (await fetch(`${base}/applicants?queue=waiting_documents`, { headers: { cookie } })).text();
     expect(filtered).toContain("Missing documents");
   });

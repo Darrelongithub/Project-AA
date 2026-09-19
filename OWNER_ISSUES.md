@@ -32,7 +32,31 @@ Baseline before this round: tsc clean · 305/305 vitest · 316/316 simulate.
 
 ---
 
-## OR-2 — Status/queue model follows the pipeline — **RED** (next)
+## OR-2 — Status/queue model follows the pipeline — **GREEN** (model core)
+
+**Repro (before fix):** `queueOf()` fell through to *Enquiries → New enquiry* for any
+applicant with documents in hand but no routing yet — exactly the owner's "documents
+submitted and awaiting review shows as waiting/new" confusion. 5 OR-2 tests written first;
+2 failed RED proving the fall-through (`documents_received` and `awaiting_review` cases
+landed in enquiries).
+
+**Fixes:**
+- `queueOf` now routes "documents in, no routing" to **Human Review → "Documents in —
+  needs a manual decision"** before any enquiries fallback.
+- Vague labels replaced with plain language: "Requirement not satisfied" → "Entry
+  requirements not met — decide manually"; "Manual decision required" → "Documents in —
+  needs a manual decision"; "Escalated" → "Escalated — overdue, needs attention now".
+  The queue page already prints the evaluation reason beside each row, so no label appears
+  without its explanation.
+- `docs/STATUS_MODEL.md` written: every state, what enters/leaves it, who acts next, and
+  the invariants pinned by tests.
+
+**Evidence:** OR-2 group `5 passed` (RED first: `2 failed | 9 passed`); full suite
+`316 passed`; simulate `316/316 ALL GREEN`.
+
+**Remaining OR-2 scope (tracked):** "What needs my attention" panel ordering/scoping is
+implemented with OR-8 (role scoping); escalation *who/when* display on the case page is
+verified in the route scan.
 ## OR-3 — Responsive UI — **RED**
 ## OR-4 — Gmail/Gemini connections in Settings, guided, live status — **RED**
 ## OR-5 — Deterministic document-requirement generator — **RED**

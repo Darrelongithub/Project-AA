@@ -47,14 +47,14 @@ export const QUEUES: QueueInfo[] = [
     key: "human_review", label: "Human Review Required", tone: "orange",
     caption: "Cannot safely proceed through the automated path",
     subs: [
-      { key: "requirement_not_satisfied", label: "Requirement not satisfied" },
+      { key: "requirement_not_satisfied", label: "Entry requirements not met — decide manually" },
       { key: "requirement_conflict", label: "Requirement conflict" },
       { key: "late_submission", label: "Late submission" },
       { key: "low_confidence_extraction", label: "Low-confidence extraction" },
       { key: "special_consideration", label: "Special consideration" },
       { key: "exception", label: "Exception" },
-      { key: "escalated", label: "Escalated" },
-      { key: "manual_decision_required", label: "Manual decision required" },
+      { key: "escalated", label: "Escalated — overdue, needs attention now" },
+      { key: "manual_decision_required", label: "Documents in — needs a manual decision" },
     ],
   },
   {
@@ -127,7 +127,15 @@ export function queueOf(a: ApplicantRow, ctx: QueueContext = {}): QueuePlacement
     return { queue: "decision", sub: "ready_for_decision" };
   }
 
-  // 5 — ENQUIRIES & COMMUNICATION
+  // 5 — DOCUMENTS IN, NO ROUTING YET: this belongs to a reviewer, not the
+  // enquiries inbox. (An earlier version fell through to "new enquiry"
+  // here, which showed submitted-but-unreviewed applicants as if they had
+  // merely asked a question.)
+  if (ctx.hasDocuments) {
+    return { queue: "human_review", sub: "manual_decision_required" };
+  }
+
+  // 6 — ENQUIRIES & COMMUNICATION
   if (a.followup_next_at) return { queue: "enquiries", sub: "follow_up_required" };
   if (!ctx.hasDocuments && a.lifecycle === "application_received") return { queue: "enquiries", sub: "new_enquiry" };
   if (ctx.lastDirection === "in") return { queue: "enquiries", sub: "awaiting_response" };
