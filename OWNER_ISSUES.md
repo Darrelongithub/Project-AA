@@ -393,3 +393,69 @@ Interpretation (see Interpretations): the extended/adversarial scenario verifica
 **Bug discovered by the stress design (not the run):** the first draft dropped the certificate floor to D+ and expected rejection — the data correctly says the certificate university-wide floor IS D+ (`BASE:certificate KCSE overall D+`), so a D+ applicant was legitimately auto-admitted. The harness was corrected to compute "below floor" per level (degree < C+, diploma < C, certificate < D+). This is exactly the proof the owner asked for: floors come from published data, not assumption.
 
 Commits: `b37dd2b` (stress harness + vitest wrapper), route scan doc in this commit.
+
+---
+
+## OR gate — hostile review round (fixes + one new bug caught) — **GREEN**
+
+**Mandate:** senior-hostile review of the whole tree; fix every finding; owner
+additionally reported "not all of the documents I sent are sent — I haven't
+seen the hostels list or Data Protection anywhere."
+
+**Root cause of the owner's observation (confirmed in code, not assumed):**
+outgoing mail never recorded its attachments — the `emails` table had no
+attachment column, so a send carrying the 7-file admission pack showed up in
+the case history as a bare email; and the dominant reply path (held drafts —
+the qualification gate holds every non-Green reply for staff) dropped the
+template's pack entirely on the approval send. Both fixed, both test-pinned.
+
+**Fixes shipped (commits `afa766e`, `3c6b9ad`):**
+1. `emails.attachments` records the exact filenames on EVERY send path
+   (pipeline auto, manual template, compose, send-pack, held-draft approval);
+   the case timeline renders them ("Attached (7): …" badges).
+2. `outbox.template_key` — held drafts remember their template; approval
+   sends honour that template's pack + banner setting.
+3. Pack-defaults migration is one-shot (`pack_defaults_migrated` marker) —
+   "no pack" is a staff choice, not an unset knob; re-open tests prove it.
+4. `retentionDue()` — instant-correct retention math (raw string compare
+   archived boundary-day cases up to 24 h early).
+5. One `GmailSender` shared by serve + ingest (ingest dropped extras);
+   inbox poll guarded by `onceAtATime` (no stacked passes).
+6. Login CSRF double-submit + `COOKIE_SECURE` support; every test login now
+   walks the real flow (`webLogin` helper).
+7. Stress harness: validated `STRESS_N`, transfer-form drops, determinism
+   semantics for resend cases, null-guards, tsx resolution.
+8. `fillSlots.missing` typed honestly; `inferProgramme` escapes data-driven
+   regexes; pack dir anchored to the DB path; exports aggregate (no 2N);
+   dead portal machinery deleted; 25 unused symbols cleared;
+   `noUnusedLocals`/`noUnusedParameters` enabled permanently.
+
+**New bug the stress harness caught once transfers could drop their form:**
+`inferTransfer` did not recognise "transfer letter" or "transfer into X" —
+the checklist's own wording and the most natural applicant phrasing. Real
+transfer applicants were never asked for the transfer form, and with
+everything else present were AUTO-ADMITTED without it (4/1000 cases: 180,
+552, 621, 961). Fixed by extending the pattern; pinned by new tests.
+
+**Evidence (RED → GREEN):**
+- `test/review-pack.test.ts` + `test/review-hardening.test.ts`: 11 tests,
+  written first against missing modules/columns — `FAIL ... Does the file
+  exist?` RED, then `2 passed | 11 passed` GREEN.
+- Full suite after fixes: **31 files, 399 passed, 1 skipped, 0 failed**.
+- Simulate (OCR ON — the scanned-KCPE fixture requires Tesseract):
+  **316/316 ALL GREEN**. Note: `DISABLE_OCR=1` is for the vitest slice only.
+- Stress: **1000/1000 clean** (Red 445 / Green 423 / Orange 45 / skips 87;
+  determinism 13/13).
+- REPORT.md OR-2/OR-3/OR-4 rows corrected to match OWNER_ISSUES.md; phantom
+  routes (`/check-status`, `/case/:id/requirements-snapshot`,
+  `/config/preview`) removed from the report — they never existed.
+
+**Interpretations:**
+17. "I haven't seen the hostels list or Data Protection anywhere" ⇒ treated
+    as a send-path integrity defect (attachments invisible in-console +
+    dropped by held-draft approval), not a pack-content problem — all 10
+    pack PDFs are present in `data/pack` and the admission pack builder
+    includes all 7 admission files (verified by test: send-pack attaches 7).
+18. Login CSRF defence uses a double-submit token rather than a session
+    (no session exists pre-login); stale/expired sign-in pages get a fresh
+    token on every render, so legitimate users are never locked out.

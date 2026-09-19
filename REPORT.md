@@ -50,9 +50,42 @@ All recorded under OWNER_ISSUES.md → Interpretations; the consequential ones:
 - **No silent failures:** every refused/skipped path is explicit (templates, packs, OAuth, setup, retired endpoints) — verified by the route scan.
 - **No paid dependencies added**; zero new external services.
 
-## 6. Remaining / known (none blocking)
+## 6. Hostile review round (same day, after push of the gates above)
+
+A full-tree hostile review was run and every finding fixed (commits `afa766e`,
+`3c6b9ad`, this doc update). Highlights:
+
+- **Owner-reported gap — "hostels list / Data Protection never appear":**
+  outgoing mail recorded no attachments at all, and held-draft approvals
+  (the dominant reply path) dropped the template's pack. Both fixed:
+  every send path now records filenames on the email row, the case
+  timeline shows them, and held drafts honour their template's pack.
+  Pinned by `test/review-pack.test.ts` (3 tests, RED-first).
+- **Migration that silently reverted staff config** (pack defaults on every
+  boot) → one-shot, marker-guarded. **Retention boundary error** (up to
+  24 h early archive) → instant-correct `retentionDue()`. **Ingest CLI
+  dropping pack attachments** → one shared `GmailSender`. **Poll overlap
+  race** → `onceAtATime` guard. **Login CSRF** → double-submit token;
+  `COOKIE_SECURE` supported.
+- **The strengthened stress run caught a real product bug:** "transfer
+  letter" / "transfer into" were not recognised, so transfer applicants
+  were never asked for the transfer form — 4 of 1,000 cases, two of them
+  auto-admitted without it. Fixed and test-pinned; the run is green again.
+- Dead code purged (portal OTP/session machinery, 25 unused symbols) and
+  `noUnusedLocals`/`noUnusedParameters` enabled so it stays purged.
+- Section 1 of this report was corrected: OR-2/OR-3/OR-4 rows previously
+  described work from other rounds and cited routes that do not exist.
+  The authoritative account of every round is OWNER_ISSUES.md.
+
+**Post-fix gates:** tsc clean (strict flags on) · vitest **399 passed / 31
+files** · simulate **316/316** (OCR on) · stress **1000/1000**.
+
+## 7. Remaining / known (none blocking)
 
 - Legacy `/queue` and `/team` aliases still resolve (harmless, noted in ROUTE_SCAN.md).
 - The stress determinism sample covers 13 of 1,000 cases by design (full re-run would double the 31 s wall time).
+- `npm run simulate` requires OCR enabled (Tesseract) — the scanned-KCPE
+  fixture exercises the real OCR tier; `DISABLE_OCR=1` applies to the
+  vitest stress slice only.
 
 *— Project-AA Bot, 2026-09-19*
