@@ -371,3 +371,25 @@ admin-only; officers do not see or manage it.
 ---
 
 (Functionality scan, route inventory and 1,000-case stress run pending — tracked in REPORT.md.)
+
+---
+
+## OR gate — functionality route scan + scenario matrix B + 1,000-case stress (all clean)
+
+Status: **DONE** — route scan `docs/ROUTE_SCAN.md`; matrix B + stress both green.
+
+### Route scan (docs/ROUTE_SCAN.md)
+Walked every route in `server.ts` (9 sections, ~80 routes). Findings, all recorded in the doc:
+- Every state-changing POST is CSRF-protected except four documented public flows (`/setup` one-time token, `/login`, `/logout`, `/theme`; Gmail OAuth uses its burned-once `state`).
+- Zero silent failures: every refused request produces an explicit 4xx page or redirect; retired endpoints refuse loudly instead of failing quietly.
+- Scoping enforcement verified on all surfaces; legacy `/queue` and `/team` still resolve.
+- **No open items** — nothing found that required a code change.
+
+### Scenario matrix B
+Interpretation (see Interpretations): the extended/adversarial scenario verification. Delivered as two complementary gates:
+- `npm run simulate` — 6-group scenario matrix, **316/316 assertions green** (re-ran this turn).
+- `npm run stress` — **1,000 deterministic synthetic cases** (seed 20260919) through the REAL pipeline with mock external adapters: profiles degree/diploma/certificate (499), master's/PhD (156), transfer (97), adversarial empty-file/junk/duplicate (248). Outcome spread Red=462 / Green=393 / Orange=51 / duplicate-skips=94 — and **zero invariant violations**: no crashes, no auto-admit with missing docs or below-floor grades (both directions checked), exact matrix-missing equality for faithful profiles, KCPE never demanded, banned umbrella labels never rendered, every outgoing subject carries `[REF]`, all 13 sampled cases re-ran byte-identically on fresh databases. **1000/1000 clean.** A reduced slice (120 cases) runs inside vitest (`test/stress.test.ts`) so the CI loop catches regressions.
+
+**Bug discovered by the stress design (not the run):** the first draft dropped the certificate floor to D+ and expected rejection — the data correctly says the certificate university-wide floor IS D+ (`BASE:certificate KCSE overall D+`), so a D+ applicant was legitimately auto-admitted. The harness was corrected to compute "below floor" per level (degree < C+, diploma < C, certificate < D+). This is exactly the proof the owner asked for: floors come from published data, not assumption.
+
+Commits: `b37dd2b` (stress harness + vitest wrapper), route scan doc in this commit.
