@@ -11,8 +11,11 @@ import { hashPassword } from "../src/util/password";
 import { createApp } from "../src/web/server";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const DB = "../data/ui-test.sqlite";
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const DB = join(ROOT, "data/ui-test.sqlite");
 
 async function main() {
   console.log("building throwaway DB via simulation …");
@@ -54,7 +57,7 @@ async function main() {
       if (overflows) failures++;
       console.log(`${route} @ ${w}px → scrollWidth=${m.sw} client=${m.cw} ${overflows ? "⚠ HORIZONTAL OVERFLOW" : "ok"}`);
       if (w === 360) {
-        await page.screenshot({ path: `docs/screenshots/${route.replace(/\//g, "_").slice(1) || "home"}_360.png`, fullPage: false }).catch(() => undefined);
+        await page.screenshot({ path: join(ROOT, "docs/screenshots", `${route.replace(/\//g, "_").slice(1) || "home"}_360.png`), fullPage: false }).catch(() => undefined);
       }
     }
   }

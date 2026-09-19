@@ -6,7 +6,10 @@ import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipe
 import { makeHeuristicWatcher } from "../src/watcher";
 
 async function main() {
-  const repo = new Repo(openDb("../data/ui-test.sqlite"));
+  const { dirname, join } = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const repo = new Repo(openDb(join(ROOT, "data/ui-test.sqlite")));
   const ctx: PipelineContext = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender: new MockSender() } };
   const app = createApp({ repo, ctx });
   const server = await new Promise<any>((resolve) => { const s = app.listen(4277, "127.0.0.1", () => resolve(s)); });

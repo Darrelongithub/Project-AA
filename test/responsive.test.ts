@@ -59,10 +59,7 @@ afterAll(async () => {
 
 describe("OR-3: responsive layout", () => {
   it("no horizontal page scroll on any staff page at 1280/1024/768/480/360", async (t) => {
-    if (!page) {
-      t.skip(`Chromium unavailable: ${launchError}`);
-      return;
-    }
+    if (!page) { t.skip(); return; }
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const routes = ["/", "/applicants", "/admissions", "/staff", "/config", "/settings", "/account", "/case/1"];
@@ -73,10 +70,9 @@ describe("OR-3: responsive layout", () => {
       for (const w of widths) {
         await page.setViewportSize({ width: w, height: 900 });
         await page.waitForTimeout(80);
-        const m = await page.evaluate(() => ({
-          sw: document.documentElement.scrollWidth,
-          cw: document.documentElement.clientWidth,
-        }));
+        const m = await page.evaluate(
+          "(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))()"
+        ) as { sw: number; cw: number };
         if (m.sw > m.cw + 1) bad.push(`${route}@${w}px (${m.sw}>${m.cw})`);
       }
     }
