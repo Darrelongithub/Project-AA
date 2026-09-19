@@ -455,4 +455,18 @@ function migrate(db: Database.Database): void {
   } catch {
     // best-effort: a fresh DB has nothing to migrate
   }
+  // OR-6 — Master's ≠ PhD: the old single "postgrad" level splits into
+  // "masters" (the university's existing postgraduate defaults) and "phd".
+  // Every table that stores a course level is migrated; the UPDATEs are
+  // idempotent so re-opening a modern database is a no-op.
+  db.exec(`UPDATE programmes SET level = 'masters' WHERE level = 'postgrad'`);
+  db.exec(`UPDATE admission_rules SET level = 'masters' WHERE level = 'postgrad'`);
+  db.exec(`UPDATE course_requirements SET level = 'masters' WHERE level = 'postgrad'`);
+  // OR-6 — schools get their own catalogue so a school exists even before
+  // its first course, and can be renamed in one place.
+  db.exec(`CREATE TABLE IF NOT EXISTS schools (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+  )`);
+  db.exec(`INSERT OR IGNORE INTO schools (name) SELECT DISTINCT school FROM programmes WHERE school <> ''`);
 }

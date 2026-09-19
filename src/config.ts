@@ -104,7 +104,7 @@ export const DEFAULT_PROGRAMMES: DefaultProgramme[] = [
   { code: "CBM", name: "Certificate in Business Management", school: "School of Business",
     entry: "KCSE D+ or equivalent (confirm current details).", level: "certificate" },
   { code: "MBA", name: "Master of Business Administration", school: "School of Business",
-    entry: "Bachelor's with at least Second Class Honours (Upper Division); Lower Division with relevant experience; Pass holders need a postgraduate diploma or substantial experience.", level: "postgrad" },
+    entry: "Bachelor's with at least Second Class Honours (Upper Division); Lower Division with relevant experience; Pass holders need a postgraduate diploma or substantial experience.", level: "masters" },
   // ── School of Computing Sciences ──
   { code: "BCS", name: "BSc Computer Science", school: "School of Computing Sciences",
     entry: "KCSE C+ with minimum C+ in Mathematics or Physics or Physical Sciences; or a Diploma/Professional Certificate in computing; or a science-based degree.", level: "degree" },
@@ -124,7 +124,7 @@ export const DEFAULT_PROGRAMMES: DefaultProgramme[] = [
   { code: "CCD", name: "Certificate in Corporate Diplomacy", school: "School of International Relations & Diplomacy",
     entry: "KCSE D+ or equivalent.", level: "certificate" },
   { code: "MIR", name: "MA International Relations and Diplomacy", school: "School of International Relations & Diplomacy",
-    entry: "Bachelor's with Second Class Honours Upper Division; Lower Division plus relevant experience; or other Senate-accepted qualifications with experience.", level: "postgrad" },
+    entry: "Bachelor's with Second Class Honours Upper Division; Lower Division plus relevant experience; or other Senate-accepted qualifications with experience.", level: "masters" },
   // ── School of Communication and Multimedia Journalism ──
   { code: "BCJ", name: "Bachelor of Communication and Multimedia Journalism", school: "School of Communication and Multimedia Journalism",
     entry: "KCSE mean C+ with C+ in English or Kiswahili and D+ in Mathematics; or a Diploma with Credit in a relevant discipline.", level: "degree" },
@@ -228,7 +228,7 @@ export const DEFAULT_STRUCTURED_BASE: Array<{ level: CourseLevel; block: SystemB
   { level: "certificate", block: B("KCSE", { overall: "D+" }) },
   { level: "certificate", block: B("IGCSE", { minCredits: 3 }) },
   // ── Postgraduate ──
-  { level: "postgrad", block: B("DEGREE", { minClass: "Second Class Honours (Upper Division)" }) },
+  { level: "masters", block: B("DEGREE", { minClass: "Second Class Honours (Upper Division)" }) },
 ];
 
 /** Course-specific blocks — the published programme requirements. */

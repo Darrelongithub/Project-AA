@@ -194,7 +194,10 @@ export interface SystemBlock {
   subjects?: SubjectRequirement[];
 }
 
-export type CourseLevel = "degree" | "diploma" | "certificate" | "postgrad";
+/** OR-6: Master's and PhD are DISTINCT levels — they enforce different
+ * university-wide defaults and generate different document checklists.
+ * ("postgrad" survives only as legacy data, migrated to "masters".) */
+export type CourseLevel = "degree" | "diploma" | "certificate" | "masters" | "phd";
 
 export interface RequirementSetEntry {
   document_type: DocType;
