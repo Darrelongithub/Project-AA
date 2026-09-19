@@ -48,6 +48,9 @@ export interface ApplicantSearchQuery {
   limit?: number;
   /** Realm scope: 0 = live only, 1 = demo only, undefined = all. */
   demo?: number;
+  /** OR-8: school visibility scope. null/undefined = unscoped; an empty
+   * list matches nothing. */
+  schools?: string[] | null;
 }
 
 /** Per-staff workload + responsiveness metrics for the Team page. */
@@ -899,17 +902,21 @@ export class Repo {
    * shown to demo accounts, and vice versa (broadcasts without an applicant
    * are visible to everyone).
    */
-  notificationsFor(staffId: number, limit = 50, demo?: number): Array<{ id: number; kind: string; message: string; read: number; at: string; applicant_id: number | null }> {
+  notificationsFor(staffId: number, limit = 50, demo?: number, schools?: string[] | null): Array<{ id: number; kind: string; message: string; read: number; at: string; applicant_id: number | null }> {
     const realmSql = demo === undefined ? "" : " AND (n.applicant_id IS NULL OR a.demo = ?)";
+    // OR-8: scoped staff never see alerts about cases outside their schools
+    // (broadcast alerts without an applicant stay visible to everyone).
+    const scope = this.scopePred("a", schools);
+    const scopeSql = scope.sql ? ` AND (n.applicant_id IS NULL OR 1=1${scope.sql})` : "";
     const params: unknown[] = demo === undefined ? [staffId, limit] : [staffId, demo, limit];
     return this.db
       .prepare(
         `SELECT n.id AS id, n.kind AS kind, n.message AS message, n.read AS read, n.at AS at, n.applicant_id AS applicant_id
          FROM notifications n LEFT JOIN applicants a ON a.id = n.applicant_id
-         WHERE (n.staff_id IS NULL OR n.staff_id = ?)${realmSql}
+         WHERE (n.staff_id IS NULL OR n.staff_id = ?)${realmSql}${scopeSql}
          ORDER BY n.id DESC LIMIT ?`
       )
-      .all(...params) as never[];
+      .all(demo === undefined ? [params[0], ...scope.params, params[1]] : [params[0], params[1], ...scope.params, params[2]]) as never[];
   }
 
   unreadCount(staffId: number, demo?: number): number {
@@ -1072,14 +1079,15 @@ export class Repo {
    * Applicants who received an enquiry-style incoming email today (one SQL
    * query — the admissions page must not do one query per applicant).
    */
-  enquiryApplicantIdsToday(startISO: string): Set<number> {
+  enquiryApplicantIdsToday(startISO: string, schools?: string[] | null): Set<number> {
+    const scope = this.scopePred("a", schools);
     const rows = this.db
       .prepare(
-        `SELECT DISTINCT applicant_id AS id FROM emails
-         WHERE direction = 'in' AND at >= ?
-           AND category IN ('fee_enquiry','admission_enquiry','follow_up','complaint','other')`
+        `SELECT DISTINCT e.applicant_id AS id FROM emails e JOIN applicants a ON a.id = e.applicant_id
+         WHERE e.direction = 'in' AND e.at >= ?
+           AND e.category IN ('fee_enquiry','admission_enquiry','follow_up','complaint','other')${scope.sql}`
       )
-      .all(startISO) as Array<{ id: number }>;
+      .all(startISO, ...scope.params) as Array<{ id: number }>;
     return new Set(rows.map((r) => r.id));
   }
 
@@ -1088,7 +1096,7 @@ export class Repo {
   // finished / unfinished / pending are the three buckets staff think in;
   // awaiting_review inside pending is the classic "human queue".
 
-  stageCounts(demo?: number): {
+  stageCounts(demo?: number, schools?: string[] | null): {
     finished: number;
     unfinished: number;
     pending: number;
@@ -1101,11 +1109,14 @@ export class Repo {
     completed: number;
     total: number;
   } {
-    const demoSql = demo === undefined ? "" : " WHERE demo = ?";
-    const demoParams: unknown[] = demo === undefined ? [] : [demo];
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (demo !== undefined) { where.push("demo = ?"); params.push(demo); }
+    const scope = this.scopePred("applicants", schools);
+    if (scope.sql) { where.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
     const rows = this.db
-      .prepare(`SELECT lifecycle, COUNT(*) AS n FROM applicants${demoSql} GROUP BY lifecycle`)
-      .all(...demoParams) as Array<{
+      .prepare(`SELECT lifecycle, COUNT(*) AS n FROM applicants${where.length ? " WHERE " + where.join(" AND ") : ""} GROUP BY lifecycle`)
+      .all(...params) as Array<{
       lifecycle: string;
       n: number;
     }>;
@@ -1114,7 +1125,7 @@ export class Repo {
     const total = rows.reduce((n, r) => n + r.n, 0);
     const start = new Date();
     start.setHours(0, 0, 0, 0);
-    const enquiries = this.enquiryApplicantIdsToday(start.toISOString()).size;
+    const enquiries = this.enquiryApplicantIdsToday(start.toISOString(), schools).size;
     return {
       finished: g("completed"),
       unfinished: g("application_received") + g("documents_received") + g("documents_checked"),
@@ -1140,7 +1151,7 @@ export class Repo {
       .get(applicantId) as { actor: string; at: string } | undefined;
   }
 
-  todayStats(demo?: number): { emailsToday: number; docsToday: number; completedToday: number } {
+  todayStats(demo?: number, schools?: string[] | null): { emailsToday: number; docsToday: number; completedToday: number } {
     // date('now') is UTC — in UTC+3 the "today" counters would reset at 03:00
     // local. Compute THIS machine's local day boundaries instead.
     const start = new Date();
@@ -1149,8 +1160,9 @@ export class Repo {
     const lo = start.toISOString();
     const hi = end.toISOString();
     const dp: unknown[] = demo === undefined ? [] : [demo];
-    const pred = demo === undefined ? "" : " AND a.demo = ?";
-    const one = (sql: string) => (this.db.prepare(sql).get(lo, hi, ...dp) as { n: number }).n;
+    const scope = this.scopePred("a", schools);
+    const pred = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
+    const one = (sql: string) => (this.db.prepare(sql).get(lo, hi, ...dp, ...scope.params) as { n: number }).n;
     return {
       emailsToday: one(`SELECT COUNT(*) AS n FROM emails e JOIN applicants a ON a.id = e.applicant_id WHERE e.direction = 'in' AND e.at >= ? AND e.at < ?${pred}`),
       docsToday: one(`SELECT COUNT(*) AS n FROM documents d JOIN applicants a ON a.id = d.applicant_id WHERE d.received_at >= ? AND d.received_at < ?${pred}`),
@@ -1159,9 +1171,10 @@ export class Repo {
   }
 
   /** The human work queue (feature 11): cases whose latest decision wasn't auto-resolved. */
-  queueView(demo?: number): Array<ApplicantRow & { computed_status: string; reasoning: string; auto_sent: boolean; decided_at: string; flag_summary: string }> {
-    const demoSql = demo === undefined ? "" : " AND a.demo = ?";
-    const demoParams: unknown[] = demo === undefined ? [] : [demo];
+  queueView(demo?: number, schools?: string[] | null): Array<ApplicantRow & { computed_status: string; reasoning: string; auto_sent: boolean; decided_at: string; flag_summary: string }> {
+    const scope = this.scopePred("a", schools);
+    const demoSql = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
+    const demoParams: unknown[] = demo === undefined ? [...scope.params] : [demo, ...scope.params];
     const rows = this.db
       .prepare(
         `SELECT a.*, d.computed_status, d.reasoning, d.auto_sent, d.timestamp AS decided_at
@@ -1244,6 +1257,11 @@ export class Repo {
       where.push("intake = ?");
       params.push(opts.intake);
     }
+    const scope = this.scopePred("applicants", opts.schools);
+    if (scope.sql) {
+      where.push(scope.sql.replace(/^ AND /, ""));
+      params.push(...scope.params);
+    }
     const now = new Date().toISOString();
     switch (opts.filter) {
       case "awaiting_docs":
@@ -1267,11 +1285,13 @@ export class Repo {
 
   // ── Dashboard analytics (feature 30) ─────────────────────────────────────
 
-  dashboardStats(demo?: number): Record<string, number | string> {
+  dashboardStats(demo?: number, schools?: string[] | null): Record<string, number | string> {
     // Realm scope: every applicant-derived count filters by the caller's demo
     // flag so live admins never see seeded (mock) data and vice versa.
-    const pred = demo === undefined ? "" : " AND a.demo = ?";
-    const dp: unknown[] = demo === undefined ? [] : [demo];
+    // OR-8: school scope applies to every count too.
+    const scope = this.scopePred("a", schools);
+    const pred = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
+    const dp: unknown[] = demo === undefined ? [...scope.params] : [demo, ...scope.params];
     const one = (sql: string, p: unknown[] = []) => (this.db.prepare(sql).get(...p) as { n: number }).n;
     const applications = one(`SELECT COUNT(*) AS n FROM applicants a WHERE 1=1${pred}`, dp);
     const documents = one(
@@ -1322,9 +1342,15 @@ export class Repo {
 
   // ── Export (feature 38) ──────────────────────────────────────────────────
 
-  allApplicants(demo?: number): ApplicantRow[] {
-    if (demo === undefined) return this.db.prepare("SELECT * FROM applicants ORDER BY id").all() as ApplicantRow[];
-    return this.db.prepare("SELECT * FROM applicants WHERE demo = ? ORDER BY id").all(demo) as ApplicantRow[];
+  allApplicants(demo?: number, schools?: string[] | null): ApplicantRow[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (demo !== undefined) { where.push("demo = ?"); params.push(demo); }
+    const scope = this.scopePred("applicants", schools);
+    if (scope.sql) { where.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
+    return this.db
+      .prepare(`SELECT * FROM applicants${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY id`)
+      .all(...params) as ApplicantRow[];
   }
 
   // ═══════════════════════════ v3 additions ═══════════════════════════════
@@ -1522,7 +1548,7 @@ export class Repo {
 
   // ── Unanswered email detection (feature 1) ───────────────────────────────
 
-  unansweredCases(): Array<{ applicant: ApplicantRow; lastInAt: string; hours: number }> {
+  unansweredCases(schools?: string[] | null): Array<{ applicant: ApplicantRow; lastInAt: string; hours: number }> {
     // Any outgoing email (automated or human) counts as "answered" — that is
     // the specified behavior (a factual auto-reply IS a reply). Batched into
     // one query; previously this ran one query per applicant (N+1).
@@ -1531,10 +1557,10 @@ export class Repo {
         `SELECT a.id AS aid, MAX(e.at) AS last_in
          FROM applicants a
          JOIN emails e ON e.applicant_id = a.id AND e.direction = 'in'
-         WHERE a.lifecycle NOT IN ('completed')
+         WHERE a.lifecycle NOT IN ('completed')${this.scopePred("a", schools).sql}
          GROUP BY a.id`
       )
-      .all() as Array<{ aid: number; last_in: string }>;
+      .all(...this.scopePred("a", schools).params) as Array<{ aid: number; last_in: string }>;
     if (rows.length === 0) return [];
     const replies = this.db
       .prepare(
@@ -1623,18 +1649,21 @@ export class Repo {
 
   // ── Analytics (features 28–31) ───────────────────────────────────────────
 
-  categoryCounts(): Array<{ category: string; n: number }> {
+  categoryCounts(schools?: string[] | null): Array<{ category: string; n: number }> {
+    const scope = this.scopePred("a", schools);
     return this.db
       .prepare(
-        `SELECT coalesce(category,'other') AS category, COUNT(*) AS n
-         FROM emails WHERE direction = 'in' GROUP BY category ORDER BY n DESC`
+        `SELECT coalesce(e.category,'other') AS category, COUNT(*) AS n
+         FROM emails e JOIN applicants a ON a.id = e.applicant_id
+         WHERE e.direction = 'in'${scope.sql} GROUP BY category ORDER BY n DESC`
       )
-      .all() as never[];
+      .all(...scope.params) as never[];
   }
 
-  accuracyStats(demo?: number): Record<string, number> {
-    const dp: unknown[] = demo === undefined ? [] : [demo];
-    const pred = demo === undefined ? "" : " AND a.demo = ?";
+  accuracyStats(demo?: number, schools?: string[] | null): Record<string, number> {
+    const scope = this.scopePred("a", schools);
+    const dp: unknown[] = demo === undefined ? [...scope.params] : [demo, ...scope.params];
+    const pred = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
     const one = (sql: string) => (this.db.prepare(sql).get(...dp) as { n: number }).n;
     return {
       greenCases: one(`SELECT COUNT(*) AS n FROM decision_logs d JOIN applicants a ON a.id = d.applicant_id WHERE d.computed_status = 'Green'${pred}`),
@@ -1662,6 +1691,41 @@ export class Repo {
   }
 
   // ═══ Admissions rules engine (round 18) ══════════════════════════════════
+
+  // ── OR-8: visibility scoping — the ONLY place scope is decided ─────────
+
+  /** The schools a staff member may see, or null = full visibility.
+   * Admins are NEVER scoped; staff without assigned schools keep full
+   * visibility (scoping is opt-in and reversible). */
+  visibleSchoolsFor(staff: { id: number; role: string }): string[] | null {
+    if (staff.role === "admin") return null;
+    const rows = this.scopesFor(staff.id);
+    return rows.length ? rows : null;
+  }
+
+  /** Would this staff member see this applicant anywhere in the console?
+   * Scoped staff only see cases whose programme belongs to one of their
+   * schools; a case with no programme is never shared with scoped staff. */
+  applicantVisibleTo(staff: { id: number; role: string }, a: ApplicantRow): boolean {
+    const scope = this.visibleSchoolsFor(staff);
+    if (!scope) return true;
+    if (!a.programme) return false;
+    const school = this.programmeByCode(a.programme)?.school;
+    return Boolean(school) && scope.includes(school as string);
+  }
+
+  /** SQL predicate restricting applicant rows to the given schools.
+   * `schools === null/undefined` = unscoped; an EMPTY scoped list matches
+   * nothing (never accidentally everything). */
+  private scopePred(alias: string, schools?: string[] | null): { sql: string; params: string[] } {
+    if (schools === undefined || schools === null) return { sql: "", params: [] };
+    if (schools.length === 0) return { sql: " AND 0 = 1", params: [] };
+    const marks = schools.map(() => "?").join(",");
+    return {
+      sql: ` AND EXISTS (SELECT 1 FROM programmes p WHERE p.code = ${alias}.programme AND p.school IN (${marks}))`,
+      params: [...schools],
+    };
+  }
 
   // ── Subject catalogue (centrally managed, never duplicated per course) ──
 
@@ -1701,6 +1765,23 @@ export class Repo {
   seedCatalogue(entries: Array<{ system: string; name: string }>): void {
     const tx = this.db.transaction(() => {
       for (const e of entries) this.addCatalogueSubject(e.system, e.name);
+    });
+    tx();
+  }
+
+  // ── Staff visibility scopes (OR-8: school × staff matrix) ───────────────
+
+  scopesFor(staffId: number): string[] {
+    const rows = this.db.prepare("SELECT school FROM staff_scopes WHERE staff_id = ? ORDER BY school").all(staffId) as Array<{ school: string }>;
+    return rows.map((x) => x.school);
+  }
+
+  /** Replace a staff member's whole school set in ONE action. */
+  setScopes(staffId: number, schools: string[]): void {
+    const tx = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM staff_scopes WHERE staff_id = ?").run(staffId);
+      const ins = this.db.prepare("INSERT OR IGNORE INTO staff_scopes (staff_id, school) VALUES (?, ?)");
+      for (const s of new Set(schools.map((x) => x.trim()).filter(Boolean))) ins.run(staffId, s);
     });
     tx();
   }

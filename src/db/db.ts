@@ -462,6 +462,12 @@ function migrate(db: Database.Database): void {
   db.exec(`UPDATE programmes SET level = 'masters' WHERE level = 'postgrad'`);
   db.exec(`UPDATE admission_rules SET level = 'masters' WHERE level = 'postgrad'`);
   db.exec(`UPDATE course_requirements SET level = 'masters' WHERE level = 'postgrad'`);
+  // OR-8 — school × staff visibility scopes (one row per assigned school).
+  db.exec(`CREATE TABLE IF NOT EXISTS staff_scopes (
+    staff_id INTEGER NOT NULL REFERENCES staff_users(id),
+    school   TEXT NOT NULL,
+    PRIMARY KEY (staff_id, school)
+  )`);
   // OR-7 — every template may optionally carry an official pack PDF set.
   addColumn("templates", "attach_pack", "TEXT NOT NULL DEFAULT 'none'");
   // The two historical pack sends become explicit flags (the knob did not
