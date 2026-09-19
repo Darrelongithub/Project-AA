@@ -3,7 +3,7 @@
 Statuses: **RED** = failing / not started · **GREEN** = fixed with evidence · **UNVERIFIED** = could not run, reason given.
 
 Baseline before this round: tsc clean · 305/305 vitest · 316/316 simulate.
-Current gate: tsc clean · **370/370 vitest (27 files)** · **simulate 316/316**.
+Current gate: tsc clean · **393/393 vitest (29 files)** · **simulate 316/316**.
 
 ---
 
@@ -270,7 +270,104 @@ is kept (relabelled reference-only) rather than deleted, so no existing
 prospectus wording is lost. Renaming a school is one action by design;
 courses move atomically with it.
 
-## OR-7 — Templates section — **RED**
-## OR-8 — Assignment & visibility scoping — **RED**
+## OR-7 — Templates section — **GREEN**
+
+**Repro (before fix):** email templates lived inside *Configuration → Reply
+configuration* as one card among pack files and branding, with no visibility
+into **which outgoing email each template serves**, no way to **reset** an
+accidental edit back to the official wording, and no way to say "this reply
+goes out **with the application pack attached**" — pack attachment was
+hardcoded (enquiries only). The automated pipeline hardcoded its own pack
+logic separately from the templates, so the editor and the sender could
+disagree (display ≠ enforce).
+
+**Fixes:**
+- **Dedicated Templates section** (`/templates`, admin nav + command
+  palette): lists **every outgoing email type** with *who sends it*
+  annotated — automated pipeline (enquiry document request, partial-file
+  notice, complete-file acknowledgement, status answer, fallback), the
+  reminder ladder (reuses the missing-documents template with a REMINDER
+  prefix), manual staff replies, and auto-admission.
+- **Placeholders documented + live preview:** all 13 tokens are listed with
+  what fills them, and each template renders a live preview against a sample
+  applicant via the same `renderTemplate` the sender uses. Saving a template
+  with an **unknown placeholder warns loudly** (it would reach applicants as
+  literal text) while still saving.
+- **Reset to default:** every template restores to the official seeded
+  wording (`TEMPLATE_DEFAULTS`, admission letter included); unknown keys are
+  refused politely.
+- **Optional pack attachment:** each template carries an `attach_pack` flag
+  (none / application pack / admission pack). Manual template sends, compose
+  sends and the **automated pipeline all honour the flag** — the pipeline no
+  longer hardcodes packs, so what staff configure is exactly what applicants
+  receive. Migration maps the two historical pack sends onto explicit flags
+  (no staff choice overwritten). Missing pack files are audited + surfaced,
+  never silently dropped.
+- **Old location removed:** the Replies tab no longer hosts the editor (a
+  pointer card links to the section) and the legacy `/settings/template`
+  endpoint refuses stale writes explicitly.
+
+**Evidence (RED → GREEN):** 13 tests in `test/templates-section.test.ts`
+written first — RED pasted in session log (`12 failed | 1 passed`: no
+/templates route, no placeholders/preview, no reset, no pack flag, editor
+still in Replies). After the fix: **13/13**; full suite **383/383 across 28
+files**; `tsc --noEmit` clean; **simulate 316/316**. Live-run (fresh DB +
+real server, HTTP): `/templates?template=missing_documents` renders the
+outgoing-type table, "Who sends it" annotations, `tpl-preview` with sample
+data, Reset button and the pack picker; admin nav shows Templates; the
+Replies tab has 0 editor forms; reset → 302; a stale POST to
+`/settings/template` redirects with the "Templates section" refusal.
+
+**Interpretations:** "every outgoing type" is satisfied by one section that
+names the sender of each template (the templates themselves already covered
+every automated path). The pack flag is deliberately a property of the
+template rather than a per-send checkbox, so automated and manual sends
+cannot diverge. "Reset" restores only what shipped (`TEMPLATE_DEFAULTS`) —
+nothing is invented.
+
+## OR-8 — Assignment & visibility scoping — **GREEN**
+
+**Repro (before fix):** every logged-in account saw **every** case. Roles
+were only admin/user — there was no way to say "this officer handles the
+School of Nursing only". Any officer could open any direct `/case/:id` URL,
+see any applicant in search or the API, and act on files that were never
+theirs — the opposite of realistic role separation.
+
+**Fixes:**
+- **One decision point** — `repo.visibleSchoolsFor(staff)`: admins are
+  **never** scoped; staff with no schools assigned keep full visibility
+  (scoping is opt-in and reversible); an assigned-but-empty set matches
+  *nothing*, never everything.
+- **Every surface enforced:**
+  - Queues: every queue tab lists only in-scope cases;
+  - Admissions: level counts and lists are scoped;
+  - Overview dashboards (admin + officer): every counter scoped;
+  - Search + `/api/search`: out-of-scope applicants never appear;
+  - Direct case URLs: one guard in front of the case page, compose, replay
+    and **every** POST action — unknown and out-of-scope ids get the SAME
+    403 so scoped staff cannot probe which cases exist;
+  - Alerts about out-of-scope cases are filtered out (broadcasts stay);
+  - Cases with **no programme** are never visible to scoped staff (no
+    accidental over-sharing); admins still see them.
+  - Exports stay admin-only, and admins cannot be scoped — the existing
+    guarantee holds.
+- **One matrix page, one action** — Staff Configuration → *Visibility
+  scope*: a staff × schools matrix; each row saves the member's **entire**
+  school set in a single POST (re-saving replaces the set; unticking
+  everything restores full visibility). No other page edits scopes —
+  pinned by test.
+
+**Evidence (RED → GREEN):** 10 tests in `test/scoping.test.ts` written
+first — RED pasted in session log (`10 failed`: `repo.setScopes is not a
+function`, no guard, no matrix). After the fix: **10/10**; full suite
+**393/393 across 29 files**; `tsc --noEmit` clean; **simulate 316/316**.
+
+**Interpretations:** "assignment" is by **school** (faculty) — the natural
+unit already used for course ownership; a case's school is its programme's
+school. Scoping is additive and reversible: nobody loses access until an
+admin explicitly saves a scope for them. The scope matrix is deliberately
+admin-only; officers do not see or manage it.
+
+---
 
 (Functionality scan, route inventory and 1,000-case stress run pending — tracked in REPORT.md.)
