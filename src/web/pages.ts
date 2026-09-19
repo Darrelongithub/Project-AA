@@ -248,8 +248,8 @@ function adminDashboard(c: Ctx): string {
 <section class="card">
   <h2>System</h2>
   <div class="kv">
-    <div><span>Gmail</span><b>${gmailConnected ? `connected${lastSync ? ` · synced ${esc(fmtDate(lastSync))}` : ""}` : "not connected"} <a class="small" href="/config#gmail">manage</a></b></div>
-    <div><span>Document AI (Gemini)</span><b>${repo.getSetting("gemini_api_key", "") ? "key saved · live" : "not set"} <a class="small" href="/config#gemini">manage</a></b></div>
+    <div><span>Gmail</span><b>${gmailConnected ? `connected${lastSync ? ` · synced ${esc(fmtDate(lastSync))}` : ""}` : "not connected"} <a class="small" href="/settings#connections">manage</a></b></div>
+    <div><span>Document AI (Gemini)</span><b>${repo.getSetting("gemini_api_key", "") ? "key saved · live" : "not set"} <a class="small" href="/settings#connections">manage</a></b></div>
     <div><span>Automation</span><b>${globalMode === "draft" ? "draft-first" : "auto"} · <a class="small" href="/settings#automation">change</a></b></div>
     <div><span>Team</span><b>${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">staff configuration</a></b></div>
     <div><span>Replies to date</span><b>${(() => { const ac = repo.accuracyStats(realm); return Number(ac.autoSends) + Number(ac.humanSends); })()}</b></div>
@@ -1333,6 +1333,8 @@ export function settingsPage(c: Ctx, flash?: string): string {
 <div class="sub">How the console behaves — automation, response targets, retention.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 
+${connectionsSection(c)}
+
 <div class="card" id="automation">
   <h2>Automation mode (draft-first)</h2>
   <p class="small muted" style="margin-top:-6px">Two rules always apply. First, automated sending is reserved for <b>fully qualified</b> applicants — a Green verdict with no flags; everyone else gets the reply as a <b>suggested draft</b> for staff to review, edit or discard, because borderline files can still be admitted on special acceptance. Second, the rollout dial: keep the global mode on <b>draft</b> (every automated reply waits for a human), then switch automation on category by category as you trust it.</p>
@@ -1381,6 +1383,85 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
 }
 
 // ── Account (self-service settings, available to every signed-in user) ─────
+
+
+/**
+ * OR-4: Gmail + Gemini connection setup — ONE home, in Settings.
+ * Step-by-step Google Cloud guide (exact scope, redirect URI,
+ * OAuth-Playground fallback) plus live status and test buttons.
+ */
+export function connectionsSection(c: Ctx): string {
+  const { repo } = c;
+  const settings = repo.allSettings();
+  const gAddress = settings["gmail_address"] ?? "";
+  const gClientId = settings["gmail_client_id"] ?? "";
+  const gClientSecret = settings["gmail_client_secret"] ?? "";
+  const gRefresh = settings["gmail_refresh_token"] ?? "";
+  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
+  return `
+<div id="connections">
+<h1 style="margin-top:34px">Connections</h1>
+<div class="sub">Gmail inbox and Gemini document AI — set up once, live immediately, no restarts.</div>
+
+<div class="card" id="gmail">
+  <h2>Gmail connection ${connected
+    ? `<span class="badge b-green">connected — live sorting on</span>`
+    : `<span class="badge b-orange">not connected</span>`}</h2>
+  <p class="small muted" style="margin-top:-6px">Connect the admissions mailbox so incoming mail is fetched, triaged and sorted automatically every minute.</p>
+  <ol class="small" style="margin:0 0 14px 18px;line-height:1.7">
+    <li>In <b>Google Cloud Console</b> (console.cloud.google.com) create or pick a project for the admissions mailbox.</li>
+    <li><b>APIs &amp; Services → Library</b>: enable the <b>Gmail API</b>.</li>
+    <li><b>APIs &amp; Services → Credentials → Create credentials → OAuth client ID</b>, application type <b>Web application</b>.</li>
+    <li>Under <b>Authorised redirect URIs</b> add this console's URL plus <span class="mono">/settings/gmail/callback</span>.</li>
+    <li>Paste the <b>Client ID</b> and <b>Client secret</b> below, save, then press <b>Connect with Google…</b> and approve. The only scope requested is <span class="mono">https://www.googleapis.com/auth/gmail.modify</span> — read and send for this one mailbox.</li>
+    <li>No OAuth client of your own? Use the <b>OAuth Playground</b> (developers.google.com/oauthplayground) with your own client ID and the <span class="mono">gmail.modify</span> scope, then paste the resulting refresh token into the advanced field.</li>
+  </ol>
+  <form method="post" action="/settings/gmail/credentials">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      <div><label>Gmail address</label><input type="email" name="gmail_address" value="${esc(gAddress)}" placeholder="admissions@institution.ac.ke"></div>
+      <div><label>OAuth client ID</label><input type="text" name="gmail_client_id" value="${esc(gClientId)}" placeholder="…apps.googleusercontent.com"></div>
+      <div><label>OAuth client secret</label><input type="password" name="gmail_client_secret" value="" placeholder="${gClientSecret ? "saved — enter a new value to replace" : "GOCSPX-…"}" autocomplete="new-password"></div>
+    </div>
+    <div class="formrow" style="margin-top:10px">
+      <div style="flex:2"><label>Mailbox label to watch <span class="muted small">(optional — leave blank for the inbox)</span></label><input type="text" name="gmail_label" value="${esc(settings["gmail_label"] ?? "")}" placeholder="e.g. admissions-intake"></div>
+      <div style="flex:2"><label>Refresh token (advanced — OAuth Playground / manual) ${gRefresh ? "<span class='muted small'>(saved)</span>" : ""}</label><input type="password" name="gmail_refresh_token_manual" value="" placeholder="1//…" autocomplete="new-password"></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="btn ghost">Save credentials</button>
+      ${gClientId && (gClientSecret || gRefresh) ? `<a class="btn" href="/settings/gmail/connect">Connect with Google…</a>` : ""}
+    </div>
+  </form>
+  ${connected ? `
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+    <form method="post" action="/settings/gmail/test" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost">Test connection</button></form>
+    <form method="post" action="/settings/gmail/sync" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost">Sync now</button></form>
+    <form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>
+  </div>` : ""}
+  <p class="small muted" style="margin-top:10px">${connected
+    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically — no restart needed.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
+    : "Mail is not being fetched yet — the console still works; process mail manually or connect when ready."}</p>
+  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again (or paste a fresh refresh token). If new mail still doesn’t appear after a good sync, check that the message is in the inbox of <b>${esc(gAddress || "the connected address")}</b> and within the lookback window.</span></p>` : ""}
+</div>
+
+<div class="card" id="gemini">
+  <h2>Document AI (Gemini) ${settings["gemini_api_key"]
+    ? `<span class="badge b-green">key saved — AI reads what OCR can't</span>`
+    : `<span class="badge b-gray">optional</span>`}</h2>
+  <p class="small muted" style="margin-top:-6px">When a document beats text extraction and OCR (bad scans, photos, handwriting), Gemini reads it as a vision model. Get a free key at <b>aistudio.google.com/apikey</b> (Google account → “Get API key”). The key is tested with one real call on save and goes live <b>immediately</b>, no restart. Without a key the console still works; unreadable files simply land in the review queue.</p>
+  <form method="post" action="/settings/gemini">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      <div style="flex:2"><label>Gemini API key ${settings["gemini_api_key"] ? "(saved — paste a new value to replace)" : ""}</label><input type="password" name="gemini_api_key" value="" placeholder="AIza…" autocomplete="new-password"></div>
+      <div><label>Model</label><input type="text" name="gemini_model" value="${esc(settings["gemini_model"] ?? "gemini-1.5-flash")}" placeholder="gemini-1.5-flash"></div>
+      <div style="flex:0"><label>&nbsp;</label><button class="btn">Save &amp; test key</button></div>
+    </div>
+  </form>
+  ${settings["gemini_api_key"] ? `<form method="post" action="/settings/gemini" style="margin-top:8px"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger small" name="clear" value="1">Remove key</button></form>` : ""}
+  ${settings["gemini_last_error"] ? `<p class="small" style="color:var(--red)">Last test failed: ${esc(settings["gemini_last_error"])}</p>` : ""}
+</div>
+</div>`;
+}
 
 export function accountPage(c: Ctx, msg?: string): string {
   const u = c.user;
@@ -1913,51 +1994,6 @@ ${intakesCard}`;
   const replyHtml = `
 ${documentsPackCard(c)}
 
-<div class="card" id="gemini">
-  <h2>Document AI (Gemini) ${settings["gemini_api_key"]
-    ? `<span class="badge b-green">key saved — AI reads what OCR can't</span>`
-    : `<span class="badge b-gray">optional</span>`}</h2>
-  <p class="small muted" style="margin-top:-6px">When a document beats text extraction and OCR (bad scans, photos, handwriting), Gemini reads it as a vision model. Paste your API key — get one free at <b>aistudio.google.com/apikey</b>. The key is tested with one real call and goes live <b>immediately</b>, no restart. Without a key the console still works; unreadable files simply land in the review queue.</p>
-  <form method="post" action="/settings/gemini">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-    <div class="formrow">
-      <div style="flex:2"><label>Gemini API key ${settings["gemini_api_key"] ? "(saved — paste a new value to replace)" : ""}</label><input type="password" name="gemini_api_key" value="" placeholder="AIza…" autocomplete="new-password"></div>
-      <div><label>Model</label><input type="text" name="gemini_model" value="${esc(settings["gemini_model"] ?? "gemini-1.5-flash")}" placeholder="gemini-1.5-flash"></div>
-      <div style="flex:0"><label>&nbsp;</label><button class="btn">Save &amp; test key</button></div>
-    </div>
-  </form>
-  ${settings["gemini_api_key"] ? `<form method="post" action="/settings/gemini" style="margin-top:8px"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger small" name="clear" value="1">Remove key</button></form>` : ""}
-  ${settings["gemini_last_error"] ? `<p class="small" style="color:var(--red)">Last test failed: ${esc(settings["gemini_last_error"])}</p>` : ""}
-</div>
-
-<div class="card" id="gmail">
-  <h2>Gmail connection ${connected
-    ? `<span class="badge b-green">connected — live sorting on</span>`
-    : `<span class="badge b-orange">not connected</span>`}</h2>
-  <p class="small muted" style="margin-top:-6px">Connect the admissions mailbox so incoming mail is fetched, triaged and sorted automatically every minute. In Google Cloud Console, enable the <b>Gmail API</b>, create an <b>OAuth client ID</b> (type: Web application) and add this server's <span class="mono">/settings/gmail/callback</span> URL to its authorised redirect URIs.</p>
-  <form method="post" action="/settings/gmail/credentials">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-    <div class="formrow">
-      <div><label>Gmail address</label><input type="email" name="gmail_address" value="${esc(gAddress)}" placeholder="admissions@institution.ac.ke"></div>
-      <div><label>OAuth client ID</label><input type="text" name="gmail_client_id" value="${esc(gClientId)}" placeholder="…apps.googleusercontent.com"></div>
-      <div><label>OAuth client secret</label><input type="password" name="gmail_client_secret" value="" placeholder="${gClientSecret ? "saved — enter a new value to replace" : "GOCSPX-…"}" autocomplete="new-password"></div>
-    </div>
-    <div class="formrow" style="margin-top:10px">
-      <div style="flex:2"><label>Mailbox label to watch <span class="muted small">(optional — leave blank for the inbox)</span></label><input type="text" name="gmail_label" value="${esc(settings["gmail_label"] ?? "")}" placeholder="e.g. admissions-intake"></div>
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button class="btn ghost">Save credentials</button>
-      ${gClientId && gClientSecret ? `<a class="btn" href="/settings/gmail/connect">Connect with Google…</a>` : ""}
-      ${connected ? `<form method="post" action="/settings/gmail/sync" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost">Sync now</button></form>` : ""}
-      ${connected ? `<form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>` : ""}
-    </div>
-  </form>
-  <p class="small muted" style="margin-top:10px">${connected
-    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically — no restart needed.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
-    : "Mail is not being fetched yet. Emails can still be replayed through the simulator."}</p>
-  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again. If new mail still doesn’t appear after a good sync, check that the message is in the inbox of <b>${esc(gAddress || "the connected address")}</b> and within the lookback window.</span></p>` : ""}
-  <p class="small muted">Receiving works both ways: staff replies and automated replies are recorded on the case, and anything the applicant sends lands here within a minute of arriving in the mailbox (or immediately after <b>Sync now</b>).</p>
-</div>
 
 <div class="card" id="templates">
   <h2>Email templates</h2>

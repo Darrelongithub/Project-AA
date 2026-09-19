@@ -255,3 +255,166 @@ describe("OR-2: queue placement follows the pipeline", () => {
     expect(queueOf(a, { hasDocuments: false, lastDirection: "in" }).queue).toBe("enquiries");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OR-4 — Gmail/Gemini connections: one home in Settings, guided, live status
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function or4Server() {
+  const repo = new Repo(openDb(":memory:"));
+  seedDefaults(repo);
+  repo.createStaff("boss", "Owner", hashPassword("first-run-password-1"), "admin");
+  const ctx: PipelineContext = {
+    repo,
+    adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender: new MockSender() },
+  };
+  return { repo, ctx, ...(await startServer(repo, ctx)) };
+}
+
+async function or4Login(base: string): Promise<string> {
+  const res = await fetch(`${base}/login`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: "username=boss&password=first-run-password-1",
+    redirect: "manual",
+  });
+  return (res.headers.get("set-cookie") || "").split(";")[0];
+}
+
+async function csrfFor(base: string, cookie: string): Promise<string> {
+  const html = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+  return (html.match(/<meta name="csrf" content="([a-f0-9]+)">/) || [])[1] || "";
+}
+
+describe("OR-4: connections live in Settings, nowhere else", () => {
+  it("Settings renders a Connections section with step-by-step Gmail + Gemini guides", async () => {
+    const { base, server } = await or4Server();
+    try {
+      const cookie = await or4Login(base);
+      const html = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+      expect(html).toContain('id="connections"');
+      expect(html).toContain('id="gmail"');
+      expect(html).toContain('id="gemini"');
+      // guide content
+      expect(html).toContain("Google Cloud");
+      expect(html).toContain("Gmail API");
+      expect(html).toContain("OAuth client");
+      expect(html).toContain("gmail.modify");
+      expect(html).toContain("/settings/gmail/callback");
+      expect(html).toContain("OAuth Playground");
+      expect(html).toContain("aistudio.google.com");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("Configuration no longer hosts the connection controls", async () => {
+    const { base, server } = await or4Server();
+    try {
+      const cookie = await or4Login(base);
+      for (const path of ["/config", "/config?tab=replies"]) {
+        const html = await (await fetch(`${base}${path}`, { headers: { cookie } })).text();
+        expect(html, path).not.toContain('id="gmail"');
+        expect(html, path).not.toContain('id="gemini"');
+        expect(html, path).not.toContain("Connect with Google");
+      }
+    } finally {
+      server.close();
+    }
+  });
+
+  it("saving Gmail credentials persists and redirects to Settings#connections", async () => {
+    const { repo, base, server } = await or4Server();
+    try {
+      const cookie = await or4Login(base);
+      const csrf = await csrfFor(base, cookie);
+      const res = await fetch(`${base}/settings/gmail/credentials`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+        body: new URLSearchParams({
+          _csrf: csrf,
+          gmail_address: "admissions@riara.example",
+          gmail_client_id: "12345-abc.apps.googleusercontent.com",
+          gmail_client_secret: "GOCSPX-fake-secret",
+          gmail_label: "",
+        }).toString(),
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toContain("/settings");
+      expect(res.headers.get("location")).toContain("#connections");
+      expect(repo.getSetting("gmail_client_id", "")).toBe("12345-abc.apps.googleusercontent.com");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("Gmail test-connection with unusable credentials reports a helpful error, never silent", async () => {
+    const { repo, base, server } = await or4Server();
+    try {
+      const cookie = await or4Login(base);
+      const csrf = await csrfFor(base, cookie);
+      // Full fake credential set incl. refresh token, then hit the test route.
+      await fetch(`${base}/settings/gmail/credentials`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+        body: new URLSearchParams({
+          _csrf: csrf,
+          gmail_address: "admissions@riara.example",
+          gmail_client_id: "12345-abc.apps.googleusercontent.com",
+          gmail_client_secret: "GOCSPX-fake-secret",
+          gmail_label: "",
+        }).toString(),
+        redirect: "manual",
+      });
+      repo.setSetting("gmail_refresh_token", "1//fake-refresh-token");
+      const res = await fetch(`${base}/settings/gmail/test`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+        body: `_csrf=${csrf}`,
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      const loc = decodeURIComponent(res.headers.get("location") || "");
+      expect(loc).toMatch(/failed|not connected/i);
+      expect(repo.getSetting("gmail_last_error", "")).not.toBe("");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("Gemini bad key: failure is stored and visible; a restart keeps the state", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "or4-"));
+    const dbPath = path.join(tmp, "db.sqlite");
+    const repo = new Repo(openDb(dbPath));
+    seedDefaults(repo);
+    repo.createStaff("boss", "Owner", hashPassword("first-run-password-1"), "admin");
+    const ctx: PipelineContext = {
+      repo,
+      adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender: new MockSender() },
+    };
+    const { base, server } = await startServer(repo, ctx);
+    try {
+      const cookie = await or4Login(base);
+      const csrf = await csrfFor(base, cookie);
+      const res = await fetch(`${base}/settings/gemini`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+        body: new URLSearchParams({ _csrf: csrf, gemini_api_key: "AIza-fake-key-not-real", gemini_model: "gemini-1.5-flash" }).toString(),
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      const loc = decodeURIComponent(res.headers.get("location") || "");
+      expect(loc).toMatch(/failed/i);
+      expect(repo.getSetting("gemini_last_error", "")).not.toBe("");
+      const html = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+      expect(html).toContain("Last test failed");
+    } finally {
+      server.close();
+    }
+    // Restart: a fresh Repo over the same file still has the key + the error.
+    const reborn = new Repo(openDb(dbPath));
+    expect(reborn.getSetting("gemini_api_key", "")).toBe("AIza-fake-key-not-real");
+    expect(reborn.getSetting("gemini_last_error", "")).not.toBe("");
+  }, 60_000);
+});

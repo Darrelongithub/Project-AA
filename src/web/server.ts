@@ -25,6 +25,7 @@ import {
 import { avatar, esc, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
 import { processEmail } from "../pipeline";
+import { GmailClient } from "../ingestion/gmailClient";
 import { BudgetedVisionAdapter, GeminiVisionAdapter } from "../extraction/gemini";
 import { GeminiWatcher } from "../watcher";
 import { buildAdapters, type Adapters } from "../pipeline/adapters";
@@ -1087,7 +1088,8 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Gmail connect (OAuth code flow; tokens stored in Settings) ───────────
 
-  const settingsBack = (msg: string) => `/config?tab=replies&msg=${encodeURIComponent(msg)}#gmail`;
+  // OR-4: connection controls have ONE home — Settings → Connections.
+  const settingsBack = (msg: string) => `/settings?msg=${encodeURIComponent(msg)}#connections`;
 
   app.post("/settings/gmail/credentials", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     repo.setSetting("gmail_address", String(req.body.gmail_address ?? "").trim());
@@ -1098,6 +1100,9 @@ export function createApp(deps: WebDeps): Express {
     // Secret is write-only in the UI: kept if the field is left blank.
     const secret = String(req.body.gmail_client_secret ?? "").trim();
     if (secret) repo.setSetting("gmail_client_secret", secret);
+    // Manual / OAuth-Playground refresh token path (advanced field).
+    const manualToken = String(req.body.gmail_refresh_token_manual ?? "").trim();
+    if (manualToken) repo.setSetting("gmail_refresh_token", manualToken);
     repo.audit(null, req.staff!.username, "gmail_credentials_saved", "stored OAuth credentials in settings");
     res.redirect(settingsBack("Gmail credentials saved — now press “Connect with Google”."));
   });
@@ -1156,6 +1161,37 @@ export function createApp(deps: WebDeps): Express {
     }
   });
 
+  // OR-4: one real, lightweight call against the mailbox — success or a
+  // helpful plain-words error, never silence.
+  app.post("/settings/gmail/test", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
+    const cfg = {
+      address: repo.getSetting("gmail_address", ""),
+      clientId: repo.getSetting("gmail_client_id", ""),
+      clientSecret: repo.getSetting("gmail_client_secret", ""),
+      refreshToken: repo.getSetting("gmail_refresh_token", ""),
+      label: repo.getSetting("gmail_label", "").trim() || undefined,
+    };
+    if (!cfg.address || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
+      return res.redirect(settingsBack("Gmail is not fully configured yet — save credentials (and connect, or paste a refresh token) first."));
+    }
+    try {
+      const client = new GmailClient(cfg);
+      const ids = await client.listRecentMessageIds(1, { perPage: 1, maxPages: 1 });
+      repo.setSetting("gmail_last_error", "");
+      repo.audit(null, req.staff!.username, "gmail_tested", "test connection succeeded");
+      return res.redirect(settingsBack(
+        ids.length
+          ? "Gmail test connection succeeded — mailbox reachable, recent mail found."
+          : "Gmail test connection succeeded — mailbox reachable (no mail in the last day, which is fine)."
+      ));
+    } catch (e) {
+      const msg = (e as Error).message;
+      repo.setSetting("gmail_last_error", msg.slice(0, 300));
+      repo.audit(null, req.staff!.username, "gmail_test_failed", msg.slice(0, 200));
+      return res.redirect(settingsBack(`Gmail test connection failed: ${msg}`));
+    }
+  });
+
   app.post("/settings/gmail/disconnect", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     repo.setSetting("gmail_refresh_token", "");
     repo.audit(null, req.staff!.username, "gmail_disconnected", "");
@@ -1177,7 +1213,7 @@ export function createApp(deps: WebDeps): Express {
     }
     repo.setSetting("gmail_last_sync_at", new Date().toISOString());
     repo.setSetting("gmail_last_error", "");
-    repo.audit(null, req.staff!.username, "gmail_synced", "manual sync from Configuration");
+    repo.audit(null, req.staff!.username, "gmail_synced", "manual sync from Settings");
     res.redirect(settingsBack("Inbox synced — new mail has been triaged."));
   });
 
@@ -1206,7 +1242,7 @@ export function createApp(deps: WebDeps): Express {
   rebuildAdapters();
 
   app.post("/settings/gemini", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
-    const back = (m: string) => `/config?tab=replies&msg=${encodeURIComponent(m)}#gemini`;
+    const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#connections`;
     const key = String(req.body.gemini_api_key ?? "").trim();
     const model = String(req.body.gemini_model ?? "gemini-1.5-flash").trim() || "gemini-1.5-flash";
     if (req.body.clear !== undefined) {

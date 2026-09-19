@@ -80,7 +80,55 @@ combinations; 0 JS errors`; permanent regression test `test/responsive.test.ts`
 `docs/screenshots/*_360.png`. Audit tooling: `scripts/ui-resize-audit.mts`.
 
 **Known low nit:** brand wordmark contrast at tiny widths (polish, not overflow).
-## OR-4 — Gmail/Gemini connections in Settings, guided, live status — **RED**
+## OR-4 — Gmail/Gemini connections in Settings, guided, live status — **GREEN**
+
+**Repro:** the Gmail/Gemini connection cards rendered in **Configuration →
+Replies** (`/config?tab=replies`) instead of Settings; after saving credentials,
+connecting, syncing or saving a Gemini key the console redirected back to
+`/config?tab=replies#gmail|gemini`; the dashboard "manage" links pointed at the
+same wrong home; the Gmail card offered **Sync now** but no explicit *Test
+connection*; and the setup guide gave only a free key/API-key line — no
+step-by-step Google Cloud OAuth walk-through (scope, redirect URI, OAuth
+Playground fallback) as the owner dictated.
+
+**Root cause:** the cards were built into `configPage()` back when connections
+were considered "reply plumbing"; the OAuth backend (server.ts) was written
+against that home, so every `Location:` header and dashboard link hardcoded
+`/config?tab=replies…`.
+
+**Fixes:**
+- `src/web/pages.ts` — new `connectionsSection(c)` rendered at the top of
+  **Settings** (`<div id="connections">` with `#gmail` and `#gemini` cards),
+  removed from `configPage` entirely. Gmail card now carries a numbered
+  step-by-step guide (Google Cloud project → enable Gmail API → OAuth consent →
+  OAuth client ID type Web application → add `<console>/settings/gmail/callback`
+  redirect URI → copy ID/secret), states the **exact scope** requested
+  (`https://www.googleapis.com/auth/gmail.modify`), documents the **OAuth
+  Playground fallback** (advanced refresh-token field wired to
+  `gmail_refresh_token_manual`), and shows live status: connected badge, signed-in
+  address, last successful sync, last error with plain-language remedies.
+- `src/web/server.ts` — new **`POST /settings/gmail/test`** (admin + CSRF): makes
+  one real lightweight Gmail call (`listRecentMessageIds(1, { perPage: 1, maxPages: 1 })`);
+  on success clears `gmail_last_error` + audit `gmail_tested`; on failure stores the
+  exact error in `gmail_last_error`, audits `gmail_test_failed`, and redirects with
+  the message — never silent. All connection redirects (`settingsBack`, Gemini
+  save/remove) now land on `/settings?msg=…#connections`; audit wording fixed
+  ("manual sync from Settings").
+- Dashboard manage links (`/config#gmail`, `/config#gemini`) → `/settings#connections`.
+- Contract updates (moves, not weakenings): `test/web.test.ts` production-readiness
+  + secret-echo tests now assert the card lives in Settings and is *absent* from
+  Configuration; `test/v5.test.ts` gemini-slot test fetches `/settings`.
+
+**Evidence (RED → GREEN):** five new acceptance tests in
+`test/owner-acceptance.test.ts` failed first (RED, pasted in session log):
+connections section + guide strings (incl. "OAuth Playground", "gmail.modify"),
+Configuration no longer hosting the cards, credential-save persisting + redirect
+to `/settings#connections`, Gmail test-connection with fake credentials reporting
+a helpful stored error, Gemini bad key stored + visible + surviving a restart on a
+file-backed DB. After the fix: **16/16** in the file; full suite **322/322 tests
+(25 files)**; `tsc --noEmit` clean; `npm run simulate` **316/316 checks across 26
+scenarios — ALL GREEN**; responsive audit still 0 overflows. No restarts needed:
+saved credentials/token/key go live immediately (hot-swap in serve.ts unchanged).
 ## OR-5 — Deterministic document-requirement generator — **RED**
 ## OR-6 — Course config: every subject × every system, extendable — **RED**
 ## OR-7 — Templates section — **RED**

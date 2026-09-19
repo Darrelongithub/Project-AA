@@ -541,16 +541,18 @@ describe("production-readiness pass", () => {
     expect(loginHtml).toContain("Riara University");
   });
 
-  it("configuration page offers the Gmail connection card", async () => {
+  it("settings page offers the Gmail connection card (moved out of Configuration)", async () => {
     const { cookie } = await login();
-    const page = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
-    expect(page).toContain("Gmail connection");
-    expect(page).toContain("not connected");
-    expect(page).toContain('action="/settings/gmail/credentials"');
-    // Settings is app behaviour only.
+    // OR-4: ONE home for connections — Settings.
     const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+    expect(settings).toContain("Gmail connection");
+    expect(settings).toContain("not connected");
+    expect(settings).toContain('action="/settings/gmail/credentials"');
     expect(settings).toContain("Automation mode");
-    expect(settings).not.toContain("Gmail connection");
+    // Configuration no longer hosts connection controls.
+    const cfg = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
+    expect(cfg).not.toContain('action="/settings/gmail/credentials"');
+    expect(cfg).not.toContain("Gmail connection");
   });
 
   it("courses show who handles them, and owners can be assigned", async () => {
@@ -641,11 +643,13 @@ describe("QA audit regressions", () => {
       redirect: "manual",
     });
     expect(save.status).toBe(302);
-    const page = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
-    expect(page).not.toContain("TOP-SECRET-VALUE");
-    expect(page).toContain("saved — enter a new value to replace");
+    // OR-4: the Gmail card now lives in Settings — secret must not echo there,
+    // and must not appear anywhere else either.
     const settingsPage = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
     expect(settingsPage).not.toContain("TOP-SECRET-VALUE");
+    expect(settingsPage).toContain("saved — enter a new value to replace");
+    const cfgPage = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
+    expect(cfgPage).not.toContain("TOP-SECRET-VALUE");
     // clean up
     repo.setSetting("gmail_address", ""); repo.setSetting("gmail_client_id", ""); repo.setSetting("gmail_client_secret", "");
   });
@@ -739,8 +743,13 @@ describe("QA audit regressions", () => {
       expect(courses).not.toContain('id="gmail"');
 
       const replies = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
-      expect(replies).toContain('id="gmail"');
+      // OR-4: connection controls moved OUT of Configuration to Settings.
+      expect(replies).not.toContain('id="gmail"');
       expect(replies).toContain('id="templates"');
+      const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
+      expect(settings).toContain('id="connections"');
+      expect(settings).toContain('id="gmail"');
+      expect(settings).toContain('id="gemini"');
       expect(replies).not.toContain('id="courses"');
     });
 
