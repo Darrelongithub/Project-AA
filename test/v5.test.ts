@@ -265,25 +265,33 @@ describe("web: admissions, compose, gemini slot", () => {
     expect(decodeURIComponent(res.headers.get("location") || "")).toContain("Paste a Gemini API key");
   });
 
-  it("grade rule add accepts grades and rejects junk", async () => {
-    const ok = await fetch(`${base}/settings/rules/add`, {
+  it("document requirements are NOT staff-configurable (OR-5)", async () => {
+    // OR-5 removed the per-document toggles: requirements are generated
+    // deterministically from the official application-form checklist. A
+    // stale POST to the old endpoints must be refused explicitly (no
+    // silent success, no hidden write).
+    const before = repo.listRules().length;
+    const res = await fetch(`${base}/settings/rules/add`, {
       method: "POST",
       headers: { cookie: auth.cookie, "content-type": "application/x-www-form-urlencoded" },
       body: `_csrf=${auth.csrf}&programme=LLB&intake=&document_type=academic_cert&required=1&mean_grade=B-&subject_grades=${encodeURIComponent("B in English")}`,
       redirect: "manual",
     });
-    expect(ok.status).toBe(302);
-    const rule = repo.listRules().find((r) => r.programme === "LLB" && r.document_type === "academic_cert");
-    expect(rule?.meanGrade).toBe("B-");
-    expect(rule?.subjectGrades).toContain("English");
+    expect(res.status).toBe(302);
+    expect(decodeURIComponent(res.headers.get("location") || "")).toContain("generated deterministically");
+    expect(repo.listRules().length).toBe(before); // nothing written
 
-    const junk = await fetch(`${base}/settings/rules/add`, {
+    const del = await fetch(`${base}/settings/rules/delete`, {
       method: "POST",
       headers: { cookie: auth.cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${auth.csrf}&programme=&intake=&document_type=id&required=1&mean_grade=250`,
+      body: `_csrf=${auth.csrf}&id=1`,
       redirect: "manual",
     });
-    expect(decodeURIComponent(junk.headers.get("location") || "")).toContain("not a KCSE grade");
+    expect(decodeURIComponent(del.headers.get("location") || "")).toContain("generated deterministically");
+    // the config page shows the deterministic notice, not toggles
+    const page = await (await fetch(`${base}/config`, { headers: { cookie: auth.cookie } })).text();
+    expect(page).toContain("generated deterministically");
+    expect(page).not.toContain('action="/settings/rules/add"');
   });
 });
 

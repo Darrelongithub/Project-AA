@@ -46,8 +46,11 @@ beforeAll(async () => {
   const name = "WEB TEST APPLICANT";
   const atts = await Promise.all(
     [
+      // OR-5: the complete file follows the official application-form checklist.
       ["w-academic.pdf", "academic_cert", {}],
-      ["w-kcpe.pdf", "kcpe_cert", { kcpePoints: 320, year: "2016" }],
+      ["w-leaving.pdf", "leaving_certificate", {}],
+      ["w-photo.pdf", "passport_photo", {}],
+      ["w-birth.pdf", "birth_cert", {}],
       ["w-id.pdf", "id", {}],
       ["w-form.pdf", "application_form", {}],
     ].map(async ([fn, dt, spec]) => ({
@@ -171,7 +174,9 @@ describe("web console", () => {
     const html = await res.text();
     expect(html).toContain(ref);
     expect(html).toContain("✓");
-    expect(html).toContain("KCPE Certificate");
+    // OR-5: the complete file follows the official checklist — an uploaded
+    // checklist document is shown on the case page.
+    expect(html).toContain("Birth Certificate");
     expect(html).toContain("Email history");
     expect(html).toContain("Audit log");
     expect(html).toContain("Status history");
@@ -300,8 +305,11 @@ describe("web console v3", () => {
   async function fullSetAtts(name: string) {
     return Promise.all(
       [
+        // OR-5: complete file per the official application-form checklist.
         ["v3-academic.pdf", "academic_cert", {}],
-        ["v3-kcpe.pdf", "kcpe_cert", { kcpePoints: 330, year: "2016" }],
+        ["v3-leaving.pdf", "leaving_certificate", {}],
+        ["v3-photo.pdf", "passport_photo", {}],
+        ["v3-birth.pdf", "birth_cert", {}],
         ["v3-id.pdf", "id", {}],
         ["v3-form.pdf", "application_form", {}],
       ].map(async ([fn, dt, spec]) => ({

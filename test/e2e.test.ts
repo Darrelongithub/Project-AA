@@ -44,9 +44,14 @@ async function mkAtt(filename: string, docType: string, name: string, extra = {}
   return { filename, mimeType: "application/pdf", content: await makeTextPdf(docLines(docType, { name, ...extra })) };
 }
 
+// OR-5: the complete file follows the official application-form checklist
+// (result slip via the academic document, leaving certificate, passport
+// photo, ID, birth certificate, completed application form).
 const fullSet = async (name: string) => [
   await mkAtt("a.pdf", "academic_cert", name),
-  await mkAtt("k.pdf", "kcpe_cert", name, { kcpePoints: 312, year: "2017" }),
+  await mkAtt("l.pdf", "leaving_certificate", name),
+  await mkAtt("p.pdf", "passport_photo", name),
+  await mkAtt("b.pdf", "birth_cert", name),
   await mkAtt("i.pdf", "id", name),
   await mkAtt("f.pdf", "application_form", name),
 ];
@@ -87,7 +92,9 @@ describe("pipeline v2 end-to-end", () => {
     const name = "CAROL NJERI MAINA";
     const email = mkEmail("e2e-carol", "carol@example.org", [
       await mkAtt("a.pdf", "academic_cert", name),
-      await mkAtt("k.pdf", "kcpe_cert", name, { kcpePoints: 298, year: "2015" }),
+      await mkAtt("l.pdf", "leaving_certificate", name),
+      await mkAtt("p.pdf", "passport_photo", name),
+      await mkAtt("b.pdf", "birth_cert", name),
       await mkAtt("f.pdf", "application_form", name),
     ]);
     const res = await processEmail(email, ctx);
@@ -117,8 +124,10 @@ describe("pipeline v2 end-to-end", () => {
   it("ambiguous (grade below floor) → queued for a human, nothing auto-sent", async () => {
     const name = "BRIAN KIPROTICH RUTO";
     const email = mkEmail("e2e-brian", "brian@example.org", [
-      await mkAtt("a.pdf", "academic_cert", name),
-      await mkAtt("k.pdf", "kcpe_cert", name, { kcpePoints: 240, meanGrade: "C+", year: "2016" }),
+      await mkAtt("a.pdf", "academic_cert", name, { kcseMeanGrade: "C-" }),
+      await mkAtt("l.pdf", "leaving_certificate", name),
+      await mkAtt("p.pdf", "passport_photo", name),
+      await mkAtt("b.pdf", "birth_cert", name),
       await mkAtt("i.pdf", "id", name),
       await mkAtt("f.pdf", "application_form", name),
     ]);
@@ -135,7 +144,9 @@ describe("pipeline v2 end-to-end", () => {
     const name = "IVY CHEBET KOSGEI";
     const email = mkEmail("e2e-ivy", "ivy@example.org", [
       await mkAtt("a.pdf", "academic_cert", name, { extraLines: ["SPECIMEN - SAMPLE COPY NOT VALID"] }),
-      await mkAtt("k.pdf", "kcpe_cert", name, { kcpePoints: 342, year: "2018" }),
+      await mkAtt("l.pdf", "leaving_certificate", name),
+      await mkAtt("p.pdf", "passport_photo", name),
+      await mkAtt("b.pdf", "birth_cert", name),
       await mkAtt("i.pdf", "id", name),
       await mkAtt("f.pdf", "application_form", name),
     ]);
@@ -149,7 +160,7 @@ describe("pipeline v2 end-to-end", () => {
   it("byte-identical resubmission → duplicate detected, not double-counted", async () => {
     const name = "KEVIN MWANGI NJOROGE";
     const docs = await fullSet(name);
-    const idDoc = docs[2];
+    const idDoc = docs.find((d) => d.filename === "i.pdf")!;
     const res1 = await processEmail(mkEmail("e2e-kev1", "kevin@example.org", docs), ctx);
     expect(res1.finalStatus).toBe("Green");
 
@@ -159,14 +170,16 @@ describe("pipeline v2 end-to-end", () => {
     );
     expect(res2.finalStatus).toBe("Green");
     expect(repo.countDuplicates(res2.applicantId)).toBe(1);
-    expect(repo.listDocuments(res2.applicantId).length).toBe(4); // still one active set
+    expect(repo.listDocuments(res2.applicantId).length).toBe(6); // still one active set
     expect(repo.auditForApplicant(res2.applicantId).some((a) => a.event === "duplicate_detected")).toBe(true);
   });
 
   it("fuzzy one-letter name variant → name_mismatch → Orange (feature 23)", async () => {
     const email = mkEmail("e2e-lucy", "lucy@example.org", [
       await mkAtt("a.pdf", "academic_cert", "LUCY OCHIMI"),
-      await mkAtt("k.pdf", "kcpe_cert", "LUCY OCHIMI", { kcpePoints: 305, year: "2017" }),
+      await mkAtt("l.pdf", "leaving_certificate", "LUCY OCHIMI"),
+      await mkAtt("p.pdf", "passport_photo", "LUCY OCHIMI"),
+      await mkAtt("b.pdf", "birth_cert", "LUCY OCHIMI"),
       await mkAtt("i.pdf", "id", "LUCY OCHIEMI"),
       await mkAtt("f.pdf", "application_form", "LUCY OCHIMI"),
     ]);
@@ -198,6 +211,9 @@ describe("pipeline v2 end-to-end", () => {
         content: await makeScannedPdf(kcpeLines),
         mockVision: { document_type: "kcpe_cert", text: kcpeLines.join("\n"), fields: { name, gradePoints: 289 }, confidence: "medium" },
       },
+      await mkAtt("l.pdf", "leaving_certificate", name),
+      await mkAtt("p.pdf", "passport_photo", name),
+      await mkAtt("b.pdf", "birth_cert", name),
       await mkAtt("i.pdf", "id", name),
       await mkAtt("f.pdf", "application_form", name),
     ]);

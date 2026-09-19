@@ -37,9 +37,12 @@ async function mkAtt(filename: string, docType: string, name: string, extra = {}
   return { filename, mimeType: "application/pdf", content: await makeTextPdf(docLines(docType, { name, ...extra })) };
 }
 
+// OR-5: complete file per the official application-form checklist.
 const fullSet = async (name: string) => [
   await mkAtt("a.pdf", "academic_cert", name),
-  await mkAtt("k.pdf", "kcpe_cert", name, { kcpePoints: 312, year: "2017" }),
+  await mkAtt("l.pdf", "leaving_certificate", name),
+  await mkAtt("p.pdf", "passport_photo", name),
+  await mkAtt("b.pdf", "birth_cert", name),
   await mkAtt("i.pdf", "id", name),
   await mkAtt("f.pdf", "application_form", name),
 ];

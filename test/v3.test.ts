@@ -47,9 +47,12 @@ async function mkAtt(filename: string, docType: string, name: string, extra = {}
   return { filename, mimeType: "application/pdf", content: await makeTextPdf(docLines(docType, { name, ...extra })) };
 }
 
+// OR-5: complete file per the official application-form checklist.
 const fullSet = async (name: string, opts: { kcpeYear?: string; kcseYear?: string } = {}) => [
   await mkAtt("a.pdf", "academic_cert", name, opts.kcseYear ? { year: opts.kcseYear } : {}),
-  await mkAtt("k.pdf", "kcpe_cert", name, { kcpePoints: 312, year: opts.kcpeYear ?? "2017" }),
+  await mkAtt("l.pdf", "leaving_certificate", name),
+  await mkAtt("p.pdf", "passport_photo", name),
+  await mkAtt("b.pdf", "birth_cert", name),
   await mkAtt("i.pdf", "id", name),
   await mkAtt("f.pdf", "application_form", name),
 ];
@@ -274,8 +277,11 @@ describe("automatic follow-up ladder (feature 13)", () => {
     // The missing document arrives → file becomes complete.
     await processEmail(
       mkEmail("f-done-2", "tf-done@example.org", "done@example.org", {
+        // OR-5: everything the official checklist still asks for arrives.
         attachments: [
-          await mkAtt("k.pdf", "kcpe_cert", "FOLLOW UP APPLICANT", { kcpePoints: 300, year: "2017" }),
+          await mkAtt("l.pdf", "leaving_certificate", "FOLLOW UP APPLICANT"),
+          await mkAtt("p.pdf", "passport_photo", "FOLLOW UP APPLICANT"),
+          await mkAtt("b.pdf", "birth_cert", "FOLLOW UP APPLICANT"),
           await mkAtt("i.pdf", "id", "FOLLOW UP APPLICANT"),
           await mkAtt("f.pdf", "application_form", "FOLLOW UP APPLICANT"),
         ],

@@ -63,7 +63,9 @@ function mkDocs(
   id: number,
   opts: { types?: DocType[]; fields?: Partial<ExtractedFields>; score?: number; examSystem?: string } = {}
 ): void {
-  const types = opts.types ?? ["academic_cert", "id", "application_form"];
+  // OR-5: the default "complete core file" follows the official checklist
+  // (two academic documents fill result slip + leaving certificate slots).
+  const types = opts.types ?? ["academic_cert", "leaving_certificate", "passport_photo", "birth_cert", "id", "application_form"];
   const score = opts.score ?? 98;
   for (const t of types) {
     const fields: ExtractedFields =

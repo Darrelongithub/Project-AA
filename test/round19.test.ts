@@ -69,6 +69,8 @@ describe("classifier: international wording (round 19)", () => {
   });
 
   it("recognises GCSE / IGCSE / A-Level / IB / WAEC results", () => {
+    // Grade-bearing international statements of results stay in the academic
+    // family; OR-5's result-slip slot is the specific checklist document.
     expect(classifyDocumentType("General Certificate of Secondary Education — Statement of Results")).toBe("academic_cert");
     expect(classifyDocumentType("CAMBRIDGE INTERNATIONAL AS & A LEVEL — candidate results")).toBe("academic_cert");
     expect(classifyDocumentType("INTERNATIONAL BACCALAUREATE ORGANISATION — results")).toBe("academic_cert");

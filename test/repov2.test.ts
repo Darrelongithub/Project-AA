@@ -28,11 +28,14 @@ describe("reference numbers (feature 1)", () => {
 });
 
 describe("requirement resolution (features 8, 36, 37)", () => {
-  it("base rules apply to everyone", () => {
+  it("base requirements apply to everyone — generated, not toggled", () => {
+    // OR-5: document requirements come from the deterministic matrix
+    // (application-form checklist). KCPE is never required (owner constant
+    // false); ID/passport and birth certificate are core checklist items.
     const reqs = repo.resolveRequirements(null, null);
-    // The KCPE certificate is not part of the published application basics.
-    expect(reqs.find((r) => r.document_type === "kcpe_cert")?.required).toBe(false);
+    expect(reqs.find((r) => r.document_type === "kcpe_cert")).toBeUndefined();
     expect(reqs.find((r) => r.document_type === "id")?.required).toBe(true);
+    expect(reqs.find((r) => r.document_type === "birth_cert")?.required).toBe(true);
     // The general minimum lives in the structured entry requirements:
     // university-wide degree floor = KCSE mean grade C+.
     const kcse = repo.listSystemBlocks(null).find((b) => b.level === "degree" && b.system === "KCSE");
@@ -50,11 +53,13 @@ describe("requirement resolution (features 8, 36, 37)", () => {
     expect(repo.resolveBlocks("BCS").find((b) => b.system === "IGCSE")?.minCredits).toBe(5);
   });
 
-  it("programme+intake is the most specific", () => {
-    repo.upsertRule({ programme: "BCS", intake: null, document_type: "birth_cert", required: true, meanGrade: null });
-    repo.upsertRule({ programme: "BCS", intake: "January 2027", document_type: "birth_cert", required: false, meanGrade: null });
-    expect(repo.resolveRequirements("BCS", "January 2027").find((r) => r.document_type === "birth_cert")?.required).toBe(false);
-    expect(repo.resolveRequirements("BCS", "September 2026").find((r) => r.document_type === "birth_cert")?.required).toBe(true);
+  it("programme-conditional documents apply only to their programme", () => {
+    // OR-5 retired the staff-editable programme×intake toggle ladder: the
+    // checklist is deterministic. Conditional items attach to the programme
+    // the checklist names (LLB personal statement) and to no other course.
+    expect(repo.resolveRequirements("LLB", null).some((r) => r.document_type === "law_personal_statement")).toBe(true);
+    expect(repo.resolveRequirements("BCS", null).some((r) => r.document_type === "law_personal_statement")).toBe(false);
+    expect(repo.resolveRequirements("BCS", "January 2027").some((r) => r.document_type === "birth_cert")).toBe(true);
   });
 });
 
