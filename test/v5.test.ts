@@ -11,6 +11,7 @@ import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { deriveFlags, gradeBelow, parseGradeRule } from "../src/rules";
 import { createApp } from "../src/web/server";
 import type { ApplicantRow, DocumentRecord } from "../src/types";
+import { webLogin } from "./helpers";
 
 let repo: Repo;
 
@@ -28,21 +29,8 @@ function mkApplicant(opts: Partial<ApplicantRow> = {}): ApplicantRow {
   return repo.getApplicant(a.id)!;
 }
 
-const login = async (app: ReturnType<typeof createApp>, username = "admin", password = "admin123") => {
-  const res = await fetch("http://test/login", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: `username=${username}&password=${password}`,
-    redirect: "manual",
-  });
-  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
-  const page = await (await fetch("http://test/", { headers: { cookie } })).text();
-  const csrf = /name="csrf" content="([^"]+)"/.exec(page)![1];
-  return { cookie, csrf };
-};
 
 // createApp needs an express app to test against — build a minimal one.
-import express from "express";
 import type { PipelineContext } from "../src/pipeline/adapters";
 import { MockSender } from "../src/pipeline/adapters";
 
@@ -296,14 +284,6 @@ describe("web: admissions, compose, gemini slot", () => {
 });
 
 async function loginWith(base: string): Promise<{ cookie: string; csrf: string }> {
-  const res = await fetch(`${base}/login`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "username=admin&password=admin123",
-    redirect: "manual",
-  });
-  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
-  const page = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-  const csrf = /name="csrf" content="([^"]+)"/.exec(page)![1];
+  const { cookie, csrf } = await webLogin(base, "admin", "admin123");
   return { cookie, csrf };
 }

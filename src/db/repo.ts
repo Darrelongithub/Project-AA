@@ -11,7 +11,6 @@ import type {
   AdmissionSystem,
   ApplicantRow,
   Programme,
-  Classification,
   Confidence,
   DeadLetter,
   DecisionLogEntry,
@@ -24,7 +23,6 @@ import type {
   ExtractedFields,
   Flag,
   LifecycleStage,
-  Priority,
   RequirementRule,
   RequirementSetEntry,
   RuleNode,
@@ -713,11 +711,11 @@ export class Repo {
 
   // ── Email history (feature 4) ────────────────────────────────────────────
 
-  insertEmail(e: Omit<EmailRecord, "id"> & { channel?: string }): number {
+  insertEmail(e: Omit<EmailRecord, "id" | "attachments"> & { channel?: string; attachments?: string[] }): number {
     const res = this.db
       .prepare(
-        `INSERT INTO emails (applicant_id, message_id, thread_id, direction, from_addr, to_addr, subject, body, category, auto, channel, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO emails (applicant_id, message_id, thread_id, direction, from_addr, to_addr, subject, body, category, auto, channel, at, attachments)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         e.applicant_id,
@@ -731,9 +729,45 @@ export class Repo {
         e.category,
         e.auto,
         e.channel ?? "email",
-        e.at
+        e.at,
+        e.attachments && e.attachments.length ? JSON.stringify(e.attachments) : ""
       );
     return Number(res.lastInsertRowid);
+  }
+
+  /** Parse the stored attachment list; tolerant of legacy empty rows. */
+  parseAttachmentList(raw: string | null | undefined): string[] {
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? v.map((x) => String(x)) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Active document count per applicant — ONE query for every export. */
+  documentCountsByApplicant(): Map<number, number> {
+    const rows = this.db
+      .prepare(
+        `SELECT applicant_id AS id, COUNT(*) AS n FROM documents WHERE superseded_by IS NULL AND is_duplicate = 0 GROUP BY applicant_id`
+      )
+      .all() as Array<{ id: number; n: number }>;
+    return new Map(rows.map((r) => [r.id, r.n]));
+  }
+
+  /** Distinct active flag types per applicant — ONE query for every export. */
+  activeFlagTypesByApplicant(): Map<number, string[]> {
+    const rows = this.db
+      .prepare(`SELECT applicant_id AS id, type FROM flags WHERE active = 1 ORDER BY applicant_id, type`)
+      .all() as Array<{ id: number; type: string }>;
+    const out = new Map<number, string[]>();
+    for (const r of rows) {
+      const list = out.get(r.id) ?? [];
+      if (!list.includes(r.type)) list.push(r.type);
+      out.set(r.id, list);
+    }
+    return out;
   }
 
   emailsForApplicant(applicantId: number): EmailRecord[] {
@@ -1005,10 +1039,10 @@ export class Repo {
 
   // ── Outbox / human queue ─────────────────────────────────────────────────
 
-  addOutbox(o: { applicant_id: number; to_address: string; subject: string; body: string; mode: "auto" | "queued" }): void {
+  addOutbox(o: { applicant_id: number; to_address: string; subject: string; body: string; mode: "auto" | "queued"; template_key?: string }): void {
     this.db
-      .prepare("INSERT INTO outbox (applicant_id, to_address, subject, body, mode) VALUES (?, ?, ?, ?, ?)")
-      .run(o.applicant_id, o.to_address, o.subject, o.body, o.mode);
+      .prepare("INSERT INTO outbox (applicant_id, to_address, subject, body, mode, template_key) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(o.applicant_id, o.to_address, o.subject, o.body, o.mode, o.template_key ?? "");
   }
 
   latestOutbox(applicantId: number): { subject: string; body: string; mode: string } | undefined {
@@ -1061,9 +1095,9 @@ export class Repo {
   }
 
   /** Latest QUEUED draft awaiting a human [Send]/[Edit]/[Discard] decision. */
-  queuedOutbox(applicantId: number): { id: number; subject: string; body: string } | undefined {
+  queuedOutbox(applicantId: number): { id: number; subject: string; body: string; template_key?: string } | undefined {
     return this.db
-      .prepare("SELECT id, subject, body FROM outbox WHERE applicant_id = ? AND mode = 'queued' ORDER BY id DESC LIMIT 1")
+      .prepare("SELECT id, subject, body, template_key FROM outbox WHERE applicant_id = ? AND mode = 'queued' ORDER BY id DESC LIMIT 1")
       .get(applicantId) as never;
   }
 
@@ -1583,70 +1617,6 @@ export class Repo {
     return out.sort((x, y) => y.hours - x.hours);
   }
 
-  // ── Portal OTP + sessions (features 12, 35) ──────────────────────────────
-
-  createOtp(applicantId: number): string {
-    // Math.random() is a predictable PRNG — never for auth codes.
-    const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
-    this.db.prepare("DELETE FROM portal_otps WHERE applicant_id = ?").run(applicantId);
-    this.db
-      .prepare("INSERT INTO portal_otps (applicant_id, code, expires_at, attempts) VALUES (?,?,?,0)")
-      .run(applicantId, code, new Date(Date.now() + 10 * 60_000).toISOString());
-    return code;
-  }
-
-  /** Max wrong guesses before a code burns (rate limiting alone is per-IP). */
-  private static readonly OTP_MAX_ATTEMPTS = 5;
-
-  consumeOtp(applicantId: number, code: string): boolean {
-    const row = this.db
-      .prepare("SELECT code, expires_at, attempts FROM portal_otps WHERE applicant_id = ?")
-      .get(applicantId) as { code: string; expires_at: string; attempts: number } | undefined;
-    if (!row) return false;
-    if (new Date(row.expires_at).getTime() < Date.now()) {
-      this.db.prepare("DELETE FROM portal_otps WHERE applicant_id = ?").run(applicantId);
-      return false;
-    }
-    if (row.attempts >= Repo.OTP_MAX_ATTEMPTS) {
-      // Too many wrong guesses — the code is dead; request a new one.
-      this.db.prepare("DELETE FROM portal_otps WHERE applicant_id = ?").run(applicantId);
-      return false;
-    }
-    // Timing-safe compare; codes are equal-length by construction.
-    const a = Buffer.from(String(code).trim().padEnd(6, "\0"));
-    const b = Buffer.from(row.code.padEnd(6, "\0"));
-    const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-    if (!ok) {
-      this.db
-        .prepare("UPDATE portal_otps SET attempts = attempts + 1 WHERE applicant_id = ?")
-        .run(applicantId);
-      return false;
-    }
-    this.db.prepare("DELETE FROM portal_otps WHERE applicant_id = ?").run(applicantId);
-    return true;
-  }
-
-  createPortalSession(applicantId: number): string {
-    const token = crypto.randomBytes(24).toString("hex");
-    this.db
-      .prepare("INSERT INTO portal_sessions (token, applicant_id, expires_at) VALUES (?,?,?)")
-      .run(token, applicantId, new Date(Date.now() + 30 * 60_000).toISOString());
-    return token;
-  }
-
-  getPortalSession(token: string): ApplicantRow | undefined {
-    const row = this.db
-      .prepare("SELECT applicant_id, expires_at FROM portal_sessions WHERE token = ?")
-      .get(token) as { applicant_id: number; expires_at: string } | undefined;
-    if (!row) return undefined;
-    if (new Date(row.expires_at).getTime() < Date.now()) return undefined;
-    return this.getApplicant(row.applicant_id);
-  }
-
-  deletePortalSession(token: string): void {
-    this.db.prepare("DELETE FROM portal_sessions WHERE token = ?").run(token);
-  }
-
   // ── Analytics (features 28–31) ───────────────────────────────────────────
 
   categoryCounts(schools?: string[] | null): Array<{ category: string; n: number }> {
@@ -1682,7 +1652,7 @@ export class Repo {
   /** Fully remove an applicant's data (used after archiving). */
   deleteApplicantFull(applicantId: number): void {
     const tx = this.db.transaction(() => {
-      for (const t of ["documents", "flags", "emails", "notes", "tasks", "decision_logs", "status_history", "audit_log", "outbox", "applicant_threads", "portal_otps", "portal_sessions", "notifications", "evaluations"]) {
+      for (const t of ["documents", "flags", "emails", "notes", "tasks", "decision_logs", "status_history", "audit_log", "outbox", "applicant_threads", "notifications", "evaluations"]) {
         this.db.prepare(`DELETE FROM ${t} WHERE applicant_id = ?`).run(applicantId);
       }
       this.db.prepare("DELETE FROM applicants WHERE id = ?").run(applicantId);

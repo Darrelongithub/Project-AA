@@ -41,8 +41,11 @@ export function inferProgramme(
   // strongest signal and always wins over fuzzy name matching. Doing this in a
   // dedicated pass keeps a bachelor's degree title quoted inside the file from
   // out-ranking the code the applicant actually wrote for the applied course.
+  // Codes are staff-editable data — escape regex metacharacters so a code
+  // like "B.COM" can only ever match itself, never act as a wildcard.
+  const escRe = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   for (const p of programmes) {
-    if (new RegExp(`\\b${p.code.toUpperCase()}\\b`).test(up)) return p.code;
+    if (new RegExp(`\\b${escRe(p.code.toUpperCase())}\\b`).test(up)) return p.code;
   }
   // Pass 2 — fuzzy name matching.
   for (const p of programmes) {
@@ -80,10 +83,13 @@ export function inferProgramme(
 
 /** Transfer applicants mention credit transfer / exemptions from another
  * institution. Conservative on purpose — a stray "transfer" (bank transfer,
- * fee transfer) must not flip an applicant into the transfer track. */
+ * fee transfer) must not flip an applicant into the transfer track. But the
+ * checklist's own wording ("transfer letter") and the plain "transfer INTO a
+ * course" are unambiguous admissions language and must be recognised: missing
+ * them means a real transfer applicant is never asked for the transfer form. */
 export function inferTransfer(text: string): boolean {
   if (!text) return false;
-  return /credit\s+transfer|transfer\s+(?:of\s+)?(?:my\s+)?credits?|transferring\s+(?:from|to|into)|transfer\s+(?:application|student|entry)|course\s+exemption|exempt(?:ions?)?\s+(?:from|for)|prior\s+credits?\b/i.test(text);
+  return /credit\s+transfer|transfer\s+letter|transfer\s+(?:of\s+)?(?:my\s+)?credits?|transferring\s+(?:from|to|into)|transfer\s+(?:application|student|entry)|transfer\s+into\b|course\s+exemption|exempt(?:ions?)?\s+(?:from|for)|prior\s+credits?\b/i.test(text);
 }
 
 /** Rough intake inference from phrases like "september intake"/"january 2027". */

@@ -75,7 +75,7 @@ export async function runFollowUpSweep(repo: Repo, _ctx: PipelineContext): Promi
         // reminder is held as a staff suggestion, never auto-sent: the file
         // may still be headed for special acceptance, so the office decides
         // what (if anything) goes out.
-        repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued" });
+        repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
         repo.notify("review_needed", `${a.ref_number}: follow-up reminder (rung ${rung}/${ladder.length - 1}) drafted — review and send`, a.id);
         repo.audit(a.id, "system", "followup_held_qualification", `rung ${rung}/${ladder.length - 1} held as a suggested reply (${subject})`);
         log(`followups: ${a.ref_number} rung ${rung} reminder held for staff`);

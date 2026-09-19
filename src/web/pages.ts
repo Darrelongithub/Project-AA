@@ -3,8 +3,8 @@
  * Single source of truth: nothing is rendered that isn't in the DB.
  */
 import { documentRequirementsFor, type ProgrammeLevel } from "../documents/matrix";
-import type { ApplicantSearchQuery, Repo } from "../db/repo";
-import type { AdmissionSystem, ApplicantRow, CourseLevel, DocType, Programme, RuleNode, StaffUser, SystemBlock } from "../types";
+import type { Repo } from "../db/repo";
+import type { AdmissionSystem, ApplicantRow, CourseLevel, Programme, RuleNode, StaffUser } from "../types";
 import { ADMISSION_SYSTEMS, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
 import { SYSTEM_LABELS } from "../admissions/systems";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../admissions/queues";
@@ -13,9 +13,8 @@ import { docLabel } from "../rules";
 import { renderTemplate } from "../drafting";
 import { EXAM_SYSTEMS } from "../config";
 import { packManifest } from "../pack";
-import { verifyPassword } from "../util/password";
 import {
-  avatar, categoryBadge, confidenceBadge, crest, esc, flagLabel, flowLine, fmtDate, fmtTime, gaugeRow,
+  avatar, categoryBadge, crest, esc, flagLabel, flowLine, fmtDate, gaugeRow,
   heroClock, layout, lifecycleBadge, lifecycleStepper, priorityBadge, readabilityScore, slaText, triageBadge, type Theme,
 } from "./views";
 
@@ -61,7 +60,7 @@ function groupBySchool<T extends { code: string; school?: string | null }>(rows:
 
 // ── Login ──────────────────────────────────────────────────────────────────
 
-export function loginPage(error?: string, theme?: Theme, institution = "Riara University"): string {
+export function loginPage(error?: string, theme?: Theme, institution = "Riara University", loginCsrf?: string): string {
   return layout({
     title: `Sign in — ${institution}`,
     institution,
@@ -74,6 +73,7 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
   <p class="sub center">${esc(institution)} · Automated admissions</p>
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
   <form method="post" action="/login">
+    ${loginCsrf ? `<input type="hidden" name="_lcsrf" value="${esc(loginCsrf)}">` : ""}
     <label>Username</label>
     <input type="text" name="username" autofocus autocomplete="username" placeholder="your.username">
     <label>Password</label>
@@ -905,22 +905,6 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
 
   // ── Admission requirements: needed vs supplied, at a glance ──────────────
   const reqByType = new Map(requirements.map((r) => [r.document_type, r]));
-  const present = (dt: string) => activeDocs.some((d) => d.document_type === dt);
-  const ruleText = (r: (typeof requirements)[number]): string => {
-    const bits: string[] = [];
-    if (r.meanGrade) bits.push(`min ${esc(r.meanGrade)}`);
-    if (r.subjectGrades) bits.push(esc(r.subjectGrades));
-    return bits.join(" · ");
-  };
-  const requiredReqs = requirements.filter((r) => r.required);
-  const optionalReqs = requirements.filter((r) => !r.required);
-  const requiredSupplied = requiredReqs.filter((r) => present(r.document_type)).length;
-  const reqItem = (r: (typeof requirements)[number], optional: boolean): string => {
-    const got = present(r.document_type);
-    const mk = got ? `<span class="mk ok">✓</span>` : optional ? `<span class="mk opt">–</span>` : `<span class="mk no">✗</span>`;
-    const rule = ruleText(r);
-    return `<li>${mk}<span>${esc(docLabel(r.document_type))}</span>${rule ? `<span class="rule">${rule}</span>` : ""}</li>`;
-  };
 
   // ── Document checklist: every received document, expandable ──────────────
   const docRowsHtml = allDocs
@@ -970,17 +954,24 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
   // ── Communication timeline ─────────────────────────────────────────────────
   const emailItems = [...emails]
     .reverse()
-    .map((e) => `<details class="mail-item ${e.direction === "out" ? "out" : ""}">
+    .map((e) => {
+      const attached = repo.parseAttachmentList(e.attachments);
+      const attLine = attached.length
+        ? `<p class="small muted" style="margin:0 0 6px"><b>Attached (${attached.length}):</b> ${attached.map((f) => `<span class="badge b-gray">${esc(f)}</span>`).join(" ")}</p>`
+        : "";
+      return `<details class="mail-item ${e.direction === "out" ? "out" : ""}">
       <summary>
         <span class="badge ${e.direction === "in" ? "b-blue" : "b-purple"}">${e.direction === "in" ? "← From applicant" : "→ To applicant"}</span>
         ${categoryBadge(e.category)}
         ${e.auto ? `<span class="badge b-gray">automated</span>` : ""}
+        ${attached.length ? `<span class="badge b-purple">${attached.length} file(s) attached</span>` : ""}
         ${e.channel && e.channel !== "email" ? `<span class="badge b-blue">via ${esc(e.channel)}</span>` : ""}
         <span class="m-sub">${esc(e.subject)}</span>
         <span class="m-when" title="${esc(fmtDate(e.at))}">${esc(fmtDate(e.at))}</span>
       </summary>
-      <div class="m-body"><pre>${esc(e.body)}</pre></div>
-    </details>`)
+      <div class="m-body">${attLine}<pre>${esc(e.body)}</pre></div>
+    </details>`;
+    })
     .join("");
 
   // ── Activity & audit trail (tabbed) ────────────────────────────────────────
@@ -1531,14 +1522,6 @@ ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(
 
 // ── Entry requirements editor (structured, per qualification system) ──────
 
-const LEVELS: Array<{ level: CourseLevel; label: string }> = [
-  { level: "degree", label: "University-wide — degree programmes" },
-  { level: "diploma", label: "University-wide — diploma programmes" },
-  { level: "certificate", label: "University-wide — certificate programmes" },
-  { level: "masters", label: "University-wide — Master's programmes" },
-  { level: "phd", label: "University-wide — PhD programmes" },
-];
-
 function documentsPackCard(c: Ctx): string {
   const manifest = packManifest();
   const app = manifest.filter((m) => m.pack === "application");
@@ -1862,13 +1845,10 @@ ${shown ? `<section class="card" id="reqpreview">${preview}</section>` : ""}
 ${opsCard}`;
 }
 
-export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsSystem?: string): string {
+export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsSystem?: string): string {
 
   const { repo } = c;
-  const settings = repo.allSettings();
   const programmes = repo.listProgrammes();
-  const intakes = repo.listIntakes();
-  const templates = repo.listTemplates();
   const staff = repo.listStaff().filter((m) => m.active);
 
   const assignForm = (p: { code: string; owner_id: number | null }) =>
@@ -1930,14 +1910,6 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, re
   }).join("") + (unaffiliated.length
     ? schoolHeader("") + unaffiliated.map(courseRow).join("")
     : "");
-
-  const first = templates[0];
-
-  const gAddress = settings["gmail_address"] ?? "";
-  const gClientId = settings["gmail_client_id"] ?? "";
-  const gClientSecret = settings["gmail_client_secret"] ?? "";
-  const gRefresh = settings["gmail_refresh_token"] ?? "";
-  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
 
   const tab = tabChoice === "requirements" ? "requirements" : tabChoice === "replies" ? "replies" : "courses";
   const tabBar = `<div class="tabs" style="margin:0 0 20px">

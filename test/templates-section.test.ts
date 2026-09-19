@@ -15,6 +15,7 @@
  *     the template editor and the legacy save endpoint refuses writes.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { webLogin } from "./helpers";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults, TEMPLATE_SEEDS } from "../src/db/seed";
@@ -57,11 +58,7 @@ describe("the Templates section", () => {
   it("officers (user role) do not get the admin Templates section", async () => {
     repo.createStaff("jane", "Jane Officer", hashPassword("jane-pass-1"), "user");
     const { base } = await startServer();
-    const login = await fetch(`${base}/login`, {
-      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: "username=jane&password=jane-pass-1", redirect: "manual",
-    });
-    const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
+    const { cookie } = await webLogin(base, "jane", "jane-pass-1");
     const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     expect(home).not.toContain('href="/templates"');
     const res = await fetch(`${base}/templates`, { headers: { cookie }, redirect: "manual" });
@@ -214,13 +211,7 @@ async function startServer(): Promise<{ base: string; cookie: string; csrf: stri
   const app = createApp({ repo, ctx });
   server = app.listen(0);
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  const res = await fetch(`${base}/login`, {
-    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "username=admin&password=admin123", redirect: "manual",
-  });
-  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
-  const page = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-  const csrf = /name="csrf" content="([^"]+)"/.exec(page)![1];
+  const { cookie, csrf } = await webLogin(base, "admin", "admin123");
   return { base, cookie, csrf };
 }
 

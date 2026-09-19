@@ -1,7 +1,7 @@
 /**
  * v3 feature tests: identity matching & conversation reconstruction, anomaly
  * rules, requirement snapshots, intake deadlines, draft-first automation,
- * follow-up ladder, reopen, unanswered detection, portal OTP/sessions,
+ * follow-up ladder, reopen, unanswered detection,
  * tasks, retention, and decision-replay inputs.
  */
 import { beforeEach, describe, expect, it } from "vitest";
@@ -299,24 +299,6 @@ describe("unanswered email detection (feature 1)", () => {
     // The docs-request suggestion is HELD (qualification gate) — until a human
     // sends something, the applicant genuinely has no reply yet.
     expect(repo.unansweredCases().some((u) => u.applicant.email_address === "waiting@example.org")).toBe(true);
-  });
-});
-
-describe("portal auth & sessions (features 12, 35)", () => {
-  it("OTP: wrong code rejected, right code consumed once", () => {
-    const a = repo.getOrCreateApplicant("otp@example.org", "t-otp", {});
-    const code = repo.createOtp(a.id);
-    expect(repo.consumeOtp(a.id, "000000")).toBe(false);
-    expect(repo.consumeOtp(a.id, code)).toBe(true);
-    expect(repo.consumeOtp(a.id, code)).toBe(false); // single use
-  });
-
-  it("portal sessions authenticate and expire", () => {
-    const a = repo.getOrCreateApplicant("sess@example.org", "t-sess", {});
-    const token = repo.createPortalSession(a.id);
-    expect(repo.getPortalSession(token)?.id).toBe(a.id);
-    repo.deletePortalSession(token);
-    expect(repo.getPortalSession(token)).toBeUndefined();
   });
 });
 

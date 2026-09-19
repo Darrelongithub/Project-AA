@@ -12,6 +12,7 @@
  *     accidental over-sharing), and out-of-scope access is refused loudly.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { webLogin } from "./helpers";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
@@ -208,13 +209,7 @@ async function startServer(): Promise<{ base: string }> {
 }
 
 async function loginAs(base: string, username: string, password: string): Promise<{ cookie: string; csrf: string }> {
-  const res = await fetch(`${base}/login`, {
-    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: `username=${username}&password=${password}`, redirect: "manual",
-  });
-  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
-  const page = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-  const csrf = /name="csrf" content="([^"]+)"/.exec(page)![1];
+  const { cookie, csrf } = await webLogin(base, username, password);
   return { cookie, csrf };
 }
 

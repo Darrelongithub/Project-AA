@@ -10,6 +10,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Server } from "http";
+import { webLogin } from "./helpers";
 import {
   KENYAN_REQUIRES_KCPE,
   documentRequirementsFor,
@@ -273,15 +274,9 @@ describe("OR-5: Configuration no longer offers document toggles", () => {
       const s = app.listen(0, "127.0.0.1", () => resolve(s));
     });
     base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-    const login = await fetch(`${base}/login`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: "username=boss&password=matrix-pass-1",
-      redirect: "manual",
-    });
-    cookie = login.headers.get("set-cookie")!.split(";")[0];
-    const settingsHtml = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
-    csrf = settingsHtml.match(/<meta name="csrf" content="([a-f0-9]+)">/)![1];
+    const r = await webLogin(base, "boss", "matrix-pass-1");
+    cookie = r.cookie;
+    csrf = r.csrf;
   });
 
   afterAll(() => server?.close());

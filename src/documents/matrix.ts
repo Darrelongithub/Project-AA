@@ -262,8 +262,10 @@ export function documentRequirementsFor(input: RequirementInput): RequirementSpe
 export interface FillResult {
   /** Slot types that at least one submitted document fills. */
   filled: DocType[];
-  /** Blocking slots still unfilled (asked for — never treated as failure). */
-  missing: RequirementSpec[];
+  /** Blocking slots still unfilled (asked for — never treated as failure).
+   * Same element type as the input: a legacy RequirementSetEntry goes in,
+   * RequirementSetEntries come out — never promised fields that aren't there. */
+  missing: Slottable[];
   /** Submitted document types that filled no slot (true extras). */
   leftover: DocType[];
 }
@@ -304,6 +306,6 @@ export function fillSlots(specs: Slottable[], submitted: DocType[]): FillResult 
   const missing = specs.filter((s) => {
     const blocking = s.blocking ?? s.required ?? true;
     return blocking && !filled.includes(s.document_type);
-  }) as RequirementSpec[];
+  });
   return { filled, missing, leftover: [...pool] };
 }

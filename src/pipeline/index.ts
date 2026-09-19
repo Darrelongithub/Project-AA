@@ -17,7 +17,6 @@
  * Automation here is strictly FACTUAL: receipts, missing-doc lists, status
  * answers. Anything ambiguous queues for a human. Never a decision.
  */
-import type { Repo } from "../db/repo";
 import type {
   Classification,
   DerivedFlag,
@@ -598,6 +597,7 @@ export async function processEmail(
         category: null,
         auto: 1,
         at: new Date().toISOString(),
+        attachments: (extras.attachments ?? []).map((f) => f.filename),
       });
       repo.addOutbox({
         applicant_id: applicant.id,
@@ -605,6 +605,7 @@ export async function processEmail(
         subject: draft.subject,
         body: draft.body,
         mode: "auto",
+        template_key: draft.templateKey ?? "",
       });
       repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind}: "${draft.subject}"`);
       log(`pipeline: auto-sent [${autoKind}] to ${applicantNow.email_address}`);
@@ -617,6 +618,7 @@ export async function processEmail(
         subject: draft.subject,
         body: draft.body,
         mode: "queued",
+        template_key: draft.templateKey ?? "",
       });
       repo.notify("review_needed", `${applicantNow.ref_number}: automated send failed — reply needs manual attention`, applicant.id);
       log(`pipeline: auto-send failed for ${applicantNow.ref_number} → queued for human`, "warn");
@@ -630,6 +632,7 @@ export async function processEmail(
       subject: draft.subject,
       body: draft.body,
       mode: "queued",
+      template_key: draft.templateKey ?? "",
     });
   }
 

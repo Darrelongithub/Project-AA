@@ -9,6 +9,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
+import { loadConfig } from "./config";
 import { log } from "./util/log";
 
 export interface PackFile {
@@ -39,7 +40,13 @@ export const PACK_SLOTS: PackSlot[] = [
   { key: "credit-transfer-form", file: "credit-transfer-form.pdf", pretty: "Riara University Credit Transfer Form.pdf", pack: "transfer", purpose: "For applicants transferring credit from another institution" },
 ];
 
-export const PACK_DIR = path.join(process.cwd(), "data", "pack");
+/**
+ * Data directory, anchored to the DATABASE file — not to process.cwd().
+ * Running the server from another working directory (systemd, cron, someone's
+ * shell) must not make the official packs "disappear".
+ */
+export const DATA_DIR = path.dirname(path.resolve(loadConfig().dbPath));
+export const PACK_DIR = path.join(DATA_DIR, "pack");
 
 /** Pack files with existence + size, for the Documents & pack panel. */
 export function packManifest(): Array<PackSlot & { exists: boolean; bytes: number }> {
@@ -104,7 +111,7 @@ export function admissionPack(): PackBuild {
 /** Default email banner (./data/branding/email-banner.jpg). */
 export function defaultEmailBanner(): { mime: string; base64: string } | null {
   try {
-    const buf = fs.readFileSync(path.join(process.cwd(), "data", "branding", "email-banner.jpg"));
+    const buf = fs.readFileSync(path.join(DATA_DIR, "branding", "email-banner.jpg"));
     return { mime: "image/jpeg", base64: buf.toString("base64") };
   } catch {
     return null;

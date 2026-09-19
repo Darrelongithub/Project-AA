@@ -13,15 +13,9 @@ import { Repo } from "../db/repo";
 import { seedDefaults } from "../db/seed";
 import { GmailClient } from "../ingestion/gmailClient";
 import { ingestNewEmails } from "../ingestion";
-import { buildAdapters, type EmailSender, type PipelineContext } from "../pipeline/adapters";
+import { buildAdapters, type PipelineContext } from "../pipeline/adapters";
+import { GmailSender } from "../ingestion/sender";
 import { log } from "../util/log";
-
-class GmailSender implements EmailSender {
-  constructor(private gmail: GmailClient) {}
-  async send(to: string, subject: string, body: string, threadId: string): Promise<void> {
-    await this.gmail.sendReply(to, subject, body, threadId);
-  }
-}
 
 async function main(): Promise<void> {
   const cfg = loadConfig();

@@ -14,6 +14,7 @@
  *     block editor is gone (explicit refusal, not silent write).
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { webLogin } from "./helpers";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
@@ -288,15 +289,7 @@ async function startServer(): Promise<{ base: string; cookie: string; csrf: stri
   const app = createApp({ repo, ctx });
   server = app.listen(0);
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  const res = await fetch(`${base}/login`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "username=admin&password=admin123",
-    redirect: "manual",
-  });
-  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
-  const page = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-  const csrf = /name="csrf" content="([^"]+)"/.exec(page)![1];
+  const { cookie, csrf } = await webLogin(base, "admin", "admin123");
   return { base, cookie, csrf };
 }
 

@@ -8,6 +8,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Server } from "http";
+import { webLogin } from "./helpers";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
@@ -346,14 +347,6 @@ describe("admissions rules engine (round 18)", () => {
 });
 
 async function loginAdmin(): Promise<{ cookie: string; csrf: string }> {
-  const res = await fetch(`${base}/login`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "username=admin&password=admin123",
-    redirect: "manual",
-  });
-  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
-  const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-  const csrf = (html.match(/<meta name="csrf" content="([a-f0-9]+)">/) || [])[1] || "";
+  const { cookie, csrf } = await webLogin(base, "admin", "admin123");
   return { cookie, csrf };
 }

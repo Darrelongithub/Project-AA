@@ -4,6 +4,7 @@
  * pass (GREEN). See OWNER_ISSUES.md for the evidence log.
  */
 import { describe, expect, it } from "vitest";
+import { webLogin } from "./helpers";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -65,14 +66,10 @@ describe("OR-1: the product contains no mock data", () => {
       expect(token.length).toBeGreaterThan(10);
 
       // Old hard-coded defaults must never grant a session — on a fresh
-      // install the login post is bounced to the setup screen.
-      const bad = await fetch(`${base}/login`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: "username=admin&password=admin123",
-        redirect: "manual",
-      });
-      expect(bad.headers.get("location") ?? "/setup").toBe("/setup");
+      // install the sign-in page itself bounces to the setup screen and no
+      // session cookie is ever minted.
+      const bad = await fetch(`${base}/login`, { redirect: "manual" });
+      expect(bad.headers.get("location")).toBe("/setup");
       expect(bad.headers.get("set-cookie") ?? "").not.toContain("sid=");
 
       // Create the admin through the setup form.
@@ -133,13 +130,8 @@ describe("OR-1: the product contains no mock data", () => {
     try {
       // First-run admin via the repo (same path the setup form takes).
       repo.createStaff("boss", "Owner", hashPassword("first-run-password-1"), "admin");
-      const login = await fetch(`${base}/login`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: "username=boss&password=first-run-password-1",
-        redirect: "manual",
-      });
-      const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
+      const r = await webLogin(base, "boss", "first-run-password-1");
+      const cookie = r.cookie;
       const pages = ["/", "/applicants", "/admissions", "/settings", "/staff", "/account", "/login"];
       for (const p of pages) {
         const res = await fetch(`${base}${p}`, { headers: { cookie }, redirect: "manual" });
@@ -272,13 +264,8 @@ async function or4Server() {
 }
 
 async function or4Login(base: string): Promise<string> {
-  const res = await fetch(`${base}/login`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "username=boss&password=first-run-password-1",
-    redirect: "manual",
-  });
-  return (res.headers.get("set-cookie") || "").split(";")[0];
+  const r = await webLogin(base, "boss", "first-run-password-1");
+  return r.cookie;
 }
 
 async function csrfFor(base: string, cookie: string): Promise<string> {

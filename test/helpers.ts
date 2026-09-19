@@ -44,3 +44,32 @@ export function completeDocs(): DocumentRecord[] {
     mkDoc("birth_cert", { name: "ALICE WANJIKU KAMAU" }),
   ];
 }
+
+/**
+ * Full sign-in flow for fetch-based tests: GET /login (collect the lcsrf
+ * cookie + hidden field), then POST credentials with the token. Returns the
+ * session cookie and a page CSRF token for subsequent POSTs.
+ */
+export async function webLogin(
+  base: string,
+  username: string,
+  password: string
+): Promise<{ cookie: string; csrf: string; status: number }> {
+  const page = await fetch(`${base}/login`);
+  const lcsrfCookie = ((page.headers.get("set-cookie") || "").match(/lcsrf=([^;]+)/) || [])[1] ?? "";
+  const html = await page.text();
+  const hidden = (/name="_lcsrf" value="([^"]+)"/.exec(html) || [])[1] ?? lcsrfCookie;
+  const res = await fetch(`${base}/login`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie: `lcsrf=${lcsrfCookie}` },
+    body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&_lcsrf=${encodeURIComponent(hidden)}`,
+    redirect: "manual",
+  });
+  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
+  let csrf = "";
+  if (res.status === 302) {
+    const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    csrf = (/name="csrf" content="([^"]+)"/.exec(home) || [])[1] ?? "";
+  }
+  return { cookie, csrf, status: res.status };
+}

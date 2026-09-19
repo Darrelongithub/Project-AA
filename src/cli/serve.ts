@@ -11,16 +11,11 @@ import { Repo } from "../db/repo";
 import { seedDefaults } from "../db/seed";
 import { buildAdapters, MockSender, type EmailSender, type PipelineContext, type SendExtras } from "../pipeline/adapters";
 import { GmailClient } from "../ingestion/gmailClient";
+import { GmailSender } from "../ingestion/sender";
 import { ingestNewEmails } from "../ingestion";
 import { createApp, runEscalationSweep } from "../web/server";
+import { onceAtATime } from "../util/once";
 import { log } from "../util/log";
-
-class GmailSender implements EmailSender {
-  constructor(private gmail: GmailClient) {}
-  async send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void> {
-    await this.gmail.sendReply(to, subject, body, threadId, extras);
-  }
-}
 
 /** Forwards to a swappable inner sender so Gmail can connect without a restart. */
 class DelegatingSender implements EmailSender {
@@ -85,7 +80,11 @@ async function main(): Promise<void> {
       return err;
     }
   };
-  const app = createApp({ repo, ctx, gmailSync: runSyncOnce });
+  // Overlap guard: a slow pass (OCR / vision latency) must never let the
+  // next 60 s tick stack a second pass on top — both would process the same
+  // message ids. Overlapped ticks are skipped, not queued.
+  const guardedSync = onceAtATime(runSyncOnce);
+  const app = createApp({ repo, ctx, gmailSync: guardedSync });
 
   const port = cfg.port;
   app.listen(port, "0.0.0.0", () => {
@@ -115,8 +114,8 @@ async function main(): Promise<void> {
 
   // Live inbox polling. Runs always: if Gmail gets connected from Settings
   // while the server is up, the next tick picks it up — no restart needed.
-  await runSyncOnce();
-  setInterval(() => { runSyncOnce(); }, 60_000);
+  await guardedSync();
+  setInterval(() => { void guardedSync(); }, 60_000);
 }
 
 main().catch((e) => {

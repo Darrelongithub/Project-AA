@@ -105,28 +105,6 @@ describe("bug: searchApplicants did not escape LIKE wildcards", () => {
   });
 });
 
-describe("bug: OTP used Math.random and never burned on wrong guesses", () => {
-  it("creates 6-digit codes and burns after 5 wrong attempts", () => {
-    const repo = freshRepo();
-    const a = repo.getOrCreateApplicant("otp@example.org", "t1");
-    const code = repo.createOtp(a.id);
-    expect(code).toMatch(/^\d{6}$/);
-    for (let i = 0; i < 5; i++) {
-      expect(repo.consumeOtp(a.id, "000000" === code ? "111111" : "000000")).toBe(false);
-    }
-    // Even the CORRECT code must fail now — the code is dead.
-    expect(repo.consumeOtp(a.id, code)).toBe(false);
-  });
-
-  it("still accepts the correct code before the attempt limit", () => {
-    const repo = freshRepo();
-    const a = repo.getOrCreateApplicant("otp2@example.org", "t1");
-    const code = repo.createOtp(a.id);
-    expect(repo.consumeOtp(a.id, "999999")).toBe(false);
-    expect(repo.consumeOtp(a.id, code)).toBe(true);
-  });
-});
-
 describe("bug: extractPhone matched inside longer digit runs", () => {
   it("rejects a phone-shaped substring of a longer number", () => {
     // 15-digit run containing what looks like 0712345678 inside.

@@ -440,6 +440,8 @@ export interface EmailRecord {
   auto: number; // 1 = sent automatically by the system
   channel?: Channel;
   at: string;
+  /** Outgoing only: JSON array of the filenames that were attached. */
+  attachments?: string;
 }
 
 // ── Vision / watcher ───────────────────────────────────────────────────────

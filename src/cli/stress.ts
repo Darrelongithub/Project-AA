@@ -42,6 +42,10 @@ const someOf = <T,>(xs: T[], n: number): T[] => [...xs].sort(() => rnd() - 0.5).
 
 const TOTAL = Number(process.env.STRESS_N ?? 1000);
 const BATCH = 100;
+if (!Number.isInteger(TOTAL) || TOTAL < 1) {
+  console.error(`stress: STRESS_N must be a positive integer, got "${process.env.STRESS_N ?? ""}" — refusing to report a fake green`);
+  process.exit(2);
+}
 
 // ── Case generation ────────────────────────────────────────────────────────
 
@@ -148,7 +152,9 @@ function makeCase(i: number): StressCase {
       { filename: `s${i}-form.pdf`, docType: "application_form", spec: { name, programme: prog.name.toUpperCase() } },
       { filename: `s${i}-ctf.pdf`, docType: "credit_transfer_form", spec: { name, programme: prog.name.toUpperCase() } },
     ];
-    const drops = rnd() < 0.5 ? someOf([0, 1, 2, 3, 4, 5], Math.floor(rnd() * 2)) : [];
+    // Index 6 is the credit transfer form itself — withholding it exercises
+    // the one matrix slot unique to transfer applicants.
+    const drops = rnd() < 0.5 ? someOf([0, 1, 2, 3, 4, 5, 6], Math.floor(rnd() * 2)) : [];
     const supplied = docs.filter((_, idx) => !drops.includes(idx));
     const suppliedTypes = supplied.map((d) => d.docType as DocType);
     const gen = documentRequirementsFor({ level: prog.level as ProgrammeLevel, route: "transfer", nationality: "unknown", curriculum: "KCSE", programmeCode: prog.code });
@@ -254,14 +260,19 @@ async function runCase(i: number, c: StressCase, ctx: PipelineContext, repo: Rep
   }
   if (c.resendOf) failures.push("resend was not detected as a duplicate");
 
-  const applicant = repo.getApplicant(result.applicantId)!;
+  const applicant = repo.getApplicant(result.applicantId);
+  if (!applicant) {
+    outcomes.push({ idx: i, case: c, ok: false, failures: [`pipeline returned unknown applicantId ${result.applicantId}`] });
+    return;
+  }
 
   // 1. Reference format always valid.
   if (!/^[A-Z]{1,4}-\d{4}-\d{6}$/.test(applicant.ref_number)) failures.push(`bad ref format: ${applicant.ref_number}`);
 
   // 2. KCPE is never demanded; banned umbrella labels never appear.
-  if (result.missing.includes("kcpe_cert")) failures.push("kcpe_cert demanded despite KENYAN_REQUIRES_KCPE=false");
-  if (!KENYAN_REQUIRES_KCPE && result.missing.includes("kcpe_cert")) failures.push("kcpe in missing");
+  if (KENYAN_REQUIRES_KCPE !== false || result.missing.includes("kcpe_cert")) {
+    failures.push("kcpe_cert demanded despite KENYAN_REQUIRES_KCPE=false");
+  }
   const genForCheck = documentRequirementsFor({
     level: (applicant.programme ? (repo.programmeByCode(applicant.programme)?.level ?? "degree") : "degree") as ProgrammeLevel,
     route: applicant.transfer ? "transfer" : "fresh",
@@ -327,11 +338,17 @@ async function main(): Promise<void> {
     console.log(`stress: ${done}/${TOTAL} processed (${failing} failing so far)`);
   }
 
-  // ── Determinism sample: 25 cases re-run on fresh databases must match ──
+  // ── Determinism sample: 13 cases re-run on fresh databases must match ──
   let determinismFailures = 0;
+  let determinismSampled = 0;
   for (const idx of [3, 42, 77, 120, 233, 300, 411, 500, 618, 702, 808, 913, 999]) {
     if (idx >= TOTAL) continue;
     const c = cases[idx];
+    // A resend case only means "skip" when its target email is in the same
+    // database — re-running it alone would process it as a fresh email, i.e.
+    // verify a DIFFERENT scenario. Those are covered by the main run.
+    if (c.resendOf) continue;
+    determinismSampled++;
     const runs: Array<{ status: string; missing: string }> = [];
     for (let r = 0; r < 2; r++) {
       const repo = new Repo(openDb(":memory:"));
@@ -362,7 +379,7 @@ async function main(): Promise<void> {
   console.log(`Cases:        ${TOTAL} (seed ${SEED})`);
   console.log(`Profiles:     ${[...byProfile.entries()].map(([k, n]) => `${k}=${n}`).join("  ")}`);
   console.log(`Outcomes:     ${[...byStatus.entries()].map(([k, n]) => `${k}=${n}`).join("  ")}`);
-  console.log(`Determinism:  ${determinismFailures === 0 ? "13/13 sampled cases re-ran identically" : `${determinismFailures} MISMATCHES`}`);
+  console.log(`Determinism:  ${determinismFailures === 0 ? `${determinismSampled}/${determinismSampled} sampled cases re-ran identically` : `${determinismFailures} MISMATCHES`}`);
   console.log(`Duration:     ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 
   if (failed.length) {

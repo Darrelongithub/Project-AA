@@ -12,6 +12,7 @@ import { loadConfig } from "../config";
 import { openDb } from "../db/db";
 import { Repo } from "../db/repo";
 import { seedDefaults } from "../db/seed";
+import { retentionDue } from "../db/retention";
 
 const cfg = loadConfig();
 const repo = new Repo(openDb(cfg.dbPath));
@@ -22,8 +23,10 @@ const cutoff = new Date(Date.now() - retentionDays * 24 * 3600_000).toISOString(
 const archiveDir = path.resolve(path.dirname(path.resolve(cfg.dbPath)), "archive");
 fs.mkdirSync(archiveDir, { recursive: true });
 
+// retentionDue normalises the two date formats before comparing — a raw
+// string compare archives cases up to 24 h early on the boundary day.
 const candidates = repo.allApplicants().filter(
-  (a) => a.lifecycle === "completed" && a.updated_at < cutoff
+  (a) => a.lifecycle === "completed" && retentionDue(a.updated_at, cutoff)
 );
 
 let archived = 0;

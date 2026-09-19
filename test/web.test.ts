@@ -4,6 +4,7 @@
  * case actions, and the public self-service status page.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { webLogin } from "./helpers";
 import type { Server } from "http";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
@@ -80,34 +81,15 @@ afterAll(() => {
 });
 
 async function login(): Promise<{ cookie: string; csrf: string }> {
-  const res = await fetch(`${base}/login`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: "username=admin&password=admin123",
-    redirect: "manual",
-  });
-  expect(res.status).toBe(302);
-  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
-  // Read the CSRF token from the meta tag present on every staff page.
-  const home = await fetch(`${base}/`, { headers: { cookie } });
-  const html = await home.text();
-  const csrf = (html.match(/<meta name="csrf" content="([a-f0-9]+)">/) || [])[1] || "";
-  return { cookie, csrf };
+  const r = await webLogin(base, "admin", "admin123");
+  expect(r.status).toBe(302);
+  return { cookie: r.cookie, csrf: r.csrf };
 }
 
 async function loginAs(username: string, password: string): Promise<{ cookie: string; csrf: string }> {
-  const res = await fetch(`${base}/login`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`,
-    redirect: "manual",
-  });
-  expect(res.status).toBe(302);
-  const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
-  const home = await fetch(`${base}/`, { headers: { cookie } });
-  const html = await home.text();
-  const csrf = (html.match(/<meta name="csrf" content="([a-f0-9]+)">/) || [])[1] || "";
-  return { cookie, csrf };
+  const r = await webLogin(base, username, password);
+  expect(r.status).toBe(302);
+  return { cookie: r.cookie, csrf: r.csrf };
 }
 
 describe("web console", () => {
@@ -118,12 +100,20 @@ describe("web console", () => {
   });
 
   it("rejects bad credentials", async () => {
+    // Go through the real flow: fetch the page, get the login-CSRF pair,
+    // then post wrong credentials WITH the token — the 401 must come from
+    // the password check, not from a missing token.
+    const r = await webLogin(base, "admin", "wrong");
+    expect(r.status).toBe(401);
+  });
+
+  it("rejects a forged login POST without the login-CSRF token", async () => {
     const res = await fetch(`${base}/login`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: "username=admin&password=wrong",
+      body: "username=admin&password=admin123",
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
   });
 
   it("admin lands on the oversight dashboard (not applicant casework)", async () => {
@@ -143,14 +133,9 @@ describe("web console", () => {
   });
 
   it("officer lands on the casework dashboard", async () => {
-    const res0 = await fetch(`${base}/login`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: "username=jane&password=jane123",
-      redirect: "manual",
-    });
-    expect(res0.status).toBe(302);
-    const cookie = (res0.headers.get("set-cookie") || "").split(";")[0];
+    const r0 = await webLogin(base, "jane", "jane123");
+    expect(r0.status).toBe(302);
+    const cookie = r0.cookie;
     const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     expect(html).toContain("Needs attention");
     expect(html).toContain("Emails today");
@@ -208,13 +193,7 @@ describe("web console", () => {
   });
 
   it("officer role cannot open settings", async () => {
-    const res = await fetch(`${base}/login`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: "username=jane&password=jane123",
-      redirect: "manual",
-    });
-    const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
+    const { cookie } = await webLogin(base, "jane", "jane123");
     const settings = await fetch(`${base}/settings`, { headers: { cookie } });
     expect(settings.status).toBe(403);
   });

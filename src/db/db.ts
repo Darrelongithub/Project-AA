@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS programmes (
   school TEXT NOT NULL DEFAULT '',
   entry_requirements TEXT NOT NULL DEFAULT '',
   owner_id INTEGER REFERENCES staff_users(id),
-  level TEXT NOT NULL DEFAULT 'degree'   -- degree|diploma|certificate|postgrad
+  level TEXT NOT NULL DEFAULT 'degree'   -- degree|diploma|certificate|masters|phd
 );
 
 -- Structured entry requirements: one row per (course, qualification system).
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS programmes (
 CREATE TABLE IF NOT EXISTS course_requirements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   programme TEXT,                     -- NULL = university-wide defaults
-  level TEXT NOT NULL,                -- degree|diploma|certificate|postgrad
+  level TEXT NOT NULL,                -- degree|diploma|certificate|masters|phd
   system TEXT NOT NULL,               -- KCSE|IGCSE|ALEVEL|IB|DIPLOMA|PREUNI|DEGREE
   enabled INTEGER NOT NULL DEFAULT 1,
   overall TEXT,                       -- KCSE mean grade (grade ladder)
@@ -97,21 +97,6 @@ CREATE INDEX IF NOT EXISTS idx_tasks_applicant ON tasks(applicant_id);
 CREATE TABLE IF NOT EXISTS automation_config (
   category TEXT PRIMARY KEY,
   mode     TEXT NOT NULL DEFAULT 'auto'
-);
-
--- Applicant portal: one-time codes + short-lived sessions (feature 35).
-CREATE TABLE IF NOT EXISTS portal_otps (
-  applicant_id INTEGER NOT NULL REFERENCES applicants(id),
-  code         TEXT NOT NULL,
-  expires_at   TEXT NOT NULL,
-  attempts     INTEGER NOT NULL DEFAULT 0,
-  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS portal_sessions (
-  token        TEXT PRIMARY KEY,
-  applicant_id INTEGER NOT NULL REFERENCES applicants(id),
-  expires_at   TEXT NOT NULL,
-  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Requirement rules: programme/intake NULL means "applies to all".
@@ -195,7 +180,8 @@ CREATE TABLE IF NOT EXISTS emails (
   category     TEXT,
   auto         INTEGER NOT NULL DEFAULT 0,
   channel      TEXT NOT NULL DEFAULT 'email',
-  at           TEXT NOT NULL DEFAULT (datetime('now'))
+  at           TEXT NOT NULL DEFAULT (datetime('now')),
+  attachments  TEXT NOT NULL DEFAULT ''   -- JSON array of filenames that rode along (outgoing)
 );
 CREATE INDEX IF NOT EXISTS idx_emails_applicant ON emails(applicant_id, at);
 
@@ -300,6 +286,7 @@ CREATE TABLE IF NOT EXISTS outbox (
   subject      TEXT NOT NULL,
   body         TEXT NOT NULL,
   mode         TEXT NOT NULL,          -- 'auto' | 'queued'
+  template_key TEXT NOT NULL DEFAULT '',  -- which template rendered this draft
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -398,6 +385,13 @@ function migrate(db: Database.Database): void {
   // base + ladder[n] days so "3,7,10" means Day 3, Day 7, Day 10.
   addColumn("applicants", "followup_base_at", "TEXT");
   addColumn("emails", "channel", "TEXT NOT NULL DEFAULT 'email'");
+  // Review fix: outgoing mail records WHICH FILES were attached, so the
+  // case history can show them (a pack that went out invisible is as good
+  // as a pack that never went out).
+  addColumn("emails", "attachments", "TEXT NOT NULL DEFAULT ''");
+  // Review fix: held drafts remember WHICH template rendered them, so the
+  // staff approval send can honour that template's pack attachment.
+  addColumn("outbox", "template_key", "TEXT NOT NULL DEFAULT ''");
   // Courses get an owner: the staff member responsible for handling them.
   addColumn("programmes", "owner_id", "INTEGER REFERENCES staff_users(id)");
   // Catalogue grouping (school) + official entry-requirement reference text.
@@ -409,8 +403,6 @@ function migrate(db: Database.Database): void {
   // and production accounts are never confused with sample ones.
   addColumn("staff_users", "demo", "INTEGER NOT NULL DEFAULT 0");
   addColumn("intakes", "deadline", "TEXT");
-  // Wrong OTP guesses are counted; the code burns after too many failures.
-  addColumn("portal_otps", "attempts", "INTEGER NOT NULL DEFAULT 0");
   // v5: requirement rules speak GRADES, not points. New columns carry the
   // published mean grade ("C+") and per-subject lines ("C+ in English and Maths").
   addColumn("requirement_rules", "mean_grade", "TEXT");
@@ -462,6 +454,10 @@ function migrate(db: Database.Database): void {
   db.exec(`UPDATE programmes SET level = 'masters' WHERE level = 'postgrad'`);
   db.exec(`UPDATE admission_rules SET level = 'masters' WHERE level = 'postgrad'`);
   db.exec(`UPDATE course_requirements SET level = 'masters' WHERE level = 'postgrad'`);
+  // Review fix: the applicant-portal OTP/session machinery had no product
+  // surface left (link sign-in was removed); drop its tables outright.
+  db.exec(`DROP TABLE IF EXISTS portal_otps`);
+  db.exec(`DROP TABLE IF EXISTS portal_sessions`);
   // OR-8 — school × staff visibility scopes (one row per assigned school).
   db.exec(`CREATE TABLE IF NOT EXISTS staff_scopes (
     staff_id INTEGER NOT NULL REFERENCES staff_users(id),
@@ -470,10 +466,16 @@ function migrate(db: Database.Database): void {
   )`);
   // OR-7 — every template may optionally carry an official pack PDF set.
   addColumn("templates", "attach_pack", "TEXT NOT NULL DEFAULT 'none'");
-  // The two historical pack sends become explicit flags (the knob did not
-  // exist before, so this cannot overwrite a staff choice).
-  db.exec(`UPDATE templates SET attach_pack = 'application' WHERE key = 'docs_request' AND attach_pack = 'none'`);
-  db.exec(`UPDATE templates SET attach_pack = 'admission' WHERE key = 'admission_letter' AND attach_pack = 'none'`);
+  // The two historical pack sends become explicit flags. This defaulting
+  // runs ONCE EVER (marker-guarded): re-running it on every open would
+  // silently resurrect a pack a staff member deliberately switched off —
+  // "none" is a legitimate choice, not an unset knob.
+  const packDefaultsDone = db.prepare("SELECT value FROM settings WHERE key = 'pack_defaults_migrated'").get();
+  if (!packDefaultsDone) {
+    db.exec(`UPDATE templates SET attach_pack = 'application' WHERE key = 'docs_request' AND attach_pack = 'none'`);
+    db.exec(`UPDATE templates SET attach_pack = 'admission' WHERE key = 'admission_letter' AND attach_pack = 'none'`);
+    db.exec(`INSERT OR REPLACE INTO settings (key, value) VALUES ('pack_defaults_migrated', '1')`);
+  }
   // OR-6 — schools get their own catalogue so a school exists even before
   // its first course, and can be renamed in one place.
   db.exec(`CREATE TABLE IF NOT EXISTS schools (

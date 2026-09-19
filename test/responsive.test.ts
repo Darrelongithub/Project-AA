@@ -19,7 +19,6 @@ let server: Server;
 let base = "";
 let browser: Browser | null = null;
 let page: Page | null = null;
-let launchError = "";
 
 beforeAll(async () => {
   const repo = new Repo(openDb(":memory:"));
@@ -46,7 +45,8 @@ beforeAll(async () => {
     await page.fill('input[name="password"]', "responsive-pass-1");
     await Promise.all([page.waitForNavigation(), page.click('button.btn')]);
   } catch (e) {
-    launchError = (e as Error).message.split("\n")[0];
+    // Chromium unavailable (CI sandbox): say WHY loudly, then runtime-skip.
+    console.warn(`responsive: chromium unavailable — ${(e as Error).message.split("\n")[0]}`);
     browser = null;
     page = null;
   }

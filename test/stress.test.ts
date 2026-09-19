@@ -6,13 +6,18 @@
  * KCPE never demanded, refs always valid, duplicates always skipped.
  */
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("stress harness (OR gate)", () => {
   it("runs the sampled stress suite clean", () => {
+    const tsxBin = resolve(__dirname, "../node_modules/.bin/tsx");
+    if (!existsSync(tsxBin)) {
+      throw new Error("tsx binary missing — run `npm install` before the stress gate");
+    }
     const out = execFileSync(
-      resolve(__dirname, "../node_modules/.bin/tsx"),
+      tsxBin,
       [resolve(__dirname, "../src/cli/stress.ts")],
       {
         env: { ...process.env, STRESS_N: "120", DISABLE_OCR: "1" },

@@ -12,8 +12,9 @@ import { FONT_INSTRUMENT_SERIF_ITALIC_WOFF2, FONT_INSTRUMENT_SERIF_WOFF2, FONT_M
 import express, { type Express, type Request, type Response } from "express";
 import type { Repo } from "../db/repo";
 import type { PipelineContext } from "../pipeline/adapters";
+import type { Adapters } from "../pipeline/adapters";
 import type { ApplicantRow, LifecycleStage } from "../types";
-import { DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type DocType, type EmailCategory } from "../types";
+import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type EmailCategory } from "../types";
 import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import { fillSlots } from "../documents/matrix";
@@ -24,20 +25,16 @@ import {
   replayPage, settingsPage, staffPage, templatesPage,
 } from "./pages";
 import { TEMPLATE_DEFAULTS } from "../db/seed";
-import { avatar, esc, layout } from "./views";
+import { avatar, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
-import { processEmail } from "../pipeline";
 import { GmailClient } from "../ingestion/gmailClient";
 import { BudgetedVisionAdapter, GeminiVisionAdapter } from "../extraction/gemini";
 import { GeminiWatcher } from "../watcher";
-import { buildAdapters, type Adapters } from "../pipeline/adapters";
-import type { PipelineContext as PCtx } from "../pipeline/adapters";
 import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { INSTITUTION, emailBanner } from "../branding";
 import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
 import { EXAM_SYSTEMS } from "../config";
-import type { SystemBlock } from "../types";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -46,23 +43,6 @@ export interface WebDeps {
   ctx: PipelineContext; // reuse the pipeline's sender/vision adapters
   /** Manual "Sync now" hook — one live ingest pass; returns the failure, if any. */
   gmailSync?: () => Promise<Error | null>;
-}
-
-/**
- * Per-IP sliding-window limiter. Self-pruning: the map never grows past
- * 5000 tracked IPs, and empty windows are dropped on access (previously the
- * maps leaked an entry per distinct IP for the process lifetime).
- */
-function makeRateLimiter(limit: number, windowMs: number) {
-  const hits = new Map<string, number[]>();
-  return (ip: string): boolean => {
-    if (hits.size > 5000) hits.clear();
-    const now = Date.now();
-    const window = (hits.get(ip) ?? []).filter((t) => now - t < windowMs);
-    window.push(now);
-    hits.set(ip, window);
-    return window.length <= limit;
-  };
 }
 
 export function createApp(deps: WebDeps): Express {
@@ -221,16 +201,27 @@ export function createApp(deps: WebDeps): Express {
     if (!created) return fail("Could not create the account — please try again.");
     const session = repo.createSession(created.id);
     repo.audit(null, username, "first_run_setup", "Administrator account created on first run");
-    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600));
+    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies));
     res.redirect("/");
   });
+
+  // Login-CSRF defence (double-submit): the sign-in form echoes a token the
+  // server also sets as a cookie. A cross-site forged login POST cannot read
+  // that cookie, so it cannot supply the matching field. Set `COOKIE_SECURE=1`
+  // behind TLS so the session cookie is never sent over plain HTTP.
+  const secureCookies = process.env.COOKIE_SECURE === "1";
+  const newLoginCsrf = (res: Response): string => {
+    const t = crypto.randomBytes(16).toString("hex");
+    res.setHeader("Set-Cookie", `lcsrf=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`);
+    return t;
+  };
 
   app.get("/login", (req, res) => {
     if (repo.staffCount() === 0) {
       res.redirect("/setup");
       return;
     }
-    res.send(loginPage(undefined, req.theme, instName()));
+    res.send(loginPage(undefined, req.theme, instName(), newLoginCsrf(res)));
   });
 
   /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
@@ -272,18 +263,26 @@ export function createApp(deps: WebDeps): Express {
   app.post("/login", (req, res) => {
     const ip = req.ip ?? "?";
     if (loginBlocked(ip)) {
-      res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme));
+      res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, instName(), newLoginCsrf(res)));
+      return;
+    }
+    // Login-CSRF: the token the page rendered must come back in the body AND
+    // match the cookie. A mismatch means the form was forged or stale.
+    const provided = String(req.body._lcsrf ?? "");
+    const cookieToken = parseCookies(req.headers.cookie)["lcsrf"] ?? "";
+    if (!provided || provided !== cookieToken) {
+      res.status(403).send(loginPage("That sign-in page expired — please try again.", req.theme, instName(), newLoginCsrf(res)));
       return;
     }
     const staff = loginAttempt(repo, String(req.body.username ?? ""), String(req.body.password ?? ""));
     if (!staff) {
       loginRecordFail(ip);
-      res.status(401).send(loginPage("Invalid username or password.", req.theme));
+      res.status(401).send(loginPage("Invalid username or password.", req.theme, instName(), newLoginCsrf(res)));
       return;
     }
     const session = repo.createSession(staff.id);
     repo.audit(null, staff.username, "staff_login", "");
-    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600));
+    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies));
     res.redirect("/");
   });
 
@@ -418,16 +417,26 @@ export function createApp(deps: WebDeps): Express {
     if (body.trimStart().startsWith("INTERNAL \u2014 DO NOT AUTO-SEND")) {
       return res.redirect(backToCase(id, "That draft still contains internal routing notes — edit the body before sending."));
     }
+    // The held draft remembers which template rendered it — approving the
+    // draft honours that template's pack attachment exactly like a direct
+    // send would. Without this, held replies (the common path under the
+    // qualification gate) went out without the promised pack PDFs.
+    const draftTpl = draft.template_key ? repo.getTemplate(draft.template_key) : undefined;
+    const pack = packForTemplate(draftTpl?.attach_pack, id, req.staff!.username);
     try {
-      await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, { banner: emailBanner(repo) });
+      await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
+        banner: draftTpl && draftTpl.include_banner === 0 ? null : emailBanner(repo),
+        attachments: pack ? pack.files : [],
+      });
       repo.insertEmail({
         applicant_id: id, message_id: `handoff-${draft.id}-${Date.now()}`, thread_id: a.thread_id,
         direction: "out", from_addr: "", to_addr: a.email_address, subject, body,
         category: null, auto: 0, at: new Date().toISOString(),
+        attachments: pack ? pack.files.map((f) => f.filename) : [],
       });
       repo.deleteOutbox(draft.id);
-      staffAction(req, id, "human_override", `approved held draft: "${subject}"`);
-      res.redirect(backToCase(id, "Reply sent."));
+      staffAction(req, id, "human_override", `approved held draft: "${subject}"${pack ? ` (+${pack.label} pack, ${pack.files.length} file(s))` : ""}`);
+      res.redirect(backToCase(id, `Reply sent${pack ? ` with the ${pack.label} pack attached` : ""}.`));
     } catch (e) {
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
       res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
@@ -530,6 +539,7 @@ export function createApp(deps: WebDeps): Express {
       applicant_id: id, message_id: `manual-${Date.now()}`, thread_id: a.thread_id, direction: "out",
       from_addr: "", to_addr: a.email_address, subject: rendered.subject, body: rendered.body, category: null, auto: 0,
       at: new Date().toISOString(),
+      attachments: pack ? pack.files.map((f) => f.filename) : [],
     });
     staffAction(req, id, "email_sent_manual", `template ${tpl.key}: "${rendered.subject}"${pack ? ` (+${pack.label} pack, ${pack.files.length} file(s))` : ""}`);
     res.redirect(backToCase(id, `Sent "${tpl.name}"${pack ? ` with the ${pack.label} pack attached` : ""}.`));
@@ -576,6 +586,7 @@ export function createApp(deps: WebDeps): Express {
       applicant_id: id, message_id: `pack-${Date.now()}`, thread_id: a.thread_id, direction: "out",
       from_addr: "", to_addr: a.email_address, subject: rendered.subject, body: rendered.body, category: null, auto: 0,
       at: new Date().toISOString(),
+      attachments: pack.files.map((f) => f.filename),
     });
     staffAction(req, id, isAdmission ? "admission_pack_sent" : "application_pack_sent",
       `${pack.files.length} document(s): "${rendered.subject}"`);
@@ -643,6 +654,7 @@ export function createApp(deps: WebDeps): Express {
     repo.insertEmail({
       applicant_id: a.id, message_id: `compose-${Date.now()}`, thread_id: a.thread_id, direction: "out",
       from_addr: "", to_addr: a.email_address, subject, body, category: null, auto: 0, at: new Date().toISOString(),
+      attachments: pack ? pack.files.map((f) => f.filename) : [],
     });
     staffAction(req, a.id, "email_sent_manual", `composed reply (${tpl.key}): "${subject}"${pack ? ` (+${pack.label} pack)` : ""}`);
     res.redirect(backToCase(a.id, `Reply sent to ${a.email_address}${pack ? ` with the ${pack.label} pack attached` : ""}.`));
@@ -1013,7 +1025,7 @@ export function createApp(deps: WebDeps): Express {
     const set = repo.ensureDraftSet(t.programme, t.level, t.system, req.staff!.username);
     const kind = String(req.body.kind) === "group" ? "group" : "condition";
     const parentId = req.body.parent ? Number(req.body.parent) : null;
-    const nodeId = repo.addRuleNode(set.id, parentId && parentId > 0 ? parentId : null, kind, "AND");
+    repo.addRuleNode(set.id, parentId && parentId > 0 ? parentId : null, kind, "AND");
     repo.audit(null, req.staff!.username, "requirements_draft_changed", `${t.programme ?? "base"} ${t.system}: ${kind} added (draft v${set.version})`);
     res.redirect(t.back(kind === "group" ? "Group added — set its AND/OR/NOT and conditions." : "Condition added — pick the field and minimum."));
   });
@@ -1587,6 +1599,10 @@ export function createApp(deps: WebDeps): Express {
 
   app.get("/export/applicants.csv", requireLogin, requireRole("admin"), (_req, res) => {
     const rows = repo.allApplicants();
+    // Two aggregate queries for the whole export — never 2N per-applicant
+    // lookups on a synchronous connection.
+    const docCounts = repo.documentCountsByApplicant();
+    const flagTypes = repo.activeFlagTypesByApplicant();
     csv(
       res,
       "applicants.csv",
@@ -1594,8 +1610,8 @@ export function createApp(deps: WebDeps): Express {
       rows.map((a) => [
         a.ref_number, a.full_name, a.email_address, a.phone, a.programme, a.intake, a.lifecycle, a.triage,
         a.priority, a.assigned_to ? repo.getStaff(a.assigned_to)?.username ?? "" : "",
-        repo.listDocuments(a.id).length,
-        [...new Set(repo.activeFlags(a.id).map((f) => f.type))].join("; "),
+        docCounts.get(a.id) ?? 0,
+        (flagTypes.get(a.id) ?? []).join("; "),
         a.created_at,
       ])
     );

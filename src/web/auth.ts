@@ -2,10 +2,9 @@
  * Auth: DB-backed sessions, scrypt password verification, CSRF tokens,
  * role guards (feature 31, 32). No external auth services — portable.
  *
- * Roles:
- *   admin   — everything incl. staff management, settings, backup
- *   manager — case actions + requirements/templates/programmes config, export
- *   officer — view + case actions (no configuration)
+ * Roles (round 18 onward there are exactly TWO):
+ *   admin — everything incl. staff management, settings, templates, exports
+ *   user  — case work within their assigned schools (OR-8 scoping)
  */
 import type { NextFunction, Request, Response } from "express";
 import type { Repo } from "../db/repo";
@@ -45,8 +44,8 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return out;
 }
 
-export function sessionCookie(token: string, maxAgeSec: number): string {
-  return `sid=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}`;
+export function sessionCookie(token: string, maxAgeSec: number, secure = false): string {
+  return `sid=${token}; Path=/; HttpOnly; SameSite=Lax;${secure ? " Secure;" : ""} Max-Age=${maxAgeSec}`;
 }
 
 export function clearSessionCookie(): string {
