@@ -10,7 +10,7 @@ import { SYSTEM_LABELS } from "../admissions/systems";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../admissions/queues";
 import { describeRuleTree, interpretRuleTree } from "../admissions/engine";
 import { docLabel } from "../rules";
-import { EXAM_SYSTEMS, SUBJECT_CATALOG } from "../config";
+import { EXAM_SYSTEMS } from "../config";
 import { packManifest } from "../pack";
 import { verifyPassword } from "../util/password";
 import {
@@ -1525,94 +1525,9 @@ const LEVELS: Array<{ level: CourseLevel; label: string }> = [
   { level: "degree", label: "University-wide — degree programmes" },
   { level: "diploma", label: "University-wide — diploma programmes" },
   { level: "certificate", label: "University-wide — certificate programmes" },
-  { level: "postgrad", label: "University-wide — postgraduate programmes" },
+  { level: "masters", label: "University-wide — Master's programmes" },
+  { level: "phd", label: "University-wide — PhD programmes" },
 ];
-
-const CLASS_OPTIONS: Record<string, string[]> = {
-  minClass_diploma: ["Pass", "Credit", "Distinction"],
-  minClass_degree: ["Pass", "Second Class Honours (Lower Division)", "Second Class Honours (Upper Division)", "First Class Honours"],
-};
-
-function systemOverallInputs(meta: (typeof EXAM_SYSTEMS)[number], block: SystemBlock | undefined): string {
-  const parts: string[] = [];
-  for (const f of meta.fields) {
-    if (f === "overall") {
-      parts.push(`<div><label>Minimum mean grade</label><input type="text" name="overall" maxlength="2" style="text-transform:uppercase;width:70px" placeholder="C+" value="${esc(block?.overall ?? "")}"></div>`);
-    } else if (f === "minCredits") {
-      parts.push(`<div><label>Min passes at C or better</label><input type="number" name="min_credits" min="0" max="12" style="width:80px" value="${block?.minCredits ?? ""}"></div>`);
-    } else if (f === "minPrincipals") {
-      parts.push(`<div><label>Min principal passes</label><input type="number" name="min_principals" min="0" max="5" style="width:80px" value="${block?.minPrincipals ?? ""}"></div>`);
-    } else if (f === "minSubsidiaries") {
-      parts.push(`<div><label>Min subsidiary passes</label><input type="number" name="min_subsidiaries" min="0" max="5" style="width:80px" value="${block?.minSubsidiaries ?? ""}"></div>`);
-    } else if (f === "minPoints") {
-      parts.push(`<div><label>Min total points</label><input type="number" name="min_points" min="0" max="45" style="width:80px" value="${block?.minPoints ?? ""}"></div>`);
-    } else if (f === "minGpa") {
-      parts.push(`<div><label>Min GPA</label><input type="number" name="min_gpa" step="0.01" min="0" max="4" style="width:90px" value="${block?.minGpa ?? ""}"></div>`);
-    } else if (f === "minClass") {
-      const opts = meta.system === "DEGREE" ? CLASS_OPTIONS.minClass_degree : CLASS_OPTIONS.minClass_diploma;
-      parts.push(`<div><label>Min award class</label><select name="min_class"><option value="">—</option>${opts.map((o) => `<option value="${esc(o)}"${block?.minClass === o ? " selected" : ""}>${esc(o)}</option>`).join("")}</select></div>`);
-    }
-  }
-  return parts.join("");
-}
-
-function subjectMatrix(meta: (typeof EXAM_SYSTEMS)[number], block: SystemBlock | undefined): string {
-  if (!meta.gradeOptions) return "";
-  const reqs = block?.subjects ?? [];
-  const rows = SUBJECT_CATALOG.map((subj, i) => {
-    const hit = reqs.find((r) => r.subject === subj);
-    const gradeOpts = meta.gradeOptions!.map((g) => `<option value="${esc(g)}"${hit?.grade === g ? " selected" : ""}>${esc(g)}</option>`).join("");
-    const altOpts = SUBJECT_CATALOG.filter((x) => x !== subj).map((x) => `<option value="${esc(x)}"${hit?.alts?.[0] === x ? " selected" : ""}>${esc(x)}</option>`).join("");
-    return `<tr>
-      <td style="width:34px"><input type="checkbox" name="sub_${i}"${hit ? " checked" : ""} aria-label="Require ${esc(subj)}"></td>
-      <td>${esc(subj)}</td>
-      <td><select name="grade_${i}" style="min-width:74px"><option value="">—</option>${gradeOpts}</select></td>
-      <td><select name="alt_${i}" style="min-width:150px"><option value="">no alternative</option>${altOpts}</select></td>
-    </tr>`;
-  }).join("");
-  return `<details style="margin-top:8px"><summary class="small">Subject requirements — tick the required subjects and set the minimum grade (${reqs.length} ticked)</summary>
-    <table style="margin-top:8px"><tr><th></th><th>Subject</th><th>Minimum grade</th><th>Or alternative (one of the two is enough)</th></tr>${rows}</table>
-  </details>`;
-}
-
-function entryRequirementsEditor(c: Ctx, programmes: Programme[], target: string): string {
-  const isBase = target.startsWith("BASE:");
-  const level = (isBase ? target.slice(5) : "degree") as CourseLevel;
-  const programme = isBase ? null : target;
-  const blocks = c.repo.listSystemBlocks(programme).filter((b) => isBase ? b.level === level : true);
-  const title = isBase
-    ? LEVELS.find((l) => l.level === level)?.label ?? target
-    : `${target} — ${esc(programmes.find((p) => p.code === target)?.name ?? "")}`;
-
-  const picker = `<form method="get" action="/config#entryreqs" class="formrow" style="align-items:flex-end">
-    <div style="flex:2"><label>Edit requirements for</label><select name="reqs" onchange="this.form.submit()">
-      ${LEVELS.map((l) => `<option value="BASE:${l.level}"${target === `BASE:${l.level}` ? " selected" : ""}>${esc(l.label)}</option>`).join("")}
-      ${programmes.map((p) => `<option value="${esc(p.code)}"${target === p.code ? " selected" : ""}>${esc(p.code)} — ${esc(p.name)}</option>`).join("")}
-    </select></div>
-  </form>`;
-
-  const forms = EXAM_SYSTEMS.map((meta) => {
-    const block = blocks.find((b) => b.system === meta.system);
-    const cfg = block && block.enabled;
-    return `<form method="post" action="/config/entry-requirements" style="border-top:1px solid var(--line2);padding:12px 0 6px">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-      <input type="hidden" name="target" value="${esc(target)}">
-      <input type="hidden" name="system" value="${meta.system}">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <label style="display:flex;gap:8px;align-items:center;min-width:320px"><input type="checkbox" name="enabled"${cfg ? " checked" : ""}> <b>${esc(meta.label)}</b></label>
-        ${systemOverallInputs(meta, block)}
-        <span style="flex:1"></span>
-        <button class="btn small ghost">Save ${esc(meta.system)}</button>
-      </div>
-      ${subjectMatrix(meta, block)}
-    </form>`;
-  }).join("");
-
-  return `${picker}
-    <p class="small muted" style="margin-top:10px">Tick the subjects this course requires, set the minimum grade for each, and save — the engine checks newly processed files against it immediately (already-submitted files keep the requirements they applied under). Untick <i>enabled</i> and save to drop this route for the course and fall back to the ${isBase ? "defaults" : "university-wide minimum"} for that qualification. A ticked subject with an <i>or alternative</i> is satisfied by either subject reaching the grade.</p>
-    <h3 style="margin:14px 0 2px">${title}</h3>
-    ${forms}`;
-}
 
 function documentsPackCard(c: Ctx): string {
   const manifest = packManifest();
@@ -1681,8 +1596,40 @@ const FIELD_LABELS: Record<string, string> = {
   class: "Degree class",
 };
 
+// OR-6: grades are CLICK-TO-REVEAL PICKERS from the system's own ladder —
+// never free text — so the config screen can only express values the engine
+// can actually enforce (display == enforce). Numeric fields keep bounded
+// number inputs. The server re-validates against the same ladders.
+const GRADE_CLASS_LADDERS: Record<string, string[]> = {
+  degree: ["Pass", "Second Class Honours (Lower Division)", "Second Class Honours (Upper Division)", "First Class Honours"],
+  diploma: ["Pass", "Credit", "Distinction"],
+};
+
+function conditionValuePicker(system: string, level: CourseLevel, node: RuleNode): string {
+  const v = node.value ?? "";
+  const picker = (opts: string[], attr: string): string =>
+    `<select name="value" data-grade-picker="${esc(attr)}" style="width:auto;min-width:130px">
+      <option value="">— pick —</option>
+      ${opts.map((g) => `<option value="${esc(g)}"${v === g ? " selected" : ""}>${esc(g)}</option>`).join("")}
+    </select>`;
+  if (node.field === "class") {
+    return picker(GRADE_CLASS_LADDERS[level === "diploma" || level === "certificate" ? "diploma" : "degree"], "class");
+  }
+  if (node.field === "mean_grade" || node.field === "subject") {
+    const ladder = EXAM_SYSTEMS.find((m) => m.system === system)?.gradeOptions;
+    if (ladder) return picker(ladder, system);
+  }
+  if (["credits", "principals", "subsidiaries", "points"].includes(node.field ?? "")) {
+    return `<input type="number" min="0" step="1" name="value" value="${esc(v)}" placeholder="minimum" style="width:110px;margin:0">`;
+  }
+  if (node.field === "gpa") {
+    return `<input type="number" min="0" max="4" step="0.1" name="value" value="${esc(v)}" placeholder="0.0–4.0" style="width:110px;margin:0">`;
+  }
+  return `<input name="value" value="${esc(v)}" placeholder="value" style="width:130px;margin:0">`;
+}
+
 /** Recursive visual builder for one node of the rule tree. */
-function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, depth: number, subjects: string[]): string {
+function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, depth: number, subjects: string[], level: CourseLevel): string {
   const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
   const targetFields = `<input type="hidden" name="target" value="${esc(target)}"><input type="hidden" name="system" value="${esc(system)}">`;
   const pad = depth * 18;
@@ -1701,7 +1648,7 @@ function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, 
       <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${targetFields}<input type="hidden" name="parent" value="${node.id}"><input type="hidden" name="kind" value="group"><button class="btn small ghost">+ Subgroup</button></form>
       <form method="post" action="/config/requirements/node-delete" style="margin:0" onsubmit="return confirm('Remove this group and everything inside it?')">${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}"><button class="btn small ghost" style="color:#A11F2E">Remove group</button></form>
     </div>`;
-    const children = (node.children ?? []).map((ch) => ruleNodeEditor(c, target, system, ch, depth + 1, subjects)).join("");
+    const children = (node.children ?? []).map((ch) => ruleNodeEditor(c, target, system, ch, depth + 1, subjects, level)).join("");
     return `${logicForm}${addButtons}${children}`;
   }
 
@@ -1721,7 +1668,7 @@ function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, 
     ${subjectSelect}
     <span class="muted small">≥</span>
     <input type="hidden" name="comparator" value=">=">
-    <input name="value" value="${esc(node.value ?? "")}" placeholder="e.g. C+ / 12 / 3.0" style="width:130px;margin:0">
+    ${conditionValuePicker(system, level, node)}
     <button class="btn small ghost">Save</button>
     <form method="post" action="/config/requirements/node-delete" style="margin:0" onsubmit="return confirm('Remove this condition?')">${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}"><button class="btn small ghost" style="color:#A11F2E">✕</button></form>
   </form>`;
@@ -1733,10 +1680,11 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
 
   const system = (reqsSystem && (ADMISSION_SYSTEMS as readonly string[]).includes(reqsSystem) ? reqsSystem : "KCSE") as AdmissionSystem;
   const targetOptions = [
-    ["BASE:degree", "University-wide default — Degree"],
+    ["BASE:degree", "University-wide defaults — Degree"],
     ["BASE:diploma", "University-wide defaults — Diploma"],
     ["BASE:certificate", "University-wide defaults — Certificate"],
-    ["BASE:postgrad", "University-wide defaults — Postgraduate"],
+    ["BASE:masters", "University-wide defaults — Master's"],
+    ["BASE:phd", "University-wide defaults — PhD"],
     ...programmes.map((p) => [p.code, `${p.code} · ${p.name}`] as [string, string]),
   ];
   const target = reqsTarget && targetOptions.some(([v]) => v === reqsTarget) ? reqsTarget : "BASE:degree";
@@ -1778,7 +1726,7 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
       <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${tf}<input type="hidden" name="kind" value="condition"><button class="btn small ghost">+ Top-level condition</button></form>
       <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${tf}<input type="hidden" name="kind" value="group"><button class="btn small ghost">+ Top-level group</button></form>
     </div>
-    ${shownTree.length ? shownTree.map((n) => ruleNodeEditor(c, target, system, n, 0, subjects)).join("") : `<p class="small muted">No rules yet — add a condition (e.g. Mean grade ≥ C+) or a group (OR-alternatives).</p>`}
+    ${shownTree.length ? shownTree.map((n) => ruleNodeEditor(c, target, system, n, 0, subjects, level)).join("") : `<p class="small muted">No rules yet — add a condition (e.g. Mean grade ≥ C+) or a group (OR-alternatives).</p>`}
   ` : `<p class="small muted">No requirement set exists for this programme/system yet — add a first rule to create a draft.</p>
     <form method="post" action="/config/requirements/node-add" style="margin:10px 0 0">${csrf}${tf}<input type="hidden" name="kind" value="condition"><button class="btn small">Start a rule set</button></form>`;
 
@@ -1792,19 +1740,26 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
     </div>` : `<p class="small muted" style="margin:0">Nothing to activate — you are looking at the active set.</p>`}
   ` : "";
 
+  // OR-6: the subject catalogue is fully editable — add, rename, retire,
+  // restore — per qualification system, all on this one page.
   const allCatalogue = repo.listSubjectCatalogue();
-  const systemsWithSubjects = ADMISSION_SYSTEMS.filter((s) => allCatalogue.some((r) => r.system === s));
-  const catalogueRows = systemsWithSubjects.map((s) => {
+  const catalogueRows = ADMISSION_SYSTEMS.map((s) => {
     const items = allCatalogue.filter((r) => r.system === s);
     return `<details ${s === system ? "open" : ""} style="margin-bottom:8px">
-      <summary style="cursor:pointer;font-weight:700;font-size:13px">${esc(SYSTEM_LABELS[s])} <span class="muted small">(${items.length})</span></summary>
-      <table style="margin-top:6px"><tr><th>Subject</th><th>Status</th><th></th></tr>
+      <summary style="cursor:pointer;font-weight:700;font-size:13px">${esc(SYSTEM_LABELS[s])} <span class="muted small">(${items.length} subject${items.length === 1 ? "" : "s"})</span></summary>
+      <table style="margin-top:6px"><tr><th>Subject</th><th>Status</th><th style="min-width:280px">Rename</th><th></th></tr>
         ${items.map((r) => `<tr>
           <td>${esc(r.name)}</td>
           <td>${r.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-gray">retired</span>`}</td>
+          <td><form method="post" action="/config/requirements/catalogue-rename" style="display:flex;gap:6px;margin:0">${csrf}<input type="hidden" name="id" value="${r.id}"><input type="text" name="name" value="${esc(r.name)}" style="margin:0"><button class="btn small ghost">Save</button></form></td>
           <td><form method="post" action="/config/requirements/catalogue-toggle" style="margin:0">${csrf}<input type="hidden" name="id" value="${r.id}"><button class="btn small ghost">${r.active ? "Retire" : "Restore"}</button></form></td>
         </tr>`).join("")}
       </table>
+      <form method="post" action="/config/requirements/catalogue-add" class="formrow" style="margin-top:10px">
+        ${csrf}<input type="hidden" name="system" value="${esc(s)}">
+        <div style="flex:2"><label>Add a subject to ${esc(SYSTEM_LABELS[s])}</label><input type="text" name="name" placeholder="e.g. Aviation Studies"></div>
+        <div style="flex:0"><label>&nbsp;</label><button class="btn small ghost">Add subject</button></div>
+      </form>
     </details>`;
   }).join("");
 
@@ -1849,7 +1804,9 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
 </section>`;
 
   // OR-5: the document checklist is generated deterministically — read-only here.
-  const genLevel: ProgrammeLevel = (level === "postgrad" ? "masters" : level) as ProgrammeLevel;
+  // OR-6: CourseLevel now carries masters/phd directly (legacy "postgrad"
+  // rows are migrated on open; keep a defensive alias anyway).
+  const genLevel: ProgrammeLevel = ((level as string) === "postgrad" ? "masters" : level) as ProgrammeLevel;
   const matrixSpecs = documentRequirementsFor({ level: genLevel, route: "fresh", nationality: "unknown", programmeCode: isBase ? null : target });
   const matrixRows = matrixSpecs
     .map(
@@ -1914,24 +1871,55 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, re
       </select>
       <button class="btn small ghost">Assign</button>
     </form>`;
-  const courseRows = groupBySchool(programmes)
-    .map(([school, rows]) => `<tr class="schoolrow"><td colspan="3">${esc(school)}</td></tr>` + rows
-      .map((p) => `<tr>
-        <td><b>${esc(p.code)}</b><br><span class="small muted">${esc(p.name)}</span></td>
+  // OR-6: schools and courses live on ONE page. Every school exists even
+  // before it has courses; renaming a school moves every course with it.
+  const schools = repo.listSchools();
+  const unaffiliated = programmes.filter((x) => !x.school);
+  const enforcedSummary = (code: string): string => {
+    const sets = repo.activeSetsForProgramme(code);
+    if (!sets.length) return `<span class="small muted">No active requirement rules yet — files for this course route to human review.</span>`;
+    return `<details style="margin-top:8px"><summary class="small" style="cursor:pointer">Enforced entry requirements (${sets.length} route${sets.length === 1 ? "" : "s"}) — exactly what the engine checks</summary>
+      <ul style="margin:6px 0 0;padding-left:18px">
+        ${sets.map((s) => `<li class="small" style="margin-bottom:3px"><b>${esc(SYSTEM_LABELS[s.system] ?? s.system)}</b> <span class="muted">(${s.programme ? "course-specific" : "university-wide default"}, v${s.version})</span>: ${esc(describeRuleTree(s.nodes ?? []) || "no conditions")}</li>`).join("")}
+      </ul>
+      <p class="small muted" style="margin:6px 0 0">Edit in the <a href="/config?tab=requirements&reqs=${encodeURIComponent(code)}">Requirements tab</a> — edits create a draft; nothing judges applicants until you activate it.</p>
+    </details>`;
+  };
+  const schoolHeader = (school: string): string => `<tr class="schoolrow"><td colspan="3">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <b>${esc(school || "No school assigned")}</b>
+        ${school ? `<form method="post" action="/config/schools/rename" style="display:flex;gap:6px;margin:0;align-items:center">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          <input type="hidden" name="from" value="${esc(school)}">
+          <input type="text" name="to" value="${esc(school)}" title="New school name" style="width:auto;min-width:220px;margin:0">
+          <button class="btn small ghost" title="Rename this school for every course in it">Rename school</button>
+        </form>` : ""}
+      </div>
+    </td></tr>`;
+  const courseRow = (pr: Programme): string => `<tr>
+        <td><b>${esc(pr.code)}</b><br><span class="small muted">${esc(pr.name)}</span><br><span class="badge ${pr.level === "phd" || pr.level === "masters" ? "b-purple" : "b-gray"}" style="margin-top:4px">${pr.level === "phd" ? "PhD" : capFirst(pr.level)}</span></td>
         <td>
           <form method="post" action="/config/programme/edit" style="display:flex;gap:6px;align-items:flex-start;max-width:640px">
             <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-            <input type="hidden" name="programme" value="${esc(p.code)}">
+            <input type="hidden" name="programme" value="${esc(pr.code)}">
             <div style="flex:1">
-              <input type="text" name="name" value="${esc(p.name)}" title="Course name" style="margin-bottom:6px">
-              <input type="text" name="school" value="${esc(p.school)}" title="School (faculty)" style="margin-bottom:6px">
-              <textarea name="entry_requirements" rows="3" title="Entry requirements" style="min-height:64px;font-size:12.5px">${esc(p.entry_requirements)}</textarea>
+              <input type="text" name="name" value="${esc(pr.name)}" title="Course name" style="margin-bottom:6px">
+              <textarea name="entry_requirements" rows="3" title="Reference notes (not enforced — the enforced rules are shown below)" placeholder="Reference notes only — prospectus wording, special cases…" style="min-height:64px;font-size:12.5px">${esc(pr.entry_requirements)}</textarea>
             </div>
             <button class="btn small ghost" title="Save course details">Save</button>
           </form>
+          ${enforcedSummary(pr.code)}
         </td>
-        <td>${assignForm(p)}</td>
-      </tr>`).join("")).join("");
+        <td>${assignForm(pr)}</td>
+      </tr>`;
+  const courseRows = schools.map((school) => {
+    const rows = programmes.filter((x) => (x.school || "") === school);
+    return schoolHeader(school) + (rows.length
+      ? rows.map(courseRow).join("")
+      : `<tr><td colspan="3" class="small muted" style="padding-left:26px">No courses yet — add one below and set its school to “${esc(school)}”.</td></tr>`);
+  }).join("") + (unaffiliated.length
+    ? schoolHeader("") + unaffiliated.map(courseRow).join("")
+    : "");
 
   const first = templates[0];
 
@@ -1979,13 +1967,22 @@ export function configPage(c: Ctx, selectedTemplate?: string, flash?: string, re
     <h2 style="margin-top:20px">Required documents (all courses)</h2>
     <p class="small muted" style="margin-top:-6px">OR-5: which documents a file must contain is <b>generated deterministically</b> from the official application-form checklist (level × curriculum × nationality × route). It is not staff-configurable — there are no toggles. Conditional items are asked for, never assumed; KCPE is never required; post-admission items never block a file. See the live matrix in the <a href="/config?tab=requirements">Requirements tab</a> and <span class="mono">docs/DOCUMENT_MATRIX.md</span>.</p>
     <h2 style="margin-top:26px" id="addcourse">Add a course or intake</h2>
-    <p class="small muted" style="margin-top:-6px">Create a new programme — it appears immediately in the picker above, in course ownership and across the admissions pipeline — or add another intake for existing courses.</p>
+    <p class="small muted" style="margin-top:-6px">Create a new programme — it appears immediately in the picker above, in course ownership and across the admissions pipeline — or add another intake for existing courses. Master's and PhD are separate levels, each judged by its own university-wide defaults.</p>
     <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
       <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
       <div><label>New programme code</label><input type="text" name="prog_code" placeholder="e.g. MED"></div>
       <div style="flex:2"><label>Programme name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
+      <div><label>School</label><select name="prog_school"><option value="">No school yet</option>${schools.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}</select></div>
+      <div><label>Level</label><select name="prog_level"><option value="degree">Degree</option><option value="diploma">Diploma</option><option value="certificate">Certificate</option><option value="masters">Master's</option><option value="phd">PhD</option></select></div>
       <div><label>New intake</label><input type="text" name="intake" placeholder="e.g. May 2027"></div>
       <div style="flex:0"><label>&nbsp;</label><button class="btn">Add course</button></div>
+    </form>
+    <h2 style="margin-top:26px" id="schools">Schools (faculties)</h2>
+    <p class="small muted" style="margin-top:-6px">A school exists as soon as it is created — even before its first course. Rename it in the course table above (the rename follows every course); add a new one here.</p>
+    <form method="post" action="/config/schools/add" class="formrow" style="margin-top:10px">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <div style="flex:2"><label>New school name</label><input type="text" name="name" placeholder="e.g. School of Aviation"></div>
+      <div style="flex:0"><label>&nbsp;</label><button class="btn">Add school</button></div>
     </form>
   </div>
 </div>

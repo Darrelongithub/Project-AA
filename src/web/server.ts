@@ -35,7 +35,7 @@ import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { INSTITUTION, emailBanner } from "../branding";
 import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS } from "../pack";
-import { EXAM_SYSTEMS, SUBJECT_CATALOG } from "../config";
+import { EXAM_SYSTEMS } from "../config";
 import type { SystemBlock } from "../types";
 import * as fs from "fs";
 import * as path from "path";
@@ -896,71 +896,60 @@ export function createApp(deps: WebDeps): Express {
   });
 
   // Structured entry requirements — one qualification-system block per save.
-  app.post("/config/entry-requirements", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const target = String(req.body.target ?? "").trim();
-    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}&reqs=${encodeURIComponent(target)}#entryreqs`;
-    const system = String(req.body.system ?? "").trim() as SystemBlock["system"];
-    if (!EXAM_SYSTEMS.some((m) => m.system === system)) return res.redirect(back("Unknown qualification system."));
-    const isBase = target.startsWith("BASE:");
-    const level = (isBase ? target.slice(5) : repo.programmeByCode(target)?.level ?? "degree") as CourseLevel;
-    if (!["degree", "diploma", "certificate", "postgrad"].includes(level)) return res.redirect(back("Unknown level."));
-    const programme = isBase ? null : target.toUpperCase();
-    if (!isBase && !repo.programmeByCode(programme!)) return res.redirect(back("Unknown course."));
-    const meta = EXAM_SYSTEMS.find((m) => m.system === system)!;
-
-    const enabled = req.body.enabled === "on";
-    if (!enabled) {
-      repo.deleteSystemBlock(programme, system, level);
-      repo.audit(null, req.staff!.username, "requirements_changed",
-        `${programme ?? `${level} (university-wide)`}: ${system} route removed`);
-      return res.redirect(back(`${meta.label} route removed for ${programme ?? "the university-wide defaults"} — the fallback now applies.`));
-    }
-
-    const block: SystemBlock = { system, enabled: true, overall: null, subjects: [] };
-    for (const f of meta.fields) {
-      if (f === "overall") {
-        const v = String(req.body.overall ?? "").trim().toUpperCase();
-        if (v && !/^[A-E][+-]?$/.test(v)) return res.redirect(back(`"${v}" is not a KCSE grade — nothing saved.`));
-        block.overall = v || null;
-      } else if (f === "minCredits" || f === "minPrincipals" || f === "minSubsidiaries" || f === "minPoints") {
-        const raw = String(req.body[f === "minCredits" ? "min_credits" : f === "minPrincipals" ? "min_principals" : f === "minSubsidiaries" ? "min_subsidiaries" : "min_points"] ?? "").trim();
-        if (raw !== "") {
-          const n = Number(raw);
-          if (!Number.isInteger(n) || n < 0) return res.redirect(back("Counts must be whole numbers — nothing saved."));
-          if (f === "minCredits") block.minCredits = n;
-          if (f === "minPrincipals") block.minPrincipals = n;
-          if (f === "minSubsidiaries") block.minSubsidiaries = n;
-          if (f === "minPoints") block.minPoints = n;
-        }
-      } else if (f === "minGpa") {
-        const raw = String(req.body.min_gpa ?? "").trim();
-        if (raw !== "") {
-          const n = Number(raw);
-          if (!Number.isFinite(n) || n < 0 || n > 4) return res.redirect(back("GPA must be between 0 and 4 — nothing saved."));
-          block.minGpa = n;
-        }
-      } else if (f === "minClass") {
-        const v = String(req.body.min_class ?? "").trim();
-        block.minClass = v || null;
-      }
-    }
-    // Subject matrix: checkbox sub_i + grade_i + optional alternative alt_i.
-    for (let i = 0; i < SUBJECT_CATALOG.length; i++) {
-      if (req.body[`sub_${i}`] !== "on") continue;
-      const grade = String(req.body[`grade_${i}`] ?? "").trim();
-      if (!grade) return res.redirect(back(`${SUBJECT_CATALOG[i]} is ticked but has no minimum grade — nothing saved.`));
-      const alt = String(req.body[`alt_${i}`] ?? "").trim();
-      block.subjects!.push({ subject: SUBJECT_CATALOG[i], grade, ...(alt ? { alts: [alt] } : {}) });
-    }
-    repo.upsertSystemBlock(programme, level, block);
-    repo.audit(null, req.staff!.username, "requirements_changed",
-      `${programme ?? `${level} (university-wide)`}: ${system} entry requirements saved (${block.subjects!.length} subject rule(s))`);
-    res.redirect(back(`Entry requirements saved for ${meta.label} — new applicants are checked against them immediately.`));
+  // OR-6: the legacy per-system block editor wrote to course_requirements,
+  // a table the engine does NOT enforce — editing it would change what staff
+  // see without changing what applicants are judged by (display ≠ enforce).
+  // It is gone; the structured Requirements tab is the single source. A stale
+  // POST gets an explicit refusal, never a silent write.
+  app.post("/config/entry-requirements", requireLogin, requireRole("admin"), csrfCheck, (_req, res) => {
+    res.redirect("/config?tab=requirements&msg=" + encodeURIComponent("Entry requirements are edited in the Requirements tab — that old form no longer saves anything."));
   });
 
   // ══ Requirements Configuration (round 18) ════════════════════════════════
   // Machine-evaluable rule trees per (programme × qualification system),
   // edited visually — no code, no raw expressions. Draft → preview → activate.
+
+  // OR-6: grade values are picked from ladders, never typed freehand. This
+  // server-side check mirrors exactly what the pickers offer, so the value
+  // that gets stored is always one the UI could have displayed.
+  const GRADE_FIELDS = new Set(["mean_grade", "subject"]);
+  const NUMERIC_FIELDS: Record<string, { int: boolean; min: number; max: number; what: string }> = {
+    credits: { int: true, min: 0, max: 99, what: "credit count" },
+    principals: { int: true, min: 0, max: 9, what: "principal-pass count" },
+    subsidiaries: { int: true, min: 0, max: 9, what: "subsidiary-pass count" },
+    points: { int: true, min: 0, max: 45, what: "point total" },
+    gpa: { int: false, min: 0, max: 4, what: "GPA" },
+  };
+  const CLASS_LADDERS: Record<string, string[]> = {
+    degree: ["Pass", "Second Class Honours (Lower Division)", "Second Class Honours (Upper Division)", "First Class Honours"],
+    diploma: ["Pass", "Credit", "Distinction"],
+  };
+  const validConditionValue = (
+    system: AdmissionSystem,
+    level: CourseLevel,
+    field: string | undefined,
+    v: string
+  ): { ok: true } | { ok: false; msg: string } => {
+    if (!field) return { ok: true };
+    if (field === "class") {
+      const ladder = CLASS_LADDERS[level === "diploma" || level === "certificate" ? "diploma" : "degree"];
+      return ladder.includes(v) ? { ok: true } : { ok: false, msg: `"${v}" is not a degree class on the ${level} ladder — pick one from the list.` };
+    }
+    if (GRADE_FIELDS.has(field)) {
+      const ladder = EXAM_SYSTEMS.find((m) => m.system === system)?.gradeOptions ?? null;
+      if (!ladder) return { ok: true }; // system has no grade ladder (e.g. DEGREE) — class/numbers apply
+      return ladder.includes(v) ? { ok: true } : { ok: false, msg: `"${v}" is not a ${system} grade — pick one from the ladder.` };
+    }
+    const num = NUMERIC_FIELDS[field];
+    if (num) {
+      const n = Number(v);
+      if (!Number.isFinite(n) || (num.int && !Number.isInteger(n)) || n < num.min || n > num.max) {
+        return { ok: false, msg: `The ${num.what} must be ${num.int ? "a whole number" : "a number"} between ${num.min} and ${num.max}.` };
+      }
+      return { ok: true };
+    }
+    return { ok: true };
+  };
 
   /** Parse a `reqs` target ("BASE:degree" | programme code) + system. */
   const reqsTarget = (req: Request): { programme: string | null; level: CourseLevel; system: AdmissionSystem; back: (m: string) => string } | null => {
@@ -972,9 +961,12 @@ export function createApp(deps: WebDeps): Express {
     const back = (m: string) =>
       `/config?tab=requirements&msg=${encodeURIComponent(m)}&reqs=${encodeURIComponent(target)}&system=${encodeURIComponent(system)}#reqbuilder`;
     if (!ADMISSION_SYSTEMS.includes(system)) return null;
-    if (!["degree", "diploma", "certificate", "postgrad"].includes(level)) return null;
+    // OR-6: Master's and PhD are separate levels. A stale "postgrad" form
+    // repost is normalised to masters instead of being dropped silently.
+    const normalized: CourseLevel = (level === ("postgrad" as CourseLevel) ? "masters" : level) as CourseLevel;
+    if (!["degree", "diploma", "certificate", "masters", "phd"].includes(normalized)) return null;
     if (!isBase && !repo.programmeByCode(programme!)) return null;
-    return { programme, level, system, back };
+    return { programme, level: normalized, system, back };
   };
 
   app.post("/config/requirements/node-add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
@@ -999,6 +991,14 @@ export function createApp(deps: WebDeps): Express {
     if (typeof req.body.subject === "string") patch.subject = req.body.subject.trim() || null;
     if (typeof req.body.value === "string") {
       const v = req.body.value.trim();
+      // OR-6: values must come from the picker ladders the UI offers — a
+      // hand-typed grade outside the ladder would display one thing and
+      // enforce another. Reject loudly instead of storing junk.
+      const field = (typeof req.body.field === "string" && req.body.field ? req.body.field : undefined) ?? undefined;
+      if (v) {
+        const verdict = validConditionValue(t.system, t.level, field, v);
+        if (!verdict.ok) return res.redirect(t.back(verdict.msg));
+      }
       patch.value = v || null;
     }
     if (Object.keys(patch).length === 0) return res.redirect(t.back("Nothing to save."));
@@ -1043,9 +1043,49 @@ export function createApp(deps: WebDeps): Express {
     const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#catalogue`;
     if (!ADMISSION_SYSTEMS.includes(system as AdmissionSystem)) return res.redirect(back("Unknown qualification system."));
     if (!name) return res.redirect(back("Subject name was empty."));
-    repo.addCatalogueSubject(system, name);
+    // OR-6: duplicates are refused explicitly — never swallowed by INSERT OR IGNORE.
+    if (!repo.addCatalogueSubject(system, name)) {
+      return res.redirect(back(`"${name}" is already in the ${system} catalogue — nothing added.`));
+    }
     repo.audit(null, req.staff!.username, "catalogue_changed", `${system}: subject "${name}" added`);
     res.redirect(back(`Subject "${name}" added to the ${system} catalogue.`));
+  });
+
+  app.post("/config/requirements/catalogue-rename", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const id = Number(req.body.id);
+    const name = String(req.body.name ?? "").trim();
+    const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#catalogue`;
+    const row = repo.listSubjectCatalogue().find((r) => r.id === id);
+    if (!row) return res.redirect(back("Unknown subject — nothing renamed."));
+    if (!name) return res.redirect(back("Subject name was empty."));
+    if (!repo.renameCatalogueSubject(id, name)) {
+      return res.redirect(back(`"${name}" already exists in the ${row.system} catalogue — nothing renamed.`));
+    }
+    repo.audit(null, req.staff!.username, "catalogue_changed", `${row.system}: "${row.name}" renamed to "${name}"`);
+    res.redirect(back(`Subject renamed to "${name}".`));
+  });
+
+  // OR-6: schools & courses live on ONE page — schools are first-class so a
+  // faculty exists before its first course and renames cascade to courses.
+  app.post("/config/schools/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const name = String(req.body.name ?? "").trim();
+    const back = (m: string) => `/config?tab=courses&msg=${encodeURIComponent(m)}#schools`;
+    if (!name) return res.redirect(back("School name was empty — nothing added."));
+    if (!repo.addSchool(name)) return res.redirect(back(`"${name}" already exists — nothing added.`));
+    repo.audit(null, req.staff!.username, "school_changed", `school "${name}" added`);
+    res.redirect(back(`School "${name}" added — assign courses to it below.`));
+  });
+
+  app.post("/config/schools/rename", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const from = String(req.body.from ?? "").trim();
+    const to = String(req.body.to ?? "").trim();
+    const back = (m: string) => `/config?tab=courses&msg=${encodeURIComponent(m)}#schools`;
+    if (!from || !to) return res.redirect(back("Rename needs a current name and a new name."));
+    if (from === to) return res.redirect(back("The new name is the same as the old one — nothing changed."));
+    const moved = repo.renameSchool(from, to);
+    if (moved < 0) return res.redirect(back(`"${to}" already exists — nothing renamed.`));
+    repo.audit(null, req.staff!.username, "school_changed", `school "${from}" renamed to "${to}" (${moved} course(s) moved)`);
+    res.redirect(back(`"${from}" renamed to "${to}" — ${moved} course(s) moved with it.`));
   });
 
   app.post("/config/requirements/catalogue-toggle", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
@@ -1356,7 +1396,17 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/settings/lists/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const added: string[] = [];
-    if (req.body.prog_code && req.body.prog_name) { repo.addProgramme(String(req.body.prog_code), String(req.body.prog_name)); added.push("programme"); }
+    if (req.body.prog_code && req.body.prog_name) {
+      const school = String(req.body.prog_school ?? "").trim();
+      // OR-6: Master's and PhD are distinct levels; anything unknown
+      // falls back to "degree" rather than storing junk.
+      const lvlRaw = String(req.body.prog_level ?? "degree");
+      const level: CourseLevel = ["degree", "diploma", "certificate", "masters", "phd"].includes(lvlRaw)
+        ? (lvlRaw as CourseLevel)
+        : "degree";
+      repo.addProgramme(String(req.body.prog_code), String(req.body.prog_name), school, "", level);
+      added.push("programme");
+    }
     if (req.body.intake) { repo.addIntake(String(req.body.intake)); added.push("intake"); }
     repo.audit(null, req.staff!.username, "lists_changed", "programmes/intakes updated");
     res.redirect("/config?msg=" + encodeURIComponent(added.length ? `Added ${added.join(" and ")}.` : "Nothing to add — fill in a programme code and name, or an intake.") + "#courses");

@@ -532,7 +532,8 @@ export class Repo {
     const p = programme ? this.programmeByCode(programme) : undefined;
     // CourseLevel "postgrad" maps onto the matrix's "masters" tier (the
     // PhD tier applies only to programmes explicitly recorded as PhD).
-    const rawLevel = p?.level ?? "degree";
+    const rawLevel = (p?.level ?? "degree") as string;
+    // legacy "postgrad" rows behave as masters until the migration rewrites them
     const level: ProgrammeLevel = rawLevel === "postgrad" ? "masters" : (rawLevel as ProgrammeLevel);
     const nationality: ApplicantNationality =
       opts?.nationality === "kenyan" || opts?.nationality === "international" ? opts.nationality : "unknown";
@@ -1666,10 +1667,26 @@ export class Repo {
     return rows as never[];
   }
 
-  addCatalogueSubject(system: string, name: string): void {
-    this.db
+  /** OR-6: returns false when the subject already exists — callers must
+   * refuse loudly; nothing is ever swallowed silently. */
+  addCatalogueSubject(system: string, name: string): boolean {
+    const res = this.db
       .prepare("INSERT OR IGNORE INTO subject_catalogue (system, name) VALUES (?, ?)")
       .run(system, name.trim());
+    return res.changes > 0;
+  }
+
+  /** OR-6: rename a catalogue subject (keeps its active status). Returns
+   * false when the new name already exists in that system. */
+  renameCatalogueSubject(id: number, name: string): boolean {
+    const row = this.db.prepare("SELECT system FROM subject_catalogue WHERE id = ?").get(id) as { system?: string } | undefined;
+    if (!row?.system) return false;
+    const clash = this.db
+      .prepare("SELECT id FROM subject_catalogue WHERE system = ? AND name = ? AND id <> ?")
+      .get(row.system, name.trim(), id);
+    if (clash) return false;
+    this.db.prepare("UPDATE subject_catalogue SET name = ? WHERE id = ?").run(name.trim(), id);
+    return true;
   }
 
   setCatalogueActive(id: number, active: boolean): void {
@@ -1681,6 +1698,34 @@ export class Repo {
       for (const e of entries) this.addCatalogueSubject(e.system, e.name);
     });
     tx();
+  }
+
+  // ── Schools (OR-6: first-class, editable, shared with courses page) ─────
+
+  /** Every school: the schools catalogue UNION the schools programmes use. */
+  listSchools(): string[] {
+    const rows = this.db
+      .prepare("SELECT name FROM schools UNION SELECT DISTINCT school FROM programmes WHERE school <> '' ORDER BY name")
+      .all() as Array<{ name: string }>;
+    return rows.map((x) => x.name);
+  }
+
+  /** Add a school. Returns false when it already exists. */
+  addSchool(name: string): boolean {
+    const res = this.db.prepare("INSERT OR IGNORE INTO schools (name) VALUES (?)").run(name.trim());
+    return res.changes > 0;
+  }
+
+  /** Rename a school, moving every course with it. Returns the number of
+   * courses moved, or -1 when the target name already exists. */
+  renameSchool(from: string, to: string): number {
+    const clash =
+      this.db.prepare("SELECT name FROM schools WHERE name = ?").get(to.trim()) ??
+      this.db.prepare("SELECT school FROM programmes WHERE school = ?").get(to.trim());
+    if (clash) return -1;
+    const moved = this.db.prepare("UPDATE programmes SET school = ? WHERE school = ?").run(to.trim(), from).changes;
+    this.db.prepare("UPDATE schools SET name = ? WHERE name = ?").run(to.trim(), from);
+    return moved;
   }
 
   // ── Requirement sets (versioned trees per programme × system) ────────────
