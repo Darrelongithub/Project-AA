@@ -165,6 +165,96 @@ export function docLines(type: string, spec: DocSpec): string[] {
         ...(spec.extraLines ?? []),
       ];
     }
+    case "exam_result_slip":
+      return [
+        "REPUBLIC OF KENYA",
+        "KENYA CERTIFICATE OF SECONDARY EDUCATION",
+        "EXAMINATION RESULT SLIP",
+        "",
+        `NAME: ${spec.name}`,
+        `YEAR: ${year}`,
+        `MEAN GRADE: ${spec.kcseMeanGrade ?? "C+"}`,
+        "INDEX NO: 20438112",
+        ...(spec.extraLines ?? []),
+      ];
+    case "leaving_certificate":
+      return [
+        `${spec.previousInstitution ?? "ALLIANCE HIGH SCHOOL"}`,
+        "HIGH SCHOOL LEAVING CERTIFICATE",
+        "",
+        `NAME: ${spec.name}`,
+        `YEAR OF COMPLETION: ${year}`,
+        "KCSE EXAMINATION CANDIDATE",
+        ...(spec.extraLines ?? []),
+      ];
+    case "passport_photo":
+      return [
+        "PASSPORT SIZE PHOTOGRAPH",
+        "(Applicant writes their name at the back)",
+        "",
+        `NAME: ${spec.name}`,
+        ...(spec.extraLines ?? []),
+      ];
+    case "undergraduate_transcript":
+      return [
+        `${spec.previousInstitution ?? "UNIVERSITY OF NAIROBI"}`,
+        "UNDERGRADUATE ACADEMIC TRANSCRIPT",
+        "",
+        `NAME: ${spec.name}`,
+        `PROGRAMME: ${spec.degreeTitle ?? "BACHELOR OF COMMERCE"}`,
+        `CLASSIFICATION: ${spec.classAwarded ?? "SECOND CLASS HONOURS (UPPER DIVISION)"}`,
+        `YEAR: ${year}`,
+        ...(spec.extraLines ?? []),
+      ];
+    case "undergraduate_degree_certificate":
+      return [
+        `${spec.previousInstitution ?? "UNIVERSITY OF NAIROBI"}`,
+        "UNDERGRADUATE DEGREE CERTIFICATE",
+        "",
+        `NAME: ${spec.name}`,
+        `DEGREE: ${spec.degreeTitle ?? "BACHELOR OF COMMERCE"}`,
+        `YEAR OF GRADUATION: ${year}`,
+        ...(spec.extraLines ?? []),
+      ];
+    case "masters_transcript":
+      return [
+        `${spec.previousInstitution ?? "UNIVERSITY OF NAIROBI"}`,
+        "MASTER'S ACADEMIC TRANSCRIPT",
+        "",
+        `NAME: ${spec.name}`,
+        `PROGRAMME: ${spec.degreeTitle ?? "MASTER OF BUSINESS ADMINISTRATION"}`,
+        `YEAR: ${year}`,
+        ...(spec.extraLines ?? []),
+      ];
+    case "masters_degree_certificate":
+      return [
+        `${spec.previousInstitution ?? "UNIVERSITY OF NAIROBI"}`,
+        "MASTER'S DEGREE CERTIFICATE",
+        "",
+        `NAME: ${spec.name}`,
+        `DEGREE: ${spec.degreeTitle ?? "MASTER OF BUSINESS ADMINISTRATION"}`,
+        `YEAR OF GRADUATION: ${year}`,
+        ...(spec.extraLines ?? []),
+      ];
+    case "law_personal_statement":
+      return [
+        "PERSONAL STATEMENT",
+        "(LLB applicants — not more than 500 words)",
+        "",
+        `NAME: ${spec.name}`,
+        "I wish to study law because I believe justice begins with listening.",
+        "My debate club leadership taught me advocacy grounded in evidence.",
+        ...(spec.extraLines ?? []),
+      ];
+    case "business_statement_of_objective":
+      return [
+        "STATEMENT OF OBJECTIVE",
+        "(BBA applicants — not more than 300 words)",
+        "",
+        `NAME: ${spec.name}`,
+        "My objective is to build a family enterprise with sound governance.",
+        ...(spec.extraLines ?? []),
+      ];
     case "kcpe_cert":
       return [
         "REPUBLIC OF KENYA",

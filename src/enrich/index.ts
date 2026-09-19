@@ -37,9 +37,15 @@ export function inferProgramme(
 ): string | null {
   if (!text) return null;
   const up = text.toUpperCase();
+  // Pass 1 — an exact programme CODE written anywhere (BCS, MBA, LLB…) is the
+  // strongest signal and always wins over fuzzy name matching. Doing this in a
+  // dedicated pass keeps a bachelor's degree title quoted inside the file from
+  // out-ranking the code the applicant actually wrote for the applied course.
   for (const p of programmes) {
-    // Exact code as a word (BCS, BBIT, LAW…)
     if (new RegExp(`\\b${p.code.toUpperCase()}\\b`).test(up)) return p.code;
+  }
+  // Pass 2 — fuzzy name matching.
+  for (const p of programmes) {
     // Significant words from the programme name; generic curriculum words
     // only support a match — they can never trigger one on their own.
     const words = p.name
@@ -62,6 +68,10 @@ export function inferProgramme(
       // of Business Administration form never matches the Bachelor's course.
       const first = words[0];
       if (first.length >= 4 && !up.includes(first)) continue;
+      // OR-5: the name's LAST word is its most specific part — "Business
+      // Administration" must never swallow "Business Information Technology".
+      const last = words[words.length - 1];
+      if (last.length >= 4 && !up.includes(last)) continue;
       return p.code;
     }
   }

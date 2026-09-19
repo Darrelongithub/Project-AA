@@ -105,7 +105,7 @@ export async function runSimulation(
   // Base set = the published application basics incl. the general minimum
   // (KCSE mean grade C+ on the secondary certificate); programme overrides
   // for diplomas/certificates/postgrad come from seedDefaults.
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  // OR-5: requirements come from the deterministic matrix — nothing to seed.
   const sender = new MockSender();
   const adapters = buildAdapters(cfg, sender, repo);
   const ctx: PipelineContext = { repo, adapters };

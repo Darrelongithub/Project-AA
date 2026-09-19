@@ -63,6 +63,18 @@ function email(p: IncomingEmail): IncomingEmail {
   return p;
 }
 
+/** OR-5: the official application-form checklist documents that accompany a
+ * file. School-leaver academic evidence (leaving certificate) applies to
+ * certificate/diploma/degree entry; postgraduate files carry prior-degree
+ * paperwork instead. Everyone provides a passport photo and birth certificate. */
+function checklistDocs(prefix: string, name: string, opts: { birth?: boolean; school?: boolean } = {}): Promise<Attachment>[] {
+  const specs: AttSpec[] = [];
+  if (opts.school !== false) specs.push({ filename: `${prefix}-leaving.pdf`, docType: "leaving_certificate", name });
+  specs.push({ filename: `${prefix}-photo.pdf`, docType: "passport_photo", name });
+  if (opts.birth !== false) specs.push({ filename: `${prefix}-birth.pdf`, docType: "birth_cert", name });
+  return specs.map((sp) => att(sp));
+}
+
 export async function buildFixtures(): Promise<Fixture[]> {
   const fixtures: Fixture[] = [];
 
@@ -84,6 +96,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "alice-id.pdf", docType: "id", name, spec: { idNumber: "23456789" } }),
             att({ filename: "alice-birth.pdf", docType: "birth_cert", name }),
             att({ filename: "alice-form.pdf", docType: "application_form", name, spec: { programme: "BSC COMPUTER SCIENCE" } }),
+            ...checklistDocs("alice", name, { birth: false }),
           ]),
         }),
       ],
@@ -108,6 +121,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "brian-kcpe.pdf", docType: "kcpe_cert", name, spec: { kcpePoints: 240, meanGrade: "C", year: "2016" } }),
             att({ filename: "brian-id.pdf", docType: "id", name, spec: { idNumber: "30112233" } }),
             att({ filename: "brian-form.pdf", docType: "application_form", name, spec: { programme: "BSC COMPUTER SCIENCE" } }),
+            ...checklistDocs("brian", name),
           ]),
         }),
       ],
@@ -131,6 +145,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "carol-academic.pdf", docType: "academic_cert", name }),
             att({ filename: "carol-kcpe.pdf", docType: "kcpe_cert", name, spec: { kcpePoints: 298, year: "2015" } }),
             att({ filename: "carol-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("carol", name),
           ]),
         }),
       ],
@@ -155,6 +170,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "daniel-academic.pdf", docType: "academic_cert", name }),
             att({ filename: "daniel-kcpe.pdf", docType: "kcpe_cert", name, spec: { kcpePoints: 355, year: "2014" } }),
             att({ filename: "daniel-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("daniel", name),
           ]),
         }),
         email({
@@ -188,6 +204,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "esther-id.pdf", docType: "id", name: "ESTHER WAIRIMU MUTUA", spec: { idNumber: "31224466" } }),
             att({ filename: "esther-birth.pdf", docType: "birth_cert", name: "ESTHER WAIRIMU MUTUA" }),
             att({ filename: "esther-form.pdf", docType: "application_form", name: "ESTHER MUTUA" }),
+            ...checklistDocs("esther", "ESTHER WAIRIMU MUTUA", { birth: false }),
           ]),
         }),
         email({
@@ -220,6 +237,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "frank-kcpe.pdf", docType: "kcpe_cert", name: "FRANK OCHIENG", spec: { kcpePoints: 276, year: "2015" } }),
             att({ filename: "frank-id.pdf", docType: "id", name: "FRANK ODHIAMBO", spec: { idNumber: "27654321" } }),
             att({ filename: "frank-form.pdf", docType: "application_form", name: "FRANK OCHIENG" }),
+            ...checklistDocs("frank", "FRANK OCHIENG"),
           ]),
         }),
       ],
@@ -248,6 +266,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             }),
             att({ filename: "grace-id.pdf", docType: "id", name, spec: { idNumber: "33445566" } }),
             att({ filename: "grace-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("grace", name),
           ]),
         }),
       ],
@@ -269,7 +288,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           attachments: [],
         }),
       ],
-      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: false, autoKind: "docs_request", flagTypes: [], superseded: 0, duplicates: 0, missing: ["academic_cert", "id", "application_form"], category: "application", priority: "normal" }, // qualification gate: held suggestion
+      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: false, autoKind: "docs_request", flagTypes: [], superseded: 0, duplicates: 0, missing: ["application_form", "birth_cert", "exam_result_slip", "id", "leaving_certificate", "passport_photo"], category: "application", priority: "normal" }, // qualification gate: held suggestion — OR-5 checklist
     });
   }
 
@@ -290,6 +309,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "ivy-kcpe.pdf", docType: "kcpe_cert", name, spec: { kcpePoints: 342, year: "2018" } }),
             att({ filename: "ivy-id.pdf", docType: "id", name, spec: { idNumber: "35566778" } }),
             att({ filename: "ivy-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("ivy", name),
           ]),
         }),
       ],
@@ -315,6 +335,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "judy-id.pdf", docType: "id", name, spec: { idNumber: "29887766" } }),
             att({ filename: "judy-form.pdf", docType: "application_form", name }),
             att({ filename: "judy-shopping-list.pdf", customLines: ["WEEKLY MARKET LIST", "TOMATOES, ONIONS, SUKUMA WIKI", "MILK, BREAD, EGGS", "COOKING OIL, RICE FLOUR"] }),
+            ...checklistDocs("judy", name),
           ]),
         }),
       ],
@@ -340,6 +361,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "kevin-kcpe.pdf", docType: "kcpe_cert", name, spec: { kcpePoints: 298, year: "2016" } }),
             att({ filename: "kevin-id.pdf", docType: "id", name, spec: { idNumber: "26677889" }, content: idPdf }),
             att({ filename: "kevin-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("kevin", name),
           ]),
         }),
         email({
@@ -370,6 +392,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "lucy-kcpe.pdf", docType: "kcpe_cert", name: "LUCY OCHIMI", spec: { kcpePoints: 305, year: "2017" } }),
             att({ filename: "lucy-id.pdf", docType: "id", name: "LUCY OCHIEMI", spec: { idNumber: "30998877" } }),
             att({ filename: "lucy-form.pdf", docType: "application_form", name: "LUCY OCHIMI" }),
+            ...checklistDocs("lucy", "LUCY OCHIMI"),
           ]),
         }),
       ],
@@ -391,7 +414,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           attachments: [],
         }),
       ],
-      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: false, autoKind: "docs_request", flagTypes: [], superseded: 0, duplicates: 0, missing: ["academic_cert", "id", "application_form"], category: "complaint", priority: "high" }, // qualification gate: held suggestion
+      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: false, autoKind: "docs_request", flagTypes: [], superseded: 0, duplicates: 0, missing: ["application_form", "birth_cert", "exam_result_slip", "id", "leaving_certificate", "passport_photo"], category: "complaint", priority: "high" }, // qualification gate: held suggestion — OR-5 checklist
     });
   }
 
@@ -415,6 +438,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "peter-kcpe.pdf", docType: "kcpe_cert", name, spec: { kcpePoints: 330, meanGrade: "B+", year: "2016" } }),
             att({ filename: "peter-birth.pdf", docType: "birth_cert", name }),
             att({ filename: "peter-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("peter", name, { birth: false }),
           ]),
         }),
         email({
@@ -457,6 +481,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
               att({ filename: "quinn-kcpe.pdf", docType: "kcpe_cert", name, spec: { kcpePoints: 340, meanGrade: "A-", year: "2016" } }),
               att({ filename: "quinn-id.pdf", docType: "id", name, spec: { idNumber: "31002244" } }),
               att({ filename: "quinn-form.pdf", docType: "application_form", name }),
+              ...checklistDocs("quinn", name, { birth: false }),
             ]),
           }),
           email({
@@ -495,6 +520,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "rosa-id.pdf", docType: "id", name, spec: { idNumber: "29775511" } }),
             att({ filename: "rosa-birth.pdf", docType: "birth_cert", name }),
             att({ filename: "rosa-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("rosa", name, { birth: false }),
           ]),
         }),
       ],
@@ -521,6 +547,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "sam-id.pdf", docType: "id", name, spec: { idNumber: "30554421" } }),
             att({ filename: "sam-birth.pdf", docType: "birth_cert", name }),
             att({ filename: "sam-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("sam", name, { birth: false }),
           ]),
         }),
       ],
@@ -550,6 +577,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "tina-id.pdf", docType: "id", name, spec: { idNumber: "31220099" } }),
             att({ filename: "tina-birth.pdf", docType: "birth_cert", name }),
             att({ filename: "tina-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("tina", name, { birth: false }),
           ]),
         }),
       ],
@@ -583,6 +611,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "uma-id.pdf", docType: "id", name, spec: { idNumber: "27664455" } }),
             att({ filename: "uma-birth.pdf", docType: "birth_cert", name }),
             att({ filename: "uma-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("uma", name, { birth: false }),
           ]),
         }),
         email({
@@ -615,6 +644,8 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "igcse-ok-results.pdf", docType: "academic_cert", name, spec: { examSystem: "IGCSE", subjects: { ENGLISH: "C", MATHEMATICS: "B", BIOLOGY: "C", CHEMISTRY: "C", HISTORY: "C", ECONOMICS: "B" } } }),
             att({ filename: "igcse-ok-id.pdf", docType: "id", name, spec: { idNumber: "33110022" } }),
             att({ filename: "igcse-ok-form.pdf", docType: "application_form", name, spec: { programme: "BACHELOR OF BUSINESS ADMINISTRATION" } }),
+            att({ filename: "igcse-ok-soo.pdf", docType: "business_statement_of_objective", name }),
+            ...checklistDocs("igcse-ok", name),
           ]),
         }),
       ],
@@ -636,6 +667,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "igcse-low-results.pdf", docType: "academic_cert", name, spec: { examSystem: "IGCSE", subjects: { ENGLISH: "C", MATHEMATICS: "C", BIOLOGY: "C", HISTORY: "C", PHYSICS: "F", CHEMISTRY: "F" } } }),
             att({ filename: "igcse-low-id.pdf", docType: "id", name, spec: { idNumber: "33445566" } }),
             att({ filename: "igcse-low-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("igcse-low", name),
           ]),
         }),
       ],
@@ -657,6 +689,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "ib-results.pdf", docType: "academic_cert", name, spec: { examSystem: "IB", ibPoints: 27 } }),
             att({ filename: "ib-id.pdf", docType: "id", name, spec: { idNumber: "33778899" } }),
             att({ filename: "ib-form.pdf", docType: "application_form", name, spec: { programme: "BACHELOR OF BUSINESS INFORMATION TECHNOLOGY" } }),
+            ...checklistDocs("ib", name),
           ]),
         }),
       ],
@@ -678,6 +711,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "al-results.pdf", docType: "academic_cert", name, spec: { examSystem: "ALEVEL", subjects: { MATHEMATICS: "B" }, subsidiaries: 1 } }),
             att({ filename: "al-id.pdf", docType: "id", name, spec: { idNumber: "33990011" } }),
             att({ filename: "al-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("al", name),
           ]),
         }),
       ],
@@ -696,9 +730,11 @@ export async function buildFixtures(): Promise<Fixture[]> {
           body: "Attached are my degree transcript and application documents for the MBA.",
           receivedAt: "2026-09-15T13:00:00Z",
           attachments: await Promise.all([
-            att({ filename: "mba-transcript.pdf", docType: "academic_cert", name, spec: { examSystem: "DEGREE", classAwarded: "SECOND CLASS HONOURS (UPPER DIVISION)" } }),
+            att({ filename: "mba-transcript.pdf", docType: "academic_cert", name, spec: { examSystem: "DEGREE", degreeTitle: "BACHELOR OF COMMERCE", classAwarded: "SECOND CLASS HONOURS (UPPER DIVISION)" } }),
+            att({ filename: "mba-ug-cert.pdf", docType: "undergraduate_degree_certificate", name }),
             att({ filename: "mba-id.pdf", docType: "id", name, spec: { idNumber: "34101112" } }),
             att({ filename: "mba-form.pdf", docType: "application_form", name, spec: { programme: "MASTER OF BUSINESS ADMINISTRATION" } }),
+            ...checklistDocs("mba", name, { school: false }),
           ]),
         }),
       ],
@@ -722,7 +758,8 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "tr-ok-academic.pdf", docType: "academic_cert", name }),
             att({ filename: "tr-ok-id.pdf", docType: "id", name, spec: { idNumber: "35221144" } }),
             att({ filename: "tr-ok-form.pdf", docType: "application_form", name }),
-            att({ filename: "tr-ok-ctf.pdf", docType: "credit_transfer_form", name, spec: { previousInstitution: "STRATHMORE UNIVERSITY" } }),
+            att({ filename: "tr-ok-ctf.pdf", docType: "credit_transfer_form", name, spec: { previousInstitution: "STRATHMORE UNIVERSITY", programme: "BSC COMPUTER SCIENCE" } }),
+            ...checklistDocs("tr-ok", name),
           ]),
         }),
       ],
@@ -744,6 +781,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
             att({ filename: "tr-miss-academic.pdf", docType: "academic_cert", name }),
             att({ filename: "tr-miss-id.pdf", docType: "id", name, spec: { idNumber: "35332255" } }),
             att({ filename: "tr-miss-form.pdf", docType: "application_form", name }),
+            ...checklistDocs("tr-miss", name),
           ]),
         }),
       ],
