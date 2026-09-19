@@ -21,8 +21,9 @@ import { evaluateAdmission } from "../admissions/evaluate";
 import { ADMISSION_SYSTEMS, type AdmissionSystem, type CourseLevel, type RuleField } from "../types";
 import {
   accountPage, admissionsPage, applicantsPage, casePage, composePage, configPage, dashboardPage, loginPage, setupPage,
-  replayPage, settingsPage, staffPage,
+  replayPage, settingsPage, staffPage, templatesPage,
 } from "./pages";
+import { TEMPLATE_DEFAULTS } from "../db/seed";
 import { avatar, esc, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
 import { processEmail } from "../pipeline";
@@ -34,7 +35,7 @@ import type { PipelineContext as PCtx } from "../pipeline/adapters";
 import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { INSTITUTION, emailBanner } from "../branding";
-import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS } from "../pack";
+import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
 import { EXAM_SYSTEMS } from "../config";
 import type { SystemBlock } from "../types";
 import * as fs from "fs";
@@ -457,6 +458,16 @@ export function createApp(deps: WebDeps): Express {
     return true;
   };
 
+  /** OR-7: which official pack (if any) rides along with a template. Missing
+   * pack files are audited — a send that silently drops a promised PDF is the
+   * worst kind of failure. */
+  const packForTemplate = (flag: string | undefined, applicantId: number, actor: string): { files: PackFile[]; label: string } | null => {
+    if (flag !== "application" && flag !== "admission") return null;
+    const pack = flag === "admission" ? admissionPack() : applicationPack();
+    if (pack.issues.length) repo.audit(applicantId, actor, "pack_incomplete", pack.issues.join("; "));
+    return { files: pack.files, label: flag };
+  };
+
   app.post("/case/:id/send", requireLogin, csrfCheck, async (req, res) => {
     const id = Number(req.params.id);
     const a = repo.getApplicant(id);
@@ -482,9 +493,11 @@ export function createApp(deps: WebDeps): Express {
     if (req.body.preview !== undefined) {
       return res.send(casePage(c(req), a, "Preview only — nothing has been sent.", rendered));
     }
+    const pack = packForTemplate(tpl.attach_pack, id, req.staff!.username);
     try {
       await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
         banner: tpl.include_banner === 0 ? null : emailBanner(repo),
+        attachments: pack ? pack.files : [],
       });
     } catch (e) {
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
@@ -495,8 +508,8 @@ export function createApp(deps: WebDeps): Express {
       from_addr: "", to_addr: a.email_address, subject: rendered.subject, body: rendered.body, category: null, auto: 0,
       at: new Date().toISOString(),
     });
-    staffAction(req, id, "email_sent_manual", `template ${tpl.key}: "${rendered.subject}"`);
-    res.redirect(backToCase(id, `Sent "${tpl.name}".`));
+    staffAction(req, id, "email_sent_manual", `template ${tpl.key}: "${rendered.subject}"${pack ? ` (+${pack.label} pack, ${pack.files.length} file(s))` : ""}`);
+    res.redirect(backToCase(id, `Sent "${tpl.name}"${pack ? ` with the ${pack.label} pack attached` : ""}.`));
   });
 
   /** Official document packs: the application pack, or the full admission pack. */
@@ -594,9 +607,11 @@ export function createApp(deps: WebDeps): Express {
       const rendered = renderFor(a, subject || tpl.subject, body || tpl.body);
       return res.send(composePage(c(req), a, tpl, rendered, "Both a subject and a body are needed before this can be sent."));
     }
+    const pack = packForTemplate(tpl.attach_pack, a.id, req.staff!.username);
     try {
       await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
         banner: tpl.include_banner === 0 ? null : emailBanner(repo),
+        attachments: pack ? pack.files : [],
       });
     } catch (e) {
       repo.audit(a.id, req.staff!.username, "send_failed", (e as Error).message);
@@ -606,8 +621,8 @@ export function createApp(deps: WebDeps): Express {
       applicant_id: a.id, message_id: `compose-${Date.now()}`, thread_id: a.thread_id, direction: "out",
       from_addr: "", to_addr: a.email_address, subject, body, category: null, auto: 0, at: new Date().toISOString(),
     });
-    staffAction(req, a.id, "email_sent_manual", `composed reply (${tpl.key}): "${subject}"`);
-    res.redirect(backToCase(a.id, `Reply sent to ${a.email_address}.`));
+    staffAction(req, a.id, "email_sent_manual", `composed reply (${tpl.key}): "${subject}"${pack ? ` (+${pack.label} pack)` : ""}`);
+    res.redirect(backToCase(a.id, `Reply sent to ${a.email_address}${pack ? ` with the ${pack.label} pack attached` : ""}.`));
   });
 
   app.post("/case/:id/note", requireLogin, csrfCheck, (req, res) => {
@@ -1412,19 +1427,58 @@ export function createApp(deps: WebDeps): Express {
     res.redirect("/config?msg=" + encodeURIComponent(added.length ? `Added ${added.join(" and ")}.` : "Nothing to add — fill in a programme code and name, or an intake.") + "#courses");
   });
 
-  app.post("/settings/template", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+  // OR-7: templates moved to their own section (/templates). A stale POST to
+  // the old endpoint is refused explicitly — never a silent write to a page
+  // nobody is looking at.
+  app.post("/settings/template", requireLogin, requireRole("admin"), csrfCheck, (_req, res) => {
+    res.redirect("/templates?msg=" + encodeURIComponent("Templates are edited in the Templates section now — this old form no longer saves anything."));
+  });
+
+  // ── OR-7: Templates section — every outgoing type, one home ──────────────
+  const tplBack = (key: string, m: string) =>
+    `/templates?template=${encodeURIComponent(key)}&msg=${encodeURIComponent(m)}#tpl-${key}`;
+  const KNOWN_PLACEHOLDERS = [
+    "{ref}", "{name}", "{first_name}", "{missing_docs}", "{missing_docs_section}",
+    "{checklist}", "{status}", "{institution}", "{programme}", "{reg_date}",
+    "{orientation_dates}", "{read_back}", "{document_issues}",
+  ];
+  const unknownPlaceholders = (text: string): string[] => {
+    const found = text.match(/\{[a-z_]+\}/g) ?? [];
+    return [...new Set(found.filter((p) => !KNOWN_PLACEHOLDERS.includes(p)))];
+  };
+
+  app.get("/templates", requireLogin, requireRole("admin"), (req, res) => {
+    const key = String(req.query.template ?? "");
+    const msg = req.query.msg ? String(req.query.msg) : undefined;
+    res.send(templatesPage(c(req), repo.listTemplates().some((t) => t.key === key) ? key : undefined, msg));
+  });
+
+  app.post("/templates/save", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const key = String(req.body.key ?? "");
     const existing = repo.getTemplate(key);
-    const back = (m: string) => `/config?tab=replies&template=${encodeURIComponent(key)}&msg=${encodeURIComponent(m)}#templates`;
-    if (!existing) return res.redirect(back("Unknown template — nothing saved."));
+    if (!existing) return res.redirect(`/templates?msg=${encodeURIComponent("Unknown template — nothing saved.")}`);
     const name = String(req.body.name ?? "").trim();
     const subject = String(req.body.subject ?? "").trim();
     const body = String(req.body.body ?? "").trim();
-    if (!name || !subject || !body) return res.redirect(back("Template needs a name, a subject and a body — nothing saved."));
-    repo.upsertTemplate(key, name, subject, body);
-    repo.setTemplateBanner(key, req.body.include_banner !== undefined);
-    repo.audit(null, req.staff!.username, "template_changed", key);
-    res.redirect(back(`Template “${name}” saved.`));
+    if (!name || !subject || !body) return res.redirect(tplBack(key, "Template needs a name, a subject and a body — nothing saved."));
+    const packRaw = String(req.body.attach_pack ?? "");
+    const attachPack = ["none", "application", "admission"].includes(packRaw) ? packRaw : "none";
+    repo.upsertTemplate(key, name, subject, body, req.body.include_banner !== undefined, attachPack);
+    repo.audit(null, req.staff!.username, "template_changed", `${key}${attachPack !== "none" ? ` (+${attachPack} pack)` : ""}`);
+    const unknown = unknownPlaceholders(subject + " " + body);
+    const warn = unknown.length
+      ? ` ⚠ Unknown placeholder${unknown.length === 1 ? "" : "s"} left in the text: ${unknown.join(", ")} — it will reach applicants as literal text.`
+      : "";
+    res.redirect(tplBack(key, `Template “${name}” saved.${warn}`));
+  });
+
+  app.post("/templates/reset", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const key = String(req.body.key ?? "");
+    const def = TEMPLATE_DEFAULTS[key];
+    if (!def) return res.redirect(`/templates?msg=${encodeURIComponent("No default exists for that template — nothing to reset.")}`);
+    repo.upsertTemplate(key, def.name, def.subject, def.body, def.include_banner, def.attach_pack);
+    repo.audit(null, req.staff!.username, "template_reset", key);
+    res.redirect(tplBack(key, `“${def.name}” reset to the official default.`));
   });
 
   // ── Staff management (admin) ─────────────────────────────────────────────

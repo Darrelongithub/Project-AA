@@ -10,6 +10,7 @@ import { SYSTEM_LABELS } from "../admissions/systems";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../admissions/queues";
 import { describeRuleTree, interpretRuleTree } from "../admissions/engine";
 import { docLabel } from "../rules";
+import { renderTemplate } from "../drafting";
 import { EXAM_SYSTEMS } from "../config";
 import { packManifest } from "../pack";
 import { verifyPassword } from "../util/password";
@@ -1280,7 +1281,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
 
 // ── Compose: a ready, pre-filled reply — one obvious path to Send ───────────
 
-export function composePage(c: Ctx, a: ApplicantRow, tpl: { key: string; name: string; subject: string; body: string; include_banner: number }, rendered: { subject: string; body: string }, error?: string): string {
+export function composePage(c: Ctx, a: ApplicantRow, tpl: { key: string; name: string; subject: string; body: string; include_banner: number; attach_pack?: string }, rendered: { subject: string; body: string }, error?: string): string {
   return head(
     c,
     `Compose — ${a.ref_number}`,
@@ -1311,6 +1312,7 @@ export function composePage(c: Ctx, a: ApplicantRow, tpl: { key: string; name: s
       <button class="btn">Send now</button>
       <a class="btn ghost" href="/case/${a.id}">Cancel — don't send</a>
       ${tpl.include_banner === 0 ? `<span class="muted small">sends without the branded banner</span>` : `<span class="muted small">branded banner is attached automatically</span>`}
+      ${tpl.attach_pack === "application" || tpl.attach_pack === "admission" ? `<span class="badge b-purple">${tpl.attach_pack} pack PDFs will be attached</span>` : ""}
     </div>
   </form>
 </div>`
@@ -1993,16 +1995,10 @@ ${intakesCard}`;
 ${documentsPackCard(c)}
 
 
-<div class="card" id="templates">
+<div class="card" id="templates-home">
   <h2>Email templates</h2>
-  <p class="small muted" style="margin-top:-6px">Placeholders: <span class="mono">{ref} {name} {first_name} {missing_docs} {missing_docs_section} {checklist} {status} {institution} {programme} {reg_date} {orientation_dates} {read_back} {document_issues}</span></p>
-  <form method="get" action="/config" class="formrow">
-    <input type="hidden" name="tab" value="replies">
-    <div style="flex:2"><label>Template</label><select name="template" onchange="this.form.submit()">${templates
-      .map((t) => `<option value="${esc(t.key)}" ${selectedTemplate === t.key ? "selected" : ""}>${esc(t.name)} (${esc(t.key)})</option>`)
-      .join("")}</select></div>
-  </form>
-  ${templateEditor(c, (selectedTemplate ? c.repo.getTemplate(selectedTemplate) : undefined) ?? first)}
+  <p class="small muted" style="margin-top:-6px">OR-7: every outgoing email type — automated replies, reminders and staff messages — is edited in the dedicated <a href="/templates">Templates section</a>, with placeholders documented, a live preview, reset-to-default and optional pack attachments.</p>
+  <p><a class="btn" href="/templates">Open the Templates section →</a></p>
 </div>
 
 <div class="card" id="branding">
@@ -2061,17 +2057,137 @@ ${tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : tab === 
   );
 }
 
-function templateEditor(c: Pick<Ctx, "csrf">, t: { key: string; name: string; subject: string; body: string; include_banner?: number } | undefined): string {
-  if (!t) return `<p class="muted">No templates.</p>`;
-  return `<form method="post" action="/settings/template">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-    <input type="hidden" name="key" value="${esc(t.key)}">
-    <label>Display name</label><input type="text" name="name" value="${esc(t.name)}">
-    <label>Subject (reference number is prepended automatically)</label><input type="text" name="subject" value="${esc(t.subject)}">
-    <label>Body</label><textarea name="body" style="min-height:220px">${esc(t.body)}</textarea>
-    <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" name="include_banner" style="width:auto" ${t.include_banner === 0 ? "" : "checked"}> Attach the email banner to this template</label>
-    <p><button class="btn">Save template</button></p>
+// ── OR-7: Templates section — one home for every outgoing email type ──────
+// What sends each template is annotated right next to it, placeholders are
+// documented with a live preview, every template can be reset to the
+// official default, and each can optionally attach an official pack PDF set.
+
+const TEMPLATE_USAGE: Record<string, string> = {
+  docs_request: "Sent automatically by the pipeline when an enquiry arrives with no documents yet.",
+  missing_documents: "Sent automatically when only some documents arrived — and reused by the reminder ladder (each rung adds a REMINDER prefix).",
+  ack_received: "Sent automatically when a file is complete and logged.",
+  status_answer: "Sent automatically for status questions, including reference-number-only emails.",
+  under_review: "Manual staff reply while a file is under review.",
+  verification: "Manual staff reply once a file moves to verification.",
+  generic_enquiry: "Automated fallback acknowledgement for anything else.",
+  admission_letter: "Sent automatically on auto-admission and from the case page — carries the full admission pack.",
+};
+
+const PLACEHOLDER_DOCS: Array<[string, string]> = [
+  ["{ref}", "the applicant's reference number"],
+  ["{name}", "full name (falls back to “Applicant”)"],
+  ["{first_name}", "first name only"],
+  ["{missing_docs}", "bulleted list of still-missing documents"],
+  ["{missing_docs_section}", "the missing list wrapped in a polite paragraph"],
+  ["{checklist}", "the full requirement checklist with ✓ / ✗ per item"],
+  ["{status}", "current lifecycle status in plain language"],
+  ["{institution}", "the university name"],
+  ["{programme}", "applied programme name"],
+  ["{reg_date}", "registration date (Settings → Response targets)"],
+  ["{orientation_dates}", "orientation dates (Settings → Response targets)"],
+  ["{read_back}", "“we read your grades as …” read-back, when available"],
+  ["{document_issues}", "per-document quality issues (unreadable pages etc.)"],
+];
+
+export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): string {
+  const { repo } = c;
+  const templates = repo.listTemplates();
+  const tpl = (selectedKey ? templates.find((t) => t.key === selectedKey) : undefined) ?? templates[0];
+
+  const picker = `<form class="inline" method="get" action="/templates" style="margin-bottom:6px">
+    <label class="small muted">Template</label>
+    <select name="template" onchange="this.form.submit()">
+      ${templates.map((t) => `<option value="${esc(t.key)}" ${tpl.key === t.key ? "selected" : ""}>${esc(t.name)} (${esc(t.key)})</option>`).join("")}
+    </select>
   </form>`;
+
+  const usage = TEMPLATE_USAGE[tpl.key] ?? "Manual staff reply.";
+  const packFlag = tpl.attach_pack ?? "none";
+
+  // Live preview against a sample applicant — exactly what renderTemplate
+  // will produce, so staff see the real output before anyone receives it.
+  const preview = renderTemplate(tpl.subject, tpl.body, {
+    ref: "RU-2026-000001",
+    institution: repo.getSetting("institution_name", "Riara University"),
+    name: "Wanjiku Kamau",
+    missingLabels: ["Leaving Certificate", "Passport Photo"],
+    checklist: "✓ Application Form\n✗ Leaving Certificate\n✗ Passport Photo",
+    statusLabel: "Documents received",
+    programme: "Bachelor of Laws",
+    regDate: repo.getSetting("reg_date", ""),
+    orientationDates: repo.getSetting("orientation_dates", ""),
+    readBack: "We read your KCSE mean grade as B (plain).",
+    documentIssues: "",
+  });
+  const unknown = [...new Set(((tpl.subject + " " + tpl.body).match(/\{[a-z_]+\}/g) ?? []).filter((ph) => !PLACEHOLDER_DOCS.some(([k]) => k === ph)))];
+
+  const editor = `<form method="post" action="/templates/save">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <input type="hidden" name="key" value="${esc(tpl.key)}">
+    <label>Display name</label><input type="text" name="name" value="${esc(tpl.name)}">
+    <label>Subject (the reference number is prepended automatically)</label><input type="text" name="subject" value="${esc(tpl.subject)}">
+    <label>Body</label><textarea name="body" style="min-height:260px">${esc(tpl.body)}</textarea>
+    <div class="formrow" style="margin-top:10px">
+      <div><label>Attach official pack PDFs</label><select name="attach_pack">
+        <option value="none" ${packFlag === "none" ? "selected" : ""}>No pack</option>
+        <option value="application" ${packFlag === "application" ? "selected" : ""}>Application pack (form + brochure)</option>
+        <option value="admission" ${packFlag === "admission" ? "selected" : ""}>Admission pack (all 8 documents)</option>
+      </select></div>
+      <div style="flex:2"><label>&nbsp;</label><span class="small muted">Applies to automated and manual sends alike. Missing pack files are audited, never skipped silently.</span></div>
+    </div>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" name="include_banner" style="width:auto" ${tpl.include_banner === 0 ? "" : "checked"}> Attach the email banner to this template</label>
+    <div style="display:flex;gap:10px;margin-top:14px;align-items:center">
+      <button class="btn">Save template</button>
+    </div>
+  </form>
+  <form method="post" action="/templates/reset" style="margin-top:10px" onsubmit="return confirm('Reset this template to the official default? Your edits will be lost.')">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <input type="hidden" name="key" value="${esc(tpl.key)}">
+    <button class="btn ghost">Reset to the official default</button>
+  </form>`;
+
+  const list = templates.map((t) => `<tr>
+      <td><a href="/templates?template=${encodeURIComponent(t.key)}#tpl-${esc(t.key)}"><b>${esc(t.name)}</b></a><br><span class="mono small muted">${esc(t.key)}</span></td>
+      <td class="small muted">${esc(TEMPLATE_USAGE[t.key] ?? "Manual staff reply.")}</td>
+      <td>${t.attach_pack === "none" ? `<span class="muted small">—</span>` : `<span class="badge b-purple">${esc(t.attach_pack)} pack</span>`}</td>
+    </tr>`).join("");
+
+  return head(
+    c,
+    "Templates",
+    "templates",
+    `
+<div class="hero">
+  <h1>Templates</h1>
+  <div class="sub">Every email this system sends — automated replies, reminders and staff messages — is built from one of these templates. Edit the words, pick the pack, reset any time.</div>
+</div>
+${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
+
+<section class="card nopad">
+  <div class="card-head"><h2>All outgoing types</h2></div>
+  <table><tr><th>Template</th><th>Who sends it</th><th>Pack attached</th></tr>${list}</table>
+</section>
+
+<section class="card nopad" id="tpl-${esc(tpl.key)}">
+  <div class="card-head"><h2>Edit — ${esc(tpl.name)}</h2></div>
+  <div style="padding:16px 24px 22px">
+    ${picker}
+    <p class="small muted" style="margin-top:6px"><b>Who sends this:</b> ${esc(usage)}</p>
+    ${unknown.length ? `<div class="flash err" style="position:static;margin:10px 0">Unknown placeholder${unknown.length === 1 ? "" : "s"} in this template: ${unknown.map(esc).join(", ")} — applicants will see it as literal text.</div>` : ""}
+    <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:22px">
+      <div>${editor}</div>
+      <div>
+        <h3 style="margin:0 0 6px;font-size:13px">Preview (sample applicant)</h3>
+        <div id="tpl-preview" class="small" style="border:1px solid var(--line2);border-radius:8px;padding:12px;background:var(--panel2,#fff);white-space:pre-wrap;line-height:1.6"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>
+        <h3 style="margin:16px 0 6px;font-size:13px">Placeholders</h3>
+        <table><tr><th>Token</th><th>Filled with</th></tr>
+          ${PLACEHOLDER_DOCS.map(([k, v]) => `<tr><td class="mono small">${esc(k)}</td><td class="small muted">${esc(v)}</td></tr>`).join("")}
+        </table>
+      </div>
+    </div>
+  </div>
+</section>`
+  );
 }
 
 // ── Staff (team performance + account management, merged) ──────────────────

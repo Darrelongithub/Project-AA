@@ -916,6 +916,7 @@ export function layout(opts: {
     }
     paletteLinks.push({ label: "Alerts", hint: "alerts", href: "/#alerts", keys: "alerts notifications bell" });
     paletteLinks.push({ label: "Account", hint: "profile", href: "/account", keys: "account profile username password theme dark light appearance" });
+    if (opts.user?.role === "admin") paletteLinks.push({ label: "Templates", hint: "email templates", href: "/templates", keys: "templates emails replies placeholders pack reset" });
   }
   const paletteJs = PALETTE_JS.replace("__PALETTE_LINKS__", JSON.stringify(paletteLinks));
 
@@ -931,6 +932,7 @@ export function layout(opts: {
         ? [
             { href: "/staff", label: "Staff Configuration", active: "staff" },
             { href: "/config", label: "Configuration", active: "config" },
+            { href: "/templates", label: "Templates", active: "templates" },
             { href: "/settings", label: "Settings", active: "settings" },
           ]
         : []),

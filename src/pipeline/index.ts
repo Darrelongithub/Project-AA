@@ -566,10 +566,15 @@ export async function processEmail(
   const wantsAutoSend = autoKind !== null && draft?.audience === "auto";
   if (wantsAutoSend && draft) {
     try {
-      // Enquiries get the real application pack; every branded template
-      // carries the changeable banner unless the template opts out.
+      // OR-7: which pack (if any) rides along is a property of the TEMPLATE,
+      // edited in the Templates section — the pipeline no longer hardcodes
+      // it, so what staff configure is exactly what applicants receive.
+      // Defaults keep the historical behaviour (enquiry → application pack,
+      // auto-admit → full admission pack).
       const tplRow = templateKey ? repo.getTemplate(templateKey) : undefined;
-      const pack = willAutoAdmit ? admissionPack() : autoKind === "docs_request" ? applicationPack() : null;
+      const packFlag = tplRow?.attach_pack
+        ?? (willAutoAdmit ? "admission" : autoKind === "docs_request" ? "application" : "none");
+      const pack = packFlag === "admission" ? admissionPack() : packFlag === "application" ? applicationPack() : null;
       const extras: SendExtras = {
         banner: tplRow?.include_banner === 0 ? null : emailBanner(repo),
         attachments: pack ? pack.files : [],
