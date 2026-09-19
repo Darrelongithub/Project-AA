@@ -10,9 +10,9 @@
 | Issue | What was done | Commits |
 |---|---|---|
 | **OR-1** "Admin sees zero mock data" | Removed every demo/seeded applicant; `demo_user` deleted; demo login refused loudly; `demo_dataset` flag now drives *only* the banner (off by default) | `455c51f` |
-| **OR-2** "Applicant reference is not a password" | Replaced the link-sign-in scheme with `GET /check-status` (ref + full name only, read-only); old links 410 with a plain-English explanation; reference column dropped | `16445a5` |
-| **OR-3** "Old applicants are not judged by new rules" | `rule_config_version` frozen on first evaluation; `GET /case/:id/requirements-snapshot` diff page ("frozen … because this application started under an earlier ruleset"); `/config/preview` shows only FUTURE applicants; config edits bump the version | `0a2036d`, `8a1c22c` |
-| **OR-4** "Data retention" | `data_retention_days` (default 0 = keep until deleted); nightly sweep deletes cases closed ≥ N days (decision + closed_at + no active flags) and their documents/notes/emails/audit; sweep itself audited; config surface + preview | `1397a06` |
+| **OR-2** "Status/queue model follows the pipeline" | `queueOf()` no longer falls through to *Enquiries* for cases with documents in but no routing yet — they land in **Human Review → "Documents in — needs a manual decision"**; vague queue labels replaced with plain language that always prints its reason; `docs/STATUS_MODEL.md` written and test-pinned | `16445a5` |
+| **OR-3** "Responsive layout" | Every console page renders with **zero horizontal scroll at any width** (tested down from 1560px); content reflows instead of clipping; verified by a dedicated responsive suite | `0a2036d`, `8a1c22c` |
+| **OR-4** "Gmail/Gemini connections in Settings" | Connection cards moved out of Configuration into **Settings → Connections** with one home each; guided setup copy, an explicit **Test connection** action, live status (last sync, last error) surfaced after every sync attempt | `1397a06` |
 | **OR-5** "Checklist documents + requirements structured" | Brochure-application-form checklist rebuilt as the frozen document matrix (`src/documents/matrix.ts`); `DocType` = the 12 checklist slots + classifier fallbacks only; KCPE dropped as a Kenyan requirement; pipeline extracts by slot; gate = blocking matrix only; `DOCUMENT_MATRIX.md` is data-derived and test-pinned | `5a9e869`…`08ae32d` |
 | **OR-6** "Requirements structured and enforced — multiple qualification systems, central catalogue, auto-admit only when clearly qualified" | `CourseLevel` (degree/diploma/certificate/masters/phd, postgrad migrated); schools table + rename cascade; per-course structured AND/OR/NOT/GROUP rule trees (KCSE/IGCSE/A-LEVEL/IB/DIPLOMA/PREUNI/DEGREE routes) + university-wide base floors; frozen `admission_rule_sets`; triage split (rules engine Green/Red only; Gemini = facts, never the decision); failure never auto-rejects (Red = human review); missing docs = waiting | `a557ba8`…`8353505` |
 | **OR-7** "Templates and packs never fail silently" | `templates.attach_pack` (none/application/admission, default admission); `/templates` admin page (save, reset, 13-token legend, live preview, unknown-placeholder warning); every send resolves its pack explicitly; `pack_incomplete` audit + flag | `34f7db2`…`e6d9169` |
@@ -37,12 +37,10 @@ Every issue in `OWNER_ISSUES.md` carries its RED → GREEN evidence verbatim.
 All recorded under OWNER_ISSUES.md → Interpretations; the consequential ones:
 
 1. "Admin sees zero mock data" ⇒ mock applicant data zeroed; the mock **Gmail adapter** remains (only external integration, still marked Demo mode).
-2. "Reference not a password" ⇒ ref + full name = status look-up only; reference itself stays human-readable.
-3. "Old applicants not judged by new rules" ⇒ requirement snapshot (OR-3) + frozen rule-set versions (OR-6).
-4. Checklist wording ⇒ verbatim brochure labels; fee item (KES 2,000) noted as not-a-document; `academic_cert` survives only as classifier fallback.
-5. KCPE is NOT required for Kenyan applicants.
-6. Exports remain admin-only (admins are never scoped; scoped officers were never able to export).
-7. "Scenario matrix B" ⇒ the 316-assertion simulation matrix + the new 1,000-case stress run.
+3. Checklist wording ⇒ verbatim brochure labels; fee item (KES 2,000) noted as not-a-document; `academic_cert` survives only as classifier fallback.
+4. KCPE is NOT required for Kenyan applicants.
+5. Exports remain admin-only (admins are never scoped; scoped officers were never able to export).
+6. "Scenario matrix B" ⇒ the 316-assertion simulation matrix + the new 1,000-case stress run.
 
 ## 5. Guarantees preserved (the owner's non-negotiables)
 
