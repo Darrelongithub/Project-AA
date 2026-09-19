@@ -21,7 +21,7 @@ import { fillSlots } from "../documents/matrix";
 import { evaluateAdmission } from "../admissions/evaluate";
 import { ADMISSION_SYSTEMS, type AdmissionSystem, type CourseLevel, type RuleField } from "../types";
 import {
-  accountPage, admissionsPage, applicantsPage, casePage, composePage, configPage, dashboardPage, loginPage, setupPage,
+  accountPage, admissionsPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, setupPage,
   replayPage, settingsPage, staffPage, templatesPage,
 } from "./pages";
 import { TEMPLATE_DEFAULTS } from "../db/seed";
@@ -619,6 +619,105 @@ export function createApp(deps: WebDeps): Express {
       regDate: repo.getSetting("reg_date", ""),
       orientationDates: repo.getSetting("orientation_dates", ""),
     });
+
+  // ── New-window composer ────────────────────────────────────────────────────
+  // A standalone compose window: pick the recipient (scoped search), load a
+  // template if wanted, edit, send. Same rules as every other send path —
+  // scoping enforced on BOTH the open and the send, pack/banner come from the
+  // chosen template, attachments recorded on the case history.
+  const refuseScope = (req: Request, res: Response): void => {
+    res.status(403).send(layout({
+      title: "Outside your schools",
+      institution: instName(),
+      user: req.staff,
+      unread: repo.unreadCount(req.staff!.id),
+      csrf: req.csrfToken,
+      content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
+        <h1>This case is outside your assigned schools</h1>
+        <p class="sub">You can only compose to cases that belong to a school you handle. If this should be yours, ask an administrator to update your visibility scope.</p>
+        <p><a class="btn" href="/compose">← Back to the composer</a></p>
+      </div>`,
+    }));
+  };
+  /** Case id from the composer (query or body) — visibility-checked. */
+  const composeCase = (req: Request, raw: unknown): ApplicantRow | null | "refused" => {
+    const id = Number(raw);
+    if (!Number.isFinite(id)) return null;
+    const a = repo.getApplicant(id);
+    if (!a || !repo.applicantVisibleTo(req.staff!, a)) return "refused";
+    return a;
+  };
+
+  app.get("/compose", requireLogin, (req, res) => {
+    const caseId = req.query.case ? String(req.query.case) : "";
+    const templateKey = req.query.template ? String(req.query.template) : undefined;
+    if (caseId) {
+      const a = composeCase(req, caseId);
+      if (a === "refused") return refuseScope(req, res);
+      if (a) {
+        const tpl = templateKey ? repo.getTemplate(templateKey) : undefined;
+        const rendered = tpl ? renderFor(a, tpl.subject, tpl.body) : undefined;
+        return res.send(composeWindowPage(c(req), {
+          applicant: a, templateKey: tpl?.key,
+          subject: rendered?.subject, body: rendered?.body,
+        }));
+      }
+    }
+    const scope = repo.visibleSchoolsFor(req.staff!);
+    const q = req.query.q !== undefined ? String(req.query.q).trim() : undefined;
+    const matches = repo.searchApplicants({
+      q: q || undefined, demo: req.staff!.demo, schools: scope, limit: 8,
+    });
+    res.send(composeWindowPage(c(req), { matches, q, templateKey }));
+  });
+
+  app.post("/compose", requireLogin, csrfCheck, async (req, res) => {
+    const a = composeCase(req, req.body.case);
+    if (a === "refused") return refuseScope(req, res);
+    if (!a) return res.redirect("/compose");
+    const tplKey = String(req.body.template ?? "");
+    const tpl = tplKey ? repo.getTemplate(tplKey) : undefined;
+
+    // Prepare step: load the chosen template into the draft, send nothing.
+    if (String(req.body.action ?? "") === "prepare") {
+      const rendered = tpl ? renderFor(a, tpl.subject, tpl.body) : { subject: "", body: "" };
+      return res.send(composeWindowPage(c(req), {
+        applicant: a, templateKey: tpl?.key,
+        subject: rendered.subject, body: rendered.body,
+        flash: tpl ? `Loaded “${tpl.name}” into the draft — edit freely, nothing is sent yet.` : "Blank draft.",
+      }));
+    }
+
+    const subject = String(req.body.subject ?? "").trim();
+    const body = String(req.body.body ?? "").trim();
+    if (!subject || !body) {
+      return res.send(composeWindowPage(c(req), {
+        applicant: a, templateKey: tpl?.key, subject, body,
+        error: "Both a subject and a message are needed before this can be sent.",
+      }));
+    }
+    const pack = packForTemplate(tpl?.attach_pack, a.id, req.staff!.username);
+    try {
+      await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
+        banner: tpl && tpl.include_banner === 0 ? null : emailBanner(repo),
+        attachments: pack ? pack.files : [],
+      });
+    } catch (e) {
+      repo.audit(a.id, req.staff!.username, "send_failed", (e as Error).message);
+      return res.send(composeWindowPage(c(req), {
+        applicant: a, templateKey: tpl?.key, subject, body,
+        error: `Send failed: ${(e as Error).message}`,
+      }));
+    }
+    repo.insertEmail({
+      applicant_id: a.id, message_id: `composewin-${Date.now()}`, thread_id: a.thread_id, direction: "out",
+      from_addr: "", to_addr: a.email_address, subject, body, category: null, auto: 0,
+      at: new Date().toISOString(),
+      attachments: pack ? pack.files.map((f) => f.filename) : [],
+    });
+    staffAction(req, a.id, "email_sent_manual", `new-window compose${tpl ? ` (${tpl.key})` : ""}: "${subject}"${pack ? ` (+${pack.label} pack, ${pack.files.length} file(s))` : ""}`);
+    res.redirect(backToCase(a.id, `Reply sent to ${a.email_address}${pack ? ` with the ${pack.label} pack attached` : ""}.`));
+  });
 
   app.get("/case/:id/compose", requireLogin, (req, res) => {
     const a = repo.getApplicant(Number(req.params.id));

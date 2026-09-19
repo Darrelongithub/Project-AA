@@ -1139,6 +1139,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
         </div>
       </form>
       <p class="small muted" style="margin-top:12px">Or open any template in the full composer: ${templates.slice(0, 3).map((t) => `<a href="/case/${a.id}/compose?template=${esc(t.key)}">${esc(t.name)}</a>`).join(" · ")}</p>
+      <p class="small muted" style="margin:6px 0 0"><a href="/compose?case=${a.id}" target="_blank" rel="noopener">Open a compose window for this applicant <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg></a> — keeps the case file open in this tab.</p>
       <p class="small muted" style="margin:6px 0 0">Auto-response toggles per category live in <a href="/settings#automation">Settings → Automation</a>. Current modes: ${esc(autoSummary || "defaults")}</p>
     </div>
 
@@ -1317,6 +1318,111 @@ export function composePage(c: Ctx, a: ApplicantRow, tpl: { key: string; name: s
 </div>`
   );
 }
+
+/**
+ * New-window composer. Two shapes:
+ *  - no applicant yet → recipient search (scoped server-side);
+ *  - applicant chosen → the draft itself (template optional, load-then-send).
+ * Designed to stand alone in its own browser window — everything the reply
+ * needs is on this one page, and after sending the window becomes the case.
+ */
+export function composeWindowPage(
+  c: Ctx,
+  opts: {
+    applicant?: ApplicantRow;
+    matches?: ApplicantRow[];
+    q?: string;
+    templateKey?: string;
+    subject?: string;
+    body?: string;
+    error?: string;
+    flash?: string;
+  }
+): string {
+  const { repo } = c;
+
+  // ── Shape 1: pick the recipient ──────────────────────────────────────────
+  if (!opts.applicant) {
+    const rows = (opts.matches ?? []).map((a) => {
+      const prog = a.programme ? repo.programmeByCode(a.programme) : undefined;
+      return `<a class="rowline" href="/compose?case=${a.id}${opts.templateKey ? `&template=${encodeURIComponent(opts.templateKey)}` : ""}" style="display:flex;gap:12px;align-items:center;padding:10px 8px;border-radius:8px;text-decoration:none;color:inherit">
+        ${avatar(a.full_name ?? a.ref_number, 30)}
+        <span style="min-width:0;flex:1">
+          <b>${esc(a.full_name ?? a.ref_number)}</b>
+          <span class="small muted"> · ${esc(a.email_address)}${prog ? ` · ${esc(prog.name)}` : ""}</span>
+        </span>
+        ${lifecycleBadge(a.lifecycle)}
+      </a>`;
+    }).join("");
+    return head(c, "Compose", "compose", `
+<div class="hero">
+  <div class="row">
+    <div style="min-width:0">
+      <div class="kicker">New window · compose</div>
+      <h1 style="margin:0">Who is this reply for?</h1>
+      <div class="sub" style="margin:2px 0 0">Every reply belongs to a case file — search by name, email or reference, then open the draft.</div>
+    </div>
+  </div>
+</div>
+<div class="card" style="max-width:880px">
+  <form method="get" action="/compose" class="formrow" style="align-items:end">
+    <div style="flex:1"><label>Search applicants</label>
+      <input type="text" name="q" value="${esc(opts.q ?? "")}" placeholder="Name, email or reference number…" autofocus>
+    </div>
+    <div style="flex:0"><button class="btn">Search</button></div>
+  </form>
+  ${opts.q !== undefined
+    ? (rows ? `<div style="margin-top:10px">${rows}</div>` : `<p class="small muted" style="margin:14px 0 0">No applicants you can see match “${esc(opts.q ?? "")}”. Scoped staff only see cases from their own schools.</p>`)
+    : `<p class="small muted" style="margin:14px 0 0">${rows ? "Recent files:" : "No cases yet — replies appear here once applications arrive."}</p>${rows ? `<div style="margin-top:4px">${rows}</div>` : ""}`}
+</div>`);
+  }
+
+  // ── Shape 2: the draft ────────────────────────────────────────────────────
+  const a = opts.applicant;
+  const templates = repo.listTemplates();
+  const tpl = opts.templateKey ? templates.find((t) => t.key === opts.templateKey) : undefined;
+  const prog = a.programme ? repo.programmeByCode(a.programme) : undefined;
+  return head(c, `Compose — ${a.ref_number}`, "compose", `
+<div class="hero">
+  <div class="row">
+    ${avatar(a.full_name ?? a.ref_number, 46)}
+    <div style="min-width:0">
+      <div class="kicker">New window · compose</div>
+      <h1 style="margin:0">${esc(a.full_name ?? a.ref_number)}</h1>
+      <div class="sub" style="margin:2px 0 0">To <b>${esc(a.email_address)}</b>${prog ? ` · ${esc(prog.name)}` : ""} · ${lifecycleBadge(a.lifecycle)} · <a href="/case/${a.id}">open the case file</a></div>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="max-width:880px">
+  ${opts.error ? `<div class="flash err" style="position:static;margin-bottom:16px">${esc(opts.error)}</div>` : ""}
+  ${opts.flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(opts.flash)}</div>` : ""}
+  <form method="post" action="/compose">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <input type="hidden" name="case" value="${a.id}">
+    <div class="formrow" style="align-items:end">
+      <div style="flex:1"><label>Start from a template (optional)</label>
+        <select name="template">
+          <option value="">— blank message —</option>
+          ${templates.map((t) => `<option value="${esc(t.key)}" ${opts.templateKey === t.key ? "selected" : ""}>${esc(t.name)}</option>`).join("")}
+        </select>
+      </div>
+      <div style="flex:0"><button class="btn ghost" name="action" value="prepare">Load into the draft</button></div>
+    </div>
+    <label>Subject</label>
+    <input type="text" name="subject" value="${esc(opts.subject ?? "")}">
+    <label>Message</label>
+    <textarea name="body" style="min-height:340px;font-size:14px;line-height:1.7">${esc(opts.body ?? "")}</textarea>
+    <div style="display:flex;gap:10px;margin-top:18px;align-items:center">
+      <button class="btn">Send now</button>
+      <a class="btn ghost" href="/case/${a.id}">Cancel — don’t send</a>
+      ${tpl ? (tpl.include_banner === 0 ? `<span class="muted small">sends without the branded banner</span>` : `<span class="muted small">branded banner is attached automatically</span>`) : ""}
+      ${tpl && (tpl.attach_pack === "application" || tpl.attach_pack === "admission") ? `<span class="badge b-purple">${tpl.attach_pack} pack PDFs will be attached</span>` : ""}
+    </div>
+  </form>
+</div>`);
+}
+
 
 // ── Settings (app behaviour) & Configuration (admissions setup) ────────────
 
