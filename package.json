@@ -11,13 +11,13 @@
     "ingest": "tsx src/cli/ingest.ts",
     "queue": "tsx src/cli/queue.ts",
     "serve": "tsx src/cli/serve.ts",
-    "demo": "tsx src/cli/demo.ts",
     "escalate": "tsx src/cli/escalate.ts",
     "followups": "tsx src/cli/followups.ts",
     "retain": "tsx src/cli/retain.ts",
     "backup": "tsx src/cli/backup.ts",
     "restore": "tsx src/cli/restore.ts",
-    "start": "node dist/src/cli/serve.js"
+    "start": "node dist/src/cli/serve.js",
+    "purge-mock": "tsx src/cli/purgeMock.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

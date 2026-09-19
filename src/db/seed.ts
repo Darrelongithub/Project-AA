@@ -1,12 +1,11 @@
 /**
- * First-run seed data: settings, programmes, intakes, base requirements,
- * reply templates, and starter staff accounts.
- * Idempotent — safe to call on every boot.
+ * First-run seed data: settings, programmes, intakes, base requirements and
+ * reply templates. Idempotent — safe to call on every boot.
+ * OR-1: seeds NO staff accounts and no mock data; the first visit to the
+ * console walks the owner through creating their own admin account.
  */
-import * as crypto from "crypto";
 import type { Repo } from "./repo";
 import { DEFAULT_INTAKES, DEFAULT_PROGRAMMES, DEFAULT_REQUIREMENTS, DEFAULT_SETTINGS, DEFAULT_STRUCTURED_BASE, DEFAULT_STRUCTURED_COURSES } from "../config";
-import { hashPassword } from "../util/password";
 import { defaultEmailBanner } from "../pack";
 import { blockToNodes, CATALOGUE_SEED } from "../admissions/convert";
 import type { CourseLevel, RuleNode } from "../types";
@@ -209,22 +208,12 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
       if (!exists) repo.upsertTemplate(t.key, t.name, t.subject, t.body);
     }
   }
-  // Staff users
-  const userCount = (repo.db.prepare("SELECT COUNT(*) AS n FROM staff_users").get() as { n: number }).n;
-  if (userCount === 0) {
-    if (opts.live) {
-      // LIVE mode pointed at a real inbox must not boot with admin/admin123.
-      // Generate a one-time password, print it once, force a rotation.
-      const pw = crypto.randomBytes(12).toString("base64url");
-      repo.createStaff("admin", "System Administrator", hashPassword(pw), "admin");
-      console.warn(`\nseed: LIVE mode — created admin account with one-time password:\n\n    ${pw}\n\nChange it immediately in Staff settings.\n`);
-    } else {
-      repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
-    }
-    // Production bootstraps with the admin account ALONE. Demo accounts
-    // (demo_admin / demo_user) are created by `npm run demo` and are marked
-    // as demo rows — real staff are provisioned by the real admin in Staff.
-  }
+  // Staff users: intentionally NONE. OR-1 — the product ships with no
+  // accounts and no default credentials. The very first visit to the console
+  // shows a one-time setup screen where the owner creates their own admin
+  // account (see /setup in src/web/server.ts). Test suites create accounts
+  // explicitly through repo.createStaff.
+  void opts;
   // Admission letter: the official template (name + dates vary per student).
   if (!repo.getTemplate("admission_letter")) {
     repo.upsertTemplate(

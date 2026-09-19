@@ -3,6 +3,7 @@
  * each test FAILS against the pre-fix code.
  */
 import { describe, expect, it } from "vitest";
+import { hashPassword } from "../src/util/password";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
@@ -287,6 +288,8 @@ describe("bug: /theme was an open redirect via the Referer header", () => {
 describe("bug: sessions were never purged after boot", () => {
   it("creating a session purges expired rows", () => {
     const repo = freshRepo();
+    // OR-1: no accounts are seeded — create one for the session to belong to.
+    repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
     const staff = repo.getStaffByUsername("admin")!;
     repo.db
       .prepare("INSERT INTO sessions (token, staff_id, csrf, expires_at) VALUES (?,?,?,?)")

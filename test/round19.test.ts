@@ -521,8 +521,9 @@ describe("regression: case routing is realm-scoped", () => {
     for (const a of [live, demo]) {
       repo.updateApplicant(a.id, { programme: "BBIT", lifecycle: "application_received" });
     }
-    // Everything seeded so far becomes the demo realm
-    repo.markDemoRealm();
+    // Everything seeded so far becomes the demo realm (flag set directly —
+    // the product no longer ships a demo-marking helper)
+    repo.db.prepare("UPDATE applicants SET demo = 1").run();
     // New applicant created after the mark stays live
     const live2 = repo.getOrCreateApplicant("live2@example.com", "t-live2");
     repo.updateApplicant(live2.id, { programme: "BBIT", lifecycle: "application_received" });

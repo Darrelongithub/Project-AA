@@ -28,6 +28,9 @@ let ctx: PipelineContext;
 beforeAll(async () => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  // OR-1: seedDefaults no longer creates accounts — the test provisions its
+  // own admin exactly like the first-run setup screen would.
+  repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
   // Test fixtures: a real officer and manager (production-style, not demo).
   repo.createStaff("manager", "Mary Mwangi (User)", hashPassword("manager123"), "user");
   repo.createStaff("jane", "Jane Wairimu (User)", hashPassword("jane123"), "user");
@@ -704,43 +707,24 @@ describe("QA audit regressions", () => {
     expect(after).not.toContain("new</span>");
   });
 
-  it("shows the demo banner only when the demo dataset flag is set", async () => {
+  // OR-1 replaced the demo-dataset banner/badges: the product no longer has
+  // any mock-data concept, so these tests pin the NEW contract instead.
+  it("never shows a demo banner — even if an old demo flag lingers in settings", async () => {
     const { cookie } = await login();
-    repo.setSetting("demo_dataset", "1");
+    repo.setSetting("demo_dataset", "1"); // residue an old install might carry
     const withFlag = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-    expect(withFlag).toContain("Demo dataset loaded");
-    expect(withFlag).toContain("demo_admin");
+    expect(withFlag).not.toContain("Demo dataset loaded");
+    expect(withFlag.toLowerCase()).not.toContain("demobar");
     repo.setSetting("demo_dataset", "0");
-    const cleared = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-    expect(cleared).not.toContain("Demo workspace");
   });
 
-  it("keeps demo accounts separate: flagged, badged, and never flagged as default-password risks", async () => {
-    // Demo-dataset accounts (as `npm run demo` creates them).
-    repo.createStaff("demo_admin", "Darrel", hashPassword("demo123"), "admin", true);
-    repo.createStaff("demo_user", "Jane Wairimu", hashPassword("demo123"), "user", true);
-    expect(repo.getStaffByUsername("demo_user")?.demo).toBe(1);
-    expect(repo.getStaffByUsername("jane")?.demo ?? 0).toBe(0);
-
-    // Demo users can sign in with the sample credentials.
-    const res = await fetch(`${base}/login`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: "username=demo_user&password=demo123",
-      redirect: "manual",
-    });
-    expect(res.status).toBe(302);
-
-    // Staff page: demo badge on sample accounts only; the default-password
-    // warning applies to REAL accounts, never to demo samples.
+  it("staff page has no demo badges and no seeded default-password machinery", async () => {
     const { cookie } = await login();
     const html = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
-    const demoRow = html.split("<tr>").find((r) => r.includes('<td class="mono">demo_user')) || "";
-    expect(demoRow).toContain("badge b-purple");
-    expect(demoRow).not.toContain("default password");
-    const adminRow = html.split("<tr>").find((r) => r.includes('<td class="mono">admin')) || "";
-    expect(adminRow).not.toContain("badge b-purple");
-    expect(adminRow).toContain("default password");
+    expect(html).not.toContain("Sample account from the demo dataset");
+    expect(html).not.toContain("default password");
+    expect(html).not.toContain("demo_admin");
+    expect(html).not.toContain("demo_user");
   });
 
   describe("configuration split, account settings & realm separation", () => {
@@ -794,7 +778,7 @@ describe("QA audit regressions", () => {
       const live = repo.searchApplicants({ demo: 0 });
       expect(live.length).toBeGreaterThan(0);
       // Mark the whole realm as demo, then a live-scoped search sees nothing.
-      repo.markDemoRealm();
+      repo.db.prepare("UPDATE applicants SET demo = 1").run();
       expect(repo.searchApplicants({ demo: 0 }).length).toBe(0);
       expect(repo.searchApplicants({ demo: 1 }).length).toBeGreaterThan(0);
       // restore for other tests

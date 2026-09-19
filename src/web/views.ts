@@ -315,7 +315,6 @@ h2 .small { font-weight: 600; text-transform: none; letter-spacing: 0; }
 .iconbtn .pip { position: absolute; top: 6px; right: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--purple2); box-shadow: 0 0 0 2px var(--card); }
 .wrap { padding: 44px 36px 88px; max-width: 1480px; width: 100%; margin: 0 auto; animation: rise .35s ease both; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.demobar { background: var(--lav); color: var(--purple); border-bottom: 1px solid var(--lav-line); font-size: 12.5px; font-weight: 600; padding: 7px 32px; text-align: center; }
 @media (max-width: 900px) { .head-in { padding: 0 16px; gap: 14px; } .searchbtn { min-width: 0; } .searchbtn span:not(.kbd) { display: none; } .wrap { padding: 24px 16px 56px; } }
 
 /* ── Cards ─────────────────────────────────────────────────────────────── */
@@ -762,7 +761,7 @@ details > summary { list-style: none; } details > summary::-webkit-details-marke
 .note-banner { display: inline-flex; align-items: center; gap: 7px; background: var(--gold-bg); color: var(--gold); border: 1px solid color-mix(in srgb, var(--gold) 35%, transparent); border-radius: 6px; padding: 3px 10px; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 12px; }
 
 @media print {
-  .sitehead, .no-print, .flash, .palette, #splash, .demobar { display: none !important; }
+  .sitehead, .no-print, .flash, .palette, #splash { display: none !important; }
   body { background: #fff; }
   .card { box-shadow: none; border-color: #ccc; break-inside: avoid; }
   .sec, .ops-card, .stepper-band, .case-head { box-shadow: none; border-color: #ccc; break-inside: avoid; }
@@ -881,8 +880,6 @@ export function layout(opts: {
   theme?: Theme;
   /** Brand name — fixed to the institution; there is no settings field for it. */
   institution?: string;
-  /** True when the database contains the seeded demo dataset — shown to staff. */
-  demo?: boolean;
 }): string {
   const theme: Theme = opts.theme === "dark" ? "dark" : "light";
   const otherTheme = theme === "dark" ? "light" : "dark";
@@ -929,7 +926,6 @@ export function layout(opts: {
     ];
     shell = `
 <div class="app">
-  ${opts.demo ? `<div class="demobar">Demo dataset loaded — <b>demo_admin</b> and <b>demo_user</b> are sample accounts holding mock applicants. The real <b>admin</b> account is separate and for live data. Connect Gmail in Configuration for real mail.</div>` : ""}
   <header class="sitehead">
     <div class="head-in">
       <a class="head-brand" href="/">${crest(27)}<span class="sr-only">${esc(inst)} — automated admissions</span></a>

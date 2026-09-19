@@ -11,6 +11,7 @@ import type { Server } from "http";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
+import { hashPassword } from "../src/util/password";
 import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { evaluateAdmission } from "../src/admissions/evaluate";
 import { evaluateTree, readerFromFields } from "../src/admissions/engine";
@@ -27,6 +28,8 @@ let seq = 0;
 beforeAll(async () => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo); // seeds programmes, KCSE subject catalogue + ACTIVE v1 rule sets
+  // OR-1: no seeded accounts — provision the admin like first-run setup does.
+  repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
 
   const ctx: PipelineContext = {

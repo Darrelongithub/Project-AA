@@ -25,12 +25,10 @@ interface Ctx {
   theme?: Theme;
   /** Fixed institution name — there is no settings field for it. */
   institution: string;
-  /** True when the seeded demo dataset is present — banner shown to staff. */
-  demo: boolean;
 }
 
 function head(c: Ctx, title: string, active: string, content: string): string {
-  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution, demo: c.demo });
+  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution });
 }
 
 /** "it" → "IT", else first-letter title: polite, readable labels. */
@@ -81,6 +79,36 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
     <p style="margin-top:18px"><button class="btn" style="width:100%">Sign in to the console</button></p>
   </form>
   <p class="small muted center">Accounts are provisioned by your administrator.</p>
+</div>`,
+  });
+}
+
+
+/** OR-1: one-time first-run screen — the owner creates their own admin account. */
+export function setupPage(token: string, error?: string, theme?: Theme, institution = "Riara University"): string {
+  return layout({
+    title: `First-run setup — ${institution}`,
+    institution,
+    publicPage: true,
+    theme,
+    content: `
+<div class="loginbox card">
+  ${crest(58)}
+  <h1 class="center">Welcome to ${esc(institution)}</h1>
+  <p class="sub center">This is a fresh installation. Create the administrator account — you will not see this screen again.</p>
+  ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
+  <form method="post" action="/setup">
+    <input type="hidden" name="_setup" value="${token}">
+    <label>Your name</label>
+    <input type="text" name="display_name" autofocus autocomplete="name" placeholder="e.g. Darrel">
+    <label>Username</label>
+    <input type="text" name="username" autocomplete="username" placeholder="your.username">
+    <label>Password (at least 8 characters)</label>
+    <input type="password" name="password" autocomplete="new-password" placeholder="••••••••">
+    <label>Confirm password</label>
+    <input type="password" name="confirm" autocomplete="new-password" placeholder="••••••••">
+    <p style="margin-top:18px"><button class="btn" style="width:100%">Create administrator account</button></p>
+  </form>
 </div>`,
   });
 }
@@ -551,6 +579,20 @@ export function applicantsPage(
   });
   const programmes = repo.listProgrammes();
   const intakes = repo.listIntakes();
+
+  // OR-1: a completely fresh installation gets the next concrete step, not a
+  // silent dead end. (Any filter/search in play means "nothing matched".)
+  if (rows.length === 0 && !q.search && !q.programme && !q.intake && !q.queue && !q.sub) {
+    return head(
+      c,
+      "Queues",
+      "applicants",
+      `<div class="empty" style="padding:56px 24px;text-align:center">
+        <p style="font-size:17px;font-weight:700;margin-bottom:6px">No applications yet.</p>
+        <p class="small muted">Connect Gmail in <a href="/settings">Settings</a> and applicant emails will land here as cases.</p>
+      </div>`
+    );
+  }
 
   // Classify every row ONCE, then count and slice by queue.
   const ids = rows.map((r) => r.id);
@@ -1390,7 +1432,7 @@ ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(
 
 <div class="card" id="role">
   <h2>Your role</h2>
-  <p class="small">You are signed in as <b>${esc(u.display_name)}</b> (${esc(capFirst(u.role))}).${u.demo ? " This is a demo account that works with the sample dataset." : ""} Some areas — such as Configuration, Settings and Staff management — are only available to administrators and managers.</p>
+  <p class="small">You are signed in as <b>${esc(u.display_name)}</b> (${esc(capFirst(u.role))}). Some areas — such as Configuration, Settings and Staff management — are only available to administrators and managers.</p>
 </div>`
   );
 }
@@ -2004,18 +2046,6 @@ export function staffPage(c: Ctx, flash?: string): string {
   const { repo } = c;
   const isAdmin = c.user.role === "admin";
 
-  // Passwords the system itself seeds. Demo-dataset accounts may keep
-  // theirs (they are samples); real accounts must not.
-  const KNOWN_DEFAULTS: Record<string, string> = {
-    admin: "admin123", demo_admin: "demo123", demo_user: "demo123",
-  };
-  const onDefaultPassword = (username: string): boolean => {
-    const known = KNOWN_DEFAULTS[username];
-    if (!known) return false;
-    const full = repo.getStaffByUsername(username);
-    return Boolean(full && !full.demo && verifyPassword(known, full.password_hash));
-  };
-
   const stats = repo.staffStats(c.user.demo);
   const totals = stats.reduce(
     (acc, r) => ({ received: acc.received + r.emailsReceived, sent: acc.sent + r.emailsSent, completed: acc.completed + r.admissionsCompleted }),
@@ -2034,16 +2064,13 @@ export function staffPage(c: Ctx, flash?: string): string {
 
   const accountsSection = isAdmin
     ? `
-${repo.listStaff().some((st) => onDefaultPassword(st.username))
-  ? `<div class="flash err" style="position:static;margin-bottom:16px">One or more real accounts still use their seeded starting passwords. Reset them below before going live.</div>`
-  : ""}
 <section class="card nopad">
   <div class="card-head"><h2>Accounts</h2></div>
   <table>
     <tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Actions</th></tr>
     ${repo.listStaff()
       .map((st) => `<tr>
-        <td class="mono">${esc(st.username)}${st.demo ? ` <span class="badge b-purple" title="Sample account from the demo dataset">demo</span>` : ""}${onDefaultPassword(st.username) ? ` <span class="badge b-red" title="This account still uses its seeded password">default password</span>` : ""}</td>
+        <td class="mono">${esc(st.username)}</td>
         <td>${esc(st.display_name)}</td>
         <td><span class="badge b-gray">${esc(capFirst(st.role))}</span></td>
         <td>${st.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-red">disabled</span>`}</td>

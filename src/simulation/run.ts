@@ -6,7 +6,9 @@
  * the resulting database state against the answer key. Exit code is non-zero
  * on failure → usable as CI.
  */
+import * as path from "path";
 import { openDb } from "../db/db";
+import { loadConfig } from "../config";
 import { Repo } from "../db/repo";
 import { DEFAULT_REQUIREMENTS, type AppConfig } from "../config";
 import { seedDefaults } from "../db/seed";
@@ -79,6 +81,13 @@ export async function runSimulation(
   opts: { disableOcr?: boolean; dbPath?: string } = {}
 ): Promise<SimulationResult> {
   const dbPath = opts.dbPath ?? ":memory:";
+  // OR-1: the simulation corpus is developer tooling. It must NEVER write the
+  // database the live server reads — refuse loudly instead of contaminating.
+  if (dbPath !== ":memory:" && path.resolve(dbPath) === path.resolve(loadConfig().dbPath)) {
+    throw new Error(
+      `refusing to run the simulation against the server database (${dbPath}) — use SIM_DB_PATH with a separate throwaway file`
+    );
+  }
   const cfg: AppConfig = {
     mode: "mock",
     dbPath,

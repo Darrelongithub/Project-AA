@@ -19,7 +19,7 @@ import { docLabel } from "../rules";
 import { evaluateAdmission } from "../admissions/evaluate";
 import { ADMISSION_SYSTEMS, type AdmissionSystem, type CourseLevel, type RuleField } from "../types";
 import {
-  accountPage, admissionsPage, applicantsPage, casePage, composePage, configPage, dashboardPage, loginPage,
+  accountPage, admissionsPage, applicantsPage, casePage, composePage, configPage, dashboardPage, loginPage, setupPage,
   replayPage, settingsPage, staffPage,
 } from "./pages";
 import { avatar, esc, layout } from "./views";
@@ -84,8 +84,6 @@ export function createApp(deps: WebDeps): Express {
     csrf: req.csrfToken ?? "",
     theme: req.theme,
     institution: instName(),
-    /** True when the seeded demo dataset is present — the banner's only gate. */
-    demo: repo.getSetting("demo_dataset", "") === "1",
   });
 
   const backToCase = (id: string | number, msg: string) => `/case/${id}?msg=${encodeURIComponent(msg)}`;
@@ -170,7 +168,67 @@ export function createApp(deps: WebDeps): Express {
     }
   );
 
-  app.get("/login", (req, res) => res.send(loginPage(undefined, req.theme, instName())));
+  // OR-1: on a fresh install the whole console reduces to one screen — the
+  // first-run setup where the owner creates their own admin account.
+  const setupTokens = new Map<string, number>(); // one-time token -> expiry (epoch ms)
+  const newSetupToken = (): string => {
+    const t = crypto.randomBytes(16).toString("hex");
+    setupTokens.set(t, Date.now() + 10 * 60_000);
+    for (const [k, exp] of setupTokens) if (exp < Date.now()) setupTokens.delete(k);
+    return t;
+  };
+
+  app.use((req, res, next) => {
+    if (repo.staffCount() === 0 && req.path !== "/setup" && req.path !== "/healthz" && req.path !== "/theme") {
+      res.redirect("/setup");
+      return;
+    }
+    next();
+  });
+
+  app.get("/setup", (req, res) => {
+    if (repo.staffCount() > 0) {
+      res.status(404).send("Not found");
+      return;
+    }
+    res.send(setupPage(newSetupToken(), undefined, req.theme, instName()));
+  });
+
+  app.post("/setup", (req, res) => {
+    if (repo.staffCount() > 0) {
+      res.status(404).send("Not found");
+      return;
+    }
+    const fail = (msg: string) => res.status(200).send(setupPage(newSetupToken(), msg, req.theme, instName()));
+    const token = String(req.body._setup ?? "");
+    const exp = setupTokens.get(token);
+    setupTokens.delete(token);
+    if (!exp || exp < Date.now()) return fail("That setup link expired — reload the page and try again.");
+    const username = String(req.body.username ?? "").trim().toLowerCase();
+    const displayName = String(req.body.display_name ?? "").trim();
+    const password = String(req.body.password ?? "");
+    const confirm = String(req.body.confirm ?? "");
+    if (!displayName) return fail("Please enter your name.");
+    if (!/^[a-z0-9_.-]{2,32}$/.test(username)) return fail("Username: 2-32 characters — letters, digits, dots, dashes.");
+    if (password.length < 8) return fail("Password must be at least 8 characters.");
+    if (password !== confirm) return fail("The passwords do not match.");
+    if (repo.getStaffByUsername(username)) return fail("That username is already taken.");
+    repo.createStaff(username, displayName, hashPassword(password), "admin");
+    const created = repo.getStaffByUsername(username);
+    if (!created) return fail("Could not create the account — please try again.");
+    const session = repo.createSession(created.id);
+    repo.audit(null, username, "first_run_setup", "Administrator account created on first run");
+    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600));
+    res.redirect("/");
+  });
+
+  app.get("/login", (req, res) => {
+    if (repo.staffCount() === 0) {
+      res.redirect("/setup");
+      return;
+    }
+    res.send(loginPage(undefined, req.theme, instName()));
+  });
 
   /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
   app.post("/theme", (req, res) => {

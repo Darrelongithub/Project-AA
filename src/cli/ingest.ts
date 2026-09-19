@@ -35,7 +35,7 @@ async function main(): Promise<void> {
         "  GMAIL_ADDRESS, GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET, GMAIL_OAUTH_REFRESH_TOKEN",
         "  GEMINI_API_KEY",
         "",
-        "Tip: `npm run demo` + `npm run serve` exercises everything without credentials.",
+        "Tip: `npm run serve`, then connect Gmail under Settings → Connections.",
       ].join("\n")
     );
     process.exit(1);

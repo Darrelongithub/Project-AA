@@ -1,0 +1,204 @@
+/**
+ * Owner acceptance gates (OR-1 … OR-8). One describe block per issue ID.
+ * Every test here was written BEFORE the fix and watched fail (RED), then
+ * pass (GREEN). See OWNER_ISSUES.md for the evidence log.
+ */
+import { describe, expect, it } from "vitest";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import type { Server } from "http";
+import { openDb } from "../src/db/db";
+import { Repo } from "../src/db/repo";
+import { seedDefaults } from "../src/db/seed";
+import { createApp } from "../src/web/server";
+import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
+import { makeHeuristicWatcher } from "../src/watcher";
+import { hashPassword, verifyPassword } from "../src/util/password";
+import { purgeMockData } from "../src/db/purge";
+import { runSimulation } from "../src/simulation/run";
+import { loadConfig } from "../src/config";
+
+function freshCtx(): { repo: Repo; ctx: PipelineContext } {
+  const repo = new Repo(openDb(":memory:"));
+  seedDefaults(repo);
+  const ctx: PipelineContext = {
+    repo,
+    adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender: new MockSender() },
+  };
+  return { repo, ctx };
+}
+
+async function startServer(repo: Repo, ctx: PipelineContext): Promise<{ base: string; server: Server }> {
+  const app = createApp({ repo, ctx });
+  const server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const addr = server.address() as { port: number };
+  return { base: `http://127.0.0.1:${addr.port}`, server };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OR-1 — No mock data in the app
+// ─────────────────────────────────────────────────────────────────────────────
+describe("OR-1: the product contains no mock data", () => {
+  it("a fresh database seeds NO staff accounts — there is no default login", () => {
+    const { repo } = freshCtx();
+    expect(repo.staffCount()).toBe(0);
+    const admin = repo.getStaffByUsername("admin");
+    expect(admin).toBeUndefined();
+  });
+
+  it("first-run setup creates the admin account over HTTP; old defaults never work", async () => {
+    const { repo, ctx } = freshCtx();
+    const { base, server } = await startServer(repo, ctx);
+    try {
+      // The login page redirects a first-run install to the setup screen.
+      const loginPage = await fetch(`${base}/login`, { redirect: "manual" });
+      expect(loginPage.status).toBe(302);
+      expect(loginPage.headers.get("location")).toBe("/setup");
+
+      const setupPage = await fetch(`${base}/setup`);
+      expect(setupPage.status).toBe(200);
+      const html = await setupPage.text();
+      const token = (html.match(/name="_setup" value="([a-f0-9]+)"/) || [])[1] || "";
+      expect(token.length).toBeGreaterThan(10);
+
+      // Old hard-coded defaults must never grant a session — on a fresh
+      // install the login post is bounced to the setup screen.
+      const bad = await fetch(`${base}/login`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "username=admin&password=admin123",
+        redirect: "manual",
+      });
+      expect(bad.headers.get("location") ?? "/setup").toBe("/setup");
+      expect(bad.headers.get("set-cookie") ?? "").not.toContain("sid=");
+
+      // Create the admin through the setup form.
+      const res = await fetch(`${base}/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          _setup: token,
+          display_name: "Darrel",
+          username: "darrel",
+          password: "owner-chosen-passphrase",
+          confirm: "owner-chosen-passphrase",
+        }).toString(),
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("/");
+      const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
+      expect(cookie).toContain("sid=");
+
+      // The setup endpoint is gone forever once one account exists.
+      const again = await fetch(`${base}/setup`);
+      expect(again.status).toBe(404);
+
+      // And the created account works.
+      const home = await fetch(`${base}/`, { headers: { cookie } });
+      expect(home.status).toBe(200);
+      const created = repo.getStaffByUsername("darrel");
+      expect(created?.role).toBe("admin");
+      expect(verifyPassword("owner-chosen-passphrase", created!.password_hash)).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("setup rejects short passwords and mismatched confirmation", async () => {
+    const { repo, ctx } = freshCtx();
+    const { base, server } = await startServer(repo, ctx);
+    try {
+      const page = await fetch(`${base}/setup`);
+      const token = ((await page.text()).match(/name="_setup" value="([a-f0-9]+)"/) || [])[1] || "";
+      const res = await fetch(`${base}/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ _setup: token, display_name: "X", username: "x", password: "short", confirm: "other" }).toString(),
+        redirect: "manual",
+      });
+      expect(res.status).toBe(200); // re-renders with the error, nothing created
+      expect(repo.staffCount()).toBe(0);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("a fresh console shows zero mock/demo wording on every page", async () => {
+    const { repo, ctx } = freshCtx();
+    const { base, server } = await startServer(repo, ctx);
+    try {
+      // First-run admin via the repo (same path the setup form takes).
+      repo.createStaff("boss", "Owner", hashPassword("first-run-password-1"), "admin");
+      const login = await fetch(`${base}/login`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "username=boss&password=first-run-password-1",
+        redirect: "manual",
+      });
+      const cookie = (login.headers.get("set-cookie") || "").split(";")[0];
+      const pages = ["/", "/applicants", "/admissions", "/settings", "/staff", "/account", "/login"];
+      for (const p of pages) {
+        const res = await fetch(`${base}${p}`, { headers: { cookie }, redirect: "manual" });
+        expect(res.status, p).toBe(200);
+        const html = await res.text();
+        expect(html, `${p} must not mention demo data`).not.toMatch(/demo/i);
+        expect(html, `${p} must not tell users to seed samples`).not.toContain("npm run demo");
+      }
+    } finally {
+      server.close();
+    }
+  });
+
+  it("the simulation corpus refuses to run against the server database", async () => {
+    const cfg = loadConfig();
+    // The simulation's default target is in-memory…
+    const src = fs.readFileSync(path.join(__dirname, "..", "src", "simulation", "run.ts"), "utf8");
+    expect(src).toContain('opts.dbPath ?? ":memory:"');
+    // …and it hard-refuses the exact file the server reads.
+    await expect(runSimulation({ dbPath: cfg.dbPath })).rejects.toThrow(/refusing/i);
+    // Same refusal for a file-based throwaway DB passed explicitly is NOT
+    // triggered — only the server's own database is protected.
+  });
+
+  it("purge-mock removes ONLY synthetic rows, backs up first, and is idempotent", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "or1-purge-"));
+    const dbPath = path.join(tmpDir, "contaminated.sqlite");
+    const repo = new Repo(openDb(dbPath));
+    seedDefaults(repo);
+    repo.createStaff("realadmin", "Real Admin", hashPassword("real-password-99"), "admin");
+    // Contamination exactly like an old `npm run demo` left behind:
+    repo.createStaff("demo_admin", "Demo Admin", hashPassword("demo123"), "admin", true);
+    repo.createStaff("demo_user", "Demo User", hashPassword("demo123"), "user", true);
+    const real = repo.getOrCreateApplicant("real.student@gmail.com", "t-real");
+    const mock1 = repo.getOrCreateApplicant("fixture-one@simulation.example", "t-mock1");
+    const mock2 = repo.getOrCreateApplicant("fixture-two@simulation.example", "t-mock2");
+    for (const a of [mock1, mock2]) repo.updateApplicant(a.id, { programme: "BBIT" });
+    // The old demo tool flagged every applicant as mock — simulate exactly that…
+    repo.db.prepare("UPDATE applicants SET demo = 1").run();
+    // …then keep the genuinely-real row clean, as a live DB would have it.
+    repo.db.prepare("UPDATE applicants SET demo = 0 WHERE id = ?").run(real.id);
+    repo.setSetting("demo_dataset", "1");
+
+    const backupPath = path.join(tmpDir, "backup.sqlite");
+    const removed = purgeMockData(repo, { backupPath });
+    expect(removed.applicants).toBe(2);
+    expect(removed.staff).toBe(2);
+    // Real data survived
+    expect(repo.getApplicant(real.id)?.email_address).toBe("real.student@gmail.com");
+    expect(repo.getStaffByUsername("realadmin")).toBeDefined();
+    expect(repo.getStaffByUsername("demo_admin")).toBeUndefined();
+    expect(repo.getSetting("demo_dataset", "")).toBe("");
+    // Backup exists and contains the old rows
+    expect(fs.existsSync(backupPath)).toBe(true);
+    const backupRepo = new Repo(openDb(backupPath));
+    expect(backupRepo.getStaffByUsername("demo_admin")).toBeDefined();
+    // Idempotent: second pass removes nothing
+    const second = purgeMockData(repo, { backupPath: path.join(tmpDir, "backup2.sqlite") });
+    expect(second.applicants).toBe(0);
+    expect(second.staff).toBe(0);
+  });
+});

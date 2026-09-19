@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
+import { hashPassword } from "../src/util/password";
 import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { deriveFlags, gradeBelow, parseGradeRule } from "../src/rules";
 import { createApp } from "../src/web/server";
@@ -16,6 +17,8 @@ let repo: Repo;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  // OR-1: no seeded accounts — provision the admin like first-run setup does.
+  repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
   repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
 });
 

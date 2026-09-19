@@ -91,6 +91,11 @@ export class Repo {
 
   // ── Applicants ───────────────────────────────────────────────────────────
 
+  /** How many staff accounts exist (drives the first-run setup gate). */
+  staffCount(): number {
+    return ((this.db.prepare("SELECT COUNT(*) AS n FROM staff_users").get() as { n: number }).n);
+  }
+
   getOrCreateApplicant(
     emailAddress: string,
     threadId: string,
@@ -1634,10 +1639,6 @@ export class Repo {
     };
   }
 
-  /** Mark every applicant as part of the seeded demo realm (used by `npm run demo`). */
-  markDemoRealm(): void {
-    this.db.exec("UPDATE applicants SET demo = 1");
-  }
 
   // ── Data retention (feature 38) ──────────────────────────────────────────
 
