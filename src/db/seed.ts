@@ -195,9 +195,10 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
       seedTree(c.programme, level, sys, blockToNodes(c.block));
     }
   }
-  // Base requirements (only if table is empty — don't clobber staff edits)
-  const ruleCount = (repo.db.prepare("SELECT COUNT(*) AS n FROM requirement_rules").get() as { n: number }).n;
-  if (ruleCount === 0) repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  // OR-5: document requirements are generated deterministically from the
+  // official application-form checklist (src/documents/matrix.ts). The legacy
+  // requirement_rules table is no longer seeded or read — it was the old
+  // staff-editable toggle surface and is deliberately retired.
   // Templates (same: don't clobber edits)
   const tplCount = (repo.db.prepare("SELECT COUNT(*) AS n FROM templates").get() as { n: number }).n;
   if (tplCount === 0) {

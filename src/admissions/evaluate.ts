@@ -23,6 +23,7 @@ import type {
   ExtractedFields,
   RequirementResult,
 } from "../types";
+import { fillSlots } from "../documents/matrix";
 import { docLabel } from "../rules";
 import { MIN_AUTO_PASS_SCORE } from "../extraction/extract";
 import { evaluateTree, readerFromFields, describeRuleTree } from "./engine";
@@ -46,6 +47,19 @@ export interface AdmissionEvaluation {
 }
 
 const nowIso = () => new Date().toISOString();
+
+/** OR-5: concrete academic checklist types + the generic fallback family.
+ * Grades ride on whichever of these carries extracted fields. */
+const ACADEMIC_FAMILY = new Set([
+  "academic_cert",
+  "exam_result_slip",
+  "leaving_certificate",
+  "undergraduate_transcript",
+  "undergraduate_degree_certificate",
+  "masters_transcript",
+  "masters_degree_certificate",
+  "kcpe_cert",
+]);
 
 function docReliable(d: DocumentRecord): boolean {
   const score = d.confidence_score || (d.confidence === "high" ? 100 : 0);
@@ -122,8 +136,8 @@ export function evaluateAdmission(
 
   // ── Step 1 — DOCUMENT CHECK. Missing data is never interpreted as failure. ─
   const requirements = repo.effectiveRequirements(a);
-  const required = requirements.filter((r) => r.required);
-  const missing = required.filter((r) => !docs.some((d) => d.document_type === r.document_type));
+  // OR-5 slot semantics: one document fills exactly one slot.
+  const { missing } = fillSlots(requirements, docs.map((d) => d.document_type));
   if (missing.length > 0) {
     const missingLabels = missing.map((m) => docLabel(m.document_type));
     const code = docs.length > 0 ? "partial_submission" : "missing_documents";
@@ -138,7 +152,10 @@ export function evaluateAdmission(
   }
 
   // ── Step 2 — which qualification system(s) did the applicant present? ─────
-  const academic = docs.filter((d) => d.document_type === "academic_cert");
+  // OR-5: academic paperwork now arrives under concrete checklist types
+  // (result slip, leaving certificate, transcripts…) as well as the generic
+  // academic_cert fallback. Grades ride on whichever of them carries fields.
+  const academic = docs.filter((d) => ACADEMIC_FAMILY.has(d.document_type));
   const identified: Array<{ doc: DocumentRecord; systems: AdmissionSystem[] }> = [];
   for (const doc of academic) {
     const fields = (doc.extracted_fields ?? {}) as ExtractedFields;

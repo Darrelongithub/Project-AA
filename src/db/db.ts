@@ -389,6 +389,9 @@ function migrate(db: Database.Database): void {
     }
   };
   addColumn("applicants", "requirements_snapshot", "TEXT");
+  // OR-5: nationality feeds the deterministic document matrix (kenyan /
+  // international / unknown). Never assumed — unknown adds no extra slots.
+  addColumn("applicants", "nationality", "TEXT");
   addColumn("applicants", "followup_rung", "INTEGER NOT NULL DEFAULT 0");
   addColumn("applicants", "followup_next_at", "TEXT");
   // Base date the follow-up ladder was armed on; rungs are scheduled as

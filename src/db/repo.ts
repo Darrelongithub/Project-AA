@@ -32,6 +32,7 @@ import type {
   SystemBlock,
   CourseLevel,
 } from "../types";
+import { documentRequirementsFor, type ApplicantNationality, type ProgrammeLevel } from "../documents/matrix";
 import type { VisionCacheStore } from "../extraction/gemini";
 import { isValidCachedVision } from "../extraction/gemini";
 import type { VisionExtraction } from "../types";
@@ -155,6 +156,7 @@ export class Repo {
         | "sla_handled_at"
         | "escalated"
         | "transfer"
+        | "nationality"
         | "req_result"
         | "routing"
         | "routing_reason"
@@ -171,7 +173,7 @@ export class Repo {
     const ALLOWED = new Set([
       "full_name", "phone", "programme", "intake", "priority", "assigned_to",
       "lifecycle", "triage", "sla_due_at", "sla_handled_at", "escalated",
-      "transfer", "req_result", "routing", "routing_reason",
+      "transfer", "nationality", "req_result", "routing", "routing_reason",
       "admission_decision", "admission_route", "decision_by", "decision_reason",
       "decision_at",
     ]);
@@ -498,11 +500,10 @@ export class Repo {
         );
       }
     }
-    const reqs = this.resolveRequirements(a.programme, a.intake);
-    if (a.transfer === 1 && !reqs.some((r) => r.document_type === "credit_transfer_form")) {
-      reqs.push({ document_type: "credit_transfer_form", required: true });
-    }
-    return reqs;
+    return this.resolveRequirements(a.programme, a.intake, {
+      transfer: a.transfer === 1,
+      nationality: (a as { nationality?: string | null }).nationality ?? null,
+    });
   }
 
   /** Freeze the current requirement set onto the applicant on first triage.
@@ -517,29 +518,30 @@ export class Repo {
       .run(JSON.stringify(snapshot), a.id);
   }
 
-  resolveRequirements(programme: string | null, intake: string | null): RequirementSetEntry[] {
-    const rows = this.db
-      .prepare("SELECT programme, intake, document_type, required, mean_grade, subject_grades FROM requirement_rules")
-      .all() as any[];
-    const ladder = [
-      (r: any) => r.programme === null && r.intake === null,
-      (r: any) => r.programme === null && r.intake !== null && r.intake === intake,
-      (r: any) => r.programme !== null && r.programme === programme && r.intake === null,
-      (r: any) => r.programme !== null && r.programme === programme && r.intake !== null && r.intake === intake,
-    ];
-    const merged = new Map<string, RequirementSetEntry>();
-    for (const matches of ladder) {
-      for (const r of rows) {
-        if (!matches(r)) continue;
-        merged.set(r.document_type, {
-          document_type: r.document_type,
-          required: r.required === 1,
-          meanGrade: r.mean_grade ?? null,
-          subjectGrades: r.subject_grades ?? null,
-        });
-      }
-    }
-    return [...merged.values()];
+  /**
+   * OR-5: document requirements come from the DETERMINISTIC generator
+   * (level × curriculum × nationality × route + KCPE constant), sourced from
+   * the official application-form checklist. The legacy requirement_rules
+   * table is no longer read — requirements are not staff-configurable.
+   */
+  resolveRequirements(
+    programme: string | null,
+    _intake: string | null,
+    opts?: { transfer?: boolean; nationality?: string | null }
+  ): RequirementSetEntry[] {
+    const p = programme ? this.programmeByCode(programme) : undefined;
+    // CourseLevel "postgrad" maps onto the matrix's "masters" tier (the
+    // PhD tier applies only to programmes explicitly recorded as PhD).
+    const rawLevel = p?.level ?? "degree";
+    const level: ProgrammeLevel = rawLevel === "postgrad" ? "masters" : (rawLevel as ProgrammeLevel);
+    const nationality: ApplicantNationality =
+      opts?.nationality === "kenyan" || opts?.nationality === "international" ? opts.nationality : "unknown";
+    return documentRequirementsFor({
+      level,
+      route: opts?.transfer ? "transfer" : "fresh",
+      nationality,
+      programmeCode: programme,
+    }).map((spec) => ({ document_type: spec.document_type, required: spec.required }));
   }
 
   // ── Documents (features 5, 6, 9, 22) ─────────────────────────────────────

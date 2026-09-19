@@ -9,6 +9,7 @@
  *   - Anything borderline (e.g. grades below the stated minimum) produces a
  *     Flag — never an auto-pass, never an auto-fail.
  */
+import { fillSlots } from "../documents/matrix";
 import type {
   Classification,
   DerivedFlag,
@@ -291,12 +292,24 @@ export function dedupeFlags(flags: DerivedFlag[]): DerivedFlag[] {
 }
 
 const DOC_LABELS: Record<DocType, string> = {
-  academic_cert: "KCSE Certificate",
-  id: "National ID",
-  kcpe_cert: "KCPE Certificate",
-  birth_cert: "Birth Certificate",
+  // OR-5: concrete labels only — vague umbrella names are banned.
   application_form: "Application Form",
-  credit_transfer_form: "Credit Transfer Form",
+  exam_result_slip: "Examination Result Slip",
+  leaving_certificate: "High School Leaving Certificate",
+  passport_photo: "Passport-size Photograph",
+  id: "National ID or Passport",
+  birth_cert: "Birth Certificate",
+  undergraduate_transcript: "Undergraduate Transcripts",
+  undergraduate_degree_certificate: "Undergraduate Degree Certificate",
+  masters_transcript: "Master's Transcripts",
+  masters_degree_certificate: "Master's Degree Certificate",
+  law_personal_statement: "Personal Statement (LLB, max 500 words)",
+  business_statement_of_objective: "Statement of Objective (BBA, max 300 words)",
+  credit_transfer_form: "Transfer Letter / Credit Transfer Form",
+  student_pass_application: "Student Pass Application (post-admission)",
+  foreign_qualification_equivalence: "Foreign Qualification Equivalence (post-admission)",
+  academic_cert: "Academic document (type not yet identified)",
+  kcpe_cert: "KCPE Certificate",
   unknown: "Unknown document",
 };
 
@@ -321,14 +334,16 @@ export function decide(input: RulesInput): RulesOutput {
   ]);
 
   const required = requirements.filter((r) => r.required);
-  const missing = required
-    .filter((r) => !docs.some((d) => d.document_type === r.document_type))
-    .map((r) => r.document_type);
+  // OR-5 slot semantics: one document fills exactly one slot.
+  const { filled, missing: missingSpecs, leftover } = fillSlots(requirements, docs.map((d) => d.document_type));
+  const missing = missingSpecs.map((s) => s.document_type);
 
   // Per-requirement status lines for the reasoning trace.
   const docLines = requirements.map((r) => {
+    const isFilled = filled.includes(r.document_type);
     const d = docs.find((x) => x.document_type === r.document_type);
-    if (!d) return `  - ${r.document_type}: MISSING (${r.required ? "required" : "optional"})`;
+    if (!isFilled) return `  - ${r.document_type}: MISSING (${r.required ? "required" : "optional"})`;
+    if (!d) return `  - ${r.document_type}: present (filled by a generic academic upload)`;
     const name = d.extracted_fields?.name ? ` name="${d.extracted_fields.name}"` : "";
     const pts =
       typeof d.extracted_fields?.gradePoints === "number"
@@ -338,9 +353,15 @@ export function decide(input: RulesInput): RulesOutput {
       r.required ? "" : " (optional)"
     }`;
   });
-  const extras = docs.filter(
-    (d) => d.document_type === "unknown" || !requirements.some((r) => r.document_type === d.document_type)
-  );
+  // OR-5 slot semantics: an attachment is an "extra" only if it filled no
+  // slot — a generic academic upload that filled a slot is not an extra.
+  const leftoverCount = new Map<DocType, number>();
+  for (const t of leftover) leftoverCount.set(t, (leftoverCount.get(t) ?? 0) + 1);
+  const extras = docs.filter((d) => {
+    const n = leftoverCount.get(d.document_type) ?? 0;
+    if (n > 0) { leftoverCount.set(d.document_type, n - 1); return true; }
+    return false;
+  });
   for (const d of extras) {
     docLines.push(`  - extra unrecognized attachment: ${d.extraction_method}/${d.confidence}`);
   }

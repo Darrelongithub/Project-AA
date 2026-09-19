@@ -17,6 +17,7 @@
 import type { Repo } from "../db/repo";
 import type { PipelineContext } from "../pipeline/adapters";
 import { checklistText, renderTemplate } from "../drafting";
+import { fillSlots } from "../documents/matrix";
 import { docLabel } from "../rules";
 import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
@@ -43,7 +44,7 @@ export async function runFollowUpSweep(repo: Repo, _ctx: PipelineContext): Promi
     const requirements = repo.effectiveRequirements(a).filter((r) => r.required);
     const activeDocs = repo.listDocuments(a.id, { activeOnly: true });
     const present = activeDocs.map((d) => d.document_type);
-    const missing = requirements.filter((r) => !present.includes(r.document_type));
+    const { missing } = fillSlots(requirements, present);
 
     if (missing.length === 0) {
       repo.setFollowup(a.id, 0, null);

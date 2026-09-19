@@ -13,6 +13,7 @@
  */
 import type { Classification, DocType, DerivedFlag } from "../types";
 import { docLabel } from "../rules";
+import { fillSlots } from "../documents/matrix";
 
 export interface DraftContext {
   ref: string;
@@ -83,9 +84,10 @@ export function checklistText(args: {
   requirements: Array<{ document_type: DocType; required: boolean }>;
   presentTypes: DocType[];
 }): string {
+  const { filled } = fillSlots(args.requirements, args.presentTypes);
   return args.requirements
     .filter((r) => r.required)
-    .map((r) => `${args.presentTypes.includes(r.document_type) ? "✓" : "✗"} ${docLabel(r.document_type)}`)
+    .map((r) => `${filled.includes(r.document_type) ? "✓" : "✗"} ${docLabel(r.document_type)}`)
     .join("\n");
 }
 
