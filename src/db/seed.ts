@@ -122,6 +122,44 @@ Kind regards,
   },
 ];
 
+/** The official admission letter (OR-7: also the reset default). */
+export const ADMISSION_LETTER_DEFAULT = {
+  name: "Admission letter (with full admission pack)",
+  subject: "Welcome to Riara University — Your Admission to {programme}",
+  body: `Dear {name},
+
+Welcome to Riara University!
+
+Congratulations on your admission to the {programme} programme. We are delighted to extend our warmest greetings as you embark on an exciting academic journey with us. Your admission to Riara University (RU) signifies the beginning of an enriching and transformative experience, and we are thrilled to have you as part of our vibrant community.
+
+In preparation for the upcoming semester, please note the following important information and deadlines:
+
+Registration Date: registration and verification of your original documents is scheduled on or before {reg_date}. Please ensure your timely arrival to facilitate a smooth transition into university life.
+
+Orientation: the orientation programme is set for {orientation_dates}, where you will receive valuable information about our academic policies, support services and campus resources. Attendance is essential for all new students.
+
+Documents for Verification: bring the following (originals and copies): i) certificates (high school, certificate, diploma and/or degree), ii) one passport-size photograph, iii) ID card or passport (or a waiting card / parent or guardian ID where applicable), and iv) birth certificate.
+
+Laptop Requirement: it is mandatory for all students to own a personal laptop upon admission.
+
+Enclosed with this letter you will find the student medical form, data protection form, next of kin form, hostels list, fee structure, sponsorship form and the orientation programme — complete them and bring them for verification.
+
+Your reference number: {ref}.
+
+Kind regards,
+{institution} — Admissions Office`,
+  include_banner: true,
+  attach_pack: "admission",
+};
+
+/** OR-7: the official defaults, used by "Reset to default" on the Templates
+ * page. Resetting restores exactly what shipped — nothing invented. */
+export const TEMPLATE_DEFAULTS: Record<string, { name: string; subject: string; body: string; include_banner: boolean; attach_pack: string }> =
+  Object.fromEntries([
+    ...TEMPLATE_SEEDS.map((t) => [t.key, { name: t.name, subject: t.subject, body: t.body, include_banner: true, attach_pack: t.key === "docs_request" ? "application" : "none" }]),
+    ["admission_letter", ADMISSION_LETTER_DEFAULT],
+  ]);
+
 export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
   // Older versions had a NULL-broken rule upsert that duplicated every base
   // requirement row on each re-seed. Clean that up idempotently.
@@ -199,14 +237,18 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
   // official application-form checklist (src/documents/matrix.ts). The legacy
   // requirement_rules table is no longer seeded or read — it was the old
   // staff-editable toggle surface and is deliberately retired.
-  // Templates (same: don't clobber edits)
+  // Templates (same: don't clobber edits). OR-7: docs_request carries the
+  // application pack by default — the pipeline and manual sends both honour
+  // the per-template flag.
   const tplCount = (repo.db.prepare("SELECT COUNT(*) AS n FROM templates").get() as { n: number }).n;
   if (tplCount === 0) {
-    for (const t of TEMPLATE_SEEDS) repo.upsertTemplate(t.key, t.name, t.subject, t.body);
+    for (const t of TEMPLATE_SEEDS) {
+      repo.upsertTemplate(t.key, t.name, t.subject, t.body, undefined, t.key === "docs_request" ? "application" : "none");
+    }
   } else {
     for (const t of TEMPLATE_SEEDS) {
       const exists = repo.db.prepare("SELECT 1 FROM templates WHERE key = ?").get(t.key);
-      if (!exists) repo.upsertTemplate(t.key, t.name, t.subject, t.body);
+      if (!exists) repo.upsertTemplate(t.key, t.name, t.subject, t.body, undefined, t.key === "docs_request" ? "application" : "none");
     }
   }
   // Staff users: intentionally NONE. OR-1 — the product ships with no
@@ -217,34 +259,8 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
   void opts;
   // Admission letter: the official template (name + dates vary per student).
   if (!repo.getTemplate("admission_letter")) {
-    repo.upsertTemplate(
-      "admission_letter",
-      "Admission letter (with full admission pack)",
-      "Welcome to Riara University — Your Admission to {programme}",
-      `Dear {name},
-
-Welcome to Riara University!
-
-Congratulations on your admission to the {programme} programme. We are delighted to extend our warmest greetings as you embark on an exciting academic journey with us. Your admission to Riara University (RU) signifies the beginning of an enriching and transformative experience, and we are thrilled to have you as part of our vibrant community.
-
-In preparation for the upcoming semester, please note the following important information and deadlines:
-
-Registration Date: registration and verification of your original documents is scheduled on or before {reg_date}. Please ensure your timely arrival to facilitate a smooth transition into university life.
-
-Orientation: the orientation programme is set for {orientation_dates}, where you will receive valuable information about our academic policies, support services and campus resources. Attendance is essential for all new students.
-
-Documents for Verification: bring the following (originals and copies): i) certificates (high school, certificate, diploma and/or degree), ii) one passport-size photograph, iii) ID card or passport (or a waiting card / parent or guardian ID where applicable), and iv) birth certificate.
-
-Laptop Requirement: it is mandatory for all students to own a personal laptop upon admission.
-
-Enclosed with this letter you will find the student medical form, data protection form, next of kin form, hostels list, fee structure, sponsorship form and the orientation programme — complete them and bring them for verification.
-
-Your reference number: {ref}.
-
-Kind regards,
-{institution} — Admissions Office`,
-      true
-    );
+    const d = ADMISSION_LETTER_DEFAULT;
+    repo.upsertTemplate("admission_letter", d.name, d.subject, d.body, d.include_banner, d.attach_pack);
   }
 
   // Admission-letter dates (editable in Settings → Response targets).

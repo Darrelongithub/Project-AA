@@ -462,6 +462,12 @@ function migrate(db: Database.Database): void {
   db.exec(`UPDATE programmes SET level = 'masters' WHERE level = 'postgrad'`);
   db.exec(`UPDATE admission_rules SET level = 'masters' WHERE level = 'postgrad'`);
   db.exec(`UPDATE course_requirements SET level = 'masters' WHERE level = 'postgrad'`);
+  // OR-7 — every template may optionally carry an official pack PDF set.
+  addColumn("templates", "attach_pack", "TEXT NOT NULL DEFAULT 'none'");
+  // The two historical pack sends become explicit flags (the knob did not
+  // exist before, so this cannot overwrite a staff choice).
+  db.exec(`UPDATE templates SET attach_pack = 'application' WHERE key = 'docs_request' AND attach_pack = 'none'`);
+  db.exec(`UPDATE templates SET attach_pack = 'admission' WHERE key = 'admission_letter' AND attach_pack = 'none'`);
   // OR-6 — schools get their own catalogue so a school exists even before
   // its first course, and can be renamed in one place.
   db.exec(`CREATE TABLE IF NOT EXISTS schools (

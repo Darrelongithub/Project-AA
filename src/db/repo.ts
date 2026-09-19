@@ -840,23 +840,28 @@ export class Repo {
 
   // ── Templates (feature 35) ───────────────────────────────────────────────
 
-  getTemplate(key: string): { key: string; name: string; subject: string; body: string; include_banner: number } | undefined {
-    return this.db.prepare("SELECT key, name, subject, body, include_banner FROM templates WHERE key = ?").get(key) as never;
+  getTemplate(key: string): { key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string } | undefined {
+    return this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM templates WHERE key = ?").get(key) as never;
   }
 
-  listTemplates(): Array<{ key: string; name: string; subject: string; body: string; include_banner: number }> {
-    return this.db.prepare("SELECT key, name, subject, body, include_banner FROM templates ORDER BY key").all() as never[];
+  listTemplates(): Array<{ key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string }> {
+    return this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM templates ORDER BY key").all() as never[];
   }
 
-  upsertTemplate(key: string, name: string, subject: string, body: string, includeBanner?: boolean): void {
+  /** OR-7: attachPack ("none" | "application" | "admission") controls which
+   * official pack PDF set goes out with this template; undefined leaves the
+   * stored flag untouched. */
+  upsertTemplate(key: string, name: string, subject: string, body: string, includeBanner?: boolean, attachPack?: string): void {
+    const pack = attachPack === undefined ? null : ["none", "application", "admission"].includes(attachPack) ? attachPack : "none";
     this.db
       .prepare(
-        `INSERT INTO templates (key, name, subject, body, include_banner) VALUES (?,?,?,?,?)
+        `INSERT INTO templates (key, name, subject, body, include_banner, attach_pack) VALUES (?,?,?,?,?,?)
          ON CONFLICT(key) DO UPDATE SET name = excluded.name, subject = excluded.subject, body = excluded.body,
-           include_banner = COALESCE(?, templates.include_banner), updated_at = datetime('now')`
+           include_banner = COALESCE(?, templates.include_banner),
+           attach_pack = COALESCE(?, templates.attach_pack), updated_at = datetime('now')`
       )
-      .run(key, name, subject, body, includeBanner === undefined ? 1 : includeBanner ? 1 : 0,
-        includeBanner === undefined ? null : includeBanner ? 1 : 0);
+      .run(key, name, subject, body, includeBanner === undefined ? 1 : includeBanner ? 1 : 0, pack ?? "none",
+        includeBanner === undefined ? null : includeBanner ? 1 : 0, pack);
   }
 
   setTemplateBanner(key: string, include: boolean): void {
