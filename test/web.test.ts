@@ -753,7 +753,11 @@ describe("QA audit regressions", () => {
       const replies = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
       // OR-4: connection controls moved OUT of Configuration to Settings.
       expect(replies).not.toContain('id="gmail"');
-      expect(replies).toContain('id="templates"');
+      // OR-7: templates moved OUT of Configuration into their own section.
+      expect(replies).not.toContain('id="templates"');
+      const templates = await (await fetch(`${base}/templates`, { headers: { cookie } })).text();
+      expect(templates).toContain("All outgoing types");
+      expect(templates).toContain('action="/templates/save"');
       const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
       expect(settings).toContain('id="connections"');
       expect(settings).toContain('id="gmail"');
