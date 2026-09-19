@@ -158,6 +158,16 @@ describe("stages & routing", () => {
     expect(bba?.subjects?.some((r) => r.subject === "Mathematics" && r.grade === "C")).toBe(true);
     // Diploma floors override the university-wide C+ degree minimum.
     expect(blocks("DBM").find((b) => b.system === "KCSE")?.overall).toBe("C-");
+    // DBM (2026 brochure): D plain in Mathematics — NOT the English-or-Maths
+    // C- rule an earlier draft carried.
+    const dbm = blocks("DBM").find((b) => b.system === "KCSE");
+    expect(dbm?.subjects?.some((r) => r.subject === "Mathematics" && r.grade === "D")).toBe(true);
+    expect(dbm?.subjects?.some((r) => r.subject === "English")).toBe(false);
+    // DIR (2026 brochure): C in English only — no science subject.
+    const dir = blocks("DIR").find((b) => b.system === "KCSE");
+    expect(dir?.overall).toBe("C-");
+    expect(dir?.subjects?.some((r) => r.subject === "English" && r.grade === "C")).toBe(true);
+    expect(dir?.subjects?.some((r) => ["Biology", "Chemistry", "Physics"].includes(r.subject))).toBe(false);
     // Postgraduate routes check the degree class — no KCSE rule.
     expect(blocks("MBA").find((b) => b.system === "DEGREE")?.minClass).toContain("Upper Division");
     // Nursing specifics were not in the published details → no invented

@@ -266,15 +266,16 @@ export const DEFAULT_STRUCTURED_COURSES: Array<{ programme: string; block: Syste
   { programme: "BED", block: B("IB", { minPoints: 24 }) },
   { programme: "BED", block: B("IGCSE", { minCredits: 5 }) },
   { programme: "BED", block: B("DIPLOMA", { minClass: "Credit" }) }, // Diploma in Education with credit
-  // Diploma in Business Management: C- with C- in English or Mathematics.
-  { programme: "DBM", block: B("KCSE", { overall: "C-", subjects: [{ subject: "English", grade: "C-", alts: ["Mathematics"] }] }) },
+  // Diploma in Business Management (2026 brochure): KCSE C- with D plain in Mathematics.
+  { programme: "DBM", block: B("KCSE", { overall: "C-", subjects: [{ subject: "Mathematics", grade: "D" }] }) },
   { programme: "DBM", block: B("IGCSE", { minCredits: 3 }) },
   // Diploma in Computer Science: C- with D+ in Mathematics or Physics.
   { programme: "DCS", block: B("KCSE", { overall: "C-", subjects: [{ subject: "Mathematics", grade: "D+", alts: ["Physics"] }] }) },
   // Diploma in Information & Cyber Security: C-.
   { programme: "DCY", block: B("KCSE", { overall: "C-" }) },
-  // Diploma in IR & Diplomacy: C- with C in English and C in any Science.
-  { programme: "DIR", block: B("KCSE", { overall: "C-", subjects: [{ subject: "English", grade: "C" }, { subject: "Biology", grade: "C", alts: ["Chemistry", "Physics"] }] }) },
+  // Diploma in IR & Diplomacy (2026 brochure): KCSE C- with C in English —
+  // no science subject (an earlier draft was stricter than the published rule).
+  { programme: "DIR", block: B("KCSE", { overall: "C-", subjects: [{ subject: "English", grade: "C" }] }) },
   // Diploma in Communication & Multimedia Journalism: C- with C in English or any language.
   { programme: "DCJ", block: B("KCSE", { overall: "C-", subjects: [{ subject: "English", grade: "C", alts: ["Kiswahili", "French", "German", "Arabic"] }] }) },
   // Diploma in Corporate Public Relations: C- with C in English/Kiswahili.
