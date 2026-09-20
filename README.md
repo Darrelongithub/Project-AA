@@ -23,6 +23,26 @@ The app ships with **no accounts and no mock data**. On a fresh database:
 The setup screen disappears permanently after the first account exists. There is no
 `admin/admin123` anywhere.
 
+## Run on Linux (Ubuntu/Debian)
+
+Everything is portable Node/TypeScript — no platform-specific code anywhere
+(OCR is tesseract.js, PDF is pdfjs-dist, SQLite is embedded). One setup script:
+
+```bash
+npm run setup:linux   # node 20+, build toolchain for native modules, npm ci
+npm run typecheck && npm test && npm run serve
+```
+
+- Requires **Node.js ≥ 20** (`engines` field enforced by npm).
+- `better-sqlite3` / `sharp` / `canvas` ship prebuilt Linux binaries; the setup
+  script also installs the fallback build toolchain (`build-essential`,
+  cairo/pango dev headers) in case a custom Node build needs to compile them.
+- Chromium is **optional** and only used by the UI layout probes
+  (`scripts/ui-*.mts`) and the responsive tests — those skip themselves when no
+  browser is present. Nothing else needs it.
+- All npm scripts are POSIX (`VAR=value command`) and run unchanged under
+  bash/zsh/sh. Line endings are pinned to LF via `.gitattributes`.
+
 ## Connecting Gmail and Gemini
 
 Both live in the staff console under **Settings → Connections** (see OR-4 work for the guided

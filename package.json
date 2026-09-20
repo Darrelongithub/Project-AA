@@ -18,7 +18,8 @@
     "restore": "tsx src/cli/restore.ts",
     "start": "node dist/src/cli/serve.js",
     "purge-mock": "tsx src/cli/purgeMock.ts",
-    "stress": "tsx src/cli/stress.ts"
+    "stress": "tsx src/cli/stress.ts",
+    "setup:linux": "bash scripts/setup-linux.sh"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
@@ -41,5 +42,8 @@
     "tsx": "^4.19.0",
     "typescript": "^5.5.4",
     "vitest": "^2.1.1"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

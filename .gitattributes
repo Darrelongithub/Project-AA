@@ -1,0 +1,17 @@
+# Cross-platform line endings: LF in the repo, LF on checkout (Linux is the
+# deploy target; editorconfig-style guard so Windows checkouts can't sneak
+# CRLF into TypeScript, SQL or shell scripts).
+* text=auto eol=lf
+*.sh text eol=lf
+*.ts text eol=lf
+*.mts text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sqlite binary
+*.sqlite-journal binary
+*.woff2 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.traineddata binary
