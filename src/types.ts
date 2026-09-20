@@ -444,6 +444,8 @@ export interface EmailRecord {
   attachments?: string;
   /** Mail window: 0 = unread incoming (arrives unread, read on open). */
   read?: number;
+  /** Mail window folders: JSON array of starred | important | spam | bin. */
+  labels?: string;
 }
 
 // ── Vision / watcher ───────────────────────────────────────────────────────

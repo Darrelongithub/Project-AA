@@ -1426,67 +1426,133 @@ export function composeWindowPage(
 }
 
 
-/** Gmail-style mail window: every conversation, newest first. */
+/** Gmail-style mail window: folders sidebar + conversation list. */
 export function mailPage(
   c: Ctx,
   opts: {
-    threads: Array<{ tkey: string; thread_n: number; unread_n: number; subject: string; body: string; at: string; direction: string; applicant_id: number | null; a_name: string | null; a_email: string; ref_number: string; lifecycle: string }>;
+    threads: Array<{ tkey: string; thread_n: number; unread_n: number; star_n: number; imp_n: number; subject: string; body: string; at: string; direction: string; applicant_id: number | null; a_name: string | null; a_email: string; ref_number: string; lifecycle: string }>;
     q?: string;
+    folder: string;
     unreadOnly: boolean;
+    counts: Record<string, number>;
+    backUrl: string;
   }
 ): string {
-  const unreadTotal = opts.unreadOnly ? opts.threads.length : c.repo.mailThreads({ schools: c.repo.visibleSchoolsFor(c.user!), demo: c.user!.demo, unreadOnly: true }).length;
+  const folderDefs: Array<{ key: string; href: string; label: string; ic: string; count: number; unread?: boolean }> = [
+    { key: "inbox", href: "/mail?f=inbox", label: "Inbox", ic: "inbox", count: opts.counts.unread ?? 0, unread: true },
+    { key: "unread", href: "/mail?f=unread", label: "Unread", ic: "bell", count: opts.counts.unread ?? 0, unread: true },
+    { key: "starred", href: "/mail?f=starred", label: "Starred", ic: "star-o", count: opts.counts.starred ?? 0 },
+    { key: "important", href: "/mail?f=important", label: "Important", ic: "flag", count: opts.counts.important ?? 0 },
+    { key: "sent", href: "/mail?f=sent", label: "Sent", ic: "send", count: opts.counts.sent ?? 0 },
+    { key: "all", href: "/mail?f=all", label: "All Mail", ic: "archive", count: opts.counts.all ?? 0 },
+    { key: "spam", href: "/mail?f=spam", label: "Spam", ic: "alert", count: opts.counts.spam ?? 0 },
+    { key: "bin", href: "/mail?f=bin", label: "Bin", ic: "trash", count: opts.counts.bin ?? 0 },
+  ];
+  const activeKey = opts.unreadOnly ? "unread" : opts.folder;
+  const sidebar = folderDefs.map((f) => {
+    const href = opts.q ? `${f.href}&q=${encodeURIComponent(opts.q)}` : f.href;
+    const active = activeKey === f.key;
+    const showCount = f.key === "inbox" || f.key === "unread" ? (f.count > 0) : (f.count > 0 && !["inbox", "unread"].includes(f.key));
+    return `<a class="mail-fold${active ? " active" : ""}" href="${href}">${icon(f.ic as "inbox", 15)}${f.label}${showCount ? ` <b class="mail-count">${f.count}</b>` : ""}</a>`;
+  }).join("");
+
   const rows = opts.threads.map((t) => {
     const unread = t.unread_n > 0;
     const snippet = (t.body || "").replace(/\s+/g, " ").trim();
     const name = t.a_name ?? t.ref_number;
-    return `<tr style="cursor:pointer" onclick="location.href='/mail/thread/${encodeURIComponent(t.tkey)}'">
+    const threadUrl = `/mail/thread/${encodeURIComponent(t.tkey)}`;
+    return `<tr style="cursor:pointer" onclick="location.href='${threadUrl}'">
       <td style="width:26px;padding-right:0">${unread ? `<span title="Unread" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--purple)"></span>` : ""}</td>
-      <td style="width:34px">${avatar(name, 28)}</td>
+      <td style="width:34px;padding-right:0">
+        <form class="starform" method="post" action="${threadUrl}/action" onclick="event.stopPropagation()" style="margin:0">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          <input type="hidden" name="action" value="${t.star_n ? "unstar" : "star"}">
+          <input type="hidden" name="back" value="${esc(opts.backUrl)}">
+          <button class="starbtn${t.star_n ? " on" : ""}" title="${t.star_n ? "Remove star" : "Star"}">${icon(t.star_n ? "star" : "star-o", 15)}</button>
+        </form>
+      </td>
+      <td style="width:34px;padding-right:0">${avatar(name, 28)}</td>
       <td style="${unread ? "font-weight:700" : ""};white-space:nowrap">${esc(name)}</td>
       <td style="min-width:0">
         <span style="${unread ? "font-weight:700" : ""}">${esc(t.subject || "(no subject)")}</span>
         <span class="muted"> — ${esc(snippet.slice(0, 140))}${snippet.length > 140 ? "…" : ""}</span>
+        ${t.imp_n ? `<span title="Important" style="color:var(--purple)">${icon("flag", 12)}</span>` : ""}
       </td>
       <td class="muted small" style="white-space:nowrap">${t.thread_n > 1 ? `(${t.thread_n})` : ""}</td>
       <td class="muted small" style="white-space:nowrap"><span data-rel="${esc(t.at)}">${esc(t.at.slice(0, 16).replace("T", " "))}</span></td>
     </tr>`;
   }).join("");
-  const tab = (href: string, label: string, active: boolean, count?: number) =>
-    `<a href="${href}" class="btn small ${active ? "" : "ghost"}" style="border-radius:999px">${label}${count ? ` (${count})` : ""}</a>`;
+
+  const folderLabel = folderDefs.find((f) => f.key === activeKey)?.label ?? "Inbox";
+  const emptyText: Record<string, string> = {
+    inbox: "Inbox zero — no new conversations.",
+    unread: "Everything is read — inbox zero.",
+    starred: "No starred conversations.",
+    important: "Nothing marked important.",
+    sent: "Nothing sent yet.",
+    all: "No mail yet — conversations appear here as they happen.",
+    spam: "Spam is empty — that's how it should be.",
+    bin: "Bin is empty.",
+  };
+
   return head(c, "Mail", "mail", `
 <div class="hero">
   <div class="row">
     <div style="min-width:0;flex:1">
-      <div class="kicker">New window · mail</div>
+      <div class="kicker">New window · mail · ${esc(folderLabel.toLowerCase())}</div>
       <h1 style="margin:0">Mail</h1>
       <div class="sub" style="margin:2px 0 0">Every conversation with every applicant — received and sent, newest first.</div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center">
-      ${tab("/mail" + (opts.q ? `?q=${encodeURIComponent(opts.q)}` : ""), "All mail", !opts.unreadOnly)}
-      ${tab("/mail?f=unread" + (opts.q ? `&q=${encodeURIComponent(opts.q)}` : ""), "Unread", opts.unreadOnly, unreadTotal)}
-      <a class="btn" href="/compose" target="_blank" rel="noopener">Compose</a>
-    </div>
   </div>
 </div>
-<div class="card" style="padding:16px 20px;margin-bottom:16px">
-  <form method="get" action="/mail" class="formrow" style="align-items:end;margin:0">
-    ${opts.unreadOnly ? `<input type="hidden" name="f" value="unread">` : ""}
-    <div style="flex:1"><input type="text" name="q" value="${esc(opts.q ?? "")}" placeholder="Search mail — subject, message, name, email or reference…"></div>
-    <div style="flex:0"><button class="btn">Search</button>${opts.q ? ` <a class="btn ghost" href="${opts.unreadOnly ? "/mail?f=unread" : "/mail"}">Clear</a>` : ""}</div>
-  </form>
-</div>
-<div class="card nopad">
-  ${rows ? `<table>
-    <tbody>${rows}</tbody>
-  </table>` : `<p class="small muted" style="padding:22px 24px;margin:0">${opts.q ? `No mail matches “${esc(opts.q)}”${opts.unreadOnly ? " among unread conversations" : ""}.` : opts.unreadOnly ? "Everything is read — inbox zero." : "No mail yet — conversations appear here as they happen."}</p>`}
+<div class="mail-wrap">
+  <aside class="mail-side">
+    <a class="btn" href="/compose" target="_blank" rel="noopener" style="display:block;text-align:center;margin-bottom:14px">Compose</a>
+    <nav>${sidebar}</nav>
+  </aside>
+  <div style="flex:1;min-width:0">
+    <div class="card" style="padding:14px 20px;margin-bottom:16px">
+      <form method="get" action="/mail" class="formrow" style="align-items:end;margin:0">
+        ${opts.unreadOnly || opts.folder !== "inbox" ? `<input type="hidden" name="f" value="${activeKey}">` : ""}
+        <div style="flex:1"><input type="text" name="q" value="${esc(opts.q ?? "")}" placeholder="Search mail — subject, message, name, email or reference…"></div>
+        <div style="flex:0"><button class="btn">Search</button>${opts.q ? ` <a class="btn ghost" href="/mail?f=${activeKey}">Clear</a>` : ""}</div>
+      </form>
+    </div>
+    <div class="card nopad">
+      ${rows ? `<table>
+        <tbody>${rows}</tbody>
+      </table>` : `<p class="small muted" style="padding:22px 24px;margin:0">${opts.q ? `No mail matches “${esc(opts.q)}” in ${esc(folderLabel.toLowerCase())}.` : emptyText[activeKey] ?? emptyText.inbox}</p>`}
+    </div>
+  </div>
 </div>`);
 }
 
-/** One conversation, both directions, oldest first. */
-export function mailThreadPage(c: Ctx, opts: { applicant: ApplicantRow; emails: EmailRecord[]; tkey: string }): string {
+/** One conversation, both directions, oldest first — with the gmail action bar. */
+export function mailThreadPage(
+  c: Ctx,
+  opts: { applicant: ApplicantRow; emails: EmailRecord[]; tkey: string; labels: { starred: boolean; important: boolean; spam: boolean; bin: boolean }; backUrl: string }
+): string {
   const a = opts.applicant;
   const prog = a.programme ? c.repo.programmeByCode(a.programme) : undefined;
+  const threadPath = `/mail/thread/${encodeURIComponent(opts.tkey)}`;
+  const actionForm = (action: string, label: string, ic: Parameters<typeof icon>[0], back = threadPath) => `
+    <form method="post" action="${threadPath}/action" style="margin:0">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <input type="hidden" name="action" value="${action}">
+      <input type="hidden" name="back" value="${esc(back)}">
+      <button class="btn small ghost">${icon(ic, 13)} ${label}</button>
+    </form>`;
+  const L = opts.labels;
+  const binOrSpam = L.bin || L.spam;
+  const actionBar = `<div class="card" style="padding:12px 16px;margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <a class="btn small ghost" href="${esc(opts.backUrl)}">← Back</a>
+    ${actionForm(L.starred ? "unstar" : "star", L.starred ? "Unstar" : "Star", L.starred ? "star" : "star-o")}
+    ${actionForm(L.important ? "unimportant" : "important", L.important ? "Remove important" : "Mark important", "flag")}
+    ${actionForm("unread", "Mark unread", "inbox", "/mail")}
+    ${L.spam ? actionForm("notspam", "Not spam", "alert") : actionForm("spam", "Report spam", "alert")}
+    ${L.bin ? actionForm("restore", "Move back to Inbox", "archive", "/mail?f=bin") : actionForm("bin", "Move to Bin", "trash")}
+    ${binOrSpam ? `<span class="small muted" style="margin-left:auto">${L.bin ? "This conversation is in the Bin." : "This conversation is in Spam."}</span>` : ""}
+  </div>`;
   const msgs = opts.emails.map((e) => {
     const out = e.direction === "out";
     let attached: string[] = [];
@@ -1516,6 +1582,7 @@ export function mailThreadPage(c: Ctx, opts: { applicant: ApplicantRow; emails: 
     <div><a class="btn" href="/compose?case=${a.id}" target="_blank" rel="noopener">Reply in a new window</a></div>
   </div>
 </div>
+${actionBar}
 ${msgs}`);
 }
 

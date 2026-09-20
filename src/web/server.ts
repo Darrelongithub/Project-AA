@@ -624,12 +624,21 @@ export function createApp(deps: WebDeps): Express {
   // Every conversation (received AND sent), grouped by thread, newest first.
   // Incoming mail arrives unread; opening a conversation reads it. Scoped by
   // school and demo realm exactly like every other case surface.
+  const MAIL_FOLDERS = new Set(["inbox", "unread", "starred", "important", "sent", "all", "spam", "bin"]);
+  /** Only local /mail… paths ever go into the `back` round-trip — open-redirect guard. */
+  const mailBack = (raw: unknown, fallback: string): string =>
+    typeof raw === "string" && raw.startsWith("/mail") ? raw : fallback;
+
   app.get("/mail", requireLogin, (req, res) => {
     const q = req.query.q !== undefined ? String(req.query.q).trim() : undefined;
-    const unreadOnly = String(req.query.f ?? "") === "unread";
-    const base = { schools: repo.visibleSchoolsFor(req.staff!), demo: req.staff!.demo, q: q || undefined };
-    const threads = repo.mailThreads({ ...base, unreadOnly });
-    res.send(mailPage(c(req), { threads, q, unreadOnly }));
+    const f = String(req.query.f ?? "inbox");
+    const folder = MAIL_FOLDERS.has(f) && f !== "unread" ? f : "inbox";
+    const unreadOnly = f === "unread";
+    const baseOpts = { schools: repo.visibleSchoolsFor(req.staff!), demo: req.staff!.demo };
+    const threads = repo.mailThreads({ ...baseOpts, q: q || undefined, unreadOnly, folder });
+    const counts = repo.mailFolderCounts(baseOpts);
+    const backUrl = `/mail?f=${unreadOnly ? "unread" : folder}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
+    res.send(mailPage(c(req), { threads, q, folder, unreadOnly, counts, backUrl }));
   });
 
   app.get("/mail/thread/:tkey", requireLogin, (req, res) => {
@@ -652,7 +661,40 @@ export function createApp(deps: WebDeps): Express {
     const a = emails[0].applicant_id != null ? repo.getApplicant(emails[0].applicant_id) : null;
     if (!a || !repo.applicantVisibleTo(req.staff!, a)) return refuseScope(req, res, "/mail", "← Back to mail");
     repo.markThreadRead(tkey);
-    res.send(mailThreadPage(c(req), { applicant: a, emails, tkey }));
+    const labels = repo.threadLabelState(tkey);
+    const backUrl = mailBack(req.query.back, labels.bin ? "/mail?f=bin" : labels.spam ? "/mail?f=spam" : "/mail");
+    res.send(mailThreadPage(c(req), { applicant: a, emails, tkey, labels, backUrl }));
+  });
+
+  /** Gmail conversation actions: star, important, spam, bin, unread. Labels
+   *  live on the conversation; bin/spam are exclusive until restore. */
+  const THREAD_ACTIONS: Record<string, { label: string; on: boolean } | { unread: true }> = {
+    star: { label: "starred", on: true },
+    unstar: { label: "starred", on: false },
+    important: { label: "important", on: true },
+    unimportant: { label: "important", on: false },
+    spam: { label: "spam", on: true },
+    notspam: { label: "spam", on: false },
+    bin: { label: "bin", on: true },
+    restore: { label: "restore", on: true },
+    unread: { unread: true },
+  };
+  app.post("/mail/thread/:tkey/action", requireLogin, csrfCheck, (req, res) => {
+    const tkey = String(req.params.tkey);
+    const emails = repo.emailsForThread(tkey);
+    if (!emails.length) return res.status(404).send("Conversation not found.");
+    const a = emails[0].applicant_id != null ? repo.getApplicant(emails[0].applicant_id) : null;
+    if (!a || !repo.applicantVisibleTo(req.staff!, a)) return refuseScope(req, res, "/mail", "← Back to mail");
+    const action = THREAD_ACTIONS[String(req.body.action ?? "")];
+    if (!action) return res.redirect(`/mail/thread/${encodeURIComponent(tkey)}`);
+    if ("unread" in action) {
+      repo.markThreadUnread(tkey);
+      repo.audit(a.id, req.staff!.username, "mail_marked_unread", a.ref_number);
+      return res.redirect(mailBack(req.body.back, "/mail"));
+    }
+    repo.setThreadLabel(tkey, action.label, action.on);
+    repo.audit(a.id, req.staff!.username, "mail_label", `${action.label} ${action.on ? "added" : "removed"} (${a.ref_number})`);
+    res.redirect(mailBack(req.body.back, `/mail/thread/${encodeURIComponent(tkey)}`));
   });
 
   // ── New-window composer ────────────────────────────────────────────────────

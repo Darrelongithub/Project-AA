@@ -182,7 +182,8 @@ CREATE TABLE IF NOT EXISTS emails (
   channel      TEXT NOT NULL DEFAULT 'email',
   at           TEXT NOT NULL DEFAULT (datetime('now')),
   attachments  TEXT NOT NULL DEFAULT '',  -- JSON array of filenames that rode along (outgoing)
-  read         INTEGER NOT NULL DEFAULT 0 -- mail window: incoming mail arrives unread
+  read         INTEGER NOT NULL DEFAULT 0, -- mail window: incoming mail arrives unread
+  labels       TEXT NOT NULL DEFAULT '[]' -- JSON array: starred | important | spam | bin (gmail folders)
 );
 CREATE INDEX IF NOT EXISTS idx_emails_applicant ON emails(applicant_id, at);
 
@@ -478,6 +479,11 @@ function migrate(db: Database.Database): void {
   if (!emailCols.some((c) => c.name === "read")) {
     db.exec(`ALTER TABLE emails ADD COLUMN read INTEGER NOT NULL DEFAULT 0`);
     db.exec(`UPDATE emails SET read = 1`);
+  }
+  // Gmail folders: conversation labels (starred/important/spam/bin). Default
+  // '[]' — history needs no backfill; labels are opt-in from the mail window.
+  if (!emailCols.some((c) => c.name === "labels")) {
+    db.exec(`ALTER TABLE emails ADD COLUMN labels TEXT NOT NULL DEFAULT '[]'`);
   }
   const packDefaultsDone = db.prepare("SELECT value FROM settings WHERE key = 'pack_defaults_migrated'").get();
   if (!packDefaultsDone) {

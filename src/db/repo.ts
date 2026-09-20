@@ -789,9 +789,21 @@ export class Repo {
    * filtered by demo, optionally searched and limited to unread threads.
    * One aggregate query — no N+1.
    */
+  /** Gmail folders. bin/spam are exclusive — a conversation there is hidden
+   *  from every other folder until restored. */
+  static MAIL_FOLDER_WHERE: Record<string, string> = {
+    inbox: "agg.in_n > 0 AND agg.spam_n = 0 AND agg.bin_n = 0",
+    starred: "agg.star_n > 0 AND agg.spam_n = 0 AND agg.bin_n = 0",
+    important: "agg.imp_n > 0 AND agg.spam_n = 0 AND agg.bin_n = 0",
+    sent: "agg.out_n > 0 AND agg.spam_n = 0 AND agg.bin_n = 0",
+    all: "agg.spam_n = 0 AND agg.bin_n = 0",
+    spam: "agg.spam_n > 0 AND agg.bin_n = 0",
+    bin: "agg.bin_n > 0",
+  };
+
   mailThreads(opts: {
-    schools?: string[] | null; demo?: number; q?: string; unreadOnly?: boolean; limit?: number;
-  }): Array<EmailRecord & { tkey: string; thread_n: number; unread_n: number; a_name: string | null; a_email: string; ref_number: string; programme: string | null; lifecycle: string }> {
+    schools?: string[] | null; demo?: number; q?: string; unreadOnly?: boolean; limit?: number; folder?: string;
+  }): Array<EmailRecord & { tkey: string; thread_n: number; unread_n: number; star_n: number; imp_n: number; a_name: string | null; a_email: string; ref_number: string; programme: string | null; lifecycle: string }> {
     const where: string[] = [];
     const params: unknown[] = [];
     if (opts.demo !== undefined) { where.push("a.demo = ?"); params.push(opts.demo); }
@@ -804,6 +816,7 @@ export class Repo {
       params.push(like, like, like, like, like);
     }
     const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+    const folder = Repo.MAIL_FOLDER_WHERE[opts.folder ?? "inbox"] ?? Repo.MAIL_FOLDER_WHERE.inbox;
     const unreadOnly = opts.unreadOnly ? " AND agg.unread_n > 0" : "";
     const sql = `
       WITH keyed AS (
@@ -815,12 +828,18 @@ export class Repo {
       ),
       agg AS (
         SELECT tkey, MAX(id) AS last_id, MAX(at) AS last_at, COUNT(*) AS n,
-               SUM(CASE WHEN direction = 'in' AND read = 0 THEN 1 ELSE 0 END) AS unread_n
+               SUM(CASE WHEN direction = 'in' THEN 1 ELSE 0 END) AS in_n,
+               SUM(CASE WHEN direction = 'out' THEN 1 ELSE 0 END) AS out_n,
+               SUM(CASE WHEN direction = 'in' AND read = 0 THEN 1 ELSE 0 END) AS unread_n,
+               SUM(CASE WHEN labels LIKE '%"starred"%' THEN 1 ELSE 0 END) AS star_n,
+               SUM(CASE WHEN labels LIKE '%"important"%' THEN 1 ELSE 0 END) AS imp_n,
+               SUM(CASE WHEN labels LIKE '%"spam"%' THEN 1 ELSE 0 END) AS spam_n,
+               SUM(CASE WHEN labels LIKE '%"bin"%' THEN 1 ELSE 0 END) AS bin_n
         FROM keyed GROUP BY tkey
       )
-      SELECT k.*, agg.n AS thread_n, agg.unread_n AS unread_n
+      SELECT k.*, agg.n AS thread_n, agg.unread_n AS unread_n, agg.star_n AS star_n, agg.imp_n AS imp_n
       FROM agg JOIN keyed k ON k.id = agg.last_id
-      WHERE 1=1${unreadOnly}
+      WHERE ${folder}${unreadOnly}
       ORDER BY agg.last_at DESC, k.id DESC LIMIT ?`;
     params.push(opts.limit ?? 100);
     return this.db.prepare(sql).all(...params) as never[];
@@ -838,6 +857,78 @@ export class Repo {
     this.db
       .prepare(`UPDATE emails SET read = 1 WHERE direction = 'in' AND ${Repo.threadKeySql("emails")} = ?`)
       .run(tkey);
+  }
+
+  /** Marking a conversation unread returns it to the Unread filter. */
+  markThreadUnread(tkey: string): void {
+    this.db
+      .prepare(`UPDATE emails SET read = 0 WHERE direction = 'in' AND ${Repo.threadKeySql("emails")} = ?`)
+      .run(tkey);
+  }
+
+  /** Sidebar counts per folder (conversations), one aggregate query. */
+  mailFolderCounts(opts: { schools?: string[] | null; demo?: number }): Record<string, number> {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (opts.demo !== undefined) { where.push("a.demo = ?"); params.push(opts.demo); }
+    const scope = this.scopePred("a", opts.schools);
+    if (scope.sql) { where.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
+    const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
+    const row = this.db.prepare(`
+      WITH keyed AS (
+        SELECT e.direction, e.read, e.labels,
+               COALESCE(NULLIF(e.thread_id, ''), 'email-' || e.id) AS tkey
+        FROM emails e JOIN applicants a ON a.id = e.applicant_id
+        ${whereSql}
+      ),
+      agg AS (
+        SELECT tkey,
+               SUM(CASE WHEN direction = 'in' THEN 1 ELSE 0 END) AS in_n,
+               SUM(CASE WHEN direction = 'out' THEN 1 ELSE 0 END) AS out_n,
+               SUM(CASE WHEN direction = 'in' AND read = 0 THEN 1 ELSE 0 END) AS unread_n,
+               SUM(CASE WHEN labels LIKE '%"starred"%' THEN 1 ELSE 0 END) AS star_n,
+               SUM(CASE WHEN labels LIKE '%"important"%' THEN 1 ELSE 0 END) AS imp_n,
+               SUM(CASE WHEN labels LIKE '%"spam"%' THEN 1 ELSE 0 END) AS spam_n,
+               SUM(CASE WHEN labels LIKE '%"bin"%' THEN 1 ELSE 0 END) AS bin_n
+        FROM keyed GROUP BY tkey
+      )
+      SELECT
+        SUM(CASE WHEN in_n > 0 AND spam_n = 0 AND bin_n = 0 THEN 1 ELSE 0 END) AS inbox,
+        SUM(CASE WHEN in_n > 0 AND spam_n = 0 AND bin_n = 0 AND unread_n > 0 THEN 1 ELSE 0 END) AS unread,
+        SUM(CASE WHEN star_n > 0 AND spam_n = 0 AND bin_n = 0 THEN 1 ELSE 0 END) AS starred,
+        SUM(CASE WHEN imp_n > 0 AND spam_n = 0 AND bin_n = 0 THEN 1 ELSE 0 END) AS important,
+        SUM(CASE WHEN out_n > 0 AND spam_n = 0 AND bin_n = 0 THEN 1 ELSE 0 END) AS sent,
+        SUM(CASE WHEN spam_n = 0 AND bin_n = 0 THEN 1 ELSE 0 END) AS all_mail,
+        SUM(CASE WHEN spam_n > 0 AND bin_n = 0 THEN 1 ELSE 0 END) AS spam,
+        SUM(CASE WHEN bin_n > 0 THEN 1 ELSE 0 END) AS bin
+      FROM agg`).get(...params) as Record<string, number>;
+    return { inbox: row.inbox ?? 0, unread: row.unread ?? 0, starred: row.starred ?? 0, important: row.important ?? 0, sent: row.sent ?? 0, all: row.all_mail ?? 0, spam: row.spam ?? 0, bin: row.bin ?? 0 };
+  }
+
+  /**
+   * Apply/remove a label on every message of a conversation (gmail semantics:
+   * labels live on the conversation). Restore = strip bin AND spam so the
+   * conversation lands back in Inbox/Sent exactly where it came from.
+   */
+  setThreadLabel(tkey: string, label: string, on: boolean): void {
+    const rows = this.emailsForThread(tkey);
+    const update = this.db.prepare("UPDATE emails SET labels = ? WHERE id = ?");
+    for (const e of rows) {
+      let arr: string[] = [];
+      try { arr = JSON.parse(e.labels || "[]") as string[]; } catch { arr = []; }
+      const set = new Set(arr.filter((x) => typeof x === "string"));
+      if (label === "restore") { set.delete("bin"); set.delete("spam"); }
+      else if (on) set.add(label);
+      else set.delete(label);
+      update.run(JSON.stringify([...set].sort()), e.id);
+    }
+  }
+
+  /** Aggregate label state of a conversation (any message labelled = labelled). */
+  threadLabelState(tkey: string): { starred: boolean; important: boolean; spam: boolean; bin: boolean } {
+    const rows = this.emailsForThread(tkey);
+    const has = (l: string) => rows.some((e) => (e.labels || "").includes(`"${l}"`));
+    return { starred: has("starred"), important: has("important"), spam: has("spam"), bin: has("bin") };
   }
 
   // ── Staff users & sessions (features 31, 32) ─────────────────────────────
