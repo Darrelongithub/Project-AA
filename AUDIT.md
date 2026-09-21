@@ -128,3 +128,39 @@ stall or a duplicate delivery could pass unrecorded.
    revisit if the theme ever gets persisted per-user server-side.
 5. The union pattern should be applied to any future "no entity attached" result type
    (`refNumber` already requires no sentinel thanks to `refNumber?: string`).
+
+
+---
+
+# Round 2 — fresh hostile pass (2026-09-21)
+
+Round 2 re-hunted under the same rules: only NEW defects, no re-audit of guards pinned in round 1 (see the A.1–E.2 verdict sheet). Recon confirmed the already-guarded vectors: `runEscalationSweep` is fully synchronous on better-sqlite3 (single event-loop turn — no interleave possible), ref-numbering uses a transaction + `INSERT OR IGNORE` per (prefix, year) with correct rollover, `/templates/save` enforces non-empty name/subject/body plus unknown-placeholder warnings, `/staff/scopes` allow-lists against `listSchools()`. Two new defects survived the hunt.
+
+## R2-1 — HIGH: held-draft approval race sends the same applicant reply twice
+
+- **Vector** — web draft route `POST /case/:id/draft` (decision `send`, `src/web/server.ts`). The handler read the queued draft, then **awaited** `sender.send(...)` — a genuine event-loop yield — and only *afterward* recorded the sent email and deleted the draft row. Two staff approving the same held draft inside that window both read the still-queued row → **the applicant received the same reply twice** (plus duplicate `human_override` audits and duplicate `emails` rows). Held drafts are exactly the high-stakes replies, and a slow SMTP transport widens the window to tens/hundreds of ms.
+- **Why round 1 missed it**: an instant MockSender keeps the handler's synchronous segment atomic; the interleave only appears when the send actually yields to the I/O phase.
+- **RED evidence** — `test/audit2-hardening.test.ts` T1: SlowSender (80 ms defer), two concurrent approvals of one held draft → `expected 2 to be 1` (both sent).
+- **Fix** — optimistic send claim. New migration `outbox.claimed_at TEXT`; `repo.claimOutboxDraft(id, nowIso)` = one `UPDATE … WHERE id=? AND (claimed_at IS NULL OR claimed_at < now-10min)` → `changes>0`. The handler must win the claim *before* the awaited send; the loser is redirected with an explicit "already being sent" message. A failed send releases the claim so the officer may retry; the 10-minute staleness horizon salvages drafts stranded by a process crash mid-send; successful sends delete the row anyway. Discard keeps its existing semantics (deterministic; a discard racing an in-flight send still cannot resurrect a sent draft).
+- **GREEN evidence** — T1 now: exactly 1 send, exactly 1 recorded `out` email, exactly 1 `human_override` audit across the two concurrent approvals.
+- **Circularity check** — the claim is a state transition on the very row the test races; no method-patching can satisfy it. Simulation determinism unchanged.
+
+## R2-2 — MEDIUM: follow-up ladder TOCTOU across sweep processes
+
+- **Vector** — `runFollowUpSweep` (`src/followups/index.ts`) reads `dueFollowUps()` and then, per case, drafts the reminder and advances the rung. The daemon runs the sweep every 2 min **unguarded** (`src/cli/serve.ts`, unlike the `guardedSync` inbox job) and `npm run followups` can additionally run from cron as a second Process. Two sweepers reading the same due-list both drafted → **duplicate reminder held + rung jumping two rungs per pass** (which later means an applicant misses a scheduled reminder). Same-process double-invocation is provably safe — the sweep body has no awaits, so one invocation never interleaves with itself — the real hazard is cross-process overlap.
+- **RED evidence** — T2a: `claimFollowupRung is not a function`; T2b: two Repo connections on one file-backed SQLite, the second holding a monkey-patched stale due-list snapshot → `expected 1 to be +0` (duplicate reminder drafted; rung double-advanced).
+- **Fix** — optimistic rung claim. `repo.claimFollowupRung(id, expectedRung, nextRung, nextAt)` = `UPDATE applicants SET followup_rung=?, followup_next_at=? WHERE id=? AND followup_rung=? AND lifecycle IN ('application_received','documents_received')` → `changes>0`. The sweep claims the rung **before any visible side effect** (draft, notification, audit); the loser logs `warn` and skips. The ladder-exhausted → human-escalation branch uses the same claim, so only one sweeper can escalate. Accepted trade-off (documented): a crash between claim and draft advances the rung without a reminder — loud, deterministic, never duplicated.
+- **GREEN evidence** — T2a: a stale rung cannot be claimed twice. T2b: the stale sweep drafts nothing, the rung advances exactly once, exactly one `followup_held_qualification` audit. The `followup_stopped` (file became complete) branch is intentionally untouched — it is idempotent.
+
+### Round-2 gates — run twice, all clean
+
+| Gate | Run 1 | Run 2 |
+|---|---|---|
+| `tsc --noEmit` | clean | clean |
+| `vitest run` (`DISABLE_OCR=1`) | 435 passed / 1 skipped (37 files) | 435 passed / 1 skipped (37 files) |
+| `npm run simulate` | 316/316 checks, 26 scenarios, determinism 13/13 | 316/316, determinism 13/13 |
+| `npm run stress` | 1000/1000 | 1000/1000 |
+
+### Invariant review (round 2)
+
+All 7 non-negotiables hold: deterministic evaluation untouched (claims are ordering gates, not evaluation inputs); Green = complete blocking matrix + rule tree + 0 blocking flags unchanged; never auto-reject preserved (reminders are still held drafts; exhaustion escalates to humans, never rejects); frozen snapshots untouched; strict scoping untouched; no silent failures added (lost claims log `warn`; the losing officer sees an explicit message); zero mock contamination (RED used two real connections over a file-backed DB; all fixes live in repo/route/sweep code, none in fixtures).
