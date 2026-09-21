@@ -564,10 +564,7 @@ export interface IntakeRow {
   deadline: string | null;
 }
 
-export interface ProcessResult {
-  skipped?: boolean;
-  applicantId: number;
-  refNumber?: string;
+export interface ProcessedCommon {
   finalStatus: Classification;
   lifecycle: LifecycleStage;
   autoSent: boolean;
@@ -577,6 +574,15 @@ export interface ProcessResult {
   flags: DerivedFlag[];
   missing: DocType[];
 }
+
+/**
+ * Pipeline outcome. A processed email ALWAYS names its applicant; a skipped
+ * one (already claimed/processed by another run) carries NO applicant handle
+ * at all — the old `applicantId: -1` sentinel was one unchecked access away
+ * from an FK crash, and the type system now makes that access impossible.
+ */
+export type ProcessResult = ProcessedCommon &
+  ({ skipped?: false; applicantId: number; refNumber?: string } | { skipped: true; applicantId: null; refNumber?: string });
 
 export interface DecisionLogEntry {
   id?: number;

@@ -5,6 +5,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { webLogin } from "./helpers";
+import { mustProcessed } from "./harness";
 import type { Server } from "http";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
@@ -65,7 +66,7 @@ beforeAll(async () => {
     id: "web-e1", threadId: "web-t1", from: applicantEmail, fromName: "Web Test",
     subject: "Application documents", body: "Attached.", receivedAt: new Date().toISOString(), attachments: atts,
   };
-  const res = await processEmail(email, ctx);
+  const res = mustProcessed(await processEmail(email, ctx));
   ref = res.refNumber!;
 
   const app = createApp({ repo, ctx });
@@ -336,14 +337,14 @@ describe("web console v3", () => {
   it("draft-first mode holds the reply and staff can approve it (features 16, 17)", async () => {
     const { cookie, csrf } = await login();
     repo.setAutomationMode("document_submission", "draft");
-    const res = await processEmail(
+    const res = mustProcessed(await processEmail(
       {
         id: "web-held-1", threadId: "web-held-t", from: "held@example.org", fromName: "Held One",
         subject: "Application documents", body: "Attached.",
         receivedAt: new Date().toISOString(), attachments: await fullSetAtts("HELD FOR APPROVAL"),
       },
       ctx
-    );
+    ));
     expect(res.finalStatus).toBe("Green");
     expect(res.autoSent).toBe(false);
     const a = repo.getApplicant(res.applicantId)!;

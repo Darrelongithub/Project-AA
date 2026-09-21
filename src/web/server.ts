@@ -286,7 +286,9 @@ export function createApp(deps: WebDeps): Express {
     res.redirect("/");
   });
 
-  app.post("/logout", (req, res) => {
+  // Logout mutates auth state, so it needs CSRF like every other mutation —
+  // otherwise a cross-site 1-pixel form could sign staff out mid-crisis.
+  app.post("/logout", csrfCheck, (req, res) => {
     if (req.sessionId) repo.deleteSession(req.sessionId);
     res.setHeader("Set-Cookie", clearSessionCookie());
     res.redirect("/login");

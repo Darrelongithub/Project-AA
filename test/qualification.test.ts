@@ -16,6 +16,7 @@ import { runFollowUpSweep } from "../src/followups";
 import { makeTextPdf, docLines } from "../src/simulation/pdfFactory";
 import type { Attachment, IncomingEmail } from "../src/types";
 
+import { mustProcessed } from "./harness";
 let repo: Repo;
 let sender: MockSender;
 let ctx: PipelineContext;
@@ -49,7 +50,7 @@ const fullSet = async (name: string) => [
 
 describe("qualification gate", () => {
   it("a fully qualified applicant (Green, no flags) still gets the automatic acknowledgement", async () => {
-    const res = await processEmail(mkEmail("q-green", "qualified@example.org", await fullSet("QUALIFIED APPLICANT")), ctx);
+    const res = mustProcessed(await processEmail(mkEmail("q-green", "qualified@example.org", await fullSet("QUALIFIED APPLICANT")), ctx));
     expect(res.finalStatus).toBe("Green");
     expect(res.autoSent).toBe(true);
     expect(res.autoKind).toBe("ack");
@@ -57,7 +58,7 @@ describe("qualification gate", () => {
   });
 
   it("a ref-only status query from a fully qualified case is answered automatically", async () => {
-    const first = await processEmail(mkEmail("q-ref-1", "status-ok@example.org", await fullSet("STATUS OK APPLICANT")), ctx);
+    const first = mustProcessed(await processEmail(mkEmail("q-ref-1", "status-ok@example.org", await fullSet("STATUS OK APPLICANT")), ctx));
     expect(first.finalStatus).toBe("Green");
     const res = await processEmail(
       mkEmail("q-ref-2", "status-ok@example.org", [], first.refNumber!),
@@ -69,10 +70,9 @@ describe("qualification gate", () => {
   });
 
   it("a ref-only status query from an INCOMPLETE case is held, not auto-sent", async () => {
-    const first = await processEmail(
-      mkEmail("q-part-1", "partial@example.org", [await mkAtt("a.pdf", "academic_cert", "PARTIAL APPLICANT")]),
+    const first = mustProcessed(await processEmail(mkEmail("q-part-1", "partial@example.org", [await mkAtt("a.pdf", "academic_cert", "PARTIAL APPLICANT")]),
       ctx
-    );
+    ));
     expect(first.finalStatus).toBe("Red");
     sender.sent.length = 0;
     const res = await processEmail(
@@ -88,7 +88,7 @@ describe("qualification gate", () => {
   });
 
   it("the held suggestion carries the applicant-facing text, ready to edit or send", async () => {
-    const res = await processEmail(mkEmail("q-text", "suggest@example.org", [], "What documents do you need?"), ctx);
+    const res = mustProcessed(await processEmail(mkEmail("q-text", "suggest@example.org", [], "What documents do you need?"), ctx));
     expect(res.autoSent).toBe(false);
     const held = repo.queuedOutbox(res.applicantId);
     expect(held).toBeTruthy();
@@ -97,10 +97,9 @@ describe("qualification gate", () => {
   });
 
   it("reminder-ladder rungs are suggestions too — never auto-sent", async () => {
-    const first = await processEmail(
-      mkEmail("q-lad-1", "ladderq@example.org", [await mkAtt("a.pdf", "academic_cert", "LADDER QUAL")]),
+    const first = mustProcessed(await processEmail(mkEmail("q-lad-1", "ladderq@example.org", [await mkAtt("a.pdf", "academic_cert", "LADDER QUAL")]),
       ctx
-    );
+    ));
     // A rung falls due immediately.
     repo.setFollowup(first.applicantId, 0, new Date(Date.now() - 1000).toISOString());
     const processed = await runFollowUpSweep(repo, ctx);

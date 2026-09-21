@@ -124,9 +124,9 @@ export async function runSimulation(
       log(`simulate:    ${emails[i].id} → ${last.finalStatus} (auto=${last.autoKind ?? "none"}, lifecycle=${last.lifecycle})`);
     }
 
-    // A skipped result carries the sentinel applicantId -1 — dereferencing it
-    // used to crash the whole simulation with a useless error instead of
-    // producing a scored failure.
+    // Skipped runs carry NO applicant handle at all (ProcessResult union) —
+    // dereferencing one used to crash the whole simulation with a useless
+    // error instead of producing a scored failure.
     if (!last || last.skipped) {
       reports.push({
         fixture,
@@ -140,7 +140,20 @@ export async function runSimulation(
       });
       continue;
     }
-    const applicant = repo.getApplicant(last.applicantId)!;
+    const applicant = repo.getApplicant(last.applicantId);
+    if (!applicant) {
+      reports.push({
+        fixture,
+        actual: {
+          finalStatus: "skipped", lifecycle: "application_received", autoSent: false, autoKind: "none",
+          flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "other", priority: "normal",
+          refOk: false, subjectRefOk: false,
+        },
+        checks: [{ field: "processed", pass: false, expected: "applicant row exists", actual: `pipeline returned unknown applicantId ${last.applicantId}` }],
+        passed: false,
+      });
+      continue;
+    }
     const lastOutbox = repo.latestOutbox(applicant.id);
     const actual: Actual = {
       finalStatus: last!.finalStatus,

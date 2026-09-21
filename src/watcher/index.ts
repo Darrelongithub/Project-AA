@@ -67,14 +67,38 @@ illegible or partial scans, specimen/sample/void markings, duplicate files, or a
 You never decide admissions outcomes. Respond with ONLY a JSON object:
 {"looks_off": true|false, "concerns": ["short concern", ...]}`;
 
+/**
+ * A Gemini call that never settles must not stall the pipeline forever —
+ * the fail-closed catch only fires on REJECTION; a hung socket rejects
+ * never. Race the call against a hard timeout. (Timeout default matches
+ * the vision tier; constructor override exists for tests.)
+ */
+const WATCHER_TIMEOUT_MS = 45_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+    // An unref'd timer never keeps the process alive on its own.
+    if (typeof timer === "object" && timer) (timer as { unref?: () => void }).unref?.();
+  });
+  return Promise.race([p, expiry]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 export class GeminiWatcher {
   private model: any;
+  private timeoutMs: number;
 
-  constructor(apiKey: string, modelName = "gemini-1.5-flash") {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { GoogleGenerativeAI } = require("@google/generative-ai");
-    const gen = new GoogleGenerativeAI(apiKey);
-    this.model = gen.getGenerativeModel({ model: modelName });
+  constructor(apiKey: string, modelName = "gemini-1.5-flash", model?: unknown, timeoutMs = WATCHER_TIMEOUT_MS) {
+    this.timeoutMs = timeoutMs;
+    if (model) {
+      this.model = model;
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { GoogleGenerativeAI } = require("@google/generative-ai");
+      const gen = new GoogleGenerativeAI(apiKey);
+      this.model = gen.getGenerativeModel({ model: modelName });
+    }
   }
 
   async watch(input: WatcherInput): Promise<WatcherResult> {
@@ -91,8 +115,10 @@ export class GeminiWatcher {
           text_excerpt: d.textExcerpt,
         })),
       };
-      const res = await this.model.generateContent(
-        WATCHER_PROMPT + "\n\nFILE:\n" + JSON.stringify(record, null, 2)
+      const res: any = await withTimeout<any>(
+        this.model.generateContent(WATCHER_PROMPT + "\n\nFILE:\n" + JSON.stringify(record, null, 2)),
+        this.timeoutMs,
+        "gemini watcher call"
       );
       const raw: string = res.response.text();
       const start = raw.indexOf("{");

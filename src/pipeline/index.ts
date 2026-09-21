@@ -58,13 +58,15 @@ export async function processEmail(
   ctx: PipelineContext,
   opts: PipelineOptions = DEFAULT_OPTS
 ): Promise<ProcessResult> {
-  const { repo, adapters } = ctx;
+  const { repo } = ctx;
 
-  if (repo.isProcessed(email.id)) {
-    log(`pipeline: skipping ${email.id} (already processed)`);
+  // Atomic claim FIRST: a concurrent run of the same email loses here and
+  // skips, so one message can never be processed (and replied to) twice.
+  if (!repo.claimProcessed(email.id, email.threadId)) {
+    log(`pipeline: skipping ${email.id} (already processed or claimed)`);
     return {
       skipped: true,
-      applicantId: -1,
+      applicantId: null,
       finalStatus: "Red",
       lifecycle: "application_received",
       autoSent: false,
@@ -75,6 +77,21 @@ export async function processEmail(
       missing: [],
     };
   }
+  try {
+    return await processEmailInner(email, ctx, opts);
+  } catch (e) {
+    // Release the claim: the ingest dead-letter machinery owns retries.
+    repo.unmarkProcessed(email.id);
+    throw e;
+  }
+}
+
+async function processEmailInner(
+  email: IncomingEmail,
+  ctx: PipelineContext,
+  opts: PipelineOptions
+): Promise<ProcessResult> {
+  const { repo, adapters } = ctx;
 
   // ── Categorize (feature 26) ──────────────────────────────────────────────
   const category: EmailCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
@@ -710,8 +727,6 @@ export async function processEmail(
     },
     { jsonlPath: ctx.jsonlPath }
   );
-  repo.markProcessed(email.id, email.threadId);
-
   const finalRow = repo.getApplicant(applicant.id)!;
   return {
     applicantId: applicant.id,

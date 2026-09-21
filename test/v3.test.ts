@@ -19,6 +19,7 @@ import { extractFields } from "../src/extraction/fields";
 import { makeTextPdf, docLines } from "../src/simulation/pdfFactory";
 import type { Attachment, IncomingEmail } from "../src/types";
 import { REQS, mkDoc } from "./helpers";
+import { mustProcessed } from "./harness";
 
 let repo: Repo;
 let sender: MockSender;
@@ -90,17 +91,17 @@ describe("identity matching (features 4, 5, 34)", () => {
   });
 
   it("pipeline: identity concern becomes an identity_check flag → human review", async () => {
-    const first = await processEmail(mkEmail("q1", "tq", "quinn@example.org", { attachments: await fullSet("QUINN ACHIENG OTIENO") }), ctx);
+    const first = mustProcessed(await processEmail(mkEmail("q1", "tq", "quinn@example.org", { attachments: await fullSet("QUINN ACHIENG OTIENO") }), ctx));
     expect(first.finalStatus).toBe("Green");
     const ref = first.refNumber!;
 
-    const res = await processEmail(
+    const res = mustProcessed(await processEmail(
       mkEmail("q2", "tq-aunt", "aunt@example.org", {
         subject: `Extra document for ${ref}`,
         attachments: [await mkAtt("birth.pdf", "birth_cert", "QUINN ACHIENG OTIENO")],
       }),
       ctx
-    );
+    ));
     expect(res.applicantId).toBe(first.applicantId); // right case, never fragmented
     expect(res.finalStatus).toBe("Orange");
     expect(res.flags.map((f) => f.type)).toContain("identity_check");
@@ -108,15 +109,15 @@ describe("identity matching (features 4, 5, 34)", () => {
   });
 
   it("pipeline: completed case + new substantive email → SAME case reopened", async () => {
-    const first = await processEmail(mkEmail("u1", "tu-a", "uma@example.org", { attachments: await fullSet("UMA WANJIRU MUTURI") }), ctx);
+    const first = mustProcessed(await processEmail(mkEmail("u1", "tu-a", "uma@example.org", { attachments: await fullSet("UMA WANJIRU MUTURI") }), ctx));
     // Round 18: a clean, fully qualified file is auto-admitted straight to
     // "completed" — so reopen behaviour is exercised against that state.
     expect(first.lifecycle).toBe("completed");
 
-    const res = await processEmail(
+    const res = mustProcessed(await processEmail(
       mkEmail("u2", "tu-b", "uma@example.org", { attachments: [await mkAtt("i2.pdf", "id", "UMA WANJIRU MUTURI", { idNumber: "99988877" })] }),
       ctx
-    );
+    ));
     expect(res.applicantId).toBe(first.applicantId);
     const audit = repo.auditForApplicant(first.applicantId);
     expect(audit.some((e) => e.event === "case_reopened")).toBe(true);
@@ -170,14 +171,14 @@ describe("rules versioning (feature 19) & deadlines (features 20, 21)", () => {
 
   it("submission after the intake deadline → late_submission flag → human", async () => {
     repo.addIntakeWithDeadline("September 2026", "2026-08-31T23:59:59Z");
-    const res = await processEmail(
+    const res = mustProcessed(await processEmail(
       mkEmail("r1", "tr", "rosa@example.org", {
         body: "Here are my documents for the September 2026 intake.",
         receivedAt: "2026-09-14T09:00:00Z",
         attachments: await fullSet("ROSA WAMBUI GITHINJI"),
       }),
       ctx
-    );
+    ));
     expect(res.flags.map((f) => f.type)).toContain("late_submission");
     expect(res.autoSent).toBe(false);
     expect(repo.auditForApplicant(res.applicantId).some((e) => e.event === "late_submission")).toBe(true);
@@ -185,13 +186,13 @@ describe("rules versioning (feature 19) & deadlines (features 20, 21)", () => {
 
   it("submission before the deadline is not flagged", async () => {
     repo.addIntakeWithDeadline("September 2026", "2026-12-31T23:59:59Z");
-    const res = await processEmail(
+    const res = mustProcessed(await processEmail(
       mkEmail("r2", "tr2", "early@example.org", {
         body: "Documents for September 2026 intake.",
         attachments: await fullSet("EARLY BIRD APPLICANT"),
       }),
       ctx
-    );
+    ));
     expect(res.flags.map((f) => f.type)).not.toContain("late_submission");
     expect(res.finalStatus).toBe("Green");
   });
@@ -200,10 +201,10 @@ describe("rules versioning (feature 19) & deadlines (features 20, 21)", () => {
 describe("draft-first automation (features 16, 17)", () => {
   it("per-category draft mode holds even a clean Green auto-reply", async () => {
     repo.setAutomationMode("document_submission", "draft");
-    const res = await processEmail(
+    const res = mustProcessed(await processEmail(
       mkEmail("d1", "td", "tina@example.org", { attachments: await fullSet("TINA NYAMBURA KARIUKI") }),
       ctx
-    );
+    ));
     expect(res.finalStatus).toBe("Green");
     expect(res.autoSent).toBe(false);
     expect(sender.sent.length).toBe(0); // nothing left the building
@@ -215,7 +216,7 @@ describe("draft-first automation (features 16, 17)", () => {
 
   it("global draft mode holds everything, regardless of category", async () => {
     repo.setSetting("automation_mode", "draft");
-    const res = await processEmail(mkEmail("d2", "td2", "held@example.org"), ctx); // no docs → docs_request normally
+    const res = mustProcessed(await processEmail(mkEmail("d2", "td2", "held@example.org"), ctx)); // no docs → docs_request normally
     expect(res.autoSent).toBe(false);
     expect(sender.sent.length).toBe(0);
     expect(repo.queuedOutbox(res.applicantId)).toBeTruthy();
@@ -224,10 +225,10 @@ describe("draft-first automation (features 16, 17)", () => {
   it("switching the category back to auto restores auto-send", async () => {
     repo.setAutomationMode("document_submission", "draft");
     repo.setAutomationMode("document_submission", "auto");
-    const res = await processEmail(
+    const res = mustProcessed(await processEmail(
       mkEmail("d3", "td3", "free@example.org", { attachments: await fullSet("FREE TO SEND APPLICANT") }),
       ctx
-    );
+    ));
     expect(res.autoSent).toBe(true);
     expect(sender.sent.length).toBe(1);
   });
@@ -235,12 +236,12 @@ describe("draft-first automation (features 16, 17)", () => {
 
 describe("automatic follow-up ladder (feature 13)", () => {
   async function incompleteApplicant(email: string) {
-    const res = await processEmail(
+    const res = mustProcessed(await processEmail(
       mkEmail(`f-${email}`, `tf-${email}`, email, {
         attachments: [await mkAtt("a.pdf", "academic_cert", "FOLLOW UP APPLICANT")],
       }),
       ctx
-    );
+    ));
     expect(res.autoKind).toBe("missing_docs"); // suggestion held for staff, ladder armed
     return res.applicantId;
   }

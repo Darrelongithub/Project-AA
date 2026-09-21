@@ -12,6 +12,7 @@ import { deriveFlags, gradeBelow, parseGradeRule } from "../src/rules";
 import { createApp } from "../src/web/server";
 import type { ApplicantRow, DocumentRecord } from "../src/types";
 import { webLogin } from "./helpers";
+import { mustProcessed } from "./harness";
 
 let repo: Repo;
 
@@ -88,7 +89,7 @@ describe("course routing", () => {
       adapters: { vision: null as never, watcher: null as never, sender: sender2 },
     };
     const { processEmail } = await import("../src/pipeline");
-    const res = await processEmail(
+    const res = mustProcessed(await processEmail(
       {
         id: "route-1", threadId: "t-route-1", from: "router@example.org",
         subject: "Application for BSc Computer Science",
@@ -96,7 +97,7 @@ describe("course routing", () => {
         receivedAt: "2026-09-14T09:00:00Z", attachments: [],
       },
       ctx
-    );
+    ));
     const applicant = repo.getApplicant(res.applicantId)!;
     expect(applicant.programme).toBe("BCS");
     expect(applicant.assigned_to).toBe(owner);

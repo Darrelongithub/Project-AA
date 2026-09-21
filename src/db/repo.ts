@@ -1187,6 +1187,20 @@ export class Repo {
     this.db.prepare("INSERT OR IGNORE INTO processed_emails (email_id, thread_id) VALUES (?, ?)").run(emailId, threadId);
   }
 
+  /**
+   * Atomically claim a message at the START of the pipeline: false means
+   * another (concurrent) run already owns it — treat as skipped. Claiming
+   * at the end instead let two concurrent runs of the same email both pass
+   * the isProcessed gate and double-process (double drafts, double sends).
+   * A mid-pipeline failure must unmarkProcessed() so retry can see it.
+   */
+  claimProcessed(emailId: string, threadId: string): boolean {
+    const res = this.db
+      .prepare("INSERT OR IGNORE INTO processed_emails (email_id, thread_id) VALUES (?, ?)")
+      .run(emailId, threadId);
+    return res.changes > 0;
+  }
+
   /** Dead-letter retry: let the next poll see the message again. */
   unmarkProcessed(emailId: string): void {
     this.db.prepare("DELETE FROM processed_emails WHERE email_id = ?").run(emailId);

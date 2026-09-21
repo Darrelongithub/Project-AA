@@ -14,6 +14,7 @@ import { processEmail } from "../src/pipeline";
 import { makeScannedPdf, makeTextPdf, docLines } from "../src/simulation/pdfFactory";
 import type { Attachment, IncomingEmail } from "../src/types";
 
+import { mustProcessed } from "./harness";
 let repo: Repo;
 let sender: MockSender;
 let ctx: PipelineContext;
@@ -59,7 +60,7 @@ const fullSet = async (name: string) => [
 describe("pipeline v2 end-to-end", () => {
   it("clean complete set → Green, auto-admitted with admission letter and completed lifecycle", async () => {
     const email = mkEmail("e2e-alice", "alice@example.org", await fullSet("ALICE WANJIKU KAMAU"));
-    const res = await processEmail(email, ctx);
+    const res = mustProcessed(await processEmail(email, ctx));
 
     expect(res.finalStatus).toBe("Green");
     expect(res.autoSent).toBe(true);
@@ -97,7 +98,7 @@ describe("pipeline v2 end-to-end", () => {
       await mkAtt("b.pdf", "birth_cert", name),
       await mkAtt("f.pdf", "application_form", name),
     ]);
-    const res = await processEmail(email, ctx);
+    const res = mustProcessed(await processEmail(email, ctx));
 
     expect(res.finalStatus).toBe("Red");
     expect(res.autoKind).toBe("missing_docs");
@@ -113,7 +114,7 @@ describe("pipeline v2 end-to-end", () => {
 
   it("bare inquiry → document-request suggestion held for staff (qualification gate)", async () => {
     const email = mkEmail("e2e-henry", "henry@example.org", [], "What documents do you need?");
-    const res = await processEmail(email, ctx);
+    const res = mustProcessed(await processEmail(email, ctx));
     expect(res.autoKind).toBe("docs_request");
     expect(res.autoSent).toBe(false);
     expect(sender.sent.length).toBe(0);
@@ -131,7 +132,7 @@ describe("pipeline v2 end-to-end", () => {
       await mkAtt("i.pdf", "id", name),
       await mkAtt("f.pdf", "application_form", name),
     ]);
-    const res = await processEmail(email, ctx);
+    const res = mustProcessed(await processEmail(email, ctx));
     expect(res.finalStatus).toBe("Orange");
     expect(res.autoSent).toBe(false);
     expect(res.lifecycle).toBe("awaiting_review");
@@ -150,7 +151,7 @@ describe("pipeline v2 end-to-end", () => {
       await mkAtt("i.pdf", "id", name),
       await mkAtt("f.pdf", "application_form", name),
     ]);
-    const res = await processEmail(email, ctx);
+    const res = mustProcessed(await processEmail(email, ctx));
     expect(res.finalStatus).toBe("Red");
     expect(res.autoSent).toBe(false);
     expect(res.flags.map((f) => f.type)).toContain("watcher_flag");
@@ -164,10 +165,9 @@ describe("pipeline v2 end-to-end", () => {
     const res1 = await processEmail(mkEmail("e2e-kev1", "kevin@example.org", docs), ctx);
     expect(res1.finalStatus).toBe("Green");
 
-    const res2 = await processEmail(
-      mkEmail("e2e-kev2", "kevin@example.org", [{ ...idDoc, filename: "id-again.pdf" }], "Resending my ID."),
+    const res2 = mustProcessed(await processEmail(      mkEmail("e2e-kev2", "kevin@example.org", [{ ...idDoc, filename: "id-again.pdf" }], "Resending my ID."),
       ctx
-    );
+    ));
     expect(res2.finalStatus).toBe("Green");
     expect(repo.countDuplicates(res2.applicantId)).toBe(1);
     expect(repo.listDocuments(res2.applicantId).length).toBe(6); // still one active set
@@ -183,7 +183,7 @@ describe("pipeline v2 end-to-end", () => {
       await mkAtt("i.pdf", "id", "LUCY OCHIEMI"),
       await mkAtt("f.pdf", "application_form", "LUCY OCHIMI"),
     ]);
-    const res = await processEmail(email, ctx);
+    const res = mustProcessed(await processEmail(email, ctx));
     expect(res.finalStatus).toBe("Orange");
     expect(res.flags.map((f) => f.type)).toContain("name_mismatch");
     expect(res.flags[0].detail).toMatch(/typo/i);
@@ -191,7 +191,7 @@ describe("pipeline v2 end-to-end", () => {
 
   it("complaint email → category complaint + high priority", async () => {
     const email = mkEmail("e2e-mary", "mary@example.org", [], "Nobody responds to me. This is unacceptable. I want to apply for BCS in the September 2026 intake. My phone is 0712 345 678.");
-    const res = await processEmail(email, ctx);
+    const res = mustProcessed(await processEmail(email, ctx));
     expect(res.category).toBe("complaint");
     const applicant = repo.getApplicant(res.applicantId)!;
     expect(applicant.priority).toBe("high");
@@ -217,7 +217,7 @@ describe("pipeline v2 end-to-end", () => {
       await mkAtt("i.pdf", "id", name),
       await mkAtt("f.pdf", "application_form", name),
     ]);
-    const res = await processEmail(email, ctx);
+    const res = mustProcessed(await processEmail(email, ctx));
     expect(res.finalStatus).toBe("Orange");
     const docs = repo.listDocuments(res.applicantId);
     const scanned = docs.find((d) => d.document_type === "kcpe_cert")!;
@@ -236,7 +236,7 @@ describe("pipeline v2 end-to-end", () => {
 
   it("email history records incoming and outgoing mail under the applicant", async () => {
     const email = mkEmail("e2e-hist", "hist@example.org", await fullSet("HISTORIA WANJIKA MUTUA"));
-    const res = await processEmail(email, ctx);
+    const res = mustProcessed(await processEmail(email, ctx));
     const emails = repo.emailsForApplicant(res.applicantId);
     expect(emails.length).toBe(2);
     expect(emails[0].direction).toBe("in");
