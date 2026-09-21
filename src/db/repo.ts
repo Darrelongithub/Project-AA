@@ -1274,6 +1274,26 @@ export class Repo {
     this.db.prepare("UPDATE outbox SET subject = ?, body = ? WHERE id = ?").run(subject, body, id);
   }
 
+  /**
+   * Atomically claim a held draft for sending. Two concurrent approvals (the
+   * send is awaited in between!) both used to read the still-queued draft and
+   * mail the same reply twice; the claim is the gate — only the first update
+   * wins. Claims older than 10 minutes are re-claimable: a sender that died
+   * mid-send must not strand the draft forever.
+   */
+  claimOutboxDraft(id: number, nowIso: string): boolean {
+    const staleBefore = new Date(new Date(nowIso).getTime() - 10 * 60_000).toISOString();
+    const res = this.db
+      .prepare(`UPDATE outbox SET claimed_at = ? WHERE id = ? AND (claimed_at IS NULL OR claimed_at < ?)`)
+      .run(nowIso, id, staleBefore);
+    return res.changes > 0;
+  }
+
+  /** Send failed after the claim was taken — let the officer retry. */
+  releaseOutboxDraft(id: number): void {
+    this.db.prepare("UPDATE outbox SET claimed_at = NULL WHERE id = ?").run(id);
+  }
+
   deleteOutbox(id: number): void {
     this.db.prepare("DELETE FROM outbox WHERE id = ?").run(id);
   }
@@ -1737,6 +1757,23 @@ export class Repo {
         .prepare("UPDATE applicants SET followup_rung = ?, followup_next_at = ?, updated_at = ? WHERE id = ?")
         .run(rung, nextAt, nowIso(), applicantId);
     }
+  }
+
+  /**
+   * Optimistic rung claim for the follow-up ladder: advance rung + next_at in
+   * ONE update guarded on the rung the sweeper READ. Two sweepers holding the
+   * same stale due-list — one holds the row, one drafts a duplicate — used to
+   * both write; with the claim, exactly one wins by definition of changes>0.
+   */
+  claimFollowupRung(applicantId: number, expectedRung: number, nextRung: number, nextAt: string | null): boolean {
+    const res = this.db
+      .prepare(
+        `UPDATE applicants SET followup_rung = ?, followup_next_at = ?
+         WHERE id = ? AND followup_rung = ?
+           AND lifecycle IN ('application_received','documents_received')`
+      )
+      .run(nextRung, nextAt, applicantId, expectedRung);
+    return res.changes > 0;
   }
 
   dueFollowUps(now: string): ApplicantRow[] {

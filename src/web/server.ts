@@ -423,6 +423,11 @@ export function createApp(deps: WebDeps): Express {
     // draft honours that template's pack attachment exactly like a direct
     // send would. Without this, held replies (the common path under the
     // qualification gate) went out without the promised pack PDFs.
+    // Claim BEFORE the awaited send: a second concurrent approval reads the
+    // same queued draft only until this update fires — from here on it loses.
+    if (!repo.claimOutboxDraft(draft.id, new Date().toISOString())) {
+      return res.redirect(backToCase(id, "That draft is already being sent — refresh before trying again."));
+    }
     const draftTpl = draft.template_key ? repo.getTemplate(draft.template_key) : undefined;
     const pack = packForTemplate(draftTpl?.attach_pack, id, req.staff!.username);
     try {
@@ -440,6 +445,7 @@ export function createApp(deps: WebDeps): Express {
       staffAction(req, id, "human_override", `approved held draft: "${subject}"${pack ? ` (+${pack.label} pack, ${pack.files.length} file(s))` : ""}`);
       res.redirect(backToCase(id, `Reply sent${pack ? ` with the ${pack.label} pack attached` : ""}.`));
     } catch (e) {
+      repo.releaseOutboxDraft(draft.id); // let the officer retry the send
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
       res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
     }

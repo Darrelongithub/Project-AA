@@ -485,6 +485,13 @@ function migrate(db: Database.Database): void {
   if (!emailCols.some((c) => c.name === "labels")) {
     db.exec(`ALTER TABLE emails ADD COLUMN labels TEXT NOT NULL DEFAULT '[]'`);
   }
+  // Held-draft send claims: approving a draft claims it atomically BEFORE the
+  // await'd send, so two concurrent approvals can never mail the same reply
+  // twice. Stale claims (>10 min, sender died mid-send) become re-claimable.
+  const outboxCols = db.prepare("PRAGMA table_info(outbox)").all() as Array<{ name: string }>;
+  if (!outboxCols.some((c) => c.name === "claimed_at")) {
+    db.exec(`ALTER TABLE outbox ADD COLUMN claimed_at TEXT`);
+  }
   const packDefaultsDone = db.prepare("SELECT value FROM settings WHERE key = 'pack_defaults_migrated'").get();
   if (!packDefaultsDone) {
     db.exec(`UPDATE templates SET attach_pack = 'application' WHERE key = 'docs_request' AND attach_pack = 'none'`);

@@ -59,6 +59,14 @@ export async function runFollowUpSweep(repo: Repo, _ctx: PipelineContext): Promi
 
     const rung = a.followup_rung + 1;
     if (rung < ladder.length) {
+      // Claim the rung BEFORE anything visible happens (draft, notify, audit):
+      // a second sweeper holding the same stale due-list loses this update by
+      // definition of changes>0 and skips — no duplicate reminder, no rung jump.
+      const nextAt = new Date(baseMs + ladder[rung] * 24 * 3600_000).toISOString();
+      if (!repo.claimFollowupRung(a.id, a.followup_rung, rung, nextAt)) {
+        log(`followups: ${a.ref_number} rung ${rung} already claimed by another sweep — skipped`, "warn");
+        continue;
+      }
       const tpl = repo.getTemplate("missing_documents");
       if (tpl) {
         const rendered = renderTemplate(tpl.subject, tpl.body, {
@@ -80,12 +88,14 @@ export async function runFollowUpSweep(repo: Repo, _ctx: PipelineContext): Promi
         repo.audit(a.id, "system", "followup_held_qualification", `rung ${rung}/${ladder.length - 1} held as a suggested reply (${subject})`);
         log(`followups: ${a.ref_number} rung ${rung} reminder held for staff`);
       }
-      const nextAt = new Date(baseMs + ladder[rung] * 24 * 3600_000).toISOString();
-      repo.setFollowup(a.id, rung, nextAt);
       processed++;
     } else {
-      // Ladder exhausted → human.
-      repo.setFollowup(a.id, rung, null);
+      // Ladder exhausted → human. Same optimistic claim: only one sweeper may
+      // escalate this case, even if both read the same stale due-list.
+      if (!repo.claimFollowupRung(a.id, a.followup_rung, rung, null)) {
+        log(`followups: ${a.ref_number} ladder-exhaustion already claimed by another sweep — skipped`, "warn");
+        continue;
+      }
       repo.setLifecycle(a.id, "awaiting_review", "system", "follow-up ladder exhausted — documents still outstanding");
       repo.notify("review_needed", `${a.ref_number}: applicant did not respond to ${ladder.length - 1} reminders — staff follow-up needed`, a.id);
       repo.audit(a.id, "system", "followup_exhausted", "escalated to staff after full reminder ladder");
