@@ -33,6 +33,7 @@ import { GeminiWatcher } from "../watcher";
 import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { gmailRedirectUri } from "./oauth";
+import { LoginThrottle } from "./throttle";
 import { INSTITUTION, emailBanner } from "../branding";
 import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
 import { EXAM_SYSTEMS } from "../config";
@@ -247,18 +248,12 @@ export function createApp(deps: WebDeps): Express {
 
   // Failed-logins-only limiter: 10 failures per IP per minute blocks further
   // attempts. Only FAILURES count, so legitimate users are never locked out
-  // by normal use.
-  const loginFails = new Map<string, number[]>();
-  const pruneLoginFails = (ip: string): number[] => {
-    if (loginFails.size > 5000) loginFails.clear();
-    const now = Date.now();
-    const w = (loginFails.get(ip) ?? []).filter((t) => now - t < 60_000);
-    loginFails.set(ip, w);
-    return w;
-  };
-  const loginBlocked = (ip: string): boolean => pruneLoginFails(ip).length >= 10;
+  // by normal use. Time-based expiry + oldest-first eviction above the entry
+  // cap — never a bulk clear (see src/web/throttle.ts).
+  const loginFails = new LoginThrottle();
+  const loginBlocked = (ip: string): boolean => !loginFails.allowed(ip);
   const loginRecordFail = (ip: string): void => {
-    pruneLoginFails(ip).push(Date.now());
+    loginFails.recordFail(ip);
   };
 
   app.post("/login", (req, res) => {
@@ -326,11 +321,23 @@ export function createApp(deps: WebDeps): Express {
     res.send(admissionsPage(c(req), String(req.query.stage ?? "all")));
   });
 
+  // Realm guard: a case is only visible to accounts in the SAME realm —
+  // live admins never open mock cases, demo accounts never open live ones.
+  const sameRealm = (req: Request, a: { demo?: number } | null): boolean =>
+    Boolean(a) && (a!.demo ?? 0) === (req.staff!.demo ?? 0);
+
   // OR-8: visibility scoping covers EVERY case surface — the case page,
   // compose, replay and every POST action. Unknown ids and out-of-scope ids
   // get the SAME refusal, so scoped staff can't probe which cases exist.
   app.use("/case/:id", requireLogin, (req, res, next) => {
     const a = repo.getApplicant(Number(req.params.id));
+    // Realm guard at the ONE choke point every /case/:id route passes through
+    // (pages, compose, replay, notes, tasks, decisions, reminders…): a
+    // cross-realm case is indistinguishable from a non-existent one.
+    if (a && !sameRealm(req, a)) {
+      res.status(404).send("Case not found.");
+      return;
+    }
     if (!a || !repo.applicantVisibleTo(req.staff!, a)) {
       res.status(403).send(layout({
         title: "Outside your schools",
@@ -348,11 +355,6 @@ export function createApp(deps: WebDeps): Express {
     }
     next();
   });
-
-  // Realm guard: a case is only visible to accounts in the SAME realm —
-  // live admins never open mock cases, demo accounts never open live ones.
-  const sameRealm = (req: Request, a: { demo?: number } | null): boolean =>
-    Boolean(a) && (a!.demo ?? 0) === (req.staff!.demo ?? 0);
 
   app.get("/case/:id", requireLogin, (req, res) => {
     const a = repo.getApplicant(Number(req.params.id));
@@ -1748,9 +1750,12 @@ export function createApp(deps: WebDeps): Express {
     const id = Number(req.body.id);
     const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
     const password = String(req.body.password ?? "");
+    const confirm = String(req.body.confirm ?? "");
     const target = repo.getStaff(id);
     if (!target) return res.redirect(staffMsg("Unknown staff member."));
+    // Same rules as first-run setup — one rulebook for every password write.
     if (password.length < 8) return res.redirect(staffMsg(`Password for “${target.username}” must be at least 8 characters.`));
+    if (password !== confirm) return res.redirect(staffMsg(`The passwords do not match — nothing changed.`));
     repo.setStaffPassword(id, hashPassword(password));
     repo.audit(null, req.staff!.username, "staff_password_reset", `user #${id}`);
     res.redirect(staffMsg(`Password reset for “${target.username}”.`));
@@ -1773,8 +1778,12 @@ export function createApp(deps: WebDeps): Express {
     res.send(body);
   };
 
-  app.get("/export/applicants.csv", requireLogin, requireRole("admin"), (_req, res) => {
-    const rows = repo.allApplicants();
+  app.get("/export/applicants.csv", requireLogin, requireRole("admin"), (req, res) => {
+    // Realm + school scope, like every other admin list — an admin in one
+    // realm must not be able to pull the whole other realm's PII to CSV.
+    const demo = req.staff!.demo ?? 0;
+    const schools = repo.visibleSchoolsFor(req.staff!);
+    const rows = repo.allApplicants(demo, schools);
     // Two aggregate queries for the whole export — never 2N per-applicant
     // lookups on a synchronous connection.
     const docCounts = repo.documentCountsByApplicant();
@@ -1793,8 +1802,10 @@ export function createApp(deps: WebDeps): Express {
     );
   });
 
-  app.get("/export/queue.csv", requireLogin, requireRole("admin"), (_req, res) => {
-    const rows = repo.queueView();
+  app.get("/export/queue.csv", requireLogin, requireRole("admin"), (req, res) => {
+    const demo = req.staff!.demo ?? 0;
+    const schools = repo.visibleSchoolsFor(req.staff!);
+    const rows = repo.queueView(demo, schools);
     csv(
       res,
       "review-queue.csv",
@@ -1803,8 +1814,16 @@ export function createApp(deps: WebDeps): Express {
     );
   });
 
-  app.get("/export/audit.csv", requireLogin, requireRole("admin"), (_req, res) => {
-    const rows = repo.recentAudit(10000);
+  app.get("/export/audit.csv", requireLogin, requireRole("admin"), (req, res) => {
+    // Scope the audit log to the caller's realm: system rows (no applicant)
+    // are institution-level and always included; applicant rows must belong
+    // to an applicant visible to this realm.
+    const demo = req.staff!.demo ?? 0;
+    const schools = repo.visibleSchoolsFor(req.staff!);
+    const visible = new Set(repo.allApplicants(demo, schools).map((a) => a.id));
+    const rows = repo
+      .recentAudit(10000)
+      .filter((r) => r.applicant_id === null || visible.has(r.applicant_id));
     csv(res, "audit.csv", ["at", "actor", "event", "detail", "applicant_id"], rows.map((r) => [r.at, r.actor, r.event, r.detail, r.applicant_id]));
   });
 

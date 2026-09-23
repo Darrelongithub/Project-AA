@@ -21,11 +21,19 @@ seedDefaults(repo, { live: cfg.mode === "live" });
 const retentionDays = Number(repo.getSetting("retention_days", "730"));
 const cutoff = new Date(Date.now() - retentionDays * 24 * 3600_000).toISOString();
 const archiveDir = path.resolve(path.dirname(path.resolve(cfg.dbPath)), "archive");
-fs.mkdirSync(archiveDir, { recursive: true });
+// The archive holds full PII in plain JSON — lock the DIRECTORY to the
+// owning user too (files are written 0o600 just below).
+fs.mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
+
+// Realm: retention defaults to the LIVE realm (demo=0). Seeded demo data is
+// mock — sweeping it silently would destroy the demo environment. Pass
+// --all-realms (or RETAIN_ALL_REALMS=1) to include the demo realm too.
+const allRealms = process.argv.includes("--all-realms") || process.env.RETAIN_ALL_REALMS === "1";
+const realm: number | undefined = allRealms ? undefined : 0;
 
 // retentionDue normalises the two date formats before comparing — a raw
 // string compare archives cases up to 24 h early on the boundary day.
-const candidates = repo.allApplicants().filter(
+const candidates = repo.allApplicants(realm).filter(
   (a) => a.lifecycle === "completed" && retentionDue(a.updated_at, cutoff)
 );
 
@@ -53,5 +61,5 @@ for (const a of candidates) {
 }
 
 console.log(
-  `retain: ${archived} completed case(s) older than ${retentionDays} day(s) archived and removed.`
+  `retain: ${archived} completed case(s) older than ${retentionDays} day(s) archived and removed (realm: ${allRealms ? "live + demo" : "live only"}).`
 );
