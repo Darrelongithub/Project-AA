@@ -370,6 +370,13 @@ export function decide(input: RulesInput): RulesOutput {
   // Previously this was noted in reasoning text only; now it is a visible
   // flag a human must check, and like any flag it stops auto-Greening.
   const listedTypes = new Set(requirements.map((r) => r.document_type));
+  // Documented routine extras that are never "wrong": `academic_cert` is
+  // the generic fallback fillSlots lets stand in for ANY academic slot, and
+  // `kcpe_cert` is the "KCPE is never required" companion file — not on the
+  // checklist, yet carried routinely by Kenyan school-leaver files and fully
+  // read by the pipeline. Flagging either would turn clean files Orange.
+  listedTypes.add("academic_cert");
+  listedTypes.add("kcpe_cert");
   const unlistedExtras = extras.filter((d) => !listedTypes.has(d.document_type));
   if (unlistedExtras.length > 0) {
     const types = [...new Set(unlistedExtras.map((d) => d.document_type))];

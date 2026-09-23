@@ -322,7 +322,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
     const name = "JUDY WAMBUI NYAGA";
     fixtures.push({
       name: "judy-unknown-attachment",
-      description: "Complete set plus an unrecognized PDF → Orange, a human looks at the odd file.",
+      description: "Complete set plus an unrecognized PDF (a shopping list) → Orange with a wrong_document flag, a human looks at the odd file.",
       emails: [
         email({
           id: "email-judy-1", threadId: "thread-judy", from: "judy.nyaga@student.example.org", fromName: "Judy Nyaga",
@@ -339,7 +339,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["low_confidence"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["low_confidence", "wrong_document"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
 
