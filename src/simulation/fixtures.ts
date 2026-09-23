@@ -656,7 +656,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
     const name = "OTIENO FEW CREDITS";
     fixtures.push({
       name: "igcse-short-credits",
-      description: "IGCSE with only 4 passes at C or better — below the 5-credit degree route → flag + human review (held).",
+      description: "IGCSE with only 4 passes at C or better — fails the 5-credit route, but the KCSE-tagged leaving certificate is unreadable → E4: an unread route beats a confirmed failure, so the case goes to verification (low-confidence flags) rather than 'does not meet requirements' (held).",
       emails: [
         email({
           id: "email-igcse-low-1", threadId: "thread-igcse-low", from: "otieno.credits@student.example.org", fromName: "Otieno Credits",
@@ -671,7 +671,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["grade_below_requirement"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["low_confidence"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
   {
@@ -700,7 +700,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
     const name = "KIPROP ONE PRINCIPAL";
     fixtures.push({
       name: "alevel-one-principal",
-      description: "KACE/A-Level with only 1 principal pass — below the 2-principal degree route → flag + human review (held).",
+      description: "KACE/A-Level with only 1 principal pass — fails the 2-principal route, but the KCSE-tagged leaving certificate is unreadable → E4: an unread route beats a confirmed failure, so the case goes to verification (low-confidence flags) rather than 'does not meet requirements' (held).",
       emails: [
         email({
           id: "email-al-1", threadId: "thread-al", from: "kiprop.principal@student.example.org", fromName: "Kiprop Principal",
@@ -715,7 +715,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["grade_below_requirement"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["low_confidence"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
     });
   }
   {
