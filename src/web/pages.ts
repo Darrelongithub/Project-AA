@@ -1589,7 +1589,7 @@ ${msgs}`);
 
 // ── Settings (app behaviour) & Configuration (admissions setup) ────────────
 
-export function settingsPage(c: Ctx, flash?: string): string {
+export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
   const settingInput = (key: string, label: string) =>
@@ -1604,7 +1604,7 @@ export function settingsPage(c: Ctx, flash?: string): string {
 <div class="sub">How the console behaves — automation, response targets, retention.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 
-${connectionsSection(c)}
+${connectionsSection(c, gmailRedirectUri)}
 
 <div class="card" id="automation">
   <h2>Automation mode (draft-first)</h2>
@@ -1661,7 +1661,7 @@ ${connectionsSection(c)}
  * Step-by-step Google Cloud guide (exact scope, redirect URI,
  * OAuth-Playground fallback) plus live status and test buttons.
  */
-export function connectionsSection(c: Ctx): string {
+export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
   const gAddress = settings["gmail_address"] ?? "";
@@ -1683,7 +1683,7 @@ export function connectionsSection(c: Ctx): string {
     <li>In <b>Google Cloud Console</b> (console.cloud.google.com) create or pick a project for the admissions mailbox.</li>
     <li><b>APIs &amp; Services → Library</b>: enable the <b>Gmail API</b>.</li>
     <li><b>APIs &amp; Services → Credentials → Create credentials → OAuth client ID</b>, application type <b>Web application</b>.</li>
-    <li>Under <b>Authorised redirect URIs</b> add this console's URL plus <span class="mono">/settings/gmail/callback</span>.</li>
+    <li>Under <b>Authorised redirect URIs</b> add exactly this address (copy it — Google rejects placeholders such as <span class="mono">0.0.0.0</span>):<br><input class="mono" style="width:100%;margin-top:4px" readonly value="${esc(gmailRedirectUri ?? "")}" onclick="this.select()"></li>
     <li>Paste the <b>Client ID</b> and <b>Client secret</b> below, save, then press <b>Connect with Google…</b> and approve. The only scope requested is <span class="mono">https://www.googleapis.com/auth/gmail.modify</span> — read and send for this one mailbox.</li>
     <li>No OAuth client of your own? Use the <b>OAuth Playground</b> (developers.google.com/oauthplayground) with your own client ID and the <span class="mono">gmail.modify</span> scope, then paste the resulting refresh token into the advanced field.</li>
   </ol>
@@ -1695,7 +1695,7 @@ export function connectionsSection(c: Ctx): string {
       <div><label>OAuth client secret</label><input type="password" name="gmail_client_secret" value="" placeholder="${gClientSecret ? "saved — enter a new value to replace" : "GOCSPX-…"}" autocomplete="new-password"></div>
     </div>
     <div class="formrow" style="margin-top:10px">
-      <div style="flex:2"><label>Mailbox label to watch <span class="muted small">(optional — leave blank for the inbox)</span></label><input type="text" name="gmail_label" value="${esc(settings["gmail_label"] ?? "")}" placeholder="e.g. admissions-intake"></div>
+      <div style="flex:2"><label>Public base URL <span class="muted small">(advanced — only for reverse-proxy / HTTPS deployments)</span></label><input type="text" name="gmail_public_base_url" value="${esc(settings["gmail_public_base_url"] ?? "")}" placeholder="https://admissions.example.ac.ke"></div>
       <div style="flex:2"><label>Refresh token (advanced — OAuth Playground / manual) ${gRefresh ? "<span class='muted small'>(saved)</span>" : ""}</label><input type="password" name="gmail_refresh_token_manual" value="" placeholder="1//…" autocomplete="new-password"></div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">

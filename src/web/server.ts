@@ -32,6 +32,7 @@ import { BudgetedVisionAdapter, GeminiVisionAdapter } from "../extraction/gemini
 import { GeminiWatcher } from "../watcher";
 import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
+import { gmailRedirectUri } from "./oauth";
 import { INSTITUTION, emailBanner } from "../branding";
 import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
 import { EXAM_SYSTEMS } from "../config";
@@ -1060,7 +1061,7 @@ export function createApp(deps: WebDeps): Express {
 
   // 'it' role: cases + configuration, but not staff management.
   app.get("/settings", requireLogin, requireRole("admin"), (req, res) =>
-    res.send(settingsPage(c(req), req.query.msg ? String(req.query.msg) : undefined))
+    res.send(settingsPage(c(req), req.query.msg ? String(req.query.msg) : undefined, gmailRedirectUri(repo, req.protocol, req.get("host") ?? "localhost")))
   );
 
   // Configuration: courses, requirements, Gmail, intakes, templates, exports.
@@ -1361,9 +1362,9 @@ export function createApp(deps: WebDeps): Express {
   app.post("/settings/gmail/credentials", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     repo.setSetting("gmail_address", String(req.body.gmail_address ?? "").trim());
     repo.setSetting("gmail_client_id", String(req.body.gmail_client_id ?? "").trim());
-    // Which part of the mailbox to watch; blank = the inbox. Applies on the
-    // very next sync — no restart needed.
-    repo.setSetting("gmail_label", String(req.body.gmail_label ?? "").trim());
+    // Always the inbox (the watcher is the same for everyone). pin the OAuth
+    // origin only for reverse-proxy / HTTPS deployments — advanced field.
+    repo.setSetting("gmail_public_base_url", String(req.body.gmail_public_base_url ?? "").trim());
     // Secret is write-only in the UI: kept if the field is left blank.
     const secret = String(req.body.gmail_client_secret ?? "").trim();
     if (secret) repo.setSetting("gmail_client_secret", secret);
@@ -1379,7 +1380,7 @@ export function createApp(deps: WebDeps): Express {
     if (!clientId) return res.redirect(settingsBack("Save the OAuth client ID and secret first."));
     const state = crypto.randomBytes(16).toString("hex");
     repo.setSetting("gmail_oauth_state", state);
-    const redirectUri = `${req.protocol}://${req.get("host")}/settings/gmail/callback`;
+    const redirectUri = gmailRedirectUri(repo, req.protocol, req.get("host") ?? "localhost");
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     url.searchParams.set("client_id", clientId);
     url.searchParams.set("redirect_uri", redirectUri);
@@ -1403,7 +1404,7 @@ export function createApp(deps: WebDeps): Express {
     const code = String(req.query.code ?? "");
     const clientId = repo.getSetting("gmail_client_id", "");
     const clientSecret = repo.getSetting("gmail_client_secret", "");
-    const redirectUri = `${req.protocol}://${req.get("host")}/settings/gmail/callback`;
+    const redirectUri = gmailRedirectUri(repo, req.protocol, req.get("host") ?? "localhost");
     try {
       const resp = await fetch("https://oauth2.googleapis.com/token", {
         method: "POST",
@@ -1436,7 +1437,6 @@ export function createApp(deps: WebDeps): Express {
       clientId: repo.getSetting("gmail_client_id", ""),
       clientSecret: repo.getSetting("gmail_client_secret", ""),
       refreshToken: repo.getSetting("gmail_refresh_token", ""),
-      label: repo.getSetting("gmail_label", "").trim() || undefined,
     };
     if (!cfg.address || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
       return res.redirect(settingsBack("Gmail is not fully configured yet — save credentials (and connect, or paste a refresh token) first."));
