@@ -69,7 +69,8 @@ export type FlagType =
   | "identity_check"
   | "late_submission"
   | "anomaly"
-  | "alternative_qualification";
+  | "alternative_qualification"
+  | "wrong_document";
 
 export const BLOCKING_FLAG_TYPES: FlagType[] = [
   "grade_below_requirement",

@@ -178,6 +178,7 @@ export function flagLabel(t: string): string {
     identity_check: "Identity check",
     late_submission: "Late submission",
     anomaly: "Anomaly",
+    wrong_document: "Wrong document",
   };
   if (special[t]) return special[t];
   return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());

@@ -1563,6 +1563,31 @@ export class Repo {
     return { applications, documents, autoHandled, humanReview, incomplete, completed, overdue, avgResponseMin, avgReviewHours };
   }
 
+  /**
+   * Most common MISSING required documents across OPEN (not completed, not
+   * in verification) cases — scoped by realm + schools like every other
+   * admin number. Each applicant counts once per missing type, judged by
+   * the frozen requirement snapshot where present (else live rules), minus
+   * their active (non-superseded) documents.
+   */
+  commonMissingDocs(demo?: number, schools?: string[] | null, limit = 5): Array<{ type: string; count: number }> {
+    const counts = new Map<string, number>();
+    for (const a of this.allApplicants(demo, schools)) {
+      if (a.lifecycle === "completed" || a.lifecycle === "verification") continue;
+      const required = new Set(
+        this.effectiveRequirements(a).filter((e) => e.required).map((e) => e.document_type)
+      );
+      const have = new Set(
+        this.listDocuments(a.id, { activeOnly: true }).map((d) => d.document_type)
+      );
+      for (const t of required) if (!have.has(t)) counts.set(t, (counts.get(t) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([type, count]) => ({ type, count }))
+      .sort((x, y) => y.count - x.count)
+      .slice(0, limit);
+  }
+
   // ── Export (feature 38) ──────────────────────────────────────────────────
 
   allApplicants(demo?: number, schools?: string[] | null): ApplicantRow[] {

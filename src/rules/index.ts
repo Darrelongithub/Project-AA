@@ -328,10 +328,6 @@ export function docLabel(t: DocType): string {
 export function decide(input: RulesInput): RulesOutput {
   const { requirements, docs } = input;
   const derived = deriveFlags(requirements, docs);
-  const allFlags = dedupeFlags([
-    ...derived,
-    ...input.flags.map((f) => ({ type: f.type, detail: f.detail })),
-  ]);
 
   const required = requirements.filter((r) => r.required);
   // OR-5 slot semantics: one document fills exactly one slot.
@@ -365,6 +361,30 @@ export function decide(input: RulesInput): RulesOutput {
   for (const d of extras) {
     docLines.push(`  - extra unrecognized attachment: ${d.extraction_method}/${d.confidence}`);
   }
+
+  // Wrong-document detection (round 3): a file whose type is not on the
+  // course's document list AT ALL — required or optional — is suspicious:
+  // the applicant may have sent the WRONG file (an old transcript, another
+  // person's ID, last year's slip). A doc that is on the list (even as an
+  // optional/conditional item) is never "wrong" — it just filled no slot.
+  // Previously this was noted in reasoning text only; now it is a visible
+  // flag a human must check, and like any flag it stops auto-Greening.
+  const listedTypes = new Set(requirements.map((r) => r.document_type));
+  const unlistedExtras = extras.filter((d) => !listedTypes.has(d.document_type));
+  if (unlistedExtras.length > 0) {
+    const types = [...new Set(unlistedExtras.map((d) => d.document_type))];
+    derived.push({
+      type: "wrong_document",
+      detail: `file(s) not on this course's document list: ${types
+        .map(docLabel)
+        .join(", ")} — the applicant may have sent the wrong file; a human should check.`,
+    });
+  }
+
+  const allFlags = dedupeFlags([
+    ...derived,
+    ...input.flags.map((f) => ({ type: f.type, detail: f.detail })),
+  ]);
 
   const flagLines = allFlags.map((f) => `  - [${f.type}] ${f.detail}`);
 

@@ -4,7 +4,7 @@
  */
 import { documentRequirementsFor, type ProgrammeLevel } from "../documents/matrix";
 import type { Repo } from "../db/repo";
-import type { AdmissionSystem, ApplicantRow, CourseLevel, EmailRecord, Programme, RuleNode, StaffUser } from "../types";
+import type { AdmissionSystem, ApplicantRow, CourseLevel, DocType, EmailRecord, Programme, RuleNode, StaffUser } from "../types";
 import { ADMISSION_SYSTEMS, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
 import { SYSTEM_LABELS } from "../admissions/systems";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../admissions/queues";
@@ -142,6 +142,7 @@ function adminDashboard(c: Ctx): string {
   const team = repo.staffStats(realm).filter((t) => t.demo === realm);
   const alerts = repo.notificationsFor(c.user.id, 6, realm, scope);
   const all = repo.allApplicants(realm, scope);
+  const missingDocs = repo.commonMissingDocs(realm, scope, 5);
   const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
   const globalMode = repo.getSetting("automation_mode", "auto");
@@ -236,6 +237,16 @@ function adminDashboard(c: Ctx): string {
     : `<div class="empty"><p>No alerts. Escalations and auto-admissions appear here.</p></div>`}
 </section>
 
+${missingDocs.length
+  ? `<section class="card" id="missing-docs">
+    <h2>Most requested missing documents</h2>
+    <p class="small muted" style="margin-top:-6px">Required documents the most open cases are still waiting on — work down the list.</p>
+    <div class="kv">
+      ${missingDocs.map((m) => `<div><span>${esc(docLabel(m.type as DocType))}</span><b>${m.count} case${m.count === 1 ? "" : "s"}</b></div>`).join("")}
+    </div>
+  </section>`
+  : ""}
+
 <section class="card nopad">
   <div class="card-head"><h2>Team performance <span class="muted small" style="text-transform:none;letter-spacing:0">— how your staff are working</span></h2><a class="small" href="/staff">staff configuration →</a></div>
   ${team.length
@@ -276,6 +287,7 @@ function officerDashboard(c: Ctx): string {
   const scope = repo.visibleSchoolsFor(c.user);
   const s = repo.dashboardStats(realm, scope);
   const stage = repo.stageCounts(realm, scope);
+  const missingDocs = repo.commonMissingDocs(realm, scope, 5);
   const today = repo.todayStats(realm, scope);
   const accuracy = repo.accuracyStats(realm, scope);
   const queue = repo.queueView(realm, scope);
@@ -394,6 +406,16 @@ function officerDashboard(c: Ctx): string {
 </section>
 
 ${alertsCard}
+
+${missingDocs.length
+  ? `<section class="card" id="missing-docs">
+    <h2>Most requested missing documents</h2>
+    <p class="small muted" style="margin-top:-6px">Required documents the most open cases are still waiting on — work down the list.</p>
+    <div class="kv">
+      ${missingDocs.map((m) => `<div><span>${esc(docLabel(m.type as DocType))}</span><b>${m.count} case${m.count === 1 ? "" : "s"}</b></div>`).join("")}
+    </div>
+  </section>`
+  : ""}
 
 <div class="cols wide">
   <section class="card nopad">
