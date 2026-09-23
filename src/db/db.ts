@@ -304,6 +304,18 @@ CREATE TABLE IF NOT EXISTS subject_catalogue (
   UNIQUE (system, name)
 );
 
+-- Per-course document checklist (round 3). A row = a document type that is
+-- required for that course. Presence of ANY row for a programme means the
+-- course has been explicitly configured; an EMPTY configuration is not
+-- storable (it is indistinguishable from "unconfigured" and safely falls
+-- back to the generated matrix defaults — the conservative direction, since
+-- it never requires FEWER documents than the official checklist).
+CREATE TABLE IF NOT EXISTS course_doc_requirements (
+  programme      TEXT NOT NULL,
+  document_type  TEXT NOT NULL,
+  PRIMARY KEY (programme, document_type)
+);
+
 CREATE TABLE IF NOT EXISTS admission_rules (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   programme  TEXT,                    -- NULL = university-wide default

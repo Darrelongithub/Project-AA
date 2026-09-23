@@ -1,8 +1,9 @@
 /**
  * New-window compose — acceptance tests (RED first).
  *
- * Staff can open a composer in a NEW browser window: either globally
- * (nav → Compose, pick the recipient first) or straight from a case.
+ * Staff can open a composer in the SAME tab (the app never opens new
+ * browser windows — round 3): either globally (nav → Compose, pick the
+ * recipient first) or straight from a case.
  * The composer is case-based (replies always belong to a case file),
  * honours scoping end to end, and its sends record attachments exactly
  * like every other send path.
@@ -50,7 +51,7 @@ describe("the new-window composer", () => {
     const { base, cookie } = await startServer();
     const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     expect(home).toContain('href="/compose"');
-    expect(home).toContain('target="_blank"'); // opens in a new window
+    expect(home).not.toContain('target="_blank"'); // same tab — never a new window
 
     const page = await (await fetch(`${base}/compose`, { headers: { cookie } })).text();
     expect(page).toContain("Compose");
@@ -65,7 +66,7 @@ describe("the new-window composer", () => {
     expect(page).toContain("amara.nurse@example.org");
   });
 
-  it("opens pre-addressed from a case, and the case page offers it as a new window", async () => {
+  it("opens pre-addressed from a case, and the case page offers it (same tab)", async () => {
     const a = mkApplicant("cased@example.org");
     const { base, cookie } = await startServer();
     const page = await (await fetch(`${base}/compose?case=${a.id}`, { headers: { cookie } })).text();
@@ -75,7 +76,7 @@ describe("the new-window composer", () => {
 
     const casePage = await (await fetch(`${base}/case/${a.id}`, { headers: { cookie } })).text();
     expect(casePage).toContain(`/case/${a.id}/compose`);
-    expect(casePage).toContain('target="_blank"'); // new-window affordance on the case file
+    expect(casePage).not.toContain('target="_blank"'); // same-tab affordance on the case file
   });
 
   it("picks a template via GET and renders it into an editable draft", async () => {

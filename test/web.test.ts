@@ -545,7 +545,8 @@ describe("production-readiness pass", () => {
 
   it("courses show who handles them, and owners can be assigned", async () => {
     const { cookie, csrf } = await login();
-    const page = await (await fetch(`${base}/config#courses`, { headers: { cookie } })).text();
+    // Round 3: course configuration (incl. ownership) lives on the staff page.
+    const page = await (await fetch(`${base}/staff#courses`, { headers: { cookie } })).text();
     expect(page).toContain("Courses &amp; ownership");
     expect(page).toContain('action="/config/course-owner"');
     const member = repo.listStaff().find((m) => m.username === "jane")!;
@@ -720,15 +721,20 @@ describe("QA audit regressions", () => {
   });
 
   describe("configuration split, account settings & realm separation", () => {
-    it("configuration is split into Course and Reply tabs", async () => {
+    it("configuration keeps Requirements and Reply tabs; course config moved to the staff area", async () => {
       const { cookie } = await login();
       const courses = await (await fetch(`${base}/config`, { headers: { cookie } })).text();
-      expect(courses).toContain("Course configuration");
       expect(courses).toContain("Reply configuration");
-      expect(courses).toContain('id="courses"');
-      expect(courses).toContain('id="intakes"');
-      expect(courses).toContain("Add a course or intake");
+      // Round 3: course configuration has ONE home — the staff area.
+      expect(courses).not.toContain("Course configuration");
+      expect(courses).not.toContain('id="courses"');
+      expect(courses).not.toContain('id="intakes"');
+      expect(courses).not.toContain("Add a course or intake");
       expect(courses).not.toContain('id="gmail"');
+      const staff = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
+      expect(staff).toContain('id="courses"');
+      expect(staff).toContain('id="intakes"');
+      expect(staff).toContain("Add a course or intake");
 
       const replies = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
       // OR-4: connection controls moved OUT of Configuration to Settings.

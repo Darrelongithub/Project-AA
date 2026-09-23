@@ -19,7 +19,7 @@ import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import { fillSlots } from "../documents/matrix";
 import { evaluateAdmission } from "../admissions/evaluate";
-import { ADMISSION_SYSTEMS, type AdmissionSystem, type CourseLevel, type RuleField } from "../types";
+import { ADMISSION_SYSTEMS, DOC_TYPES, type AdmissionSystem, type CourseLevel, type DocType, type RuleField } from "../types";
 import {
   accountPage, admissionsPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, mailPage, mailThreadPage, setupPage,
   replayPage, settingsPage, staffPage, templatesPage,
@@ -1066,9 +1066,12 @@ export function createApp(deps: WebDeps): Express {
     res.send(settingsPage(c(req), req.query.msg ? String(req.query.msg) : undefined, gmailRedirectUri(repo, req.protocol, req.get("host") ?? "localhost")))
   );
 
-  // Configuration: courses, requirements, Gmail, intakes, templates, exports.
-  app.get("/config", requireLogin, requireRole("admin"), (req, res) =>
-    res.send(
+  // Configuration: requirements, replies, Gmail, intakes, templates, exports.
+  // Course configuration moved to the STAFF area (round 3) — one home for
+  // it; the old tab redirects so bookmarks keep working.
+  app.get("/config", requireLogin, requireRole("admin"), (req, res) => {
+    if (req.query.tab === "courses") return res.redirect("/staff");
+    return res.send(
       configPage(
         c(req),
         req.query.template ? String(req.query.template) : undefined,
@@ -1076,14 +1079,14 @@ export function createApp(deps: WebDeps): Express {
         req.query.reqs ? String(req.query.reqs) : undefined,
         req.query.tab ? String(req.query.tab) : undefined,
         req.query.system ? String(req.query.system) : undefined
-      ))
-  );
+      ));
+  });
 
-  // Assign who handles a course (shown on the administration overview).
+  // Assign who handles a course (configured in the staff area).
   app.post("/config/course-owner", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const programme = String(req.body.programme ?? "").trim();
     const ownerRaw = String(req.body.owner ?? "").trim();
-    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#courses`;
+    const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#courses`;
     if (!programme) return res.redirect(back("No course selected."));
     const ownerId = ownerRaw ? Number(ownerRaw) : null;
     if (ownerId !== null && (!Number.isInteger(ownerId) || !repo.getStaff(ownerId))) {
@@ -1298,7 +1301,7 @@ export function createApp(deps: WebDeps): Express {
   // faculty exists before its first course and renames cascade to courses.
   app.post("/config/schools/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const name = String(req.body.name ?? "").trim();
-    const back = (m: string) => `/config?tab=courses&msg=${encodeURIComponent(m)}#schools`;
+    const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#schools`;
     if (!name) return res.redirect(back("School name was empty — nothing added."));
     if (!repo.addSchool(name)) return res.redirect(back(`"${name}" already exists — nothing added.`));
     repo.audit(null, req.staff!.username, "school_changed", `school "${name}" added`);
@@ -1308,7 +1311,7 @@ export function createApp(deps: WebDeps): Express {
   app.post("/config/schools/rename", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const from = String(req.body.from ?? "").trim();
     const to = String(req.body.to ?? "").trim();
-    const back = (m: string) => `/config?tab=courses&msg=${encodeURIComponent(m)}#schools`;
+    const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#schools`;
     if (!from || !to) return res.redirect(back("Rename needs a current name and a new name."));
     if (from === to) return res.redirect(back("The new name is the same as the old one — nothing changed."));
     const moved = repo.renameSchool(from, to);
@@ -1759,6 +1762,33 @@ export function createApp(deps: WebDeps): Express {
     repo.setStaffPassword(id, hashPassword(password));
     repo.audit(null, req.staff!.username, "staff_password_reset", `user #${id}`);
     res.redirect(staffMsg(`Password reset for “${target.username}”.`));
+  });
+
+  // Round 3 — per-course document checklists (checkboxes on the staff page).
+  // Saving replaces the course's configured set; a course with no rows runs
+  // on the generated matrix checklist. New applicants are checked against the
+  // live list; cases that already froze a requirement snapshot keep theirs.
+  app.post("/staff/course-docs", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#courses`;
+    const programme = String(req.body.programme ?? "").trim().toUpperCase();
+    if (!repo.programmeByCode(programme)) return res.redirect(back("Unknown course — nothing changed."));
+    const raw = req.body.docs;
+    const all = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw];
+    const valid = new Set<string>(DOC_TYPES);
+    const types = all.map((x) => String(x)).filter((x) => valid.has(x) && x !== "unknown");
+    repo.saveCourseDocConfig(programme, types as DocType[]);
+    repo.audit(null, req.staff!.username, "course_docs_configured",
+      `${programme}: ${types.join(", ") || "none"}`);
+    res.redirect(back(`Required documents saved for ${programme}. New applicants are checked against this list; cases with a frozen requirement set keep theirs.`));
+  });
+
+  app.post("/staff/course-docs/reset", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#courses`;
+    const programme = String(req.body.programme ?? "").trim().toUpperCase();
+    if (!repo.programmeByCode(programme)) return res.redirect(back("Unknown course — nothing changed."));
+    repo.deleteCourseDocConfig(programme);
+    repo.audit(null, req.staff!.username, "course_docs_reset", `${programme}: back to the generated checklist`);
+    res.redirect(back(`${programme} is back on the generated document checklist.`));
   });
 
   // ── Exports (feature 38) ─────────────────────────────────────────────────

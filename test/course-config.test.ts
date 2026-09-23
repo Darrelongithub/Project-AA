@@ -184,7 +184,7 @@ describe("editable subject catalogue", () => {
 describe("schools & courses on one page", () => {
   it("the courses page lists every school with its courses together", async () => {
     const { base, cookie } = await startServer();
-    const page = await (await fetch(`${base}/config?tab=courses`, { headers: { cookie } })).text();
+    const page = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
     for (const school of ["School of Law", "School of Business", "School of Nursing", "School of Computing Sciences"]) {
       expect(page).toContain(school);
     }
@@ -201,7 +201,7 @@ describe("schools & courses on one page", () => {
       redirect: "manual",
     });
     expect(res.status).toBe(302);
-    const page = await (await fetch(`${base}/config?tab=courses`, { headers: { cookie } })).text();
+    const page = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
     expect(page).toContain("School of Aviation");
   });
 
@@ -215,7 +215,7 @@ describe("schools & courses on one page", () => {
     });
     expect(res.status).toBe(302);
     expect(repo.programmeByCode("LLB")?.school).toBe("Faculty of Law");
-    const page = await (await fetch(`${base}/config?tab=courses`, { headers: { cookie } })).text();
+    const page = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
     expect(page).toContain("Faculty of Law");
     expect(page).not.toContain("School of Law");
   });
@@ -224,7 +224,7 @@ describe("schools & courses on one page", () => {
 describe("display == enforce", () => {
   it("the courses page prints the exact enforced rule tree for each course", async () => {
     const { base, cookie } = await startServer();
-    const page = await (await fetch(`${base}/config?tab=courses`, { headers: { cookie } })).text();
+    const page = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
     const llbKcse = repo.activeSetsForProgramme("LLB").find((s) => s.system === "KCSE");
     expect(llbKcse).toBeTruthy();
     const described = describeRuleTree(llbKcse!.nodes ?? []);
@@ -245,7 +245,7 @@ describe("display == enforce", () => {
       body: `_csrf=${csrf}&target=LLB&system=KCSE`,
       redirect: "manual",
     });
-    const page = await (await fetch(`${base}/config?tab=courses`, { headers: { cookie } })).text();
+    const page = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
     const active = repo.activeSetsForProgramme("LLB").find((s) => s.system === "KCSE")!;
     expect(describeRuleTree(active.nodes ?? [])).toContain("Biology");
     expect(page).toContain(esc(describeRuleTree(active.nodes ?? [])));
@@ -264,7 +264,7 @@ describe("display == enforce", () => {
     expect(decodeURIComponent(res.headers.get("location") || "")).toContain("Requirements tab");
     const after = (repo.db.prepare("SELECT COUNT(*) AS n FROM course_requirements").get() as { n: number }).n;
     expect(after).toBe(before); // nothing written to the unenforced table
-    const page = await (await fetch(`${base}/config?tab=courses`, { headers: { cookie } })).text();
+    const page = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
     expect(page).not.toContain('action="/config/entry-requirements"');
   });
 

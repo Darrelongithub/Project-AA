@@ -190,7 +190,9 @@ describe("one matrix page, one action", () => {
   it("no other page hosts scope editing", async () => {
     const { base } = await startServer();
     const admin = await loginAs(base, "admin", "admin123");
-    for (const path of ["/config", "/config?tab=courses", "/settings", "/templates"]) {
+    // Round 3: /config?tab=courses now redirects to /staff — the staff page
+    // IS the one (and only) place hosting scope editing, so it's excluded.
+    for (const path of ["/config", "/settings", "/templates"]) {
       const page = await (await fetch(`${base}${path}`, { headers: { cookie: admin.cookie } })).text();
       expect(page).not.toContain('action="/staff/scopes"');
     }

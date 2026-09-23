@@ -1,10 +1,10 @@
 /**
  * Gmail-style Mail window — acceptance tests (RED first).
  *
- * A new window where staff can see ALL the mail: conversations grouped by
+ * The Gmail-style Mail view (same-tab — the app never opens new windows):
  * thread like Gmail, unread tracking (incoming mail arrives unread, opening
  * the conversation reads it), search, and a reply affordance that opens the
- * new-window composer. Scoped end to end like every other surface.
+ * same-tab composer. Scoped end to end like every other surface.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db/db";
@@ -53,12 +53,12 @@ function mail(applicantId: number, direction: "in" | "out", subject: string, bod
 }
 
 describe("the Gmail-style mail window", () => {
-  it("is reachable from the nav and opens in a new window", async () => {
+  it("is reachable from the nav and opens in the SAME tab (never a new window)", async () => {
     const { base, cookie } = await startServer();
     const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     const link = home.match(/<a[^>]*href="\/mail"[^>]*>/);
     expect(link).toBeTruthy();
-    expect(link![0]).toContain('target="_blank"');
+    expect(link![0]).not.toContain('target="_blank"');
   });
 
   it("groups conversations by thread like Gmail: latest subject, snippet, message count", async () => {
@@ -103,7 +103,7 @@ describe("the Gmail-style mail window", () => {
     expect(all).toContain("Brand new unread message");
   });
 
-  it("shows the whole conversation both directions, attachments, and a new-window reply", async () => {
+  it("shows the whole conversation both directions, attachments, and a same-tab reply", async () => {
     const aid = mkApplicant("convo@example.org", "thr-convo", "Convo Person");
     mail(aid, "in", "Documents attached?", "Are my documents there?", "thr-convo", "2026-09-18T09:00:00Z");
     mail(aid, "out", "Yes — admission letter sent", "Please find everything attached.", "thr-convo", "2026-09-18T09:30:00Z", ["Admission-Letter.pdf", "Hostels-List.pdf"]);
@@ -114,10 +114,10 @@ describe("the Gmail-style mail window", () => {
     expect(page).toContain("Please find everything attached.");
     expect(page).toContain("Admission-Letter.pdf");
     expect(page).toContain("Hostels-List.pdf");
-    // reply affordance opens the new-window composer for this case
+    // reply affordance opens the composer for this case in the same tab
     const reply = page.match(/<a[^>]*href="\/compose\?case=\d+"[^>]*>/);
     expect(reply).toBeTruthy();
-    expect(reply![0]).toContain('target="_blank"');
+    expect(reply![0]).not.toContain('target="_blank"');
     // chronological order: incoming first
     expect(page.indexOf("Are my documents there?")).toBeLessThan(page.indexOf("Please find everything attached."));
   });

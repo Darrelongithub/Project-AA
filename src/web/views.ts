@@ -946,12 +946,14 @@ export function layout(opts: {
   if (opts.user) {
     const role = opts.user.role;
     // Role-separated navigation: admins administer, officers/IT work cases.
-    const nav: Array<{ href: string; label: string; active: string; newWindow?: boolean }> = [
+    // Round 3: Mail and Compose open in the SAME tab — the app never opens
+    // a new browser window (owner requirement).
+    const nav: Array<{ href: string; label: string; active: string }> = [
       { href: "/", label: "Overview", active: "dashboard" },
       { href: "/admissions", label: "Admissions", active: "admissions" },
       { href: "/applicants", label: "Queues", active: "applicants" },
-      { href: "/mail", label: "Mail", active: "mail", newWindow: true },
-      { href: "/compose", label: "Compose", active: "compose", newWindow: true },
+      { href: "/mail", label: "Mail", active: "mail" },
+      { href: "/compose", label: "Compose", active: "compose" },
       ...(role === "admin"
         ? [
             { href: "/staff", label: "Staff Configuration", active: "staff" },
@@ -968,7 +970,7 @@ export function layout(opts: {
     <div class="head-in">
       <a class="head-brand" href="/">${crest(27)}<span class="sr-only">${esc(inst)} — automated admissions</span></a>
       <nav class="head-nav">
-        ${nav.map((n) => `<a href="${n.href}" class="${opts.active === n.active ? "active" : ""}"${n.newWindow ? ` target="_blank" rel="noopener" title="Opens in a new window"` : ""}>${n.label}</a>`).join("")}
+        ${nav.map((n) => `<a href="${n.href}" class="${opts.active === n.active ? "active" : ""}">${n.label}</a>`).join("")}
       </nav>
       <div class="head-right">
         <button class="searchbtn" id="searchbtn">${icon("search", 15)}<span>Search…</span><span class="kbd">Ctrl K</span></button>

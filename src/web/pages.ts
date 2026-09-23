@@ -5,7 +5,7 @@
 import { documentRequirementsFor, type ProgrammeLevel } from "../documents/matrix";
 import type { Repo } from "../db/repo";
 import type { AdmissionSystem, ApplicantRow, CourseLevel, DocType, EmailRecord, Programme, RuleNode, StaffUser } from "../types";
-import { ADMISSION_SYSTEMS, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
+import { ADMISSION_SYSTEMS, DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
 import { SYSTEM_LABELS } from "../admissions/systems";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../admissions/queues";
 import { describeRuleTree, interpretRuleTree } from "../admissions/engine";
@@ -47,16 +47,6 @@ export function kindLabel(kind: string): string {
 }
 
 /** Stable school grouping for course lists. */
-function groupBySchool<T extends { code: string; school?: string | null }>(rows: T[]): Array<[string, T[]]> {
-  const out: Array<[string, T[]]> = [];
-  for (const r of rows) {
-    const key = r.school || "Other programmes";
-    const last = out[out.length - 1];
-    if (last && last[0] === key) last[1].push(r);
-    else out.push([key, [r]]);
-  }
-  return out;
-}
 
 // ── Login ──────────────────────────────────────────────────────────────────
 
@@ -1161,7 +1151,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
         </div>
       </form>
       <p class="small muted" style="margin-top:12px">Or open any template in the full composer: ${templates.slice(0, 3).map((t) => `<a href="/case/${a.id}/compose?template=${esc(t.key)}">${esc(t.name)}</a>`).join(" · ")}</p>
-      <p class="small muted" style="margin:6px 0 0"><a href="/compose?case=${a.id}" target="_blank" rel="noopener">Open a compose window for this applicant <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg></a> — keeps the case file open in this tab.</p>
+      <p class="small muted" style="margin:6px 0 0"><a href="/case/${a.id}/compose">Open the composer for this applicant</a> — same tab; after sending you land back on this case file.</p>
       <p class="small muted" style="margin:6px 0 0">Auto-response toggles per category live in <a href="/settings#automation">Settings → Automation</a>. Current modes: ${esc(autoSummary || "defaults")}</p>
     </div>
 
@@ -1529,7 +1519,7 @@ export function mailPage(
 </div>
 <div class="mail-wrap">
   <aside class="mail-side">
-    <a class="btn" href="/compose" target="_blank" rel="noopener" style="display:block;text-align:center;margin-bottom:14px">Compose</a>
+    <a class="btn" href="/compose" style="display:block;text-align:center;margin-bottom:14px">Compose</a>
     <nav>${sidebar}</nav>
   </aside>
   <div style="flex:1;min-width:0">
@@ -1601,7 +1591,7 @@ export function mailThreadPage(
       <h1 style="margin:0">${esc(a.full_name ?? a.ref_number)}</h1>
       <div class="sub" style="margin:2px 0 0">${esc(a.email_address)}${prog ? ` · ${esc(prog.name)}` : ""} · ${lifecycleBadge(a.lifecycle)} · <a href="/case/${a.id}">open the case file</a></div>
     </div>
-    <div><a class="btn" href="/compose?case=${a.id}" target="_blank" rel="noopener">Reply in a new window</a></div>
+    <div><a class="btn" href="/compose?case=${a.id}">Reply to this case</a></div>
   </div>
 </div>
 ${actionBar}
@@ -2138,129 +2128,13 @@ ${opsCard}`;
 
 export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsSystem?: string): string {
 
-  const { repo } = c;
-  const programmes = repo.listProgrammes();
-  const staff = repo.listStaff().filter((m) => m.active);
-
-  const assignForm = (p: { code: string; owner_id: number | null }) =>
-    `<form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-      <input type="hidden" name="programme" value="${esc(p.code)}">
-      <select name="owner" style="width:auto;min-width:190px">
-        <option value="">Unassigned</option>
-        ${staff.map((m) => `<option value="${m.id}" ${p.owner_id === m.id ? "selected" : ""}>${esc(m.display_name)} (${capFirst(m.role)})</option>`).join("")}
-      </select>
-      <button class="btn small ghost">Assign</button>
-    </form>`;
-  // OR-6: schools and courses live on ONE page. Every school exists even
-  // before it has courses; renaming a school moves every course with it.
-  const schools = repo.listSchools();
-  const unaffiliated = programmes.filter((x) => !x.school);
-  const enforcedSummary = (code: string): string => {
-    const sets = repo.activeSetsForProgramme(code);
-    if (!sets.length) return `<span class="small muted">No active requirement rules yet — files for this course route to human review.</span>`;
-    return `<details style="margin-top:8px"><summary class="small" style="cursor:pointer">Enforced entry requirements (${sets.length} route${sets.length === 1 ? "" : "s"}) — exactly what the engine checks</summary>
-      <ul style="margin:6px 0 0;padding-left:18px">
-        ${sets.map((s) => `<li class="small" style="margin-bottom:3px"><b>${esc(SYSTEM_LABELS[s.system] ?? s.system)}</b> <span class="muted">(${s.programme ? "course-specific" : "university-wide default"}, v${s.version})</span>: ${esc(describeRuleTree(s.nodes ?? []) || "no conditions")}</li>`).join("")}
-      </ul>
-      <p class="small muted" style="margin:6px 0 0">Edit in the <a href="/config?tab=requirements&reqs=${encodeURIComponent(code)}">Requirements tab</a> — edits create a draft; nothing judges applicants until you activate it.</p>
-    </details>`;
-  };
-  const schoolHeader = (school: string): string => `<tr class="schoolrow"><td colspan="3">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <b>${esc(school || "No school assigned")}</b>
-        ${school ? `<form method="post" action="/config/schools/rename" style="display:flex;gap:6px;margin:0;align-items:center">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-          <input type="hidden" name="from" value="${esc(school)}">
-          <input type="text" name="to" value="${esc(school)}" title="New school name" style="width:auto;min-width:220px;margin:0">
-          <button class="btn small ghost" title="Rename this school for every course in it">Rename school</button>
-        </form>` : ""}
-      </div>
-    </td></tr>`;
-  const courseRow = (pr: Programme): string => `<tr>
-        <td><b>${esc(pr.code)}</b><br><span class="small muted">${esc(pr.name)}</span><br><span class="badge ${pr.level === "phd" || pr.level === "masters" ? "b-purple" : "b-gray"}" style="margin-top:4px">${pr.level === "phd" ? "PhD" : capFirst(pr.level)}</span></td>
-        <td>
-          <form method="post" action="/config/programme/edit" style="display:flex;gap:6px;align-items:flex-start;max-width:640px">
-            <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-            <input type="hidden" name="programme" value="${esc(pr.code)}">
-            <div style="flex:1">
-              <input type="text" name="name" value="${esc(pr.name)}" title="Course name" style="margin-bottom:6px">
-              <textarea name="entry_requirements" rows="3" title="Reference notes (not enforced — the enforced rules are shown below)" placeholder="Reference notes only — prospectus wording, special cases…" style="min-height:64px;font-size:12.5px">${esc(pr.entry_requirements)}</textarea>
-            </div>
-            <button class="btn small ghost" title="Save course details">Save</button>
-          </form>
-          ${enforcedSummary(pr.code)}
-        </td>
-        <td>${assignForm(pr)}</td>
-      </tr>`;
-  const courseRows = schools.map((school) => {
-    const rows = programmes.filter((x) => (x.school || "") === school);
-    return schoolHeader(school) + (rows.length
-      ? rows.map(courseRow).join("")
-      : `<tr><td colspan="3" class="small muted" style="padding-left:26px">No courses yet — add one below and set its school to “${esc(school)}”.</td></tr>`);
-  }).join("") + (unaffiliated.length
-    ? schoolHeader("") + unaffiliated.map(courseRow).join("")
-    : "");
-
-  const tab = tabChoice === "requirements" ? "requirements" : tabChoice === "replies" ? "replies" : "courses";
+  // Round 3: the courses tab moved to the staff area (one home for course
+  // configuration); /config?tab=courses redirects there at the route level.
+  const tab = tabChoice === "replies" ? "replies" : "requirements";
   const tabBar = `<div class="tabs" style="margin:0 0 20px">
     <a href="/config?tab=requirements" class="${tab === "requirements" ? "on" : ""}">Requirements</a>
-    <a href="/config?tab=courses" class="${tab === "courses" ? "on" : ""}">Course configuration</a>
     <a href="/config?tab=replies" class="${tab === "replies" ? "on" : ""}">Reply configuration</a>
   </div>`;
-
-  const intakesCard = `<div class="card" id="intakes">
-  <h2>Intake deadlines</h2>
-  <p class="small muted" style="margin-top:-6px">Submissions arriving after the deadline are flagged <b>late_submission</b> for a human — the system never auto-rejects on deadline alone.</p>
-  <table><tr><th>Intake</th><th>Deadline</th><th></th></tr>
-    ${c.repo.listIntakeRows().map((i) => `<tr>
-      <td>${esc(i.name)}</td>
-      <td><form method="post" action="/settings/intake-deadline" style="display:flex;gap:6px;margin:0">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-        <input type="hidden" name="name" value="${esc(i.name)}">
-        <input type="date" name="deadline" value="${esc(i.deadline ? i.deadline.slice(0, 10) : "")}" style="width:auto">
-        <button class="btn small ghost">Save</button>
-      </form></td>
-      <td class="small muted">${i.deadline ? "" : "no deadline set"}</td>
-    </tr>`).join("")}
-  </table>
-</div>`;
-
-  const courseHtml = `
-<div class="card nopad" id="courses">
-  <div class="card-head"><h2>Courses &amp; ownership</h2></div>
-  <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone — assign the responsible officer here. The notes column is free-text reference; the <b>enforced</b> subject-and-grade rules for each course live in the <a href="/config?tab=requirements">Requirements tab</a>.</p>
-  ${programmes.length
-    ? `<table><tr><th>Programme</th><th>Course details &amp; reference notes</th><th>Handled by</th></tr>${courseRows}</table>`
-    : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
-  <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
-    <h2 id="entryreqs">Entry requirements</h2>
-    <p class="small muted" style="margin-top:-2px">Entry requirements are now structured, machine-evaluable rules — built visually per programme and qualification system, with a preview before activation. <a href="/config?tab=requirements">Open the Requirements tab →</a></p>
-
-    <h2 style="margin-top:20px">Required documents (all courses)</h2>
-    <p class="small muted" style="margin-top:-6px">OR-5: which documents a file must contain is <b>generated deterministically</b> from the official application-form checklist (level × curriculum × nationality × route). It is not staff-configurable — there are no toggles. Conditional items are asked for, never assumed; KCPE is never required; post-admission items never block a file. See the live matrix in the <a href="/config?tab=requirements">Requirements tab</a> and <span class="mono">docs/DOCUMENT_MATRIX.md</span>.</p>
-    <h2 style="margin-top:26px" id="addcourse">Add a course or intake</h2>
-    <p class="small muted" style="margin-top:-6px">Create a new programme — it appears immediately in the picker above, in course ownership and across the admissions pipeline — or add another intake for existing courses. Master's and PhD are separate levels, each judged by its own university-wide defaults.</p>
-    <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-      <div><label>New programme code</label><input type="text" name="prog_code" placeholder="e.g. MED"></div>
-      <div style="flex:2"><label>Programme name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
-      <div><label>School</label><select name="prog_school"><option value="">No school yet</option>${schools.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}</select></div>
-      <div><label>Level</label><select name="prog_level"><option value="degree">Degree</option><option value="diploma">Diploma</option><option value="certificate">Certificate</option><option value="masters">Master's</option><option value="phd">PhD</option></select></div>
-      <div><label>New intake</label><input type="text" name="intake" placeholder="e.g. May 2027"></div>
-      <div style="flex:0"><label>&nbsp;</label><button class="btn">Add course</button></div>
-    </form>
-    <h2 style="margin-top:26px" id="schools">Schools (faculties)</h2>
-    <p class="small muted" style="margin-top:-6px">A school exists as soon as it is created — even before its first course. Rename it in the course table above (the rename follows every course); add a new one here.</p>
-    <form method="post" action="/config/schools/add" class="formrow" style="margin-top:10px">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-      <div style="flex:2"><label>New school name</label><input type="text" name="name" placeholder="e.g. School of Aviation"></div>
-      <div style="flex:0"><label>&nbsp;</label><button class="btn">Add school</button></div>
-    </form>
-  </div>
-</div>
-
-${intakesCard}`;
 
   const replyHtml = `
 ${documentsPackCard(c)}
@@ -2320,10 +2194,10 @@ ${documentsPackCard(c)}
     "config",
     `
 <h1>Configuration</h1>
-<div class="sub">Courses, requirements, deadlines and reply behaviour — changes apply to newly processed email immediately.</div>
+<div class="sub">Requirements, deadlines and reply behaviour — course configuration (courses, ownership, document checklists) lives in the <a href="/staff">Staff area</a>. Changes apply to newly processed email immediately.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 ${tabBar}
-${tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : tab === "courses" ? courseHtml : replyHtml}
+${tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : replyHtml}
 `
   );
 }
@@ -2498,6 +2372,172 @@ function scopeMatrix(c: Ctx): string {
   </section>`;
 }
 
+/**
+ * Round 3 — course configuration lives in ONE place: the staff area.
+ * Everything that used to sit behind Configuration → "Course configuration"
+ * (schools, course details, ownership, enforced rules, intakes, add forms)
+ * plus the NEW per-course document checklists (checkboxes).
+ */
+function coursesConfigHtml(c: Ctx): string {
+  const { repo } = c;
+  const programmes = repo.listProgrammes();
+  const staffList = repo.listStaff().filter((m) => m.active);
+
+  const assignForm = (p: { code: string; owner_id: number | null }) =>
+    `<form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <input type="hidden" name="programme" value="${esc(p.code)}">
+      <select name="owner" style="width:auto;min-width:190px">
+        <option value="">Unassigned</option>
+        ${staffList.map((m) => `<option value="${m.id}" ${p.owner_id === m.id ? "selected" : ""}>${esc(m.display_name)} (${capFirst(m.role)})</option>`).join("")}
+      </select>
+      <button class="btn small ghost">Assign</button>
+    </form>`;
+  // OR-6: schools and courses live together. Every school exists even before
+  // it has courses; renaming a school moves every course with it.
+  const schools = repo.listSchools();
+  const enforcedSummary = (code: string): string => {
+    const sets = repo.activeSetsForProgramme(code);
+    if (!sets.length) return `<span class="small muted">No active requirement rules yet — files for this course route to human review.</span>`;
+    return `<details style="margin-top:8px"><summary class="small" style="cursor:pointer">Enforced entry requirements (${sets.length} route${sets.length === 1 ? "" : "s"}) — exactly what the engine checks</summary>
+      <ul style="margin:6px 0 0;padding-left:18px">
+        ${sets.map((s) => `<li class="small" style="margin-bottom:3px"><b>${esc(SYSTEM_LABELS[s.system] ?? s.system)}</b> <span class="muted">(${s.programme ? "course-specific" : "university-wide default"}, v${s.version})</span>: ${esc(describeRuleTree(s.nodes ?? []) || "no conditions")}</li>`).join("")}
+      </ul>
+      <p class="small muted" style="margin:6px 0 0">Edit in the <a href="/config?tab=requirements&reqs=${encodeURIComponent(code)}">Requirements tab</a> — edits create a draft; nothing judges applicants until you activate it.</p>
+    </details>`;
+  };
+  const schoolHeader = (school: string): string => `<tr class="schoolrow"><td colspan="3">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <b>${esc(school || "No school assigned")}</b>
+        ${school ? `<form method="post" action="/config/schools/rename" style="display:flex;gap:6px;margin:0;align-items:center">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          <input type="hidden" name="from" value="${esc(school)}">
+          <input type="text" name="to" value="${esc(school)}" title="New school name" style="width:auto;min-width:220px;margin:0">
+          <button class="btn small ghost" title="Rename this school for every course in it">Rename school</button>
+        </form>` : ""}
+      </div>
+    </td></tr>`;
+  const courseRow = (pr: Programme): string => `<tr>
+        <td><b>${esc(pr.code)}</b><br><span class="small muted">${esc(pr.name)}</span><br><span class="badge ${pr.level === "phd" || pr.level === "masters" ? "b-purple" : "b-gray"}" style="margin-top:4px">${pr.level === "phd" ? "PhD" : capFirst(pr.level)}</span></td>
+        <td>
+          <form method="post" action="/config/programme/edit" style="display:flex;gap:6px;align-items:flex-start;max-width:640px">
+            <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+            <input type="hidden" name="programme" value="${esc(pr.code)}">
+            <div style="flex:1">
+              <input type="text" name="name" value="${esc(pr.name)}" title="Course name" style="margin-bottom:6px">
+              <textarea name="entry_requirements" rows="3" title="Reference notes (not enforced — the enforced rules are shown below)" placeholder="Reference notes only — prospectus wording, special cases…" style="min-height:64px;font-size:12.5px">${esc(pr.entry_requirements)}</textarea>
+            </div>
+            <button class="btn small ghost" title="Save course details">Save</button>
+          </form>
+          ${enforcedSummary(pr.code)}
+        </td>
+        <td>${assignForm(pr)}</td>
+      </tr>`;
+  const unaffiliated = programmes.filter((x) => !x.school);
+  const courseRows = schools.map((school) => {
+    const rows = programmes.filter((x) => (x.school || "") === school);
+    return schoolHeader(school) + (rows.length
+      ? rows.map(courseRow).join("")
+      : `<tr><td colspan="3" class="small muted" style="padding-left:26px">No courses yet — add one below and set its school to “${esc(school)}”.</td></tr>`);
+  }).join("") + (unaffiliated.length
+    ? schoolHeader("") + unaffiliated.map(courseRow).join("")
+    : "");
+
+  // Round 3 — per-course document checklist. The generated matrix is the
+  // default; ticking (or un-ticking) boxes and saving configures THIS course
+  // only. Conditional items are "asked for, never assumed" and are not
+  // toggled here.
+  const courseDocChecklist = (pr: Programme): string => {
+    const configured = repo.courseDocConfig(pr.code);
+    const defaults = new Set(
+      repo.resolveRequirements(pr.code, null, {}).filter((e) => e.required).map((e) => e.document_type)
+    );
+    const typed = DOC_TYPES.filter((t) => t !== "unknown");
+    const rows = typed
+      .map((t) => {
+        const checked = configured ? configured.has(t) : defaults.has(t);
+        return `<label style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:13.5px">
+          <input type="checkbox" name="docs" value="${t}"${checked ? " checked" : ""}>
+          <span>${esc(docLabel(t))}${!configured && defaults.has(t) ? ` <span class="muted small">(generated default)</span>` : ""}</span>
+        </label>`;
+      })
+      .join("");
+    return `<details id="docs-${esc(pr.code)}" style="margin:10px 0;border:1px solid var(--line2);border-radius:8px">
+      <summary style="cursor:pointer;padding:10px 14px"><b>${esc(pr.code)}</b> — ${esc(pr.name)}
+        ${configured
+          ? `<span class="badge b-purple" style="margin-left:8px">customised checklist</span>`
+          : `<span class="badge b-gray" style="margin-left:8px">generated checklist</span>`}</summary>
+      <div style="padding:6px 16px 14px">
+        <p class="small muted">Tick exactly the documents this course requires — untick a default to drop it, tick anything else to add it. New applicants are checked against this list; cases that already froze their requirement set keep theirs.</p>
+        <div style="display:flex;gap:24px;flex-wrap:wrap">
+          <form method="post" action="/staff/course-docs" style="flex:1;min-width:280px">
+            <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+            <input type="hidden" name="programme" value="${esc(pr.code)}">
+            ${rows}
+            <div style="margin-top:10px"><button class="btn small" type="submit">Save required documents</button></div>
+          </form>
+          ${configured ? `<form method="post" action="/staff/course-docs/reset" style="align-self:flex-end;padding-bottom:4px"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="programme" value="${esc(pr.code)}"><button class="btn small ghost" type="submit">Reset to generated</button></form>` : ""}
+        </div>
+      </div>
+    </details>`;
+  };
+
+  const intakesCard = `<div class="card" id="intakes">
+  <h2>Intake deadlines</h2>
+  <p class="small muted" style="margin-top:-6px">Submissions arriving after the deadline are flagged <b>late_submission</b> for a human — the system never auto-rejects on deadline alone.</p>
+  <table><tr><th>Intake</th><th>Deadline</th><th></th></tr>
+    ${c.repo.listIntakeRows().map((i) => `<tr>
+      <td>${esc(i.name)}</td>
+      <td><form method="post" action="/settings/intake-deadline" style="display:flex;gap:6px;margin:0">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <input type="hidden" name="name" value="${esc(i.name)}">
+        <input type="date" name="deadline" value="${esc(i.deadline ? i.deadline.slice(0, 10) : "")}" style="width:auto">
+        <button class="btn small ghost">Save</button>
+      </form></td>
+      <td class="small muted">${i.deadline ? "" : "no deadline set"}</td>
+    </tr>`).join("")}
+  </table>
+</div>`;
+
+  return `
+<section class="card nopad" id="courses">
+  <div class="card-head"><h2>Courses &amp; ownership</h2></div>
+  <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone — assign the responsible officer here. The notes column is free-text reference; the <b>enforced</b> subject-and-grade rules for each course live in the <a href="/config?tab=requirements">Requirements tab</a>.</p>
+  ${programmes.length
+    ? `<table><tr><th>Programme</th><th>Course details &amp; reference notes</th><th>Handled by</th></tr>${courseRows}</table>`
+    : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
+  <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
+    <h2>Required documents — per course</h2>
+    <p class="small muted" style="margin-top:-2px">Each course starts on the <b>generated checklist</b> (level × curriculum, from the official application form). Open a course and tick exactly the documents it requires — saving customises that course only; “Reset to generated” puts it back. Conditional items (e.g. credit-transfer forms) are asked for automatically and are not toggled here.</p>
+    ${programmes.map(courseDocChecklist).join("")}
+
+    <h2 style="margin-top:26px" id="entryreqs">Entry requirements (grades)</h2>
+    <p class="small muted" style="margin-top:-6px">Entry requirements are structured, machine-evaluable rules — built visually per programme and qualification system, with a preview before activation. <a href="/config?tab=requirements">Open the Requirements tab →</a></p>
+
+    <h2 style="margin-top:26px" id="addcourse">Add a course or intake</h2>
+    <p class="small muted" style="margin-top:-6px">Create a new programme — it appears immediately in the table above, in course ownership and across the admissions pipeline — or add another intake for existing courses. Master's and PhD are separate levels, each judged by its own university-wide defaults.</p>
+    <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <div><label>New programme code</label><input type="text" name="prog_code" placeholder="e.g. MED"></div>
+      <div style="flex:2"><label>Programme name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
+      <div><label>School</label><select name="prog_school"><option value="">No school yet</option>${schools.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}</select></div>
+      <div><label>Level</label><select name="prog_level"><option value="degree">Degree</option><option value="diploma">Diploma</option><option value="certificate">Certificate</option><option value="masters">Master's</option><option value="phd">PhD</option></select></div>
+      <div><label>New intake</label><input type="text" name="intake" placeholder="e.g. May 2027"></div>
+      <div style="flex:0"><label>&nbsp;</label><button class="btn">Add course</button></div>
+    </form>
+    <h2 style="margin-top:26px" id="schools">Schools (faculties)</h2>
+    <p class="small muted" style="margin-top:-6px">A school exists as soon as it is created — even before its first course. Rename it in the course table above (the rename follows every course); add a new one here.</p>
+    <form method="post" action="/config/schools/add" class="formrow" style="margin-top:10px">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <div style="flex:2"><label>New school name</label><input type="text" name="name" placeholder="e.g. School of Aviation"></div>
+      <div style="flex:0"><label>&nbsp;</label><button class="btn">Add school</button></div>
+    </form>
+  </div>
+</section>
+
+${intakesCard}`;
+}
+
 export function staffPage(c: Ctx, flash?: string): string {
   const { repo } = c;
   const isAdmin = c.user.role === "admin";
@@ -2552,26 +2592,9 @@ export function staffPage(c: Ctx, flash?: string): string {
 </section>`
     : `<p class="small muted">Account management is limited to administrators — you are seeing the team report only.</p>`;
 
-  // Courses & ownership — moved here from the overview (round 18).
-  const staffList = repo.listStaff().filter((m) => m.active);
-  const assignForm = (p: { code: string; owner_id: number | null }) =>
-    `<form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-      <input type="hidden" name="programme" value="${esc(p.code)}">
-      <select name="owner" style="width:auto;min-width:190px">
-        <option value="">Unassigned</option>
-        ${staffList.map((m) => `<option value="${m.id}" ${p.owner_id === m.id ? "selected" : ""}>${esc(m.display_name)} (${capFirst(m.role)})</option>`).join("")}
-      </select>
-      <button class="btn small ghost">Assign</button>
-    </form>`;
-  const programmes = repo.listProgrammes();
-  const courseRows = groupBySchool(programmes)
-    .map(([school, rows]) => `<tr class="schoolrow"><td colspan="3">${esc(school)}</td></tr>` + rows
-      .map((p) => `<tr>
-        <td><b>${esc(p.code)}</b><br><span class="small muted">${esc(p.name)}</span></td>
-        <td class="small muted">${esc(p.entry_requirements ? (p.entry_requirements.length > 110 ? p.entry_requirements.slice(0, 110) + "…" : p.entry_requirements) : "—")} <a class="small" href="/config?tab=courses">edit</a></td>
-        <td>${assignForm(p)}</td>
-      </tr>`).join("")).join("");
+  // Round 3: the full course configuration (details, ownership, schools,
+  // intakes, per-course document checklists) lives in this one section —
+  // see coursesConfigHtml above.
 
   return head(
     c,
@@ -2605,13 +2628,7 @@ ${accountsSection}
 
 ${isAdmin ? scopeMatrix(c) : ""}
 
-<section class="card nopad">
-  <div class="card-head"><h2>Courses &amp; ownership</h2><a class="small" href="/config?tab=courses">course details →</a></div>
-  <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone — assign the responsible person here. Course details, notes and adding new courses live in Configuration.</p>
-  ${programmes.length
-    ? `<table><tr><th>Programme</th><th>Published entry requirements</th><th>Handled by</th></tr>${courseRows}</table>`
-    : `<div class="empty"><p>No courses yet — add the first one in Configuration.</p></div>`}
-</section>`
+${coursesConfigHtml(c)}`
   );
 }
 

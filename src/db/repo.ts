@@ -538,12 +538,58 @@ export class Repo {
     const level: ProgrammeLevel = rawLevel === "postgrad" ? "masters" : (rawLevel as ProgrammeLevel);
     const nationality: ApplicantNationality =
       opts?.nationality === "kenyan" || opts?.nationality === "international" ? opts.nationality : "unknown";
-    return documentRequirementsFor({
+    return this.applyCourseDocOverrides(programme, documentRequirementsFor({
       level,
       route: opts?.transfer ? "transfer" : "fresh",
       nationality,
       programmeCode: programme,
-    }).map((spec) => ({ document_type: spec.document_type, required: spec.required }));
+    }).map((spec) => ({ document_type: spec.document_type, required: spec.required })));
+  }
+
+  /**
+   * Round 3 — per-course document configuration. The generated matrix stays
+   * the default; once a course is explicitly configured, REQUIRED entries
+   * outside the configured set drop out and configured types missing from
+   * the matrix are added as plain required entries. Conditional
+   * (required:false) entries are never touched — they are asked for, never
+   * assumed, exactly as before.
+   */
+  private applyCourseDocOverrides(programme: string | null, entries: RequirementSetEntry[]): RequirementSetEntry[] {
+    if (!programme) return entries;
+    const configured = this.courseDocConfig(programme);
+    if (configured === null) return entries; // not configured → generated defaults
+    const kept = entries.filter((e) => !e.required || configured.has(e.document_type));
+    const known = new Set(entries.map((e) => e.document_type));
+    const added: RequirementSetEntry[] = [...configured]
+      .filter((t) => !known.has(t as DocType))
+      .sort()
+      .map((t) => ({ document_type: t as DocType, required: true }));
+    return [...kept, ...added];
+  }
+
+  /**
+   * The explicitly configured required document types for a course — or
+   * null when the course is unconfigured (generated matrix defaults apply).
+   */
+  courseDocConfig(programme: string): Set<DocType> | null {
+    const rows = this.db
+      .prepare("SELECT document_type FROM course_doc_requirements WHERE programme = ?")
+      .all(programme.toUpperCase()) as Array<{ document_type: string }>;
+    if (rows.length === 0) return null;
+    return new Set(rows.map((r) => r.document_type as DocType));
+  }
+
+  /** Save a course's configured required document types (replaces the set). */
+  saveCourseDocConfig(programme: string, types: DocType[]): void {
+    const code = programme.toUpperCase();
+    this.db.prepare("DELETE FROM course_doc_requirements WHERE programme = ?").run(code);
+    const ins = this.db.prepare("INSERT OR IGNORE INTO course_doc_requirements (programme, document_type) VALUES (?, ?)");
+    for (const t of new Set(types)) ins.run(code, t);
+  }
+
+  /** Remove a course's configuration — it falls back to the matrix defaults. */
+  deleteCourseDocConfig(programme: string): void {
+    this.db.prepare("DELETE FROM course_doc_requirements WHERE programme = ?").run(programme.toUpperCase());
   }
 
   // ── Documents (features 5, 6, 9, 22) ─────────────────────────────────────
