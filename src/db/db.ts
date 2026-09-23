@@ -439,6 +439,7 @@ function migrate(db: Database.Database): void {
   addColumn("applicants", "routing", "TEXT");
   addColumn("applicants", "routing_reason", "TEXT");
   addColumn("applicants", "admission_rules_frozen", "TEXT");
+  addColumn("applicants", "admission_rules_frozen_at", "TEXT");
   addColumn("applicants", "admission_decision", "TEXT NOT NULL DEFAULT 'undecided'");
   addColumn("applicants", "admission_route", "TEXT");
   addColumn("applicants", "decision_by", "TEXT");

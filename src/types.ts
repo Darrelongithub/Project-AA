@@ -540,6 +540,8 @@ export interface ApplicantRow {
   routing_reason: string | null;
   /** Frozen rule sets this applicant is judged by (JSON AdmissionRuleSet[]). */
   admission_rules_frozen: string | null;
+  /** ISO timestamp of the first freeze of the admission rule sets (E1). */
+  admission_rules_frozen_at: string | null;
   admission_decision: AdmissionDecision;
   /** automated | human — how the decision came about. */
   admission_route: string | null;

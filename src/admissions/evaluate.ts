@@ -150,16 +150,41 @@ export function evaluateAdmission(
     );
   }
 
+  // ── Step 1b — the course must be known. E3: the degree-level defaults are
+  // NOT a fallback — an unknown or never-inferred programme is judged against
+  // NO ladder, and the (wrong) degree goalposts are never frozen as the
+  // applicant's. A human sets the course, then the engine re-runs.
+  const programmeKnown = a.programme ? repo.programmeByCode(a.programme) : undefined;
+  if (!programmeKnown) {
+    derivedFlags.push({
+      type: "low_confidence",
+      detail: "applicant's programme is not identified — no course- or level-specific requirements may be applied; a human must set the course first",
+    });
+    return persist(
+      "needs_verification", "human_review",
+      "The applicant's programme has not been identified, so no course-specific (or level-specific) requirements can be applied. Set the course, then re-evaluate.",
+      "programme_unidentified", null
+    );
+  }
+
   // ── Step 2 — which qualification system(s) did the applicant present? ─────
   // OR-5: academic paperwork now arrives under concrete checklist types
   // (result slip, leaving certificate, transcripts…) as well as the generic
   // academic_cert fallback. Grades ride on whichever of them carries fields.
+  // E5: only the GENERIC academic_cert is "could be anything" — an
+  // unidentified generic certificate is a potential conflicting route, so it
+  // withholds auto-admission. Specifically-typed companions (the KCPE
+  // certificate, a degree certificate, a transcript…) are checklist items,
+  // not entry routes, and their unreadability surfaces through the
+  // document-level confidence machinery instead.
   const academic = docs.filter((d) => ACADEMIC_FAMILY.has(d.document_type));
   const identified: Array<{ doc: DocumentRecord; systems: AdmissionSystem[] }> = [];
+  const unidentifiedGeneric: DocumentRecord[] = [];
   for (const doc of academic) {
     const fields = (doc.extracted_fields ?? {}) as ExtractedFields;
     const sys = fields.examSystem ? SYSTEM_ROUTE_MAP[String(fields.examSystem)] : undefined;
     if (sys && sys.length > 0) identified.push({ doc, systems: sys });
+    else if (doc.document_type === "academic_cert") unidentifiedGeneric.push(doc);
     else if (academic.length === 1) {
       // The certificate is there but the system could not be identified —
       // reliability problem → a human decides the route.
@@ -167,10 +192,28 @@ export function evaluateAdmission(
       return persist("needs_verification", "human_review", "The qualification system on the certificate could not be identified. Academic result requires verification.", "system_unidentified", null);
     }
   }
+  // E5 (mixed case): a route IS identified, but a generic certificate with no
+  // identifiable system is also in the file. It may be the applicant's real
+  // qualification (extraction failed) or a conflicting second certificate —
+  // either way auto-admission is withheld for a human to check.
+  let withholdAuto: { reason: string; code: string } | null = null;
+  if (unidentifiedGeneric.length > 0 && identified.length > 0) {
+    const labels = [...new Set(unidentifiedGeneric.map((d) => docLabel(d.document_type)))].join(", ");
+    derivedFlags.push({
+      type: "low_confidence",
+      detail: `certificate(s) with no identifiable qualification system (${labels}) — the identified route may not be the applicant's; a human should verify before admission`,
+    });
+    withholdAuto = {
+      reason: `One or more certificates carry no identifiable qualification system (${labels}). The identified route may not be the applicant's — verify before admission.`,
+      code: "system_unidentified_partial",
+    };
+  }
 
   // ── Step 3 — the frozen requirement sets (goalposts never move). ──────────
   const frozen = repo.freezeAdmissionSets(repo.getApplicant(applicantId)!);
-  base.frozenAt = frozen.length ? null : null; // freeze timestamp lives on the applicant row
+  // E1: the real freeze time, recorded on the applicant row at first freeze
+  // (COALESCE keeps the FIRST freeze if the snapshot is ever re-written).
+  base.frozenAt = repo.getApplicant(applicantId)!.admission_rules_frozen_at ?? null;
   const candidateSets: AdmissionRuleSet[] = [];
   for (const { systems } of identified) {
     for (const s of systems) {
@@ -246,6 +289,26 @@ export function evaluateAdmission(
   }
 
   if (tree.result === "passed") {
+    // E2: a tree with ZERO conditions "passes" vacuously — that is not
+    // qualification. An empty route (a misconfigured seed, or a staff edit
+    // that deleted every condition) must never auto-admit: a human confirms
+    // the route, and restores the rule set if it was emptied by mistake.
+    if (tree.rulesTotal === 0) {
+      derivedFlags.push({
+        type: "low_confidence",
+        detail: `the ${sysLabel} route's rule set contains no conditions — zero academic checks were performed; auto-admission withheld until a human confirms the route`,
+      });
+      return persist(
+        "needs_verification", "human_review",
+        `The ${sysLabel} route has no configured conditions, so nothing was checked. Auto-admission is withheld: a human must confirm the route — and restore the rule set if it was emptied by mistake.`,
+        "empty_rule_set", set
+      );
+    }
+    // E5: an unidentified generic certificate in the file withholds
+    // auto-admission even though the identified route passed every rule.
+    if (withholdAuto) {
+      return persist("passed", "human_review", `${withholdAuto.reason} Auto-admission withheld.`, withholdAuto.code, set);
+    }
     if (blocking.length > 0) {
       const label = blockingTypes.map((t) => t.replace(/_/g, " ")).join(", ");
       return persist(
@@ -257,9 +320,7 @@ export function evaluateAdmission(
     }
     return persist(
       "passed", "auto_admit",
-      tree.rulesTotal === 0
-        ? `${SYSTEM_LABELS[set.system]} route recognised — this route has no automated minimum, so nothing further is required.`
-        : `All configured admission requirements satisfied (${tree.rulesSatisfied}/${tree.rulesTotal} rules) and no blocking flags detected.`,
+      `All configured admission requirements satisfied (${tree.rulesSatisfied}/${tree.rulesTotal} rules) and no blocking flags detected.`,
       "qualified", set
     );
   }
@@ -286,9 +347,13 @@ export function evaluateAdmission(
   );
 }
 
-/** passed > failed > undetermined — pick the best route when several apply. */
+/** passed > undetermined > failed — pick the best route when several apply.
+ *  E4: an UNREAD route outranks a confirmed failure on another route. The
+ *  undetermined route may be the applicant's real qualification system that
+ *  simply could not be read — the honest label is "needs verification", not
+ *  "does not meet requirements". */
 function rankTree(t: TreeResult): number {
-  return t.result === "passed" ? 2 : t.result === "failed" ? 1 : 0;
+  return t.result === "passed" ? 3 : t.result === "undetermined" ? 2 : 1;
 }
 
 /**

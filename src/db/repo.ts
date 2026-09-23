@@ -2267,9 +2267,11 @@ export class Repo {
       }
     }
     const sets = this.activeSetsForProgramme(a.programme);
+    // E1: record WHEN the goalposts froze — audit/replay needs a real time,
+    // and the FIRST freeze wins (a later corrupt re-parse must not move it).
     this.db
-      .prepare("UPDATE applicants SET admission_rules_frozen = ? WHERE id = ?")
-      .run(JSON.stringify(sets), a.id);
+      .prepare("UPDATE applicants SET admission_rules_frozen = ?, admission_rules_frozen_at = COALESCE(admission_rules_frozen_at, ?) WHERE id = ?")
+      .run(JSON.stringify(sets), new Date().toISOString(), a.id);
     return sets;
   }
 
