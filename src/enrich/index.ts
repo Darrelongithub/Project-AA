@@ -99,7 +99,15 @@ export function inferIntake(text: string, intakes: string[]): string | null {
   for (const intake of intakes) {
     if (up.includes(intake.toUpperCase())) return intake;
     const [month, year] = intake.split(" ");
-    if (month && year && up.includes(month.toUpperCase()) && up.includes(year)) return intake;
+    // The month and the year must sit NEXT TO each other ("JANUARY 2026",
+    // "JANUARY, 2026", "JANUARY INTAKE 2026"). Matching them anywhere in the
+    // text let a DOB month on a birth certificate ("12 JANUARY 1990") pair
+    // with an application year elsewhere ("2026 intake") and fabricate an
+    // intake the applicant never mentioned as a unit.
+    if (month && year) {
+      const adjacent = new RegExp(`\\b${month.toUpperCase()}\\s*(?:INTAKE)?\\s*,?\\s*${year}\\b`);
+      if (adjacent.test(up)) return intake;
+    }
     if (month && up.includes(`${month.toUpperCase()} INTAKE`)) return intake;
   }
   return null;

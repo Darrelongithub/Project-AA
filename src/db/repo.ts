@@ -30,7 +30,7 @@ import type {
   SystemBlock,
   CourseLevel,
 } from "../types";
-import { documentRequirementsFor, type ApplicantNationality, type ProgrammeLevel } from "../documents/matrix";
+import { documentRequirementsFor, fillSlots, type ApplicantNationality, type ProgrammeLevel } from "../documents/matrix";
 import type { VisionCacheStore } from "../extraction/gemini";
 import { isValidCachedVision } from "../extraction/gemini";
 import type { VisionExtraction } from "../types";
@@ -1620,13 +1620,13 @@ export class Repo {
     const counts = new Map<string, number>();
     for (const a of this.allApplicants(demo, schools)) {
       if (a.lifecycle === "completed" || a.lifecycle === "verification") continue;
-      const required = new Set(
-        this.effectiveRequirements(a).filter((e) => e.required).map((e) => e.document_type)
-      );
-      const have = new Set(
-        this.listDocuments(a.id, { activeOnly: true }).map((d) => d.document_type)
-      );
-      for (const t of required) if (!have.has(t)) counts.set(t, (counts.get(t) ?? 0) + 1);
+      // The SAME slot semantics as decide(): a generic academic upload fills
+      // an academic slot (fillSlots), so the tile must not count as missing
+      // a document the pipeline already considers present. A literal
+      // type-set difference used to show complete files as short.
+      const present = this.listDocuments(a.id, { activeOnly: true }).map((d) => d.document_type);
+      const { missing } = fillSlots(this.effectiveRequirements(a), present);
+      for (const m of missing) counts.set(m.document_type, (counts.get(m.document_type) ?? 0) + 1);
     }
     return [...counts.entries()]
       .map(([type, count]) => ({ type, count }))
@@ -2231,6 +2231,52 @@ export class Repo {
   deleteRuleNode(nodeId: number): void {
     // FK ON DELETE CASCADE handles descendants.
     this.db.prepare("DELETE FROM admission_rule_nodes WHERE id = ?").run(nodeId);
+  }
+
+  /** The rule set that owns a node (any status), or undefined. */
+  ruleNodeSet(nodeId: number): AdmissionRuleSet | undefined {
+    const row = this.db
+      .prepare("SELECT set_id FROM admission_rule_nodes WHERE id = ?")
+      .get(nodeId) as { set_id: number } | undefined;
+    return row ? this.getRuleSet(Number(row.set_id)) : undefined;
+  }
+
+  /**
+   * True only when the node belongs to the DRAFT set for (programme, level,
+   * system). The draft-flow routes must route writes through this: a raw
+   * node id from a form body must not reach an ACTIVE or RETIRED set
+   * (published rules change only via draft → activate) or another course's
+   * set (a tampered or stale `node=` must never cross courses).
+   */
+  private nodeInDraftSet(nodeId: number, programme: string | null, level: CourseLevel, system: AdmissionSystem): boolean {
+    const set = this.ruleNodeSet(nodeId);
+    return (
+      !!set &&
+      set.status === "draft" &&
+      (set.programme ?? null) === (programme ?? null) &&
+      set.level === level &&
+      set.system === system
+    );
+  }
+
+  /** updateRuleNode, refused (false) unless the node is in the target's draft. */
+  updateRuleNodeIfDraft(
+    nodeId: number,
+    programme: string | null,
+    level: CourseLevel,
+    system: AdmissionSystem,
+    patch: Partial<Pick<RuleNode, "logic" | "field" | "subject" | "comparator" | "value">>
+  ): boolean {
+    if (!this.nodeInDraftSet(nodeId, programme, level, system)) return false;
+    this.updateRuleNode(nodeId, patch);
+    return true;
+  }
+
+  /** deleteRuleNode, refused (false) unless the node is in the target's draft. */
+  deleteRuleNodeIfDraft(nodeId: number, programme: string | null, level: CourseLevel, system: AdmissionSystem): boolean {
+    if (!this.nodeInDraftSet(nodeId, programme, level, system)) return false;
+    this.deleteRuleNode(nodeId);
+    return true;
   }
 
   /** Activate a draft: it becomes the new version; the old active retires. */

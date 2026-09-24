@@ -1234,8 +1234,13 @@ export function createApp(deps: WebDeps): Express {
       patch.value = v || null;
     }
     if (Object.keys(patch).length === 0) return res.redirect(t.back("Nothing to save."));
-    // Subject conditions need a subject; grade/number conditions need a value.
-    repo.updateRuleNode(nodeId, patch);
+    // The node id comes from the form body — verify it belongs to THIS
+    // target's DRAFT set before writing. Without this, a tampered or stale
+    // `node=` reached ACTIVE and other courses' published rule sets, bypass-
+    // ing the draft → activate versioning flow.
+    if (!repo.updateRuleNodeIfDraft(nodeId, t.programme, t.level, t.system, patch)) {
+      return res.redirect(t.back("That rule does not belong to this course's draft — nothing was changed."));
+    }
     res.redirect(t.back("Rule updated in the draft — preview it, then activate."));
   });
 
@@ -1243,7 +1248,11 @@ export function createApp(deps: WebDeps): Express {
     const t = reqsTarget(req);
     if (!t) return res.redirect("/config?tab=requirements");
     const nodeId = Number(req.body.node);
-    repo.deleteRuleNode(nodeId);
+    // Same ownership check as node-save: the body's node id may be stale or
+    // hostile — only the target's own DRAFT set is deletable.
+    if (!repo.deleteRuleNodeIfDraft(nodeId, t.programme, t.level, t.system)) {
+      return res.redirect(t.back("That rule does not belong to this course's draft — nothing was changed."));
+    }
     res.redirect(t.back("Rule removed from the draft."));
   });
 
