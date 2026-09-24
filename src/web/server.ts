@@ -28,8 +28,8 @@ import { TEMPLATE_DEFAULTS } from "../db/seed";
 import { avatar, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
 import { GmailClient } from "../ingestion/gmailClient";
-import { BudgetedVisionAdapter, GeminiVisionAdapter } from "../extraction/gemini";
-import { GeminiWatcher } from "../watcher";
+import { BudgetedVisionAdapter, GeminiVisionAdapter, MockVisionAdapter } from "../extraction/gemini";
+import { GeminiWatcher, makeHeuristicWatcher } from "../watcher";
 import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { gmailRedirectUri } from "./oauth";
@@ -1504,7 +1504,20 @@ export function createApp(deps: WebDeps): Express {
   // reports exactly what happened.
   const rebuildAdapters = () => {
     const key = repo.getSetting("gemini_api_key", "").trim();
-    if (!key) return;
+    if (!key) {
+      // N1: no key means MOCK reading — say so by actually rebuilding. The
+      // old early-return left stale live Gemini adapters in place after a
+      // key removal: the dead-key watcher fails closed on every Green file
+      // (auto-replies silently stop) while the UI/audit claim "back to
+      // mock reading". Boot with no key behaves identically (mock either
+      // way, so this is a no-op there).
+      ctx.adapters = {
+        ...ctx.adapters,
+        vision: new MockVisionAdapter(),
+        watcher: makeHeuristicWatcher(),
+      };
+      return;
+    }
     const model = repo.getSetting("gemini_model", "gemini-1.5-flash").trim() || "gemini-1.5-flash";
     try {
       const next: Adapters = {
@@ -1529,6 +1542,9 @@ export function createApp(deps: WebDeps): Express {
     if (req.body.clear !== undefined) {
       repo.setSetting("gemini_api_key", "");
       repo.setSetting("gemini_last_error", "");
+      // N1: the message below is only true if the adapters actually go
+      // back to mock — rebuild before claiming it.
+      rebuildAdapters();
       repo.audit(null, req.staff!.username, "gemini_disabled", "API key removed — back to mock reading");
       return res.redirect(back("Gemini key removed. Document reading falls back to text/OCR only."));
     }
