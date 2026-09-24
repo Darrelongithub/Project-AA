@@ -1056,6 +1056,58 @@ export class Repo {
     this.db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
   }
 
+  /**
+   * One-time admin-issued password reset codes (forgot password).
+   *
+   * The code is shown exactly ONCE, in the issuing admin's response body
+   * (never a URL — no history/referrer leakage), and travels out-of-band
+   * to the member. It is valid until `expires_at`, is revoked the moment a
+   * newer code is issued for the same member, and is consumed exactly once
+   * by the public reset route.
+   */
+  issueResetCode(staffId: number, issuedBy: string, ttlMs = 30 * 60_000): string {
+    // No 0/O/1/I — codes get read over the phone and typed from WhatsApp.
+    const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    let code = "";
+    for (;;) {
+      code = Array.from(crypto.randomBytes(10)).map((b) => alphabet[b % alphabet.length]).join("");
+      if (!this.db.prepare("SELECT 1 FROM password_reset_codes WHERE code = ?").get(code)) break;
+    }
+    const now = new Date().toISOString();
+    this.db
+      .transaction(() => {
+        this.db
+          .prepare("UPDATE password_reset_codes SET revoked_at = ? WHERE staff_id = ? AND used_at IS NULL AND revoked_at IS NULL")
+          .run(now, staffId);
+        this.db
+          .prepare("INSERT INTO password_reset_codes (code, staff_id, issued_by, expires_at) VALUES (?,?,?,?)")
+          .run(code, staffId, issuedBy, new Date(Date.now() + ttlMs).toISOString());
+      })();
+    return code;
+  }
+
+  /**
+   * Atomically consume a code. Returns the member id it belongs to, or null
+   * when the code is unknown, revoked, expired, or already used. The UPDATE
+   * is the single point of claim, so two racing redemptions can't both win.
+   */
+  consumeResetCode(code: string): number | null {
+    const trimmed = code.trim().toUpperCase();
+    const now = new Date().toISOString();
+    const r = this.db
+      .prepare("UPDATE password_reset_codes SET used_at = ? WHERE code = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?")
+      .run(now, trimmed, now);
+    if (Number(r.changes) === 0) return null;
+    const row = this.db.prepare("SELECT staff_id FROM password_reset_codes WHERE code = ?").get(trimmed) as { staff_id: number };
+    return row.staff_id;
+  }
+
+  /** End every live session of a member (always run after their password changes). */
+  purgeStaffSessions(staffId: number): number {
+    const r = this.db.prepare("DELETE FROM sessions WHERE staff_id = ?").run(staffId);
+    return Number(r.changes);
+  }
+
   purgeExpiredSessions(): void {
     this.db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(new Date().toISOString());
   }

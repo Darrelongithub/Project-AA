@@ -236,6 +236,18 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at TEXT NOT NULL
 );
 
+-- One-time admin-issued password reset codes (forgot password).
+-- A code is valid until expires_at, is revoked by a newer issue for the
+-- same member (revoked_at), and is consumed exactly once (used_at).
+CREATE TABLE IF NOT EXISTS password_reset_codes (
+  code        TEXT PRIMARY KEY,
+  staff_id    INTEGER NOT NULL REFERENCES staff_users(id),
+  issued_by   TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  used_at     TEXT,
+  revoked_at  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   staff_id     INTEGER REFERENCES staff_users(id),   -- NULL = broadcast to all

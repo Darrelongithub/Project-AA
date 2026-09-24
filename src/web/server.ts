@@ -21,7 +21,7 @@ import { fillSlots } from "../documents/matrix";
 import { evaluateAdmission } from "../admissions/evaluate";
 import { ADMISSION_SYSTEMS, DOC_TYPES, type AdmissionSystem, type CourseLevel, type DocType, type RuleField } from "../types";
 import {
-  accountPage, admissionsPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, mailPage, mailThreadPage, setupPage,
+  accountPage, admissionsPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, mailPage, mailThreadPage, resetPasswordPage, setupPage,
   replayPage, settingsPage, staffPage, templatesPage,
 } from "./pages";
 import { TEMPLATE_DEFAULTS } from "../db/seed";
@@ -223,7 +223,8 @@ export function createApp(deps: WebDeps): Express {
       res.redirect("/setup");
       return;
     }
-    res.send(loginPage(undefined, req.theme, instName(), newLoginCsrf(res)));
+    // ?msg= carries the one success notice (password just reset via code).
+    res.send(loginPage(undefined, req.theme, instName(), newLoginCsrf(res), req.query.msg ? String(req.query.msg) : undefined));
   });
 
   /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
@@ -288,6 +289,58 @@ export function createApp(deps: WebDeps): Express {
     if (req.sessionId) repo.deleteSession(req.sessionId);
     res.setHeader("Set-Cookie", clearSessionCookie());
     res.redirect("/login");
+  });
+
+  // ── Forgot password — one-time code issued by an admin ─────────────────
+  // Per the owner's direction there is no email in the loop: the admin
+  // issues a code on the staff page (shown once, in the response body —
+  // never a URL, so it can't leak into history or a Referer) and hands it
+  // to the member out-of-band; the member redeems it here. Codes are
+  // single-use, expire in 30 minutes, are revoked by a newer issue, and
+  // every failure returns the SAME generic refusal (no account
+  // enumeration). The public endpoint is rate-limited per IP.
+  const resetThrottle = new LoginThrottle({ windowMs: 10 * 60_000, maxFails: 5 });
+
+  app.get("/reset-password", (req, res) => {
+    res.send(resetPasswordPage(undefined, req.theme, instName(), newLoginCsrf(res)));
+  });
+
+  app.post("/reset-password", (req, res) => {
+    const ip = req.ip ?? "?";
+    if (!resetThrottle.allowed(ip)) {
+      return res.status(429).send(resetPasswordPage("Too many reset attempts from this address — please wait a few minutes.", req.theme, instName(), newLoginCsrf(res)));
+    }
+    // Same anonymous double-submit CSRF as /login.
+    const provided = String(req.body._lcsrf ?? "");
+    const cookieToken = parseCookies(req.headers.cookie)["lcsrf"] ?? "";
+    if (!provided || provided !== cookieToken) {
+      return res.status(403).send(resetPasswordPage("That page expired — please try again.", req.theme, instName(), newLoginCsrf(res)));
+    }
+    const refuse = (m: string) => res.send(resetPasswordPage(m, req.theme, instName(), newLoginCsrf(res)));
+    const GENERIC = "We couldn't verify that username and code. Check both, or ask your admin for a fresh code.";
+    const username = String(req.body.username ?? "").trim();
+    const code = String(req.body.code ?? "").trim();
+    const password = String(req.body.password ?? "");
+    const confirm = String(req.body.confirm ?? "");
+    const member = username ? repo.getStaffByUsername(username) : undefined;
+    if (!member || member.active !== 1) {
+      resetThrottle.recordFail(ip); // credential guess — count it
+      return refuse(GENERIC);
+    }
+    // Validate the password BEFORE consuming the code — a typo must not
+    // burn the one-time code.
+    if (password.length < 8) return refuse("The new password must be at least 8 characters.");
+    if (password !== confirm) return refuse("The two new passwords do not match — nothing was changed.");
+    // Atomic claim: racing redemptions can't both win.
+    const ownerId = repo.consumeResetCode(code);
+    if (ownerId === null || ownerId !== member.id) {
+      resetThrottle.recordFail(ip); // credential guess — count it
+      return refuse(GENERIC);
+    }
+    repo.setStaffPassword(member.id, hashPassword(password));
+    const purged = repo.purgeStaffSessions(member.id);
+    repo.audit(null, member.username, "password_reset_code_used", `admin-issued code consumed; ${purged} session(s) ended`);
+    res.redirect(`/login?msg=${encodeURIComponent("Password updated — sign in with your new password.")}`);
   });
 
   // ── Dashboard / queue / applicants ───────────────────────────────────────
@@ -1797,6 +1850,17 @@ export function createApp(deps: WebDeps): Express {
     repo.setStaffPassword(id, hashPassword(password));
     repo.audit(null, req.staff!.username, "staff_password_reset", `user #${id}`);
     res.redirect(staffMsg(`Password reset for “${target.username}”.`));
+  });
+
+  // Forgot password: issue a one-time code for a member. Deliberately a
+  // 200 re-render, NOT a redirect — the code is shown exactly once, in the
+  // response body, and must never appear in a URL (history/Referer).
+  app.post("/staff/reset-code", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const target = repo.getStaff(Number(req.body.id));
+    if (!target) return res.send(staffPage(c(req), "Unknown staff member — no code issued."));
+    const code = repo.issueResetCode(target.id, req.staff!.username);
+    repo.audit(null, req.staff!.username, "password_reset_code_issued", `for ${target.username}`);
+    res.send(staffPage(c(req), `Reset code issued for “${target.username}”.`, code));
   });
 
   // Round 3 — per-course document checklists (checkboxes on the staff page).

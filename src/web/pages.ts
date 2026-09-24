@@ -50,7 +50,7 @@ export function kindLabel(kind: string): string {
 
 // ── Login ──────────────────────────────────────────────────────────────────
 
-export function loginPage(error?: string, theme?: Theme, institution = "Riara University", loginCsrf?: string): string {
+export function loginPage(error?: string, theme?: Theme, institution = "Riara University", loginCsrf?: string, okMsg?: string): string {
   return layout({
     title: `Sign in — ${institution}`,
     institution,
@@ -61,6 +61,7 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
   ${crest(58)}
   <h1 class="center">Sign in</h1>
   <p class="sub center">${esc(institution)} · Automated admissions</p>
+  ${okMsg ? `<div class="flash ok" style="position:static;margin-bottom:14px">${esc(okMsg)}</div>` : ""}
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
   <form method="post" action="/login">
     ${loginCsrf ? `<input type="hidden" name="_lcsrf" value="${esc(loginCsrf)}">` : ""}
@@ -70,7 +71,38 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
     <input type="password" name="password" autocomplete="current-password" placeholder="••••••••">
     <p style="margin-top:18px"><button class="btn" style="width:100%">Sign in to the console</button></p>
   </form>
+  <p class="small center" style="margin-top:14px"><a href="/reset-password">Forgot your password? Ask your admin for a reset code.</a></p>
   <p class="small muted center">Accounts are provisioned by your administrator.</p>
+</div>`,
+  });
+}
+
+/** Forgot-password: redeem an admin-issued one-time reset code. Anonymous. */
+export function resetPasswordPage(error?: string, theme?: Theme, institution = "Riara University", loginCsrf?: string): string {
+  return layout({
+    title: `Reset password — ${institution}`,
+    institution,
+    publicPage: true,
+    theme,
+    content: `
+<div class="loginbox card">
+  ${crest(58)}
+  <h1 class="center">Reset password</h1>
+  <p class="sub center">Enter your username and the one-time reset code your administrator issued for you. It works once and expires after 30 minutes.</p>
+  ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
+  <form method="post" action="/reset-password">
+    ${loginCsrf ? `<input type="hidden" name="_lcsrf" value="${esc(loginCsrf)}">` : ""}
+    <label>Username</label>
+    <input type="text" name="username" autofocus autocomplete="username" placeholder="your.username">
+    <label>Reset code (from your admin)</label>
+    <input type="text" name="code" autocomplete="one-time-code" placeholder="e.g. 7KMQ3NP9XW" class="mono" style="text-transform:uppercase">
+    <label>New password</label>
+    <input type="password" name="password" autocomplete="new-password" placeholder="at least 8 characters">
+    <label>Confirm new password</label>
+    <input type="password" name="confirm" autocomplete="new-password" placeholder="repeat it">
+    <p style="margin-top:18px"><button class="btn" style="width:100%">Set new password</button></p>
+  </form>
+  <p class="small muted center"><a href="/login">← Back to sign in</a></p>
 </div>`,
   });
 }
@@ -2556,7 +2588,7 @@ function coursesConfigHtml(c: Ctx): string {
 ${intakesCard}`;
 }
 
-export function staffPage(c: Ctx, flash?: string): string {
+export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
   const { repo } = c;
   const isAdmin = c.user.role === "admin";
 
@@ -2591,6 +2623,7 @@ export function staffPage(c: Ctx, flash?: string): string {
         <td>
           <form method="post" action="/staff/toggle" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><button class="btn small ghost">${st.active ? "Disable" : "Enable"}</button></form>
           <form method="post" action="/staff/password" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><input type="password" name="password" placeholder="new password" style="width:150px;display:inline-block"><input type="password" name="confirm" placeholder="confirm" style="width:150px;display:inline-block"><button class="btn small ghost">Reset</button></form>
+          <form method="post" action="/staff/reset-code" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><button class="btn small ghost" title="Issue a one-time code the member can use on the public “Forgot password” page (no email involved)">Reset code</button></form>
         </td>
       </tr>`)
       .join("")}
@@ -2622,6 +2655,12 @@ export function staffPage(c: Ctx, flash?: string): string {
 <h1>Staff Configuration</h1>
 <div class="sub">Who handles what — workload, responsiveness, accounts and course ownership.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+${resetCode ? `
+<div class="card" id="reset-code" style="position:static;margin-bottom:16px;border-left:4px solid var(--green)">
+  <b>One-time reset code issued</b>
+  <div class="mono" style="font-size:1.5em;letter-spacing:0.2em;margin:8px 0;user-select:all">${esc(resetCode)}</div>
+  <span class="muted small">Works once, expires in 30 minutes. Give it to the member — they enter it on the public “Forgot password” page (linked under Sign in). A new issue voids this code. It is shown nowhere else and never appears in a URL.</span>
+</div>` : ""}
 
 <div class="cols wide">
   <section class="card nopad">

@@ -1,14 +1,14 @@
 # BUGLOG — every bug found, in one place
 
-**Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-24 (bug hunt 4 + live OAuth report)
+**Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-24 (round 8: forgot-password codes, §19)
 
 ## Total
 
 | | |
 |---|---|
-| **Confirmed bugs found (all rounds)** | **144** |
+| **Confirmed bugs found (all rounds)** | **145** |
 | — found in hunt / audit rounds | 141 |
-| — self-introduced regressions caught by my own gates | 3 |
+| — self-introduced regressions caught by my own gates | 4 |
 | Documented false positive (investigated, ruled out) | 1 |
 
 Every bug above was fixed with RED→GREEN evidence (failing test first, fix, green).
@@ -43,7 +43,8 @@ Each bug is counted once, under the round that first found it.
 | 16 | Bug hunt 3 (`c46f98d`) | 09-24 | 3 |
 | 17 | Bug hunt 4 (this round, incl. the live OAuth report) | 09-24 | 3 |
 | 18 | Self-introduced regressions | 09-23/24 | 3 |
-| | **Total** | | **144 confirmed (+1 false positive)** |
+| 19 | Round 8 — forgot-password (admin-issued reset codes) | 09-24 | 1 |
+| | **Total** | | **145 confirmed (+1 false positive)** |
 
 ---
 
@@ -279,6 +280,34 @@ These were bugs I shipped in a round's own work and caught with the RED→GREEN 
 1. **R1** (Round 3 B, `9a68705`) — the new `wrong_document` flag also fired on OPTIONAL documents that ARE on the course's list; caught as 5 breakages in `rules.test.ts` during the same commit ("optional listed docs must not count as 'wrong'").
 2. **R2** (Round 3 B2, `e26e72c`) — `wrong_document` then fired on routine unlisted extras every Kenyan file carries (`academic_cert` generic fallback, `kcpe_cert` companion); caught as **52 check regressions** on the first simulate run.
 3. **R3** (Round 4, `ec7a357`) — the simulation answer keys for `igcse-short-credits` + `alevel-one-principal` were stale against the new E4 ranking (unread route beats confirmed failure); the fixtures now encode the audit-mandated "verify the unread route" expectation.
+
+---
+
+## §19 · Round 8 — forgot-password (admin-issued reset code) — 1
+
+The round's feature — admin-issued one-time password-reset codes
+(`POST /staff/reset-code` shows the code inline on the staff page, never in a
+URL; public `GET/POST /reset-password` with username + code + new password;
+weak-password and mismatch checks run BEFORE the claim so a bad attempt never
+burns the code; atomic single-use claim; all of the member's sessions purged;
+audit `password_reset_code_issued` / `password_reset_code_used`; "Forgot your
+password?" link + `?msg=` green flash on `/login`) — is pinned by
+`test/forgot-password.test.ts` (13 tests, incl. expiry, revocation-on-reissue,
+single-use, wrong-username pairing, non-admin 403, and a 429 throttle). No
+product bugs were found while building it; the single entry below is a
+self-introduced test bug:
+
+1. **R4** (Round 8, this round) — the new tests asserted the success hop with
+   `expect(res.status).toBe(302)`, but undici's `fetch` **follows 302s by
+   default**: the server sent the correct 302 to `/login?msg=…` and the
+   assertion saw the **200 login page** on the other side of the hop. Three
+   `expected 200 to be 302` failures persisted while an isolated probe
+   (which happened to use `redirect: "manual"`) proved the route correct —
+   two instrumented runs were required to show that the claim, password
+   change, and session purge had all succeeded before the response was
+   "lost". Fix: `redirect: "manual"` on the reset POST and on the dead-session
+   `GET /` assertion, with a comment naming the trap (same trap: a purged
+   session 302s to /login, which a following fetch reports as 200).
 
 ---
 
