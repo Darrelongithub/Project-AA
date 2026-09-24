@@ -1681,6 +1681,23 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   const gClientSecret = settings["gmail_client_secret"] ?? "";
   const gRefresh = settings["gmail_refresh_token"] ?? "";
   const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
+  // AUX-2: a plain-`http://` redirect URI on a NON-LOOPBACK host can never
+  // be registered with a Google OAuth web client — the classic
+  // behind-a-proxy trap (the app sees the plain-http hop to the proxy,
+  // not the public https address). Instead of letting the admin hit
+  // Google's opaque 400, name it and point at the Public base URL field.
+  let proxyUriWarning = "";
+  if (gmailRedirectUri) {
+    try {
+      const u = new URL(gmailRedirectUri);
+      const loopback = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(u.hostname);
+      if (u.protocol === "http:" && !loopback && !(settings["gmail_public_base_url"] ?? "").trim()) {
+        proxyUriWarning = `<p class="small" style="color:var(--red);margin-top:10px"><b>You're behind a proxy — set the <i>Public base URL</i> below before connecting.</b><br>The app currently hands Google <span class="mono">http://${esc(u.host)}/settings/gmail/callback</span>, and Google's OAuth console refuses plain-http (non-localhost) redirect addresses for web clients. Enter your public address (e.g. <span class="mono">https://admissions.example.ac.ke</span>), save, and step&nbsp;4 below will show the correct https URI to register.</p>`;
+      }
+    } catch {
+      /* unparseable URI — nothing to warn about */
+    }
+  }
   return `
 <div id="connections">
 <h1 style="margin-top:34px">Connections</h1>
@@ -1691,6 +1708,7 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
     ? `<span class="badge b-green">connected — live sorting on</span>`
     : `<span class="badge b-orange">not connected</span>`}</h2>
   <p class="small muted" style="margin-top:-6px">Connect the admissions mailbox so incoming mail is fetched, triaged and sorted automatically every minute.</p>
+  ${proxyUriWarning}
   <ol class="small" style="margin:0 0 14px 18px;line-height:1.7">
     <li>In <b>Google Cloud Console</b> (console.cloud.google.com) create or pick a project for the admissions mailbox.</li>
     <li><b>APIs &amp; Services → Library</b>: enable the <b>Gmail API</b>.</li>

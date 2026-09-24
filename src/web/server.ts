@@ -1413,7 +1413,17 @@ export function createApp(deps: WebDeps): Express {
     }
     repo.setSetting("gmail_oauth_state", "");
     if (req.query.error) {
-      return res.redirect(settingsBack(`Google returned an error: ${String(req.query.error)}`));
+      // AUX-1: a bare code ("access_denied") is not actionable — surface
+      // Google's description and point at the usual causes.
+      const err = String(req.query.error);
+      const desc = req.query.error_description ? ` — ${String(req.query.error_description)}` : "";
+      const hint =
+        err === "redirect_uri_mismatch"
+          ? " The redirect URI must match step 4 above byte-for-byte (scheme, host, port — http vs https counts)."
+          : err === "access_denied"
+            ? " While the consent screen is “In testing”, only the listed test users can approve — and the client type must be “Web application”, not Desktop."
+            : "";
+      return res.redirect(settingsBack(`Google returned an error: ${err}${desc}${hint}`));
     }
     const code = String(req.query.code ?? "");
     const clientId = repo.getSetting("gmail_client_id", "");

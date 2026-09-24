@@ -1,13 +1,13 @@
 # BUGLOG — every bug found, in one place
 
-**Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-24 (bug hunt 4)
+**Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-24 (bug hunt 4 + live OAuth report)
 
 ## Total
 
 | | |
 |---|---|
-| **Confirmed bugs found (all rounds)** | **142** |
-| — found in hunt / audit rounds | 139 |
+| **Confirmed bugs found (all rounds)** | **144** |
+| — found in hunt / audit rounds | 141 |
 | — self-introduced regressions caught by my own gates | 3 |
 | Documented false positive (investigated, ruled out) | 1 |
 
@@ -41,9 +41,9 @@ Each bug is counted once, under the round that first found it.
 | 14 | Round 3 security audit (`7ba3f35`) | 09-23 | 6 |
 | 15 | Round 4 engine audit (`5f75017`) | 09-23 | 5 |
 | 16 | Bug hunt 3 (`c46f98d`) | 09-24 | 3 |
-| 17 | Bug hunt 4 (this round) | 09-24 | 1 |
+| 17 | Bug hunt 4 (this round, incl. the live OAuth report) | 09-24 | 3 |
 | 18 | Self-introduced regressions | 09-23/24 | 3 |
-| | **Total** | | **142 confirmed (+1 false positive)** |
+| | **Total** | | **144 confirmed (+1 false positive)** |
 
 ---
 
@@ -269,6 +269,8 @@ Pinned by `test/bughunt3.test.ts`.
 
 Pinned by `test/bughunt4.test.ts`.
 1. **N1** — removing the Gemini API key never returned the server to mock reading: `rebuildAdapters()` started with `if (!key) return;` and the clear route returned without rebuilding at all. The stale live adapters stayed in place — the dead-key watcher fails closed (`flagged: true`) on every Green file so **auto-replies silently stop for the whole intake**, while the UI flash and audit line both claim "back to mock reading"; vision keeps burning the daily budget on the dead key. Fix: no-key branch restores `MockVisionAdapter` + `makeHeuristicWatcher()`; the clear route rebuilds before claiming the fallback.
+2. **AUX-1** — the Gmail OAuth callback surfaced only Google's bare error code (`Google returned an error: access_denied`) and discarded `error_description`, with no hint at the usual causes — an admin staring at a failed connection had nothing actionable. Now: code + description + a cause-specific hint (`redirect_uri_mismatch` → byte-for-byte match with step 4; `access_denied` → test-user list / client type).
+3. **AUX-2** — behind a reverse proxy / HTTPS preview (public host, plain-http hop, no `gmail_public_base_url` set) the app computed a plain-`http://` redirect URI on a non-loopback host — an address Google's OAuth console refuses to register for web clients — and the settings page presented it as the thing to register, with no warning. Now the page names the situation and points at the Public base URL field before the admin hits Google's opaque 400.
 
 ## §18 · Self-introduced regressions (caught by my own gates) — 3
 
