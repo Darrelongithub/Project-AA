@@ -1702,12 +1702,30 @@ ${connectionsSection(c, gmailRedirectUri)}
 
 <div class="card" id="intake">
   <h2>Which emails become cases</h2>
-  <p class="small muted" style="margin-top:-6px">The inbox gets more than applications — service messages, promos, stray mail. An incoming email opens an application case only when its subject or text contains one of these words, <b>or</b> when it is a reply to an applicant you already know (quoted reference number, or a sender on file). Everything else is <b>parked</b>: kept in <a href="/mail?f=all">All Mail</a> so nothing is ever lost, but no case number, queue entry or auto-reply is created for it.</p>
+  <p class="small muted" style="margin-top:-6px">The inbox gets more than applications — service messages, promos, stray mail, job ads. The engine decides in plain terms:</p>
+  <ul class="small muted" style="margin:4px 0 8px 18px">
+    <li>It is a reply to an applicant you already know (quoted reference number, or a sender on file) → <b>always a case</b>.</li>
+    <li>It contains one of the <b>hotwords below</b> (your words — decisive) → a case.</li>
+    <li>It carries <b>two or more admissions signals</b>, or one strong one — an exact phrase like "application form", a <b>course name from your course list</b>, application/transcript/certificate words (the subject line counts double), or attachment names like "ApplicationForm.pdf" → a case.</li>
+    <li>It asks an <b>admissions question</b> (tuition, scholarship, how to apply, prospectus…) → a case, so enquiries get answered.</li>
+    <li>It is clearly <b>not</b> admissions (job application, vacancy, CV, refund, invoice…) → parked.</li>
+  </ul>
+  <p class="small muted" style="margin-top:0">Everything else is <b>parked</b>: kept in <a href="/mail?f=all">All Mail</a> so nothing is ever lost, but no case number, queue entry or auto-reply is created for it. Add a word below whenever mail you wanted as a case gets parked.</p>
   <form method="post" action="/settings/general">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-    <div style="max-width:560px"><label>Intake hotwords (comma-separated)</label><input type="text" name="intake_hotwords" value="${esc(settings["intake_hotwords"] ?? "")}" style="width:100%"></div>
+    <div style="max-width:560px"><label>Intake hotwords (comma-separated — your words, always decisive)</label><input type="text" name="intake_hotwords" value="${esc(settings["intake_hotwords"] ?? "")}" style="width:100%"></div>
     <p><button class="btn">Save hotwords</button></p>
   </form>
+  ${(() => {
+    const parked = c.repo.recentAudit(100).filter((a) => a.event === "email_parked_non_intake").slice(0, 5);
+    if (parked.length === 0) return "";
+    return `<details style="margin-top:10px">
+      <summary class="small"><b>Recently parked</b> <span class="muted">— the engine's score for each, so you can add a hotword when it misjudges</span></summary>
+      <ul class="small muted" style="margin:8px 0 4px 18px">
+        ${parked.map((a) => `<li>${esc(a.detail)}<br><span style="opacity:.7">${esc(a.at)}</span></li>`).join("")}
+      </ul>
+    </details>`;
+  })()}
 </div>
 
 <div class="card" id="automation">
@@ -1832,7 +1850,7 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
     <form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>
   </div>` : ""}
   <p class="small muted" style="margin-top:10px">${connected
-    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically — no restart needed.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
+    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically every minute, — no restart needed.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
     : "Mail is not being fetched yet — the console still works; process mail manually or connect when ready."}</p>
   ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again (or paste a fresh refresh token). If new mail still doesn’t appear after a good sync, check that the message is in the inbox of <b>${esc(gAddress || "the connected address")}</b> and within the lookback window.</span></p>` : ""}
 </div>

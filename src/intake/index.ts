@@ -39,3 +39,6 @@ export function matchesIntakeHotwords(text: string, raw: string): boolean {
     new RegExp(`\\b${w.replace(ESC_RE, "\\$&")}\\b`).test(lower)
   );
 }
+
+// Round 11: the smart scored engine (replaces the blunt flat gate in the pipeline).
+export * from "./engine";

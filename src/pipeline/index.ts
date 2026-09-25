@@ -37,7 +37,7 @@ import { SYSTEM_LABELS } from "../admissions/systems";
 import { gate } from "../gate";
 import { categorizeEmail, priorityForCategory } from "../categorize";
 import { emailTargetsKnownApplicant } from "../matching";
-import { DEFAULT_INTAKE_HOTWORDS, matchesIntakeHotwords } from "../intake";
+import { classifyIntakeEmail, DEFAULT_INTAKE_HOTWORDS, intakeHotwordList } from "../intake";
 import { extractPhone, inferIntake, inferProgramme, inferTransfer } from "../enrich";
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
@@ -101,9 +101,20 @@ async function processEmailInner(
   // number or known sender — conversation continuity). Everything else is
   // parked in the Mail window WITHOUT an applicant: kept, visible,
   // labelable — but no case number, no queue entry, no auto-reply.
-  const intakeText = `${email.subject}\n${email.body}`;
+  // The smart engine (round 11) decides: configured hotwords (settings),
+  // weighted keywords/phrases (subject counts double), course names, an
+  // attachment-name boost, enquiry signals — and negative vocabulary that
+  // keeps job ads and staff mail from opening cases.
   const hotwords = repo.getSetting("intake_hotwords", DEFAULT_INTAKE_HOTWORDS);
-  if (!matchesIntakeHotwords(intakeText, hotwords) && !emailTargetsKnownApplicant(repo, email)) {
+  const verdict = classifyIntakeEmail({
+    subject: email.subject,
+    body: email.body,
+    attachmentFilenames: (email.attachments ?? []).map((a) => a.filename),
+    courseNames: repo.listProgrammes().map((p) => p.name),
+    customHotwords: intakeHotwordList(hotwords),
+    knownApplicant: emailTargetsKnownApplicant(repo, email),
+  });
+  if (verdict.category === "parked") {
     repo.insertEmail({
       applicant_id: null,
       message_id: email.id,
@@ -118,13 +129,17 @@ async function processEmailInner(
       channel: email.channel ?? "email",
       at: email.receivedAt,
     });
+    const why =
+      `score ${verdict.score}` +
+      (verdict.negatives.length ? ` (negatives: ${verdict.negatives.join(", ")})` : "") +
+      (verdict.positives.length ? `; signals seen: ${verdict.positives.join(", ")}` : "; no intake signals");
     repo.audit(
       null,
       "system",
       "email_parked_non_intake",
-      `"${email.subject}" from ${email.from} — no intake hotword; kept in Mail, no case created`
+      `"${email.subject}" from ${email.from} — ${why}; kept in Mail, no case created`
     );
-    log(`pipeline: "${email.subject}" parked — no intake hotword, sender not a known applicant`);
+    log(`pipeline: "${email.subject}" parked — ${why}`);
     return {
       skipped: true,
       applicantId: null,
@@ -133,7 +148,7 @@ async function processEmailInner(
       autoSent: false,
       autoKind: null,
       category: "other",
-      reasoning: "parked: no intake hotword matched and sender is not a known applicant",
+      reasoning: "parked: no intake signals reached the threshold and sender is not a known applicant",
       flags: [],
       missing: [],
     };
