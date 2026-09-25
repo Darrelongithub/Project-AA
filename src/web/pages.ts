@@ -1650,6 +1650,16 @@ ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${es
 
 ${connectionsSection(c, gmailRedirectUri)}
 
+<div class="card" id="intake">
+  <h2>Which emails become cases</h2>
+  <p class="small muted" style="margin-top:-6px">The inbox gets more than applications — service messages, promos, stray mail. An incoming email opens an application case only when its subject or text contains one of these words, <b>or</b> when it is a reply to an applicant you already know (quoted reference number, or a sender on file). Everything else is <b>parked</b>: kept in <a href="/mail?f=all">All Mail</a> so nothing is ever lost, but no case number, queue entry or auto-reply is created for it.</p>
+  <form method="post" action="/settings/general">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div style="max-width:560px"><label>Intake hotwords (comma-separated)</label><input type="text" name="intake_hotwords" value="${esc(settings["intake_hotwords"] ?? "")}" style="width:100%"></div>
+    <p><button class="btn">Save hotwords</button></p>
+  </form>
+</div>
+
 <div class="card" id="automation">
   <h2>Automation mode (draft-first)</h2>
   <p class="small muted" style="margin-top:-6px">Two rules always apply. First, automated sending is reserved for <b>fully qualified</b> applicants — a Green verdict with no flags; everyone else gets the reply as a <b>suggested draft</b> for staff to review, edit or discard, because borderline files can still be admitted on special acceptance. Second, the rollout dial: keep the global mode on <b>draft</b> (every automated reply waits for a human), then switch automation on category by category as you trust it.</p>

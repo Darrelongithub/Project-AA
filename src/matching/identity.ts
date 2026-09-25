@@ -27,6 +27,21 @@ export interface IdentityResolution {
 // them or quoted refs stop matching the moment the prefix changes.
 const REF_RE = /\b([A-Z]{1,4}-\d{4}-\d{6})\b/i;
 
+/**
+ * Round 9: side-effect-free check — does this email target an applicant we
+ * ALREADY KNOW (quoted reference number or known sender)? Mirrors
+ * resolveIdentity's signals 1–2 exactly, minus the create/link side effects,
+ * so the intake hotword gate can admit replies to existing cases without
+ * ever creating an applicant for a stranger.
+ */
+export function emailTargetsKnownApplicant(repo: Repo, email: IncomingEmail): boolean {
+  if (!email.channel || email.channel === "email") {
+    const refMatch = `${email.subject}\n${email.body}`.match(REF_RE);
+    if (refMatch && repo.findByRef(refMatch[1].toUpperCase())) return true;
+  }
+  return Boolean(repo.findByEmailAny(email.from));
+}
+
 export function resolveIdentity(
   repo: Repo,
   email: IncomingEmail,

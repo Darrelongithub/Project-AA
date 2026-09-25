@@ -1640,7 +1640,7 @@ export function createApp(deps: WebDeps): Express {
     for (const key of [
       "ref_prefix", "sla_target_hours", "escalation_hours", "from_name",
       "unanswered_target_hours", "followup_ladder_days", "retention_days",
-      "reg_date", "orientation_dates",
+      "reg_date", "orientation_dates", "intake_hotwords",
     ]) {
       if (typeof req.body[key] !== "string") continue;
       const v = String(req.body[key]).trim();

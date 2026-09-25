@@ -36,6 +36,8 @@ import { evaluateAdmission, downgradeRoutingForWatcher } from "../admissions/eva
 import { SYSTEM_LABELS } from "../admissions/systems";
 import { gate } from "../gate";
 import { categorizeEmail, priorityForCategory } from "../categorize";
+import { emailTargetsKnownApplicant } from "../matching";
+import { DEFAULT_INTAKE_HOTWORDS, matchesIntakeHotwords } from "../intake";
 import { extractPhone, inferIntake, inferProgramme, inferTransfer } from "../enrich";
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
@@ -92,6 +94,50 @@ async function processEmailInner(
   opts: PipelineOptions
 ): Promise<ProcessResult> {
   const { repo, adapters } = ctx;
+
+  // ── Intake gate (round 9) ────────────────────────────────────────────────
+  // Only admissions intake becomes a case: the mail carries an intake
+  // hotword, or it targets an applicant we already know (quoted reference
+  // number or known sender — conversation continuity). Everything else is
+  // parked in the Mail window WITHOUT an applicant: kept, visible,
+  // labelable — but no case number, no queue entry, no auto-reply.
+  const intakeText = `${email.subject}\n${email.body}`;
+  const hotwords = repo.getSetting("intake_hotwords", DEFAULT_INTAKE_HOTWORDS);
+  if (!matchesIntakeHotwords(intakeText, hotwords) && !emailTargetsKnownApplicant(repo, email)) {
+    repo.insertEmail({
+      applicant_id: null,
+      message_id: email.id,
+      thread_id: email.threadId,
+      direction: "in",
+      from_addr: email.from,
+      to_addr: "",
+      subject: email.subject,
+      body: email.body,
+      category: "other",
+      auto: 0,
+      channel: email.channel ?? "email",
+      at: email.receivedAt,
+    });
+    repo.audit(
+      null,
+      "system",
+      "email_parked_non_intake",
+      `"${email.subject}" from ${email.from} — no intake hotword; kept in Mail, no case created`
+    );
+    log(`pipeline: "${email.subject}" parked — no intake hotword, sender not a known applicant`);
+    return {
+      skipped: true,
+      applicantId: null,
+      finalStatus: "Red",
+      lifecycle: "application_received",
+      autoSent: false,
+      autoKind: null,
+      category: "other",
+      reasoning: "parked: no intake hotword matched and sender is not a known applicant",
+      flags: [],
+      missing: [],
+    };
+  }
 
   // ── Categorize (feature 26) ──────────────────────────────────────────────
   const category: EmailCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);

@@ -2,6 +2,7 @@
  * Configuration. Everything external (Gemini, Gmail) is optional: without
  * credentials the system runs in mock mode (tests, simulation, demo).
  */
+import { DEFAULT_INTAKE_HOTWORDS } from "./intake";
 import * as dotenv from "dotenv";
 
 dotenv.config();
@@ -163,6 +164,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   followup_ladder_days: "3,7,10", // Day 3 reminder, Day 7 final, Day 10 → human
   retention_days: "730", // completed cases kept 2 years, then archived+removed
   automation_mode: "auto", // 'draft' holds EVERY automated reply for approval
+  intake_hotwords: DEFAULT_INTAKE_HOTWORDS, // round 9: which emails become cases
 };
 
 // ── Structured entry requirements ───────────────────────────────────────────

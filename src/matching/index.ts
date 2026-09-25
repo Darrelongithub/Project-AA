@@ -59,3 +59,4 @@ export function recordDocuments(
   }
   return ids;
 }
+export { emailTargetsKnownApplicant } from "./identity";
