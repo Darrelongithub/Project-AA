@@ -165,6 +165,7 @@ function adminDashboard(c: Ctx): string {
   const alerts = repo.notificationsFor(c.user.id, 6, realm, scope);
   const all = repo.allApplicants(realm, scope);
   const missingDocs = repo.commonMissingDocs(realm, scope, 5);
+  const triage = repo.triageCounts(realm, scope);
   const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
   const globalMode = repo.getSetting("automation_mode", "auto");
@@ -269,6 +270,8 @@ ${missingDocs.length
   </section>`
   : ""}
 
+${triageTile(triage)}
+
 <section class="card nopad">
   <div class="card-head"><h2>Team performance <span class="muted small" style="text-transform:none;letter-spacing:0">— how your staff are working</span></h2><a class="small" href="/staff">staff configuration →</a></div>
   ${team.length
@@ -302,6 +305,25 @@ export function dashboardPage(c: Ctx): string {
 
 // ── Admissions command center (managers & officers), alerts merged in ──────
 
+/** Round 10: the one explicit Green/Orange/Red counter (checklist §11). */
+function triageTile(t: { green: number; orange: number; red: number }): string {
+  const item = (n: number, label: string, sub: string, hex: string) =>
+    `<div style="display:flex;align-items:center;gap:10px">
+      <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${hex};flex:none"></span>
+      <b style="font-size:20px;min-width:30px">${n}</b>
+      <span class="small"><b>${label}</b><br><span class="muted">${sub}</span></span>
+    </div>`;
+  return `<section class="card" id="triage">
+    <h2>Triage right now</h2>
+    <p class="small muted" style="margin-top:-6px">Every case's current marking — Green needs nothing, Orange needs a look, Red needs action.</p>
+    <div style="display:flex;gap:34px;flex-wrap:wrap;padding-top:6px">
+      ${item(t.green, "Green", "clean — nothing needs a person", "#1B7F4D")}
+      ${item(t.orange, "Orange", "needs a person to look", "#C77700")}
+      ${item(t.red, "Red", "a problem a person must act on", "#A11F2E")}
+    </div>
+  </section>`;
+}
+
 function officerDashboard(c: Ctx): string {
   const { repo } = c;
   const realm = c.user.demo;
@@ -316,6 +338,7 @@ function officerDashboard(c: Ctx): string {
   const unanswered = repo.unansweredCases(scope);
   const target = Number(repo.getSetting("unanswered_target_hours", "4"));
   const categories = repo.categoryCounts(scope);
+  const triage = repo.triageCounts(realm, scope);
   const alerts = repo.notificationsFor(c.user.id, 6, realm, scope);
 
   const activeCount = Number(s.applications) - Number(s.completed);
@@ -438,6 +461,8 @@ ${missingDocs.length
     </div>
   </section>`
   : ""}
+
+${triageTile(triage)}
 
 <div class="cols wide">
   <section class="card nopad">

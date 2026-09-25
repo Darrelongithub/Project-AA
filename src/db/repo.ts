@@ -1975,6 +1975,20 @@ export class Repo {
       .all(...scope.params) as never[];
   }
 
+  /** Round 10: the three current markings per case (applicants.triage),
+   *  realm- and school-scoped like every other dashboard number. */
+  triageCounts(demo?: number, schools?: string[] | null): { green: number; orange: number; red: number } {
+    const scope = this.scopePred("a", schools);
+    const dp: unknown[] = demo === undefined ? [...scope.params] : [demo, ...scope.params];
+    const pred = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
+    const one = (sql: string) => (this.db.prepare(sql).get(...dp) as { n: number }).n;
+    return {
+      green: one(`SELECT COUNT(*) AS n FROM applicants a WHERE a.triage = 'Green'${pred}`),
+      orange: one(`SELECT COUNT(*) AS n FROM applicants a WHERE a.triage = 'Orange'${pred}`),
+      red: one(`SELECT COUNT(*) AS n FROM applicants a WHERE a.triage = 'Red'${pred}`),
+    };
+  }
+
   accuracyStats(demo?: number, schools?: string[] | null): Record<string, number> {
     const scope = this.scopePred("a", schools);
     const dp: unknown[] = demo === undefined ? [...scope.params] : [demo, ...scope.params];
