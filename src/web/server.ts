@@ -138,7 +138,7 @@ export function createApp(deps: WebDeps): Express {
     requireLogin,
     requireRole("admin"),
     csrfCheck,
-    express.raw({ type: ["image/jpeg", "image/png"], limit: "1mb" }),
+    express.raw({ type: ["image/jpeg", "image/png"], limit: "8mb" }), // phone photos run 3–8 MB
     (req, res) => {
       const back = (m: string) => `/config?tab=replies&msg=${encodeURIComponent(m)}#branding`;
       const buf = req.body as Buffer;

@@ -35,7 +35,7 @@ import { VisionUnavailableError } from "./gemini";
 import { log } from "../util/log";
 
 export interface ExtractDeps {
-  vision: VisionAdapter;
+  vision?: VisionAdapter;
   /** OCR tier; pass undefined to disable (e.g. DISABLE_OCR=1). */
   ocr?: (image: Buffer, ext?: "png" | "jpg") => Promise<string | null>;
   /** Set false to skip the rasterise tier (tests). Default on. */
@@ -279,6 +279,50 @@ export async function extractAttachment(
     att.mimeType === "application/pdf" || /\.pdf$/i.test(att.filename);
   const isImage = /^image\/(png|jpe?g|tiff?)$/i.test(att.mimeType);
 
+  // ── Tier 3 (Gemini vision) shared by both branches ───────────────────────
+  // Images try it FIRST (round 11 — phone photos are exactly where a vision
+  // model beats Tesseract); PDFs fall back to it after text/OCR. One call
+  // per attachment, ever.
+  let visionError: VisionUnavailableError | null = null;
+  let visionTried = false;
+  const runVision = async (): Promise<ExtractionResult | null> => {
+    if (!deps.vision || visionTried) return null;
+    visionTried = true;
+    let v: Awaited<ReturnType<VisionAdapter["extractDocument"]>> = null;
+    try {
+      v = await deps.vision.extractDocument(att);
+    } catch (e) {
+      if (e instanceof VisionUnavailableError) visionError = e;
+      else throw e;
+    }
+    if (!v) return null;
+    // Code classifies; the model's guess is a fallback signal only.
+    const codeType: DocType = classifyDocumentType(v.text || "");
+    const document_type = codeType !== "unknown" ? codeType : v.document_type;
+    let tier: Confidence = v.confidence;
+    if (codeType === "unknown" && document_type !== "unknown") tier = "low";
+    const fields: ExtractedFields = { ...v.fields, ...extractFields(v.text || "") };
+    const verdict = computeConfidence({
+      text: v.text || "",
+      fields,
+      docType: document_type,
+      method: "gemini_vision",
+      tier,
+    });
+    log(`extraction: ${att.filename} → Gemini vision (${verdict.confidence} confidence, score ${verdict.score})`);
+    return {
+      filename: att.filename,
+      document_type,
+      method: "gemini_vision",
+      text: v.text || "",
+      fields,
+      confidence: verdict.confidence,
+      confidence_score: verdict.score,
+      failure_reason: null,
+      sha256,
+    };
+  };
+
   if (isPdf) {
     // ── Inspect first: WHY a PDF fails matters ───────────────────────────
     const { text: rawText, inspection } = await pdfRead(att.content);
@@ -375,11 +419,14 @@ export async function extractAttachment(
         log(`extraction: rasterise failed for ${att.filename}: ${(e as Error).message}`);
       }
     }
-  } else if (isImage && deps.ocr) {
-    // Image attachments: EXIF-rotate first (sideways phone shots of IDs),
-    // then OCR.
+  } else if (isImage) {
+    // Image attachments (photos of documents): a live vision model reads
+    // them FIRST — phone shots are where Tesseract is weakest. EXIF-rotate
+    // still happens for the OCR fallback (sideways phone shots of IDs).
+    const vFirst = await runVision();
+    if (vFirst) return vFirst;
     const prep = await preprocessImage(att.content);
-    const t = await deps.ocr(prep ?? att.content, "png");
+    const t = deps.ocr ? await deps.ocr(prep ?? att.content, "png") : null;
     if (t && isGoodText(t, classifyDocumentType(t))) {
       log(`extraction: ${att.filename} → Tesseract OCR on image (medium confidence)`);
       const screenshotNote = /screen\s?shot|screen\s?capture|screencap/i.test(att.filename)
@@ -389,48 +436,16 @@ export async function extractAttachment(
     }
   }
 
-  // ── Tier 3: Gemini vision ──────────────────────────────────────────────
-  let visionError: VisionUnavailableError | null = null;
-  let v: Awaited<ReturnType<VisionAdapter["extractDocument"]>> = null;
-  try {
-    v = await deps.vision.extractDocument(att);
-  } catch (e) {
-    if (e instanceof VisionUnavailableError) visionError = e;
-    else throw e;
-  }
-  if (v) {
-    // Code classifies; the model's guess is a fallback signal only.
-    const codeType: DocType = classifyDocumentType(v.text || "");
-    const document_type = codeType !== "unknown" ? codeType : v.document_type;
-    let tier: Confidence = v.confidence;
-    if (codeType === "unknown" && document_type !== "unknown") tier = "low";
-    const fields: ExtractedFields = { ...v.fields, ...extractFields(v.text || "") };
-    const verdict = computeConfidence({
-      text: v.text || "",
-      fields,
-      docType: document_type,
-      method: "gemini_vision",
-      tier,
-    });
-    log(`extraction: ${att.filename} → Gemini vision (${verdict.confidence} confidence, score ${verdict.score})`);
-    return {
-      filename: att.filename,
-      document_type,
-      method: "gemini_vision",
-      text: v.text || "",
-      fields,
-      confidence: verdict.confidence,
-      confidence_score: verdict.score,
-      failure_reason: null,
-      sha256,
-    };
-  }
+  // ── Tier 3: Gemini vision (images already tried it first) ──────────────
+  const vPdf = await runVision();
+  if (vPdf) return vPdf;
 
   // Nothing read it. Record WHY — a vision outage is a different situation
   // from an unreadable document, and the pipeline tells staff which one.
-  if (visionError) {
-    log(`extraction: ${att.filename} → vision model unavailable (${visionError.kind}: ${visionError.message})`, "warn");
-    return unreadable(att.filename, sha256, `Vision model unavailable (${visionError.kind}). The document is preserved for human review.`);
+  const verr = visionError as VisionUnavailableError | null;
+  if (verr) {
+    log(`extraction: ${att.filename} → vision model unavailable (${verr.kind}: ${verr.message})`, "warn");
+    return unreadable(att.filename, sha256, `Vision model unavailable (${verr.kind}). The document is preserved for human review.`);
   }
   log(`extraction: ${att.filename} → unreadable by all tiers`, "warn");
   const handwrittenHint = !isPdf
