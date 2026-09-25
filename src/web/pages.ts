@@ -1995,15 +1995,15 @@ function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, 
   if (node.kind === "group") {
     const logicForm = `<form class="node-row" method="post" action="/config/requirements/node-save" style="margin-left:${pad}px">
       ${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}">
-      <span class="badge b-purple">Group</span>
-      <select name="logic" style="width:auto">
-        ${["AND", "OR", "NOT"].map((l) => `<option value="${l}" ${node.logic === l ? "selected" : ""}>${l === "NOT" ? "NOT (none of)" : l}</option>`).join("")}
+      <span class="badge b-purple">Either/or group</span>
+      <select name="logic" style="width:auto" title="How the options inside this group combine">
+        ${["AND", "OR", "NOT"].map((l) => `<option value="${l}" ${node.logic === l ? "selected" : ""}>${l === "OR" ? "any of these (either/or)" : l === "AND" ? "all of these (must all pass)" : "none of these (must all fail)"}</option>`).join("")}
       </select>
       <button class="btn small ghost" title="Save group logic">Save</button>
     </form>`;
     const addButtons = `<div class="node-add" style="margin-left:${pad + 18}px">
       <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${targetFields}<input type="hidden" name="parent" value="${node.id}"><input type="hidden" name="kind" value="condition"><button class="btn small ghost">+ Condition</button></form>
-      <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${targetFields}<input type="hidden" name="parent" value="${node.id}"><input type="hidden" name="kind" value="group"><button class="btn small ghost">+ Subgroup</button></form>
+      <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${targetFields}<input type="hidden" name="parent" value="${node.id}"><input type="hidden" name="kind" value="group"><button class="btn small ghost" title="A nested either/or group inside this one">+ Subgroup (nested either/or)</button></form>
       <form method="post" action="/config/requirements/node-delete" style="margin:0" onsubmit="return confirm('Remove this group and everything inside it?')">${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}"><button class="btn small ghost" style="color:#A11F2E">Remove group</button></form>
     </div>`;
     const children = (node.children ?? []).map((ch) => ruleNodeEditor(c, target, system, ch, depth + 1, subjects, level)).join("");
@@ -2080,11 +2080,15 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
     : `<span class="badge b-gray">NO SET YET</span>`;
 
   const builder = shown ? `
-    <div class="node-add" style="margin-bottom:10px">
-      <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${tf}<input type="hidden" name="kind" value="condition"><button class="btn small ghost">+ Top-level condition</button></form>
-      <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${tf}<input type="hidden" name="kind" value="group"><button class="btn small ghost">+ Top-level group</button></form>
+    <div class="card" style="margin-bottom:14px;padding:12px 16px">
+      <div style="font-size:13px"><b>How to read this list:</b> every requirement below must all be met — unless it sits inside an <b>either/or group</b>, where meeting <b>any one</b> of the options is enough.</div>
+      <div class="node-add" style="margin:10px 0 0">
+        <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${tf}<input type="hidden" name="kind" value="condition"><button class="btn small">+ Add a requirement</button></form>
+        <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${tf}<input type="hidden" name="kind" value="group"><button class="btn small ghost">+ Add an either/or group</button></form>
+      </div>
+      <p class="small muted" style="margin:8px 0 0">A <b>requirement</b> is one check, e.g. “Mean grade ≥ C+”. An <b>either/or group</b> bundles checks where any single pass counts — e.g. “KCSE A in Mathematics <i>or</i> A-Level A in Mathematics”.</p>
     </div>
-    ${shownTree.length ? shownTree.map((n) => ruleNodeEditor(c, target, system, n, 0, subjects, level)).join("") : `<p class="small muted">No rules yet — add a condition (e.g. Mean grade ≥ C+) or a group (OR-alternatives).</p>`}
+    ${shownTree.length ? shownTree.map((n) => ruleNodeEditor(c, target, system, n, 0, subjects, level)).join("") : `<p class="small muted">No requirements yet. Start with “+ Add a requirement” — e.g. <b>Mean grade ≥ C+</b>. Everything you add below must all be met for an applicant to qualify; an either/or group passes when any one of its options passes.</p>`}
   ` : `<p class="small muted">No requirement set exists for this programme/system yet — add a first rule to create a draft.</p>
     <form method="post" action="/config/requirements/node-add" style="margin:10px 0 0">${csrf}${tf}<input type="hidden" name="kind" value="condition"><button class="btn small">Start a rule set</button></form>`;
 

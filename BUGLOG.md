@@ -1,13 +1,13 @@
 # BUGLOG — every bug found, in one place
 
-**Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-24 (round 8: forgot-password codes, §19)
+**Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-25 (round 9: intake hotwords + full mail history, §20)
 
 ## Total
 
 | | |
 |---|---|
-| **Confirmed bugs found (all rounds)** | **145** |
-| — found in hunt / audit rounds | 141 |
+| **Confirmed bugs found (all rounds)** | **147** |
+| — found in hunt / audit rounds | 143 |
 | — self-introduced regressions caught by my own gates | 4 |
 | Documented false positive (investigated, ruled out) | 1 |
 
@@ -44,7 +44,8 @@ Each bug is counted once, under the round that first found it.
 | 17 | Bug hunt 4 (this round, incl. the live OAuth report) | 09-24 | 3 |
 | 18 | Self-introduced regressions | 09-23/24 | 3 |
 | 19 | Round 8 — forgot-password (admin-issued reset codes) | 09-24 | 1 |
-| | **Total** | | **145 confirmed (+1 false positive)** |
+| 20 | Round 9 — intake hotwords, full mail history, builder UX | 09-25 | 2 |
+| | **Total** | | **147 confirmed (+1 false positive)** |
 
 ---
 
@@ -308,6 +309,39 @@ self-introduced test bug:
    "lost". Fix: `redirect: "manual"` on the reset POST and on the dead-session
    `GET /` assertion, with a comment naming the trap (same trap: a purged
    session 302s to /login, which a following fetch reports as 200).
+
+---
+
+## §20 · Round 9 — intake hotwords, full mail history, builder UX — 2
+
+User-reported: "it processes all of them instead of only the application ones
+(e.g. a Snapchat email is under review)", "I should be able to see all my
+emails not just the new ones", and "what is add top level group??" The round
+shipped three features — the intake hotword gate (Settings → "Which emails
+become cases"), paginated All Mail incl. parked mail, and a plain-words
+requirements builder — pinned by `test/intake-hotwords.test.ts`,
+`test/all-mail.test.ts`, `test/config-ux.test.ts` (14 tests, RED first).
+While building them, two real defects were found in the mail window itself:
+
+1. **M1** — every mail-window folder (All Mail chief among them) was
+   silently truncated at the 100 newest conversations: a hard
+   `LIMIT 100` in `mailThreads` with no pager and no way to reach older
+   mail — so the user could never see their history, only the new. Fix:
+   50-per-page pagination (`?page=N`, invalid numbers clamp to page 1)
+   with a working ← Newer / Older → pager and an "end of list" marker.
+2. **M2** — `mailThreads`/`mailFolderCounts` INNER-JOINed `applicants`,
+   so any email with `applicant_id NULL` was invisible in the list,
+   missing from every folder count, and its conversation route refused
+   it ("outside your schools"). Latent while every email got an
+   applicant; it would have silently swallowed ALL of the round's parked
+   non-intake mail the moment the hotword gate started producing it. Fix:
+   LEFT JOIN with a realm rule (parked mail is visible to live accounts
+   only, never demo), a "not linked to a case" row badge, a "No case
+   linked" conversation view, and applicant-null-safe action/audit paths.
+
+(The builder rewording itself — "+ Top-level condition/+ Top-level group"
+→ "+ Add a requirement / + Add an either/or group" plus a one-sentence
+reading rule and plain-logic options — was clarity work, not a bug.)
 
 ---
 
