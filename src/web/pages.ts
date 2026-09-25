@@ -1474,12 +1474,14 @@ export function composeWindowPage(
 export function mailPage(
   c: Ctx,
   opts: {
-    threads: Array<{ tkey: string; thread_n: number; unread_n: number; star_n: number; imp_n: number; subject: string; body: string; at: string; direction: string; applicant_id: number | null; a_name: string | null; a_email: string; ref_number: string; lifecycle: string }>;
+    threads: Array<{ tkey: string; thread_n: number; unread_n: number; star_n: number; imp_n: number; subject: string; body: string; at: string; direction: string; applicant_id: number | null; a_name: string | null; a_email: string | null; ref_number: string | null; lifecycle: string | null }>;
     q?: string;
     folder: string;
     unreadOnly: boolean;
     counts: Record<string, number>;
     backUrl: string;
+    page?: number;
+    hasMore?: boolean;
   }
 ): string {
   const folderDefs: Array<{ key: string; href: string; label: string; ic: string; count: number; unread?: boolean }> = [
@@ -1500,10 +1502,15 @@ export function mailPage(
     return `<a class="mail-fold${active ? " active" : ""}" href="${href}">${icon(f.ic as "inbox", 15)}${f.label}${showCount ? ` <b class="mail-count">${f.count}</b>` : ""}</a>`;
   }).join("");
 
+  const page = Math.max(1, opts.page ?? 1);
+  const pagerHref = (pg: number) => `/mail?f=${activeKey}${opts.q ? `&q=${encodeURIComponent(opts.q)}` : ""}&page=${pg}`;
   const rows = opts.threads.map((t) => {
     const unread = t.unread_n > 0;
     const snippet = (t.body || "").replace(/\s+/g, " ").trim();
-    const name = t.a_name ?? t.ref_number;
+    // Parked conversations (round 9: no intake hotword) have no applicant —
+    // show the sender and say plainly that no case exists.
+    const parked = t.applicant_id == null;
+    const name = t.a_name ?? (parked ? (t.a_email ?? "Unknown sender") : (t.ref_number ?? "(no case)"));
     const threadUrl = `/mail/thread/${encodeURIComponent(t.tkey)}`;
     return `<tr style="cursor:pointer" onclick="location.href='${threadUrl}'">
       <td style="width:26px;padding-right:0">${unread ? `<span title="Unread" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--purple)"></span>` : ""}</td>
@@ -1521,6 +1528,7 @@ export function mailPage(
         <span style="${unread ? "font-weight:700" : ""}">${esc(t.subject || "(no subject)")}</span>
         <span class="muted"> — ${esc(snippet.slice(0, 140))}${snippet.length > 140 ? "…" : ""}</span>
         ${t.imp_n ? `<span title="Important" style="color:var(--purple)">${icon("flag", 12)}</span>` : ""}
+        ${parked ? `<span class="badge b-gray" title="No intake hotword matched — kept in Mail, never processed as an application">not linked to a case</span>` : ""}
       </td>
       <td class="muted small" style="white-space:nowrap">${t.thread_n > 1 ? `(${t.thread_n})` : ""}</td>
       <td class="muted small" style="white-space:nowrap"><span data-rel="${esc(t.at)}">${esc(t.at.slice(0, 16).replace("T", " "))}</span></td>
@@ -1565,7 +1573,12 @@ export function mailPage(
     <div class="card nopad">
       ${rows ? `<table>
         <tbody>${rows}</tbody>
-      </table>` : `<p class="small muted" style="padding:22px 24px;margin:0">${opts.q ? `No mail matches “${esc(opts.q)}” in ${esc(folderLabel.toLowerCase())}.` : emptyText[activeKey] ?? emptyText.inbox}</p>`}
+      </table>
+      <div class="row" style="justify-content:center;gap:10px;padding:10px 16px;border-top:1px solid var(--line)">
+        ${page > 1 ? `<a class="btn small ghost" href="${pagerHref(page - 1)}">← Newer</a>` : ""}
+        <span class="small muted">Page ${page} · ${opts.threads.length} conversation(s)${opts.hasMore ? "" : " · end of list"}</span>
+        ${opts.hasMore ? `<a class="btn small ghost" href="${pagerHref(page + 1)}">Older →</a>` : ""}
+      </div>` : `<p class="small muted" style="padding:22px 24px;margin:0">${opts.q ? `No mail matches “${esc(opts.q)}” in ${esc(folderLabel.toLowerCase())}.` : emptyText[activeKey] ?? emptyText.inbox}</p>`}
     </div>
   </div>
 </div>`);
@@ -1574,10 +1587,10 @@ export function mailPage(
 /** One conversation, both directions, oldest first — with the gmail action bar. */
 export function mailThreadPage(
   c: Ctx,
-  opts: { applicant: ApplicantRow; emails: EmailRecord[]; tkey: string; labels: { starred: boolean; important: boolean; spam: boolean; bin: boolean }; backUrl: string }
+  opts: { applicant: ApplicantRow | null; emails: EmailRecord[]; tkey: string; labels: { starred: boolean; important: boolean; spam: boolean; bin: boolean }; backUrl: string }
 ): string {
   const a = opts.applicant;
-  const prog = a.programme ? c.repo.programmeByCode(a.programme) : undefined;
+  const prog = a && a.programme ? c.repo.programmeByCode(a.programme) : undefined;
   const threadPath = `/mail/thread/${encodeURIComponent(opts.tkey)}`;
   const actionForm = (action: string, label: string, ic: Parameters<typeof icon>[0], back = threadPath) => `
     <form method="post" action="${threadPath}/action" style="margin:0">
@@ -1605,7 +1618,7 @@ export function mailThreadPage(
       <div class="row" style="justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div class="small muted">
           <span class="badge ${out ? "b-purple" : ""}">${out ? (e.auto ? "Sent · automatic" : "Sent") : "Received"}</span>
-          ${out ? `to <b>${esc(e.to_addr || a.email_address)}</b>` : `from <b>${esc(e.from_addr || a.email_address)}</b>`}
+          ${out ? `to <b>${esc(e.to_addr || a?.email_address || "—")}</b>` : `from <b>${esc(e.from_addr || a?.email_address || "—")}</b>`}
         </div>
         <div class="small muted">${esc(e.at.slice(0, 16).replace("T", " "))} UTC</div>
       </div>
@@ -1614,8 +1627,8 @@ export function mailThreadPage(
       ${attached.length ? `<p style="margin:12px 0 0">${attached.map((f) => `<span class="badge" style="margin-right:6px">${icon("clip", 11)} ${esc(f)}</span>`).join("")}</p>` : ""}
     </div>`;
   }).join("");
-  return head(c, `Mail — ${a.ref_number}`, "mail", `
-<div class="hero">
+  const hero = a
+    ? `<div class="hero">
   <div class="row">
     ${avatar(a.full_name ?? a.ref_number, 46)}
     <div style="min-width:0;flex:1">
@@ -1625,7 +1638,18 @@ export function mailThreadPage(
     </div>
     <div><a class="btn" href="/compose?case=${a.id}">Reply to this case</a></div>
   </div>
-</div>
+</div>`
+    : `<div class="hero">
+  <div class="row">
+    <div style="min-width:0;flex:1">
+      <div class="kicker">Mail · conversation</div>
+      <h1 style="margin:0">${esc(opts.emails[0]?.from_addr ?? "(unknown sender)")}</h1>
+      <div class="sub" style="margin:2px 0 0">No case linked — no intake hotword matched, so this mail was kept in Mail but never processed as an application. You can still star, flag or bin it like any other conversation.</div>
+    </div>
+  </div>
+</div>`;
+  return head(c, `Mail — ${a ? a.ref_number : "no case"}`, "mail", `
+${hero}
 ${actionBar}
 ${msgs}`);
 }

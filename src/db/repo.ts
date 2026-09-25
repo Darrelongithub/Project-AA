@@ -837,6 +837,9 @@ export class Repo {
    */
   /** Gmail folders. bin/spam are exclusive — a conversation there is hidden
    *  from every other folder until restored. */
+  /** Conversations per mail-window page (round 9: All Mail is paginated, not capped). */
+  static MAIL_PAGE_SIZE = 50;
+
   static MAIL_FOLDER_WHERE: Record<string, string> = {
     inbox: "agg.in_n > 0 AND agg.spam_n = 0 AND agg.bin_n = 0",
     starred: "agg.star_n > 0 AND agg.spam_n = 0 AND agg.bin_n = 0",
@@ -848,13 +851,20 @@ export class Repo {
   };
 
   mailThreads(opts: {
-    schools?: string[] | null; demo?: number; q?: string; unreadOnly?: boolean; limit?: number; folder?: string;
-  }): Array<EmailRecord & { tkey: string; thread_n: number; unread_n: number; star_n: number; imp_n: number; a_name: string | null; a_email: string; ref_number: string; programme: string | null; lifecycle: string }> {
+    schools?: string[] | null; demo?: number; q?: string; unreadOnly?: boolean; page?: number; folder?: string;
+  }): Array<EmailRecord & { tkey: string; thread_n: number; unread_n: number; star_n: number; imp_n: number; a_name: string | null; a_email: string | null; ref_number: string | null; programme: string | null; lifecycle: string | null }> {
     const where: string[] = [];
     const params: unknown[] = [];
-    if (opts.demo !== undefined) { where.push("a.demo = ?"); params.push(opts.demo); }
+    // Round 9: applicant rows are realm- and school-scoped through the join;
+    // PARKED rows (applicant_id NULL — the intake hotword gate) carry no
+    // school of their own, so they are visible to live accounts only.
+    const demo = opts.demo ?? 0;
+    const appConds: string[] = [];
+    if (opts.demo !== undefined) { appConds.push("a.demo = ?"); params.push(opts.demo); }
     const scope = this.scopePred("a", opts.schools);
-    if (scope.sql) { where.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
+    if (scope.sql) { appConds.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
+    const appCondSql = appConds.length ? appConds.join(" AND ") : "1=1";
+    where.push(`((e.applicant_id IS NOT NULL AND ${appCondSql}) OR (e.applicant_id IS NULL AND ${demo} = 0))`);
     if (opts.q) {
       const escaped = opts.q.replace(/[\\%_]/g, (ch) => `\\${ch}`);
       const like = `%${escaped}%`;
@@ -869,7 +879,7 @@ export class Repo {
         SELECT e.*, COALESCE(NULLIF(e.thread_id, ''), 'email-' || e.id) AS tkey,
                a.full_name AS a_name, a.email_address AS a_email, a.ref_number AS ref_number,
                a.programme AS programme, a.lifecycle AS lifecycle
-        FROM emails e JOIN applicants a ON a.id = e.applicant_id
+        FROM emails e LEFT JOIN applicants a ON a.id = e.applicant_id
         ${whereSql}
       ),
       agg AS (
@@ -886,8 +896,8 @@ export class Repo {
       SELECT k.*, agg.n AS thread_n, agg.unread_n AS unread_n, agg.star_n AS star_n, agg.imp_n AS imp_n
       FROM agg JOIN keyed k ON k.id = agg.last_id
       WHERE ${folder}${unreadOnly}
-      ORDER BY agg.last_at DESC, k.id DESC LIMIT ?`;
-    params.push(opts.limit ?? 100);
+      ORDER BY agg.last_at DESC, k.id DESC
+      LIMIT ${Repo.MAIL_PAGE_SIZE} OFFSET ${(Math.max(1, Math.floor(opts.page ?? 1)) - 1) * Repo.MAIL_PAGE_SIZE}`;
     return this.db.prepare(sql).all(...params) as never[];
   }
 
@@ -916,15 +926,21 @@ export class Repo {
   mailFolderCounts(opts: { schools?: string[] | null; demo?: number }): Record<string, number> {
     const where: string[] = [];
     const params: unknown[] = [];
-    if (opts.demo !== undefined) { where.push("a.demo = ?"); params.push(opts.demo); }
+    // Round 9: same realm rule as mailThreads — parked (applicant-less)
+    // mail counts for live accounts only.
+    const demo = opts.demo ?? 0;
+    const appConds: string[] = [];
+    if (opts.demo !== undefined) { appConds.push("a.demo = ?"); params.push(opts.demo); }
     const scope = this.scopePred("a", opts.schools);
-    if (scope.sql) { where.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
+    if (scope.sql) { appConds.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
+    const appCondSql = appConds.length ? appConds.join(" AND ") : "1=1";
+    where.push(`((e.applicant_id IS NOT NULL AND ${appCondSql}) OR (e.applicant_id IS NULL AND ${demo} = 0))`);
     const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
     const row = this.db.prepare(`
       WITH keyed AS (
         SELECT e.direction, e.read, e.labels,
                COALESCE(NULLIF(e.thread_id, ''), 'email-' || e.id) AS tkey
-        FROM emails e JOIN applicants a ON a.id = e.applicant_id
+        FROM emails e LEFT JOIN applicants a ON a.id = e.applicant_id
         ${whereSql}
       ),
       agg AS (

@@ -10,7 +10,7 @@ import * as crypto from "crypto";
 import { FAVICON_BASE64, LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
 import { FONT_INSTRUMENT_SERIF_ITALIC_WOFF2, FONT_INSTRUMENT_SERIF_WOFF2, FONT_MANROPE_WOFF2 } from "./fonts";
 import express, { type Express, type Request, type Response } from "express";
-import type { Repo } from "../db/repo";
+import { Repo } from "../db/repo";
 import type { PipelineContext } from "../pipeline/adapters";
 import type { Adapters } from "../pipeline/adapters";
 import type { ApplicantRow, LifecycleStage } from "../types";
@@ -698,11 +698,15 @@ export function createApp(deps: WebDeps): Express {
     const f = String(req.query.f ?? "inbox");
     const folder = MAIL_FOLDERS.has(f) && f !== "unread" ? f : "inbox";
     const unreadOnly = f === "unread";
+    // Round 9: All Mail is paginated (newest first) — the whole history,
+    // not just the new. Invalid/missing page numbers clamp to page one.
+    const pageRaw = Number(req.query.page ?? 1);
+    const page = Number.isInteger(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
     const baseOpts = { schools: repo.visibleSchoolsFor(req.staff!), demo: req.staff!.demo };
-    const threads = repo.mailThreads({ ...baseOpts, q: q || undefined, unreadOnly, folder });
+    const threads = repo.mailThreads({ ...baseOpts, q: q || undefined, unreadOnly, folder, page });
     const counts = repo.mailFolderCounts(baseOpts);
     const backUrl = `/mail?f=${unreadOnly ? "unread" : folder}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
-    res.send(mailPage(c(req), { threads, q, folder, unreadOnly, counts, backUrl }));
+    res.send(mailPage(c(req), { threads, q, folder, unreadOnly, counts, backUrl, page, hasMore: threads.length === Repo.MAIL_PAGE_SIZE }));
   });
 
   app.get("/mail/thread/:tkey", requireLogin, (req, res) => {
@@ -722,8 +726,13 @@ export function createApp(deps: WebDeps): Express {
         </div>`,
       }));
     }
-    const a = emails[0].applicant_id != null ? repo.getApplicant(emails[0].applicant_id) : null;
-    if (!a || !repo.applicantVisibleTo(req.staff!, a)) return refuseScope(req, res, "/mail", "← Back to mail");
+    const a = emails[0].applicant_id != null ? (repo.getApplicant(emails[0].applicant_id) ?? null) : null;
+    if (a) {
+      if (!repo.applicantVisibleTo(req.staff!, a)) return refuseScope(req, res, "/mail", "← Back to mail");
+    } else if ((req.staff!.demo ?? 0) !== 0) {
+      // Parked mail (no applicant) belongs to the live realm — demo accounts never see it.
+      return refuseScope(req, res, "/mail", "← Back to mail");
+    }
     repo.markThreadRead(tkey);
     const labels = repo.threadLabelState(tkey);
     const backUrl = mailBack(req.query.back, labels.bin ? "/mail?f=bin" : labels.spam ? "/mail?f=spam" : "/mail");
@@ -747,17 +756,23 @@ export function createApp(deps: WebDeps): Express {
     const tkey = String(req.params.tkey);
     const emails = repo.emailsForThread(tkey);
     if (!emails.length) return res.status(404).send("Conversation not found.");
-    const a = emails[0].applicant_id != null ? repo.getApplicant(emails[0].applicant_id) : null;
-    if (!a || !repo.applicantVisibleTo(req.staff!, a)) return refuseScope(req, res, "/mail", "← Back to mail");
+    const a = emails[0].applicant_id != null ? (repo.getApplicant(emails[0].applicant_id) ?? null) : null;
+    if (a) {
+      if (!repo.applicantVisibleTo(req.staff!, a)) return refuseScope(req, res, "/mail", "← Back to mail");
+    } else if ((req.staff!.demo ?? 0) !== 0) {
+      // Parked mail (no applicant) belongs to the live realm — demo accounts never see it.
+      return refuseScope(req, res, "/mail", "← Back to mail");
+    }
     const action = THREAD_ACTIONS[String(req.body.action ?? "")];
     if (!action) return res.redirect(`/mail/thread/${encodeURIComponent(tkey)}`);
+    const refBit = a ? ` (${a.ref_number})` : " (no case)";
     if ("unread" in action) {
       repo.markThreadUnread(tkey);
-      repo.audit(a.id, req.staff!.username, "mail_marked_unread", a.ref_number);
+      repo.audit(a?.id ?? null, req.staff!.username, "mail_marked_unread", a?.ref_number ?? "no case");
       return res.redirect(mailBack(req.body.back, "/mail"));
     }
     repo.setThreadLabel(tkey, action.label, action.on);
-    repo.audit(a.id, req.staff!.username, "mail_label", `${action.label} ${action.on ? "added" : "removed"} (${a.ref_number})`);
+    repo.audit(a?.id ?? null, req.staff!.username, "mail_label", `${action.label} ${action.on ? "added" : "removed"}${refBit}`);
     res.redirect(mailBack(req.body.back, `/mail/thread/${encodeURIComponent(tkey)}`));
   });
 
