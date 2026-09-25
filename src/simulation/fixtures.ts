@@ -138,8 +138,8 @@ export async function buildFixtures(): Promise<Fixture[]> {
       emails: [
         email({
           id: "email-carol-1", threadId: "thread-carol", from: "carol.maina@student.example.org", fromName: "Carol Maina",
-          subject: "Documents",
-          body: "Please find my attached documents.",
+          subject: "Application documents",
+          body: "Please find my attached application documents.",
           receivedAt: "2026-09-14T11:00:00Z",
           attachments: await Promise.all([
             att({ filename: "carol-academic.pdf", docType: "academic_cert", name }),
@@ -384,8 +384,8 @@ export async function buildFixtures(): Promise<Fixture[]> {
       emails: [
         email({
           id: "email-lucy-1", threadId: "thread-lucy", from: "lucy.ochimi@student.example.org", fromName: "Lucy Ochimi",
-          subject: "Documents attached",
-          body: "Please see my attached documents.",
+          subject: "Application documents attached",
+          body: "Please see my attached application documents.",
           receivedAt: "2026-09-14T20:00:00Z",
           attachments: await Promise.all([
             att({ filename: "lucy-academic.pdf", docType: "academic_cert", name: "LUCY OCHIMI" }),
@@ -660,8 +660,8 @@ export async function buildFixtures(): Promise<Fixture[]> {
       emails: [
         email({
           id: "email-igcse-low-1", threadId: "thread-igcse-low", from: "otieno.credits@student.example.org", fromName: "Otieno Credits",
-          subject: "My results",
-          body: "Attached are my IGCSE statement of results and documents.",
+          subject: "My results for my application",
+          body: "Attached are my IGCSE statement of results and documents for my application.",
           receivedAt: "2026-09-15T10:00:00Z",
           attachments: await Promise.all([
             att({ filename: "igcse-low-results.pdf", docType: "academic_cert", name, spec: { examSystem: "IGCSE", subjects: { ENGLISH: "C", MATHEMATICS: "C", BIOLOGY: "C", HISTORY: "C", PHYSICS: "F", CHEMISTRY: "F" } } }),
@@ -704,8 +704,8 @@ export async function buildFixtures(): Promise<Fixture[]> {
       emails: [
         email({
           id: "email-al-1", threadId: "thread-al", from: "kiprop.principal@student.example.org", fromName: "Kiprop Principal",
-          subject: "A level results",
-          body: "Please find my advanced level results attached.",
+          subject: "A level results — my application",
+          body: "Please find my advanced level results attached, for my application.",
           receivedAt: "2026-09-15T12:00:00Z",
           attachments: await Promise.all([
             att({ filename: "al-results.pdf", docType: "academic_cert", name, spec: { examSystem: "ALEVEL", subjects: { MATHEMATICS: "B" }, subsidiaries: 1 } }),
