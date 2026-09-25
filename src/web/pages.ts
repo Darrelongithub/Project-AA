@@ -1216,6 +1216,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
 
     ${isMgr ? `<div class="ops-card" id="packs">
       <h2>Official packs</h2>
+      <p class="small" style="margin:0 0 8px"><a href="/config?tab=pack">Manage the pack files (preview &amp; replace) →</a></p>
       <details style="margin-bottom:12px"><summary class="small" style="cursor:pointer;font-weight:700">What's included?</summary>
         <p class="small muted" style="margin:6px 0 0">The <b>application pack</b> (application form + brochure) goes to anyone who asks about applying. The <b>admission pack</b> sends the official admission letter with its accompanying documents. The <b>credit transfer form</b> goes to transferring applicants.</p>
       </details>
@@ -2272,16 +2273,17 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
 
   // Round 3: the courses tab moved to the staff area (one home for course
   // configuration); /config?tab=courses redirects there at the route level.
-  const tab = tabChoice === "replies" ? "replies" : "requirements";
+  const tab = tabChoice === "replies" || tabChoice === "pack" ? tabChoice : "requirements";
   const tabBar = `<div class="tabs" style="margin:0 0 20px">
     <a href="/config?tab=requirements" class="${tab === "requirements" ? "on" : ""}">Requirements</a>
     <a href="/config?tab=replies" class="${tab === "replies" ? "on" : ""}">Reply configuration</a>
+    <a href="/config?tab=pack" class="${tab === "pack" ? "on" : ""}">Document pack</a>
   </div>`;
 
+  // Round 11: the pack files have their OWN tab (they were hiding inside
+  // "Reply configuration", which is why staff thought they couldn't be
+  // changed).
   const replyHtml = `
-${documentsPackCard(c)}
-
-
 <div class="card" id="templates-home">
   <h2>Email templates</h2>
   <p class="small muted" style="margin-top:-6px">OR-7: every outgoing email type — automated replies, reminders and staff messages — is edited in the dedicated <a href="/templates">Templates section</a>, with placeholders documented, a live preview, reset-to-default and optional pack attachments.</p>
@@ -2339,7 +2341,7 @@ ${documentsPackCard(c)}
 <div class="sub">Requirements, deadlines and reply behaviour — course configuration (courses, ownership, document checklists) lives in the <a href="/staff">Staff area</a>. Changes apply to newly processed email immediately.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 ${tabBar}
-${tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : replyHtml}
+${tab === "pack" ? documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : replyHtml}
 `
   );
 }
