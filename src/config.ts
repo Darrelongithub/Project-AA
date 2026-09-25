@@ -3,6 +3,7 @@
  * credentials the system runs in mock mode (tests, simulation, demo).
  */
 import { DEFAULT_INTAKE_HOTWORDS } from "./intake";
+import { DEFAULT_GEMINI_MODEL } from "./extraction/gemini";
 import * as dotenv from "dotenv";
 
 dotenv.config();
@@ -44,7 +45,7 @@ export function loadConfig(): AppConfig {
     dbPath: env.DB_PATH || "./data/email-sorter.sqlite",
     port: Number(env.PORT || 8080),
     geminiApiKey: env.GEMINI_API_KEY || undefined,
-    geminiModel: env.GEMINI_MODEL || "gemini-1.5-flash",
+    geminiModel: env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
     gmail: gmailConfigured
       ? {
           address: env.GMAIL_ADDRESS!,

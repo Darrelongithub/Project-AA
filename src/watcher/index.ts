@@ -13,6 +13,7 @@
  *     errors or returns garbage, the record is flagged to a human rather
  *     than auto-sent.
  */
+import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 import type { WatcherInput, WatcherResult } from "../types";
 import { normalizeName } from "../rules";
 
@@ -89,7 +90,7 @@ export class GeminiWatcher {
   private model: any;
   private timeoutMs: number;
 
-  constructor(apiKey: string, modelName = "gemini-1.5-flash", model?: unknown, timeoutMs = WATCHER_TIMEOUT_MS) {
+  constructor(apiKey: string, modelName = DEFAULT_GEMINI_MODEL, model?: unknown, timeoutMs = WATCHER_TIMEOUT_MS) {
     this.timeoutMs = timeoutMs;
     if (model) {
       this.model = model;

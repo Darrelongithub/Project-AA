@@ -128,10 +128,32 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
+/**
+ * The default Gemini model, in ONE place. The old default (gemini-1.5-flash)
+ * no longer exists in the v1beta API — probes and live reading 404'd with
+ * "models/gemini-1.5-flash is not found". And since 2026-09-18 access to the
+ * 2.5 generation is limited to users who actively used it in the past, so a
+ * new key/project can't lean on it either. Current GA Flash: gemini-3.8-flash
+ * (GA 2026-09-02, per the Gemini API changelog).
+ */
+export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+
+/** Model names Google has removed from the API — the settings card calls them out. */
+export const DEAD_GEMINI_MODELS = new Set([
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-001",
+  "gemini-1.5-flash-8b",
+  "gemini-1.5-pro",
+  "gemini-1.5-pro-001",
+  "gemini-1.0-pro",
+  "gemini-1.0-pro-001",
+  "gemini-pro",
+]);
+
 export class GeminiVisionAdapter implements VisionAdapter {
   private model: any;
 
-  constructor(apiKey: string, modelName = "gemini-1.5-flash") {
+  constructor(apiKey: string, modelName = DEFAULT_GEMINI_MODEL) {
     // Lazy require so mock mode never needs the SDK at runtime. A missing
     // SDK is a configuration error — say so loudly instead of throwing an
     // opaque MODULE_NOT_FOUND deep in request handling.

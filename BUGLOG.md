@@ -1,13 +1,13 @@
 # BUGLOG — every bug found, in one place
 
-**Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-25 (round 9: intake hotwords + full mail history, §20)
+**Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-25 (round 10: Gemini model default + G/O/R tile, §21)
 
 ## Total
 
 | | |
 |---|---|
-| **Confirmed bugs found (all rounds)** | **147** |
-| — found in hunt / audit rounds | 143 |
+| **Confirmed bugs found (all rounds)** | **148** |
+| — found in hunt / audit rounds | 144 |
 | — self-introduced regressions caught by my own gates | 4 |
 | Documented false positive (investigated, ruled out) | 1 |
 
@@ -45,7 +45,8 @@ Each bug is counted once, under the round that first found it.
 | 18 | Self-introduced regressions | 09-23/24 | 3 |
 | 19 | Round 8 — forgot-password (admin-issued reset codes) | 09-24 | 1 |
 | 20 | Round 9 — intake hotwords, full mail history, builder UX | 09-25 | 2 |
-| | **Total** | | **147 confirmed (+1 false positive)** |
+| 21 | Round 10 — Gemini model default (production 404) + G/O/R tile | 09-25 | 1 |
+| | **Total** | | **148 confirmed (+1 false positive)** |
 
 ---
 
@@ -342,6 +343,33 @@ While building them, two real defects were found in the mail window itself:
 (The builder rewording itself — "+ Top-level condition/+ Top-level group"
 → "+ Add a requirement / + Add an either/or group" plus a one-sentence
 reading rule and plain-logic options — was clarity work, not a bug.)
+
+---
+
+## §21 · Round 10 — Gemini model default + G/O/R tile — 1
+
+The round shipped the last code-owed checklist item (the explicit
+Green/Orange/Red counter tile on both dashboards, pinned by
+`test/triage-tile.test.ts` — 4 tests, a feature, not a defect) and fixed
+the production error the user reported: `404 Not Found —
+models/gemini-1.5-flash is not found for API version v1beta`.
+
+1. **G1** — the shipped default Gemini model (`gemini-1.5-flash`) no
+   longer exists in the v1beta API: the settings probe and live document
+   reading 404'd in production. The 2.5 generation is also not a safe
+   default — since 2026-09-18 Google limits 2.5 access to users who
+   actively used it in the past, so a new key/project cannot lean on it.
+   The model was ALWAYS user-configurable (settings field) — what was
+   broken is every *default* still pointing at the dead model (env unset,
+   blank field, fresh install). Fix: one `DEFAULT_GEMINI_MODEL =
+   "gemini-3.8-flash"` (GA 2026-09-02, per the Gemini API changelog)
+   shared by `loadConfig`, the vision adapter and the watcher; the
+   settings card pre-fills the current model and, when the STORED model
+   is one Google has removed (`DEAD_GEMINI_MODELS`), calls it out in red
+   with the 404 explained and the current model named — so the next
+   deprecation is a settings edit plus a hint, not another production
+   mystery. Proof: `test/gemini-model.test.ts` (6 tests, RED first —
+   defaults were `gemini-1.5-flash`).
 
 ---
 

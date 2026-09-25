@@ -11,6 +11,7 @@ import { FAVICON_BASE64, LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
 import { FONT_INSTRUMENT_SERIF_ITALIC_WOFF2, FONT_INSTRUMENT_SERIF_WOFF2, FONT_MANROPE_WOFF2 } from "./fonts";
 import express, { type Express, type Request, type Response } from "express";
 import { Repo } from "../db/repo";
+import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 import type { PipelineContext } from "../pipeline/adapters";
 import type { Adapters } from "../pipeline/adapters";
 import type { ApplicantRow, LifecycleStage } from "../types";
@@ -1596,7 +1597,7 @@ export function createApp(deps: WebDeps): Express {
       };
       return;
     }
-    const model = repo.getSetting("gemini_model", "gemini-1.5-flash").trim() || "gemini-1.5-flash";
+    const model = repo.getSetting("gemini_model", DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
     try {
       const next: Adapters = {
         ...ctx.adapters,
@@ -1616,7 +1617,7 @@ export function createApp(deps: WebDeps): Express {
   app.post("/settings/gemini", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
     const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#connections`;
     const key = String(req.body.gemini_api_key ?? "").trim();
-    const model = String(req.body.gemini_model ?? "gemini-1.5-flash").trim() || "gemini-1.5-flash";
+    const model = String(req.body.gemini_model ?? DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
     if (req.body.clear !== undefined) {
       repo.setSetting("gemini_api_key", "");
       repo.setSetting("gemini_last_error", "");

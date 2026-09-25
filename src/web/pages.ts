@@ -2,6 +2,7 @@
  * Page renderers — every page is built server-side from the database.
  * Single source of truth: nothing is rendered that isn't in the DB.
  */
+import { DEAD_GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 import { documentRequirementsFor, type ProgrammeLevel } from "../documents/matrix";
 import type { Repo } from "../db/repo";
 import type { AdmissionSystem, ApplicantRow, CourseLevel, DocType, EmailRecord, Programme, RuleNode, StaffUser } from "../types";
@@ -1845,7 +1846,12 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
       <div style="flex:2"><label>Gemini API key ${settings["gemini_api_key"] ? "(saved — paste a new value to replace)" : ""}</label><input type="password" name="gemini_api_key" value="" placeholder="AIza…" autocomplete="new-password"></div>
-      <div><label>Model</label><input type="text" name="gemini_model" value="${esc(settings["gemini_model"] ?? "gemini-1.5-flash")}" placeholder="gemini-1.5-flash"></div>
+      ${(() => {
+    const storedModel = settings["gemini_model"] ?? "";
+    const dead = DEAD_GEMINI_MODELS.has(storedModel);
+    return `<div><label>Model</label><input type="text" name="gemini_model" value="${esc(storedModel || DEFAULT_GEMINI_MODEL)}" placeholder="${esc(DEFAULT_GEMINI_MODEL)}"></div>
+    ${dead ? `<p class="small" style="color:var(--red)">Heads-up: <span class="mono">${esc(storedModel)}</span> no longer exists in the Gemini API — that is the 404 you are seeing. The current Flash model is <span class="mono">${esc(DEFAULT_GEMINI_MODEL)}</span> (GA 2026-09-02) — put it in the field and test again.</p>` : ""}`;
+  })()}
       <div style="flex:0"><label>&nbsp;</label><button class="btn">Save &amp; test key</button></div>
     </div>
   </form>
