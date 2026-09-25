@@ -3,6 +3,7 @@
  * Single source of truth: nothing is rendered that isn't in the DB.
  */
 import { DEAD_GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
+import { missingGmailCredentials, resolveLookbackDays } from "../ingestion/sync";
 import { documentRequirementsFor, type ProgrammeLevel } from "../documents/matrix";
 import type { Repo } from "../db/repo";
 import type { AdmissionSystem, ApplicantRow, CourseLevel, DocType, EmailRecord, Programme, RuleNode, StaffUser } from "../types";
@@ -1819,6 +1820,9 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
     : `<span class="badge b-orange">not connected</span>`}</h2>
   <p class="small muted" style="margin-top:-6px">Connect the admissions mailbox so incoming mail is fetched, triaged and sorted automatically every minute.</p>
   ${proxyUriWarning}
+  ${!connected && (gAddress || gClientId || gClientSecret || gRefresh)
+    ? `<p class="small" style="color:var(--red);margin-top:10px"><b>Connection incomplete — mail is NOT being fetched until every piece is saved.</b> Missing: <b>${esc(missingGmailCredentials(repo).join(", "))}</b>. Add what's missing in the fields below (or via the OAuth connect) and save.</p>`
+    : ""}
   <ol class="small" style="margin:0 0 14px 18px;line-height:1.7">
     <li>In <b>Google Cloud Console</b> (console.cloud.google.com) create or pick a project for the admissions mailbox.</li>
     <li><b>APIs &amp; Services → Library</b>: enable the <b>Gmail API</b>.</li>
@@ -1847,10 +1851,11 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
     <form method="post" action="/settings/gmail/test" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost">Test connection</button></form>
     <form method="post" action="/settings/gmail/sync" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost">Sync now</button></form>
+    <form method="post" action="/settings/gmail/backfill" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><select name="days" class="small"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">365 days</option></select> <button class="btn ghost">Pull older mail</button></form>
     <form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>
   </div>` : ""}
   <p class="small muted" style="margin-top:10px">${connected
-    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically every minute, — no restart needed.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
+    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically every minute, covering the last ${resolveLookbackDays(repo, undefined)} days — older mail is brought in with “Pull older mail”.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
     : "Mail is not being fetched yet — the console still works; process mail manually or connect when ready."}</p>
   ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again (or paste a fresh refresh token). If new mail still doesn’t appear after a good sync, check that the message is in the inbox of <b>${esc(gAddress || "the connected address")}</b> and within the lookback window.</span></p>` : ""}
 </div>

@@ -13,6 +13,7 @@ import { buildAdapters, MockSender, type EmailSender, type PipelineContext, type
 import { GmailClient } from "../ingestion/gmailClient";
 import { GmailSender } from "../ingestion/sender";
 import { ingestNewEmails } from "../ingestion";
+import { missingGmailCredentials, resolveLookbackDays } from "../ingestion/sync";
 import { createApp, runEscalationSweep } from "../web/server";
 import { onceAtATime } from "../util/once";
 import { log } from "../util/log";
@@ -54,7 +55,7 @@ async function main(): Promise<void> {
   const adapters = buildAdapters(cfg, sender, repo);
   const ctx: PipelineContext = { repo, adapters, jsonlPath: cfg.logToFile ? "./logs/decisions.jsonl" : undefined };
   // One ingest pass, usable by BOTH the 60s poll and Configuration → "Sync now".
-  const runSyncOnce = async (): Promise<Error | null> => {
+  const runSyncOnce = async (backfillDays?: number): Promise<Error | null> => {
     try {
       const fromSettings = gmailFromSettings(repo);
       if (!gmail && fromSettings) {
@@ -66,9 +67,19 @@ async function main(): Promise<void> {
         gmail = null;
         sender.inner = new MockSender();
       }
-      if (!gmail) return new Error("Gmail is not connected.");
+      if (!gmail) {
+        const missing = missingGmailCredentials(repo);
+        return new Error(
+          missing.length
+            ? `Gmail is not connected — missing: ${missing.join(", ")} (Settings → Connections)`
+            : "Gmail is not connected (Settings → Connections)."
+        );
+      }
       const opts = { autoMissingDocsEmails: cfg.autoMissingDocsEmails, autoStatusAnswers: cfg.autoStatusAnswers };
-      await ingestNewEmails(gmail, ctx, cfg.ingestLookbackDays, opts);
+      // The window is re-read every pass: Settings changes apply without a
+      // restart, and a backfill pass covers a deeper one-shot window.
+      const lookback = backfillDays ?? resolveLookbackDays(repo, cfg.ingestLookbackDays);
+      await ingestNewEmails(gmail, ctx, lookback, opts);
       repo.setSetting("gmail_last_sync_at", new Date().toISOString());
       repo.setSetting("gmail_last_error", "");
       return null;
@@ -83,7 +94,7 @@ async function main(): Promise<void> {
   // next 60 s tick stack a second pass on top — both would process the same
   // message ids. Overlapped ticks are skipped, not queued.
   const guardedSync = onceAtATime(runSyncOnce);
-  const app = createApp({ repo, ctx, gmailSync: guardedSync });
+  const app = createApp({ repo, ctx, gmailSync: guardedSync, gmailBackfill: guardedSync });
 
   const port = cfg.port;
   app.listen(port, "0.0.0.0", () => {

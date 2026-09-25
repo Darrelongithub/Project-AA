@@ -46,10 +46,12 @@ export interface WebDeps {
   ctx: PipelineContext; // reuse the pipeline's sender/vision adapters
   /** Manual "Sync now" hook — one live ingest pass; returns the failure, if any. */
   gmailSync?: () => Promise<Error | null>;
+  /** One-off backfill hook — one pass over a deeper window (30/90/365 days). */
+  gmailBackfill?: (days: number) => Promise<Error | null>;
 }
 
 export function createApp(deps: WebDeps): Express {
-  const { repo, ctx, gmailSync } = deps;
+  const { repo, ctx, gmailSync, gmailBackfill } = deps;
   const app = express();
   /** Institution name for all branding — fixed; no settings field exists. */
   const instName = (): string => INSTITUTION;
@@ -1576,6 +1578,24 @@ export function createApp(deps: WebDeps): Express {
     repo.audit(null, req.staff!.username, "gmail_synced", "manual sync from Settings");
     res.redirect(settingsBack("Inbox synced — new mail has been triaged."));
   });
+  // Round 11: one-off backfill — pull mail older than the normal window.
+  app.post("/settings/gmail/backfill", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
+    const { BACKFILL_WINDOWS } = await import("../ingestion/sync");
+    const days = Number(req.body.days);
+    if (!BACKFILL_WINDOWS.includes(days)) {
+      return res.redirect(`/settings?msg=${encodeURIComponent("Backfill windows are 30, 90 or 365 days.")}#connections`);
+    }
+    if (!gmailBackfill) {
+      return res.redirect(`/settings?msg=${encodeURIComponent("Backfill is unavailable — the server was started without live Gmail sync.")}#connections`);
+    }
+    const err = await gmailBackfill(days);
+    if (err) {
+      return res.redirect(`/settings?msg=${encodeURIComponent(`Backfill failed: ${err.message}`)}#connections`);
+    }
+    repo.audit(null, req.staff!.username, "gmail_backfill", `Pulled mail from the last ${days} days into the console`);
+    res.redirect(`/settings?msg=${encodeURIComponent(`History pulled — mail from the last ${days} days is now in All Mail.`)}#connections`);
+  });
+
 
   // ── Gemini (document-reading AI) — a first-class settings field ───────────
   // The key is stored in Settings, used by the extraction pipeline AT ONCE
