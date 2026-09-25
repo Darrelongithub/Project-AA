@@ -1,13 +1,13 @@
 # BUGLOG — every bug found, in one place
 
-**Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-25 (round 10: Gemini model default + G/O/R tile, §21)
+**Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-25 (round 11: smart intake engine + Gmail history, §22)
 
 ## Total
 
 | | |
 |---|---|
-| **Confirmed bugs found (all rounds)** | **148** |
-| — found in hunt / audit rounds | 144 |
+| **Confirmed bugs found (all rounds)** | **150** |
+| — found in hunt / audit rounds | 146 |
 | — self-introduced regressions caught by my own gates | 4 |
 | Documented false positive (investigated, ruled out) | 1 |
 
@@ -46,7 +46,8 @@ Each bug is counted once, under the round that first found it.
 | 19 | Round 8 — forgot-password (admin-issued reset codes) | 09-24 | 1 |
 | 20 | Round 9 — intake hotwords, full mail history, builder UX | 09-25 | 2 |
 | 21 | Round 10 — Gemini model default (production 404) + G/O/R tile | 09-25 | 1 |
-| | **Total** | | **148 confirmed (+1 false positive)** |
+| 22 | Round 11 — production mail gap: 2-day lookback + blunt intake gate | 09-25 | 2 |
+| | **Total** | | **150 confirmed (+1 false positive)** |
 
 ---
 
@@ -370,6 +371,48 @@ models/gemini-1.5-flash is not found for API version v1beta`.
    deprecation is a settings edit plus a hint, not another production
    mystery. Proof: `test/gemini-model.test.ts` (6 tests, RED first —
    defaults were `gemini-1.5-flash`).
+
+---
+
+## §22 · Round 11 — production mail gap: history window + intake precision — 2
+
+Production feedback after the round-9 gate shipped: "Gmail doesn't
+refresh / I can't see all my mail / I sent an email applying and it
+doesn't work". Two distinct defects behind the one experience:
+
+1. **S1** — the every-minute Gmail poll only ever looked back a **2-day
+   window** (env-only `INGEST_LOOKBACK_DAYS`, invisible to the
+   operator, no UI mention). Mail older than 48h was **never
+   ingested**, so "All Mail" — pagination and all — could never
+   actually be all mail, and the operator had no way to know the
+   window existed. Fix: `gmail_lookback_days` is a Settings value
+   (default 14, env still overrides, clamped 1..365, re-read every
+   pass), the connections card shows the active window, and a
+   one-off "Pull older mail" backfill (30/90/365 days, audited)
+   brings in the history the poll never saw. A connection missing
+   pieces now names the missing pieces instead of the opaque "Gmail
+   is not connected". Proof: `test/gmail-sync.test.ts` (10 tests,
+   RED first).
+
+2. **S2** — the round-9 intake gate was a **flat word list**: a real
+   application whose phrasing missed the list (e.g. "is the seat
+   available for Bachelor of Nursing") was parked, while a job ad
+   containing "admissions" opened a case. Fix: the scored intake
+   engine (`src/intake/engine.ts`) — weighted phrases/keywords with
+   the subject counting double, course names from the database as
+   strong signals, an application-named-attachment boost, enquiry
+   routing (admissions questions still get cases; general questions
+   park), and negative vocabulary (job application / vacancy / CV /
+   refund / invoice) that parks staff mail and job ads. Parked mail
+   now audits its score + signals, and Settings shows the five most
+   recent parks so a misjudgement is one hotword away from being
+   fixed. Proof: `test/intake-engine.test.ts` (15 tests, RED first)
+   + round-9 gate tests + e2e unchanged.
+
+Also shipped in the round (features, not defects): vision-first
+photo reading + 8 MB staff image upload (`test/photo-reading.test.ts`),
+and the PDF pack's own home at Configuration → Document pack
+(`test/pack-management.test.ts`).
 
 ---
 
