@@ -2,8 +2,8 @@
  * Server-rendered views + embedded design system. Zero external assets: the
  * whole UI is one self-contained HTML document per page (portable, preview-safe).
  *
- * v4 design: Riara University identity — white & purple, gold crest accents,
- * full dark mode, quiet top-header shell, splash entry, command palette, toasts.
+ * v4 design: organization-configurable identity and colors, full dark mode,
+ * quiet top-header shell, splash entry, command palette, toasts.
  */
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type EmailCategory, type LifecycleStage, type Priority, type StaffUser } from "../types";
 
@@ -153,14 +153,14 @@ export function avatar(name: string | null | undefined, size = 34): string {
   return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px;background:linear-gradient(135deg,${c1},${c2})">${esc(initials)}</span>`;
 }
 
-/** The official full Riara University logo; the image itself is served once
- * at /assets/logo and cached, pages only reference the path. The white
- * variant renders in dark mode so the mark blends with its background. */
-export function crest(size = 40, variant: "auto" | "white" = "auto"): string {
+/** Compatibility logo used only when an organization has not uploaded one;
+ * new branding is read from the organization row and cached by the browser. */
+export function crest(size = 40, variant: "auto" | "white" = "auto", logo?: string | null, alt = "Organization"): string {
+  if (logo) return `<span class="crest" style="height:${size}px"><img src="${esc(logo)}" alt="${esc(alt)}" style="max-height:${size}px;max-width:${size * 3}px;object-fit:contain"></span>`;
   if (variant === "white") {
-    return `<span class="crest" style="height:${size}px"><img src="/assets/logo-white" alt="Riara University"></span>`;
+    return `<span class="crest" style="height:${size}px"><img src="/assets/logo-white" alt="${esc(alt)}"></span>`;
   }
-  return `<span class="crest" style="height:${size}px"><img class="logo-c" src="/assets/logo" alt="Riara University"><img class="logo-w" src="/assets/logo-white" alt=""></span>`;
+  return `<span class="crest" style="height:${size}px"><img class="logo-c" src="/assets/logo" alt="${esc(alt)}"><img class="logo-w" src="/assets/logo-white" alt=""></span>`;
 }
 
 /** The signature motif: one thin flowing purple line — progress, connection. */
@@ -912,12 +912,17 @@ export function layout(opts: {
   publicPage?: boolean;
   csrf?: string;
   theme?: Theme;
-  /** Brand name — fixed to the institution; there is no settings field for it. */
+  /** Organization-owned identity and colors. */
   institution?: string;
+  brand?: { primary: string; accent: string; logo?: string | null };
 }): string {
+  const brand = opts.brand;
+  const brandStyle = brand && /^#[0-9a-f]{6}$/i.test(brand.primary) && /^#[0-9a-f]{6}$/i.test(brand.accent)
+    ? `<style>:root{--purple:${brand.primary};--purple2:${brand.accent};--purple-hover:${brand.primary};--purple3:${brand.accent};}</style>`
+    : "";
   const theme: Theme = opts.theme === "dark" ? "dark" : "light";
   const otherTheme = theme === "dark" ? "light" : "dark";
-  const inst = opts.institution ?? "Riara University";
+  const inst = opts.institution ?? "Organization";
 
   const themeBtn = `<form method="post" action="/theme" style="display:inline">
       <button class="iconbtn" title="Switch to ${otherTheme} mode">${icon(theme === "dark" ? "sun" : "moon")}</button>
@@ -968,7 +973,7 @@ export function layout(opts: {
 <div class="app">
   <header class="sitehead">
     <div class="head-in">
-      <a class="head-brand" href="/">${crest(27)}<span class="sr-only">${esc(inst)} — automated admissions</span></a>
+      <a class="head-brand" href="/">${crest(27, "auto", brand?.logo, inst)}<span class="sr-only">${esc(inst)} — case intake</span></a>
       <nav class="head-nav">
         ${nav.map((n) => `<a href="${n.href}" class="${opts.active === n.active ? "active" : ""}">${n.label}</a>`).join("")}
       </nav>
@@ -997,7 +1002,7 @@ ${opts.content}
   <div class="palette-box">
     <input id="palette-q" type="text" placeholder="Jump to a case, applicant or page…" autocomplete="off" spellcheck="false">
     <div id="palette-res"></div>
-    <div class="palette-keys"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span><span style="margin-left:auto">Riara University · Nurturing Innovations</span></div>
+    <div class="palette-keys"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span><span style="margin-left:auto">${esc(inst)} · intake workspace</span></div>
   </div>
 </div>`;
   } else {
@@ -1021,10 +1026,11 @@ ${opts.content}
 <link rel="icon" type="image/png" href="/assets/favicon?v=3">
 ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
 <title>${esc(opts.title)}</title>
+${brandStyle}
 <style>${CSS}</style>
 </head>
 <body>
-<div id="splash" aria-hidden="true">${crest(54)}${flowLine(160, 30)}<div class="s-sub">Nurturing Innovations</div></div>
+<div id="splash" aria-hidden="true">${crest(54, "auto", brand?.logo, inst)}${flowLine(160, 30)}<div class="s-sub">Nurturing Innovations</div></div>
 <script>
   // The greeting shield plays once per tab session. Reloads, back/forward and
   // every later page load remove it instantly so navigation never feels stuck.

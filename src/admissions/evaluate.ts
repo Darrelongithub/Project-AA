@@ -46,6 +46,66 @@ export interface AdmissionEvaluation {
   derivedFlags: DerivedFlag[];
 }
 
+export interface CaseTypeRuleEvaluation {
+  result: "passed" | "failed" | "undetermined";
+  routing: "human_review";
+  /** A rule tree is evidence only; it cannot write an approval decision. */
+  outcome: "undecided";
+  passed: number;
+  total: number;
+}
+
+/**
+ * Generic rule-tree entry point. It reuses the same AND/OR/NOT semantics as
+ * the admissions evaluator, but accepts organization-defined fields so a
+ * workplace or school workflow does not have to pretend every value is an
+ * academic grade. Failure and missing values remain human-review outcomes.
+ */
+export function evaluateCaseTypeRules(
+  _repo: Repo,
+  _caseType: { id: number; code: string },
+  nodes: Array<import("../types").RuleNode>,
+  facts: Record<string, unknown>
+): CaseTypeRuleEvaluation {
+  let passed = 0;
+  let total = 0;
+  const compare = (actual: unknown, comparator: string, expected: unknown): boolean | null => {
+    if (actual === undefined || actual === null || expected === undefined || expected === null) return null;
+    const an = typeof actual === "number" ? actual : Number(actual);
+    const en = typeof expected === "number" ? expected : Number(expected);
+    const numeric = Number.isFinite(an) && Number.isFinite(en);
+    const left = numeric ? an : String(actual);
+    const right = numeric ? en : String(expected);
+    switch (comparator) {
+      case ">=": return left >= right;
+      case ">": return left > right;
+      case "<=": return left <= right;
+      case "<": return left < right;
+      case "=": return left === right;
+      case "!=": return left !== right;
+      default: return null;
+    }
+  };
+  const visit = (node: import("../types").RuleNode): boolean | null => {
+    if (node.kind === "condition") {
+      total += 1;
+      const actual = node.subject ? (facts[node.subject] as unknown) : facts[node.field ?? ""];
+      const value = compare(actual, node.comparator ?? ">=", node.value);
+      if (value === true) passed += 1;
+      return value;
+    }
+    const children = (node.children ?? []).map(visit);
+    const logic = node.logic ?? "AND";
+    if (children.length === 0) return null;
+    if (logic === "OR") return children.some((x) => x === true) ? true : children.every((x) => x === false) ? false : null;
+    if (logic === "NOT") return children.length === 1 && children[0] !== null ? !children[0] : null;
+    return children.every((x) => x === true) ? true : children.some((x) => x === false) ? false : null;
+  };
+  const results = nodes.map(visit);
+  const value = results.length === 0 ? null : results.every((x) => x === true) ? true : results.some((x) => x === false) ? false : null;
+  return { result: value === true ? "passed" : value === false ? "failed" : "undetermined", routing: "human_review", outcome: "undecided", passed, total };
+}
+
 const nowIso = () => new Date().toISOString();
 
 /** OR-5: concrete academic checklist types + the generic fallback family.

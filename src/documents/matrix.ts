@@ -281,6 +281,62 @@ export interface FillResult {
  * (RequirementSpec or legacy RequirementSetEntry) can be slotted. */
 export type Slottable = { document_type: DocType; blocking?: boolean; required?: boolean };
 
+export interface CaseTypeDocumentDefinition {
+  key: string;
+  label: string;
+  required: boolean;
+  blocking: boolean;
+  position?: number;
+  /** Optional organization-defined axis condition. */
+  axis?: string;
+  values?: string[];
+}
+
+/** A generic document slot. It deliberately does not use DocType: a workplace
+ * or community case may define any organization-owned document key. */
+export interface CaseTypeRequirement {
+  key: string;
+  label: string;
+  required: boolean;
+  blocking: boolean;
+}
+
+/** Configurable document matrix entry point. The legacy academic generator is
+ * retained above for Riara compatibility; new case types use their own
+ * organization-owned definitions and never inherit academic assumptions. */
+export function documentRequirementsForCaseType(input: {
+  caseType: { id: number; code: string; category?: string };
+  definitions: CaseTypeDocumentDefinition[];
+}): CaseTypeRequirement[] {
+  return [...input.definitions]
+    .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+    .map((d) => ({ key: d.key, label: d.label, required: !!d.required, blocking: !!d.blocking }));
+}
+
+export interface OrganizationDocumentAxis {
+  key: string;
+  label: string;
+  values: string[];
+}
+
+/** The axis idea is still useful for generated checklists, but axes are now
+ * data, not academic concepts. */
+export function documentRequirementsFromAxes(input: {
+  axes: OrganizationDocumentAxis[];
+  selections?: Record<string, string>;
+  definitions: CaseTypeDocumentDefinition[];
+}): CaseTypeRequirement[] {
+  const selected = input.selections ?? {};
+  const validSelections = new Set(input.axes
+    .filter((a) => selected[a.key] === undefined || a.values.includes(selected[a.key]))
+    .map((a) => a.key));
+  const definitions = input.definitions.filter((source) => {
+    if (!source.axis || !validSelections.has(source.axis) || selected[source.axis] === undefined) return true;
+    return !source.values?.length || source.values.includes(selected[source.axis]);
+  });
+  return documentRequirementsForCaseType({ caseType: { id: 0, code: "generic" }, definitions });
+}
+
 export function fillSlots(specs: Slottable[], submitted: DocType[]): FillResult {
   const pool = [...submitted];
   const filled: DocType[] = [];

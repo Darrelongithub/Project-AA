@@ -11,6 +11,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { loadConfig } from "./config";
 import { log } from "./util/log";
+import type { Repo } from "./db/repo";
 
 export interface PackFile {
   filename: string;
@@ -106,6 +107,21 @@ export function admissionPack(): PackBuild {
     read("sponsorship-form.pdf", "RU Sponsorship Form.pdf", issues),
     read("orientation-programme-2026.pdf", "September 2026 Orientation Programmes.pdf", issues)
   );
+}
+
+/** Build an organization-owned pack. Empty slots are intentional: no
+ * institution PDFs are assumed by the generic workflow. */
+export function organizationPack(repo: Repo, organizationId = 1, keys?: string[]): PackBuild {
+  const wanted = new Set(keys ?? ["application", "admission", "brochure", "transfer"]);
+  const issues: string[] = [];
+  const slots = repo.listOrganizationPackSlots(organizationId);
+  const files = slots
+    .filter((slot) => wanted.has(slot.key) && slot.content && slot.filename)
+    .map((slot) => ({ filename: slot.filename!, mimeType: slot.mime || "application/pdf", content: slot.content! }));
+  for (const key of wanted) {
+    if (!slots.some((slot) => slot.key === key && slot.content)) issues.push(`Organization pack slot '${key}' is empty`);
+  }
+  return { files, issues };
 }
 
 /** Default email banner (./data/branding/email-banner.jpg). */

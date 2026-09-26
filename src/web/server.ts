@@ -60,6 +60,7 @@ export function createApp(deps: WebDeps): Express {
   const app = express();
   /** Workspace name for UI and outgoing templates; Riara remains the default. */
   const instName = (): string => institutionName(repo);
+  const authName = (): string => repo.getOrganization(1)?.name?.trim() || instName();
 
   app.disable("x-powered-by");
   // Behind any reverse proxy (the preview environment included) req.ip is the
@@ -77,6 +78,7 @@ export function createApp(deps: WebDeps): Express {
     csrf: req.csrfToken ?? "",
     theme: req.theme,
     institution: instName(),
+    brand: repo.getOrganization(1) ? { ...repo.getOrganization(1)!.theme, logo: repo.getOrganization(1)!.logo } : undefined,
     gmailConfigured: Boolean(gmailConfigured) && repo.getSetting("gmail_disabled", "") !== "1",
     gmailAddress: deps.gmailAddress,
   });
@@ -163,6 +165,27 @@ export function createApp(deps: WebDeps): Express {
     }
   );
 
+  /** Organization-owned logo upload; the bytes are stored in the tenant row,
+   * never read from a bundled institution asset. */
+  app.post(
+    "/config/organization/logo",
+    requireLogin,
+    requireRole("admin"),
+    csrfCheck,
+    express.raw({ type: ["image/jpeg", "image/png", "image/svg+xml"], limit: "2mb" }),
+    (req, res) => {
+      const buf = req.body as Buffer;
+      if (!Buffer.isBuffer(buf) || buf.length < 16) return res.status(400).send("Logo missing");
+      const png = buf.length > 8 && buf.readUInt32BE(0) === 0x89504e47 && buf.subarray(4, 8).toString("hex") === "0d0a1a0a";
+      const jpg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+      const svg = String(buf.subarray(0, 256)).trimStart().startsWith("<svg");
+      if (!png && !jpg && !svg) return res.status(415).send("Logo must be PNG, JPEG or SVG");
+      repo.updateOrganization(1, { logo: `data:${png ? "image/png" : jpg ? "image/jpeg" : "image/svg+xml"};base64,${buf.toString("base64")}` });
+      repo.audit(null, req.staff!.username, "organization_logo_changed", `${buf.length} bytes`);
+      res.status(204).end();
+    }
+  );
+
   // OR-1: on a fresh install the whole console reduces to one screen — the
   // first-run setup where the owner creates their own admin account.
   const setupTokens = new Map<string, number>(); // one-time token -> expiry (epoch ms)
@@ -186,7 +209,7 @@ export function createApp(deps: WebDeps): Express {
       res.status(404).send("Not found");
       return;
     }
-    res.send(setupPage(newSetupToken(), undefined, req.theme, instName()));
+    res.send(setupPage(newSetupToken(), undefined, req.theme, authName()));
   });
 
   app.post("/setup", (req, res) => {
@@ -194,7 +217,7 @@ export function createApp(deps: WebDeps): Express {
       res.status(404).send("Not found");
       return;
     }
-    const fail = (msg: string) => res.status(200).send(setupPage(newSetupToken(), msg, req.theme, instName()));
+    const fail = (msg: string) => res.status(200).send(setupPage(newSetupToken(), msg, req.theme, authName()));
     const token = String(req.body._setup ?? "");
     const exp = setupTokens.get(token);
     setupTokens.delete(token);
@@ -234,7 +257,7 @@ export function createApp(deps: WebDeps): Express {
       return;
     }
     // ?msg= carries the one success notice (password just reset via code).
-    res.send(loginPage(undefined, req.theme, instName(), newLoginCsrf(res), req.query.msg ? String(req.query.msg) : undefined));
+    res.send(loginPage(undefined, req.theme, authName(), newLoginCsrf(res), req.query.msg ? String(req.query.msg) : undefined));
   });
 
   /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
@@ -270,7 +293,7 @@ export function createApp(deps: WebDeps): Express {
   app.post("/login", (req, res) => {
     const ip = req.ip ?? "?";
     if (loginBlocked(ip)) {
-      res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, instName(), newLoginCsrf(res)));
+      res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, authName(), newLoginCsrf(res)));
       return;
     }
     // Login-CSRF: the token the page rendered must come back in the body AND
@@ -278,13 +301,13 @@ export function createApp(deps: WebDeps): Express {
     const provided = String(req.body._lcsrf ?? "");
     const cookieToken = parseCookies(req.headers.cookie)["lcsrf"] ?? "";
     if (!provided || provided !== cookieToken) {
-      res.status(403).send(loginPage("That sign-in page expired — please try again.", req.theme, instName(), newLoginCsrf(res)));
+      res.status(403).send(loginPage("That sign-in page expired — please try again.", req.theme, authName(), newLoginCsrf(res)));
       return;
     }
     const staff = loginAttempt(repo, String(req.body.username ?? ""), String(req.body.password ?? ""));
     if (!staff) {
       loginRecordFail(ip);
-      res.status(401).send(loginPage("Invalid username or password.", req.theme, instName(), newLoginCsrf(res)));
+      res.status(401).send(loginPage("Invalid username or password.", req.theme, authName(), newLoginCsrf(res)));
       return;
     }
     const session = repo.createSession(staff.id);
@@ -312,21 +335,21 @@ export function createApp(deps: WebDeps): Express {
   const resetThrottle = new LoginThrottle({ windowMs: 10 * 60_000, maxFails: 5 });
 
   app.get("/reset-password", (req, res) => {
-    res.send(resetPasswordPage(undefined, req.theme, instName(), newLoginCsrf(res)));
+    res.send(resetPasswordPage(undefined, req.theme, authName(), newLoginCsrf(res)));
   });
 
   app.post("/reset-password", (req, res) => {
     const ip = req.ip ?? "?";
     if (!resetThrottle.allowed(ip)) {
-      return res.status(429).send(resetPasswordPage("Too many reset attempts from this address — please wait a few minutes.", req.theme, instName(), newLoginCsrf(res)));
+      return res.status(429).send(resetPasswordPage("Too many reset attempts from this address — please wait a few minutes.", req.theme, authName(), newLoginCsrf(res)));
     }
     // Same anonymous double-submit CSRF as /login.
     const provided = String(req.body._lcsrf ?? "");
     const cookieToken = parseCookies(req.headers.cookie)["lcsrf"] ?? "";
     if (!provided || provided !== cookieToken) {
-      return res.status(403).send(resetPasswordPage("That page expired — please try again.", req.theme, instName(), newLoginCsrf(res)));
+      return res.status(403).send(resetPasswordPage("That page expired — please try again.", req.theme, authName(), newLoginCsrf(res)));
     }
-    const refuse = (m: string) => res.send(resetPasswordPage(m, req.theme, instName(), newLoginCsrf(res)));
+    const refuse = (m: string) => res.send(resetPasswordPage(m, req.theme, authName(), newLoginCsrf(res)));
     const GENERIC = "We couldn't verify that username and code. Check both, or ask your admin for a fresh code.";
     const username = String(req.body.username ?? "").trim();
     const code = String(req.body.code ?? "").trim();

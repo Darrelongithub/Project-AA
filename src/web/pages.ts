@@ -26,15 +26,16 @@ interface Ctx {
   unread: number;
   csrf: string;
   theme?: Theme;
-  /** Configured workspace name (Riara University by default). */
+  /** Organization-owned name and theme; admissions remains a configuration, not a code identity. */
   institution: string;
+  brand?: { primary: string; accent: string; logo?: string | null };
   /** The running server may have env-only Gmail credentials. */
   gmailConfigured?: boolean;
   gmailAddress?: string;
 }
 
 function head(c: Ctx, title: string, active: string, content: string): string {
-  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution });
+  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution, brand: c.brand });
 }
 
 /** "it" → "IT", else first-letter title: polite, readable labels. */
@@ -55,7 +56,7 @@ export function kindLabel(kind: string): string {
 
 // ── Login ──────────────────────────────────────────────────────────────────
 
-export function loginPage(error?: string, theme?: Theme, institution = "Riara University", loginCsrf?: string, okMsg?: string): string {
+export function loginPage(error?: string, theme?: Theme, institution = "Organization", loginCsrf?: string, okMsg?: string): string {
   return layout({
     title: `Sign in — ${institution}`,
     institution,
@@ -83,7 +84,7 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
 }
 
 /** Forgot-password: redeem an admin-issued one-time reset code. Anonymous. */
-export function resetPasswordPage(error?: string, theme?: Theme, institution = "Riara University", loginCsrf?: string): string {
+export function resetPasswordPage(error?: string, theme?: Theme, institution = "Organization", loginCsrf?: string): string {
   return layout({
     title: `Reset password — ${institution}`,
     institution,
@@ -114,7 +115,7 @@ export function resetPasswordPage(error?: string, theme?: Theme, institution = "
 
 
 /** OR-1: one-time first-run screen — the owner creates their own admin account. */
-export function setupPage(token: string, error?: string, theme?: Theme, institution = "Riara University"): string {
+export function setupPage(token: string, error?: string, theme?: Theme, institution = "Organization"): string {
   return layout({
     title: `First-run setup — ${institution}`,
     institution,
@@ -2401,7 +2402,7 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
   // will produce, so staff see the real output before anyone receives it.
   const preview = renderTemplate(tpl.subject, tpl.body, {
     ref: "RU-2026-000001",
-    institution: repo.getSetting("institution_name", "Riara University"),
+    institution: repo.getSetting("institution_name", "Organization"),
     name: "Wanjiku Kamau",
     missingLabels: ["Leaving Certificate", "Passport Photo"],
     checklist: "✓ Application Form\n✗ Leaving Certificate\n✗ Passport Photo",

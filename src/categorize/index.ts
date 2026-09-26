@@ -51,3 +51,53 @@ export function categorizeEmail(
 export function priorityForCategory(category: EmailCategory): "normal" | "high" {
   return category === "complaint" ? "high" : "normal";
 }
+
+export interface ConfiguredCategoryLabel {
+  label: string;
+  confidence: number;
+  source?: "gemini" | "fallback";
+}
+
+export type CategoryLabeler = (input: { subject: string; body: string }, categories: string[]) => Promise<ConfiguredCategoryLabel>;
+
+/**
+ * Gemini is a label sensor, not a decision-maker. The caller supplies the
+ * organization's allow-list and this function rejects any model output that
+ * is not on it. If the model fails or is uncertain, triage falls back to a
+ * safe configured label; no case outcome is returned or inferred here.
+ */
+export async function classifyWithConfiguredCategories(
+  input: { subject: string; body: string },
+  categories: string[],
+  labeler?: CategoryLabeler
+): Promise<ConfiguredCategoryLabel> {
+  const allowed = [...new Set(categories.map((x) => x.trim()).filter(Boolean))];
+  if (allowed.length === 0) return { label: "other", confidence: 0, source: "fallback" };
+  try {
+    const result = labeler
+      ? await labeler(input, allowed)
+      : await geminiCategoryLabel(input, allowed);
+    const label = allowed.find((x) => x.toLowerCase() === String(result.label).trim().toLowerCase());
+    if (!label || !Number.isFinite(result.confidence) || result.confidence < 0) throw new Error("invalid category label");
+    return { label, confidence: Math.min(1, result.confidence), source: "gemini" };
+  } catch {
+    const fallback = allowed.find((x) => x.toLowerCase() === "other") ?? allowed[0];
+    return { label: fallback, confidence: 0, source: "fallback" };
+  }
+}
+
+async function geminiCategoryLabel(input: { subject: string; body: string }, categories: string[]): Promise<ConfiguredCategoryLabel> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) throw new Error("GEMINI_API_KEY is not configured");
+  // Keep the SDK lazy and optional in mock/test mode, as with document vision.
+  // Gemini receives categories as data and can only return one of them.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { GoogleGenerativeAI } = require("@google/generative-ai");
+  const model = new GoogleGenerativeAI(key).getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-3.8-flash" });
+  const prompt = `Classify this message using exactly one category from ${JSON.stringify(categories)}. Return JSON only: {"label":"...","confidence":0}. The label is routing metadata only and must not make an approval or rejection decision.\nSubject: ${input.subject}\nBody: ${input.body}`;
+  const response = await model.generateContent(prompt);
+  const raw = String(response?.response?.text?.() ?? "");
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("Gemini returned no category JSON");
+  return JSON.parse(match[0]) as ConfiguredCategoryLabel;
+}

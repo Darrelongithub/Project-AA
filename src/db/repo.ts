@@ -29,6 +29,11 @@ import type {
   StaffUser,
   SystemBlock,
   CourseLevel,
+  Organization,
+  OrganizationTheme,
+  CaseType,
+  DocumentDefinition,
+  CaseOutcome,
 } from "../types";
 import { documentRequirementsFor, fillSlots, type ApplicantNationality, type ProgrammeLevel } from "../documents/matrix";
 import type { VisionCacheStore } from "../extraction/gemini";
@@ -69,6 +74,136 @@ export interface StaffStatsRow {
 export class Repo {
   constructor(public db: Database) {}
 
+  // ── Organizations and generic case configuration ───────────────────────
+
+  getOrganization(id: number): Organization | undefined {
+    const row = this.db.prepare("SELECT id, name, logo, theme FROM organizations WHERE id = ?").get(id) as
+      | { id: number; name: string; logo: string | null; theme: string }
+      | undefined;
+    if (!row) return undefined;
+    let theme: OrganizationTheme = { primary: "#334155", accent: "#0f766e" };
+    try { theme = { ...theme, ...(JSON.parse(row.theme || "{}") as Partial<OrganizationTheme>) }; } catch { /* use safe defaults */ }
+    return { id: row.id, name: row.name, logo: row.logo, theme };
+  }
+
+  listOrganizations(): Organization[] {
+    return (this.db.prepare("SELECT id FROM organizations ORDER BY id").all() as Array<{ id: number }>)
+      .map((r) => this.getOrganization(r.id)!).filter(Boolean);
+  }
+
+  updateOrganization(id: number, patch: { name?: string; logo?: string | Buffer | null; theme?: Partial<OrganizationTheme> }): void {
+    const current = this.getOrganization(id);
+    if (!current) return;
+    const theme = { ...current.theme, ...(patch.theme ?? {}) };
+    const logo = patch.logo === undefined ? current.logo : Buffer.isBuffer(patch.logo) ? `data:application/octet-stream;base64,${patch.logo.toString("base64")}` : patch.logo;
+    const name = patch.name?.trim() || current.name;
+    this.db.prepare("UPDATE organizations SET name = ?, logo = ?, theme = ? WHERE id = ?")
+      .run(name, logo, JSON.stringify(theme), id);
+    if (id === 1 && patch.name !== undefined) {
+      this.db.prepare("INSERT INTO settings (key, value) VALUES ('institution_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(name);
+    }
+  }
+
+  createCaseType(organizationId: number, input: { code: string; name: string; category?: string; config?: Record<string, unknown> }): CaseType {
+    this.db.prepare(
+      "INSERT INTO case_types (organization_id, code, name, category, config) VALUES (?,?,?,?,?) " +
+      "ON CONFLICT(organization_id, code) DO UPDATE SET name=excluded.name, category=excluded.category, config=excluded.config"
+    ).run(organizationId, input.code.trim().toUpperCase(), input.name.trim(), input.category?.trim() || "general", JSON.stringify(input.config ?? {}));
+    return this.getCaseType(input.code, organizationId)!;
+  }
+
+  getCaseType(code: string, organizationId = 1): CaseType | undefined {
+    const row = this.db.prepare("SELECT id, organization_id, code, name, category, config, active FROM case_types WHERE organization_id = ? AND code = ? COLLATE NOCASE")
+      .get(organizationId, code.trim()) as (Omit<CaseType, "config"> & { config: string }) | undefined;
+    if (!row) return undefined;
+    let config: Record<string, unknown> = {};
+    try { config = JSON.parse(row.config || "{}"); } catch { /* safe empty config */ }
+    return { ...row, config };
+  }
+
+  listCaseTypes(organizationId = 1): CaseType[] {
+    const rows = this.db.prepare("SELECT code FROM case_types WHERE organization_id = ? AND active = 1 ORDER BY code").all(organizationId) as Array<{ code: string }>;
+    return rows.map((r) => this.getCaseType(r.code, organizationId)!).filter(Boolean);
+  }
+
+  listCases(organizationId?: number): ApplicantRow[] {
+    // `0` is retained as the legacy live-realm selector used by the old
+    // dashboard; organization ids are positive and use the canonical path.
+    if (organizationId === 0) return this.allApplicants(0);
+    const sql = organizationId === undefined
+      ? "SELECT a.* FROM applicants a ORDER BY a.id"
+      : "SELECT a.* FROM applicants a WHERE COALESCE(a.organization_id, 1) = ? ORDER BY a.id";
+    return (organizationId === undefined ? this.db.prepare(sql).all() : this.db.prepare(sql).all(organizationId)) as ApplicantRow[];
+  }
+
+  getCase(id: number): ApplicantRow | undefined { return this.getApplicant(id); }
+
+  listCasesForStaff(staff: { id: number; role: string; organization_id?: number | null }): ApplicantRow[] {
+    return this.listCases(staff.organization_id ?? 1).filter((a) => this.caseTypeVisibleTo(staff, a) && this.applicantVisibleTo(staff, a));
+  }
+
+  caseTypeForCase(id: number): CaseType | undefined {
+    const row = this.db.prepare("SELECT case_type_id FROM applicants WHERE id = ?").get(id) as { case_type_id?: number | null } | undefined;
+    return row?.case_type_id ? this.getCaseTypeById(row.case_type_id) : undefined;
+  }
+
+  private getCaseTypeById(id: number): CaseType | undefined {
+    const row = this.db.prepare("SELECT organization_id, code FROM case_types WHERE id = ?").get(id) as { organization_id: number; code: string } | undefined;
+    return row ? this.getCaseType(row.code, row.organization_id) : undefined;
+  }
+
+  listDocumentDefinitions(caseTypeId: number): DocumentDefinition[] {
+    type Row = Omit<DocumentDefinition, "required" | "blocking"> & { required: number; blocking: number };
+    return (this.db.prepare("SELECT id, case_type_id, key, label, required, blocking, position FROM document_definitions WHERE case_type_id = ? ORDER BY position, id").all(caseTypeId) as Row[])
+      .map((d) => ({ ...d, required: !!d.required, blocking: !!d.blocking }));
+  }
+
+  listOrganizationDocumentAxes(organizationId = 1): Array<{ key: string; label: string; values: string[] }> {
+    const rows = this.db.prepare("SELECT axis_key, label, values_json FROM organization_document_axes WHERE organization_id = ? ORDER BY axis_key").all(organizationId) as Array<{ axis_key: string; label: string; values_json: string }>;
+    return rows.map((r) => {
+      let values: string[] = [];
+      try { values = JSON.parse(r.values_json) as string[]; } catch { /* safe empty axis */ }
+      return { key: r.axis_key, label: r.label, values };
+    });
+  }
+
+  replaceOrganizationDocumentAxes(organizationId: number, axes: Array<{ key: string; label: string; values: string[] }>): void {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM organization_document_axes WHERE organization_id = ?").run(organizationId);
+      const insert = this.db.prepare("INSERT INTO organization_document_axes (organization_id, axis_key, label, values_json) VALUES (?,?,?,?)");
+      for (const axis of axes) insert.run(organizationId, axis.key.trim(), axis.label.trim(), JSON.stringify([...new Set(axis.values.map((v) => v.trim()).filter(Boolean))]));
+    })();
+  }
+
+  replaceDocumentDefinitions(caseTypeId: number, definitions: Array<{ key: string; label: string; required: boolean; blocking: boolean }>): void {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM document_definitions WHERE case_type_id = ?").run(caseTypeId);
+      const insert = this.db.prepare("INSERT INTO document_definitions (case_type_id, key, label, required, blocking, position) VALUES (?,?,?,?,?,?)");
+      definitions.forEach((d, position) => insert.run(caseTypeId, d.key.trim(), d.label.trim(), d.required ? 1 : 0, d.blocking ? 1 : 0, position));
+    })();
+  }
+
+  listEmailCategories(organizationId = 1): Array<{ id: number; organization_id: number; key: string; label: string; active: number }> {
+    return this.db.prepare("SELECT id, organization_id, key, label, active FROM organization_categories WHERE organization_id = ? AND active = 1 ORDER BY id").all(organizationId) as never[];
+  }
+
+  addEmailCategory(organizationId: number, input: { key: string; label: string }): void {
+    this.db.prepare("INSERT INTO organization_categories (organization_id, key, label) VALUES (?,?,?) ON CONFLICT(organization_id, key) DO UPDATE SET label=excluded.label, active=1")
+      .run(organizationId, input.key.trim(), input.label.trim());
+  }
+
+  listOrganizationPackSlots(organizationId = 1): Array<{ organization_id: number; key: string; filename: string | null; mime: string | null; content: Buffer | null }> {
+    const keys = ["application", "admission", "brochure", "transfer"];
+    const rows = this.db.prepare("SELECT organization_id, key, filename, mime, content FROM organization_pack_slots WHERE organization_id = ? ORDER BY key").all(organizationId) as Array<{ organization_id: number; key: string; filename: string | null; mime: string | null; content: Buffer | null }>;
+    const byKey = new Map(rows.map((r) => [r.key, r]));
+    return keys.map((key) => byKey.get(key) ?? { organization_id: organizationId, key, filename: null, mime: null, content: null });
+  }
+
+  setOrganizationPackSlot(organizationId: number, key: string, file: { filename: string; mime: string; content: Buffer }): void {
+    this.db.prepare("INSERT INTO organization_pack_slots (organization_id, key, filename, mime, content, updated_at) VALUES (?,?,?,?,?,datetime('now')) ON CONFLICT(organization_id,key) DO UPDATE SET filename=excluded.filename, mime=excluded.mime, content=excluded.content, updated_at=datetime('now')")
+      .run(organizationId, key, file.filename, file.mime, file.content);
+  }
+
   // ── Reference numbers (feature 1) ────────────────────────────────────────
 
   nextRefNumber(prefix: string, year: number): string {
@@ -101,7 +236,7 @@ export class Repo {
   getOrCreateApplicant(
     emailAddress: string,
     threadId: string,
-    opts: { fullName?: string; refPrefix?: string } = {}
+    opts: { fullName?: string; refPrefix?: string; organizationId?: number; caseTypeCode?: string } = {}
   ): ApplicantRow {
     const addr = emailAddress.trim().toLowerCase();
     // Check-then-insert WITHOUT a transaction races: two parallel first emails
@@ -129,11 +264,24 @@ export class Repo {
       created = true;
     })();
     // The transaction ran synchronously; row is always set here.
-    const applicant = row as ApplicantRow;
+    let applicant = row as ApplicantRow;
+    const organizationId = opts.organizationId ?? 1;
+    const caseType = opts.caseTypeCode ? this.getCaseType(opts.caseTypeCode, organizationId) : this.getCaseType("GENERAL", organizationId);
+    if (caseType && (!applicant.organization_id || !applicant.case_type_id)) {
+      this.db.prepare("UPDATE applicants SET organization_id = ?, case_type_id = ? WHERE id = ?")
+        .run(organizationId, caseType.id, applicant.id);
+      applicant = this.getApplicant(applicant.id)!;
+    }
     if (created) {
       this.audit(applicant.id, "system", "applicant_created", `Case ${applicant.ref_number} opened for ${addr}`);
     }
     return applicant;
+  }
+
+  /** Canonical generic entry point; Applicant terminology is retained only
+   * in the compatibility implementation above. */
+  createCase(input: { emailAddress: string; threadId: string; organizationId?: number; caseTypeCode?: string; fullName?: string; refPrefix?: string }): ApplicantRow {
+    return this.getOrCreateApplicant(input.emailAddress, input.threadId, input);
   }
 
   getApplicant(id: number): ApplicantRow | undefined {
@@ -186,6 +334,25 @@ export class Repo {
     const setSql = keys.map((k) => `${k} = ?`).join(", ");
     const vals = keys.map((k) => patch[k] ?? null);
     this.db.prepare(`UPDATE applicants SET ${setSql}, updated_at = ? WHERE id = ?`).run(...vals, nowIso(), id);
+    if (Object.prototype.hasOwnProperty.call(patch, "admission_decision")) {
+      const decision = patch.admission_decision;
+      const outcome = decision === "auto_admitted" ? "auto_approved" : decision === "admitted_after_review" ? "approved_after_review" : decision === "not_admitted" ? "not_approved" : "undecided";
+      this.db.prepare("UPDATE applicants SET outcome = ? WHERE id = ?").run(outcome, id);
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "programme")) {
+      this.db.prepare("UPDATE applicants SET category = programme WHERE id = ?").run(id);
+    }
+  }
+
+  updateCase(id: number, patch: { category?: string | null; outcome?: CaseOutcome; case_type_id?: number | null }): void {
+    const allowed = Object.keys(patch);
+    if (allowed.some((key) => !["category", "outcome", "case_type_id"].includes(key))) throw new Error("updateCase: refusing unknown column");
+    if (patch.category !== undefined) this.db.prepare("UPDATE applicants SET category = ? WHERE id = ?").run(patch.category, id);
+    if (patch.case_type_id !== undefined) this.db.prepare("UPDATE applicants SET case_type_id = ? WHERE id = ?").run(patch.case_type_id, id);
+    if (patch.outcome !== undefined) {
+      const legacy = patch.outcome === "auto_approved" ? "auto_admitted" : patch.outcome === "approved_after_review" ? "admitted_after_review" : patch.outcome === "not_approved" ? "not_admitted" : "undecided";
+      this.db.prepare("UPDATE applicants SET outcome = ?, admission_decision = ?, updated_at = ? WHERE id = ?").run(patch.outcome, legacy, nowIso(), id);
+    }
   }
 
   // ── Lifecycle + status history (features 15, 16) ─────────────────────────
@@ -1004,9 +1171,14 @@ export class Repo {
   createStaff(username: string, displayName: string, passwordHash: string, role: string, demo = false): void {
     this.db
       .prepare(
-        "INSERT INTO staff_users (username, display_name, password_hash, role, demo) VALUES (?,?,?,?,?)"
+        "INSERT INTO staff_users (username, display_name, password_hash, role, demo, organization_id) VALUES (?,?,?,?,?,?)"
       )
-      .run(username, displayName, passwordHash, role, demo ? 1 : 0);
+      .run(username, displayName, passwordHash, role, demo ? 1 : 0, 1);
+  }
+
+  createStaffAndReturn(username: string, displayName: string, passwordHash: string, role: "admin" | "user" = "user"): StaffUser {
+    this.createStaff(username, displayName, passwordHash, role);
+    return this.getStaffByUsername(username)!;
   }
 
   /** Rename an account (e.g. giving the demo admin a human name). */
@@ -1016,19 +1188,19 @@ export class Repo {
 
   getStaffByUsername(username: string): (StaffUser & { password_hash: string }) | undefined {
     return this.db
-      .prepare("SELECT id, username, display_name, password_hash, role, active, demo FROM staff_users WHERE username = ?")
+      .prepare("SELECT id, username, display_name, password_hash, role, active, demo, organization_id FROM staff_users WHERE username = ?")
       .get(username) as never;
   }
 
   getStaff(id: number): StaffUser | undefined {
     return this.db
-      .prepare("SELECT id, username, display_name, role, active, demo FROM staff_users WHERE id = ?")
+      .prepare("SELECT id, username, display_name, role, active, demo, organization_id FROM staff_users WHERE id = ?")
       .get(id) as StaffUser | undefined;
   }
 
   listStaff(): StaffUser[] {
     return this.db
-      .prepare("SELECT id, username, display_name, role, active, demo FROM staff_users ORDER BY id")
+      .prepare("SELECT id, username, display_name, role, active, demo, organization_id FROM staff_users ORDER BY id")
       .all() as StaffUser[];
   }
 
@@ -1152,28 +1324,38 @@ export class Repo {
 
   // ── Templates (feature 35) ───────────────────────────────────────────────
 
-  getTemplate(key: string): { key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string } | undefined {
-    return this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM templates WHERE key = ?").get(key) as never;
+  getTemplate(key: string, organizationId = 1): { key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string } | undefined {
+    const owned = this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM organization_templates WHERE organization_id = ? AND key = ?").get(organizationId, key) as never;
+    return owned ?? this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM templates WHERE key = ? AND COALESCE(organization_id, 1) = ?").get(key, organizationId) as never;
   }
 
-  listTemplates(): Array<{ key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string }> {
-    return this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM templates ORDER BY key").all() as never[];
+  listTemplates(organizationId = 1): Array<{ key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string }> {
+    const owned = this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM organization_templates WHERE organization_id = ? ORDER BY key").all(organizationId) as never[];
+    const legacy = this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM templates WHERE COALESCE(organization_id, 1) = ? ORDER BY key").all(organizationId) as never[];
+    const byKey = new Map([...legacy, ...owned].map((row: any) => [row.key, row]));
+    return [...byKey.values()] as never[];
   }
 
   /** OR-7: attachPack ("none" | "application" | "admission") controls which
-   * official pack PDF set goes out with this template; undefined leaves the
-   * stored flag untouched. */
-  upsertTemplate(key: string, name: string, subject: string, body: string, includeBanner?: boolean, attachPack?: string): void {
+   * organization-owned pack slot is associated with this template. */
+  upsertTemplate(key: string, name: string, subject: string, body: string, includeBanner?: boolean, attachPack?: string, organizationId = 1): void {
     const pack = attachPack === undefined ? null : ["none", "application", "admission"].includes(attachPack) ? attachPack : "none";
-    this.db
-      .prepare(
-        `INSERT INTO templates (key, name, subject, body, include_banner, attach_pack) VALUES (?,?,?,?,?,?)
-         ON CONFLICT(key) DO UPDATE SET name = excluded.name, subject = excluded.subject, body = excluded.body,
-           include_banner = COALESCE(?, templates.include_banner),
-           attach_pack = COALESCE(?, templates.attach_pack), updated_at = datetime('now')`
-      )
-      .run(key, name, subject, body, includeBanner === undefined ? 1 : includeBanner ? 1 : 0, pack ?? "none",
-        includeBanner === undefined ? null : includeBanner ? 1 : 0, pack);
+    if (organizationId !== 1) {
+      const current = this.getTemplate(key, organizationId);
+      this.db.prepare(
+        `INSERT INTO organization_templates (organization_id, key, name, subject, body, include_banner, attach_pack) VALUES (?,?,?,?,?,?,?)
+         ON CONFLICT(organization_id, key) DO UPDATE SET name=excluded.name, subject=excluded.subject, body=excluded.body,
+           include_banner=COALESCE(?, organization_templates.include_banner), attach_pack=COALESCE(?, organization_templates.attach_pack), updated_at=datetime('now')`
+      ).run(organizationId, key, name, subject, body, includeBanner === undefined ? current?.include_banner ?? 1 : includeBanner ? 1 : 0,
+        pack ?? current?.attach_pack ?? "none", includeBanner === undefined ? null : includeBanner ? 1 : 0, pack);
+      return;
+    }
+    this.db.prepare(
+      `INSERT INTO templates (key, organization_id, name, subject, body, include_banner, attach_pack) VALUES (?,?,?,?,?,?,?)
+       ON CONFLICT(key) DO UPDATE SET organization_id = excluded.organization_id, name = excluded.name, subject = excluded.subject, body = excluded.body,
+         include_banner = COALESCE(?, templates.include_banner), attach_pack = COALESCE(?, templates.attach_pack), updated_at = datetime('now')`
+    ).run(key, organizationId, name, subject, body, includeBanner === undefined ? 1 : includeBanner ? 1 : 0, pack ?? "none",
+      includeBanner === undefined ? null : includeBanner ? 1 : 0, pack);
   }
 
   setTemplateBanner(key: string, include: boolean): void {
@@ -1981,7 +2163,7 @@ export class Repo {
       .prepare(
         `SELECT coalesce(e.category,'other') AS category, COUNT(*) AS n
          FROM emails e JOIN applicants a ON a.id = e.applicant_id
-         WHERE e.direction = 'in'${scope.sql} GROUP BY category ORDER BY n DESC`
+         WHERE e.direction = 'in'${scope.sql} GROUP BY e.category ORDER BY n DESC`
       )
       .all(...scope.params) as never[];
   }
@@ -2120,6 +2302,27 @@ export class Repo {
   scopesFor(staffId: number): string[] {
     const rows = this.db.prepare("SELECT school FROM staff_scopes WHERE staff_id = ? ORDER BY school").all(staffId) as Array<{ school: string }>;
     return rows.map((x) => x.school);
+  }
+
+  setCaseTypeScopes(staffId: number, caseTypes: string[]): void {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM staff_case_type_scopes WHERE staff_id = ?").run(staffId);
+      const insert = this.db.prepare("INSERT OR IGNORE INTO staff_case_type_scopes (staff_id, case_type_code) VALUES (?,?)");
+      for (const code of [...new Set(caseTypes.map((x) => x.trim().toUpperCase()).filter(Boolean))]) insert.run(staffId, code);
+    })();
+  }
+
+  caseTypeScopesFor(staffId: number): string[] {
+    const rows = this.db.prepare("SELECT case_type_code FROM staff_case_type_scopes WHERE staff_id = ? ORDER BY case_type_code").all(staffId) as Array<{ case_type_code: string }>;
+    return rows.map((r) => r.case_type_code);
+  }
+
+  caseTypeVisibleTo(staff: { id: number; role: string; organization_id?: number | null }, a: ApplicantRow): boolean {
+    if (staff.role === "admin") return true;
+    const scopes = this.caseTypeScopesFor(staff.id);
+    if (scopes.length === 0) return true;
+    const code = a.case_type_id ? this.caseTypeForCase(a.id)?.code : (a.programme ?? null);
+    return !!code && scopes.includes(code.toUpperCase());
   }
 
   /** Replace a staff member's whole school set in ONE action.

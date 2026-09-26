@@ -160,7 +160,37 @@ export const TEMPLATE_DEFAULTS: Record<string, { name: string; subject: string; 
     ["admission_letter", ADMISSION_LETTER_DEFAULT],
   ]);
 
+function seedGenericModel(repo: Repo): void {
+  const org = repo.db.prepare("SELECT id FROM organizations WHERE id = 1").get();
+  if (!org) {
+    repo.db.prepare("INSERT INTO organizations (id, name, theme) VALUES (1, ?, ?)")
+      .run(DEFAULT_SETTINGS.institution_name || "Organization", JSON.stringify({ primary: "#334155", accent: "#0f766e" }));
+  }
+  // Case types are the canonical generic equivalent of the legacy programme
+  // catalogue. Codes are stable, so this is safe on every boot.
+  for (const p of DEFAULT_PROGRAMMES) {
+    repo.createCaseType(1, { code: p.code, name: p.name, category: p.school || "general" });
+  }
+  repo.createCaseType(1, { code: "GENERAL", name: "General enquiry", category: "general" });
+  const categories = [
+    ["admission", "Admission enquiry"], ["normal", "Normal enquiry"],
+    ["document_submission", "Document submission"], ["support", "Support"],
+  ] as const;
+  for (const [key, label] of categories) repo.addEmailCategory(1, { key, label });
+  for (const key of ["application", "admission", "brochure", "transfer"]) {
+    const exists = repo.db.prepare("SELECT 1 FROM organization_pack_slots WHERE organization_id = 1 AND key = ?").get(key);
+    if (!exists) repo.db.prepare("INSERT INTO organization_pack_slots (organization_id, key) VALUES (1, ?)").run(key);
+  }
+  // Backfill ownership without rewriting or deleting any legacy row.
+  repo.db.prepare("UPDATE applicants SET organization_id = 1 WHERE organization_id IS NULL").run();
+  repo.db.prepare("UPDATE applicants SET category = COALESCE(category, programme) WHERE category IS NULL").run();
+  repo.db.prepare("UPDATE applicants SET case_type_id = (SELECT id FROM case_types WHERE organization_id = 1 AND code = applicants.programme) WHERE case_type_id IS NULL AND programme IS NOT NULL").run();
+  repo.db.prepare("UPDATE staff_users SET organization_id = 1 WHERE organization_id IS NULL").run();
+  repo.db.prepare("UPDATE templates SET organization_id = 1 WHERE organization_id IS NULL").run();
+}
+
 export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
+  seedGenericModel(repo);
   // Older versions had a NULL-broken rule upsert that duplicated every base
   // requirement row on each re-seed. Clean that up idempotently.
   repo.dedupeRules();

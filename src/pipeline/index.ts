@@ -34,7 +34,7 @@ import { readBackText, documentIssuesText, internalNote } from "../extraction/fe
 import { decide, docLabel, normalizeName } from "../rules";
 import { evaluateAdmission, downgradeRoutingForWatcher } from "../admissions/evaluate";
 import { gate } from "../gate";
-import { categorizeEmail, priorityForCategory } from "../categorize";
+import { categorizeEmail, classifyWithConfiguredCategories, priorityForCategory } from "../categorize";
 import { emailTargetsKnownApplicant } from "../matching";
 import { classifyIntakeEmail, DEFAULT_INTAKE_HOTWORDS, intakeHotwordList } from "../intake";
 import { extractPhone, inferIntake, inferProgramme, inferTransfer } from "../enrich";
@@ -157,7 +157,25 @@ async function processEmailInner(
   }
 
   // ── Categorize (feature 26) ──────────────────────────────────────────────
-  const category: EmailCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
+  // Gemini may provide only an organization-owned routing label. Code maps
+  // that label to the legacy workflow enum; it never produces an outcome.
+  const configuredKeys = repo.listEmailCategories(1).map((x) => x.key);
+  const fallbackCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
+  let category: EmailCategory = fallbackCategory;
+  if (process.env.GEMINI_API_KEY && configuredKeys.length > 0) {
+    const label = await classifyWithConfiguredCategories(
+      { subject: email.subject, body: email.body }, configuredKeys
+    );
+    const normalized = label.label.toLowerCase();
+    const mapped: Record<string, EmailCategory> = {
+      admission: "admission_enquiry", admission_enquiry: "admission_enquiry",
+      application: "application", document_submission: "document_submission",
+      missing_document: "missing_document", fee_enquiry: "fee_enquiry",
+      follow_up: "follow_up", complaint: "complaint", other: "other", normal: "other",
+    };
+    category = mapped[normalized] ?? "other";
+    repo.audit(null, "system", "email_labelled", `Gemini label=${label.label} confidence=${label.confidence}; routing metadata only`);
+  }
 
   // An eligibility/requirements question may carry a screenshot as evidence.
   // Keep it in the enquiry workflow: OCR can still preserve the evidence, but

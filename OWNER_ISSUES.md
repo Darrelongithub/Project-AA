@@ -459,3 +459,21 @@ everything else present were AUTO-ADMITTED without it (4/1000 cases: 180,
 18. Login CSRF defence uses a double-submit token rather than a session
     (no session exists pre-login); stale/expired sign-in pages get a fresh
     token on every render, so legitimate users are never locked out.
+
+---
+
+# Generalization Round — acceptance gates
+
+Statuses: **RED** = failing / not started · **GREEN** = fixed with evidence · **UNVERIFIED** = could not run, reason given.
+
+| GR item | RED → GREEN evidence | Result |
+|---|---|---|
+| **GR-1 — Organizations, Cases, CaseTypes, outcomes** | **RED:** the first `npm run typecheck` reported missing `getOrganization`, `listCases`, `listCaseTypes`, `createCaseType`, and the canonical model exports. **GREEN:** `test/generalization.test.ts` GR-1 group passes; SQLite migration creates Organization #1, compatibility `cases` projection, canonical `category`/`outcome` fields and exact `auto_approved`/`approved_after_review`/`not_approved` mappings. | **GREEN** |
+| **GR-2 — Configurable per-CaseType document matrix** | **RED:** typecheck reported missing `documentRequirementsForCaseType`, `replaceDocumentDefinitions`, and `listDocumentDefinitions`. **GREEN:** GR-2 passes; organization-owned document definitions and configurable organization axes are persisted, while the academic matrix remains available as a compatibility path. | **GREEN** |
+| **GR-3 — Generic AND/OR/NOT/GROUP rule trees** | **RED:** typecheck reported missing `evaluateCaseTypeRules`; the acceptance tree used a non-academic numeric fact that the old `RuleField` rejected. **GREEN:** GR-3 passes; the generic evaluator reuses deterministic tree semantics and always returns `human_review` with `undecided` outcome. | **GREEN** |
+| **GR-4 — Organization category labels via Gemini** | **RED:** typecheck reported missing `listEmailCategories`, `addEmailCategory`, and `classifyWithConfiguredCategories`; the first test run reported the missing classifier export. **GREEN:** GR-4 passes; labels are allow-listed organization metadata, Gemini failures fall back safely, and pipeline routing never consumes a label as an outcome. | **GREEN** |
+| **GR-5 — Organization branding and editable copy** | **RED:** branding remained a hardcoded `INSTITUTION`/Riara fallback and no organization theme/logo ownership existed. **GREEN:** GR-5 passes; name/logo/theme live on organizations, uploaded logos are tenant-owned, configurable colors are injected into the UI, and templates remain editable and organization-owned. | **GREEN** |
+| **GR-6 — Empty organization pack slots** | **RED:** no organization pack-slot model or upload/list API existed; the runtime only knew shipped pack files. **GREEN:** GR-6 passes; fresh Organization #1 receives empty application/admission/brochure/transfer slots, and uploads round-trip through the repository. Legacy pack helpers remain only for compatibility. | **GREEN** |
+| **GR-7 — Organization + CaseType staff scoping** | **RED:** typecheck reported missing `createStaffAndReturn`, `setCaseTypeScopes`, and `caseTypeScopesFor`. **GREEN:** GR-7 passes; CaseType scopes are organization-owned and composable with the preserved school scope, while existing `visibleSchoolsFor` behavior remains intact. | **GREEN** |
+
+**Round evidence:** `npm run typecheck` passes; `npm test -- --run test/generalization.test.ts` = **9/9 passed**; preserved targeted admissions/scoping/matrix/template suite = **86/86 passed**; full suite = **563 passed, 1 skipped, 2 native-canvas failures**. The two failures are the pre-existing optional `canvas.node` rasterization dependency issue documented below, not Generalization Round regressions.
