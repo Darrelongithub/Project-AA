@@ -13,7 +13,7 @@
  * Hard limits protect the worker from pathological files: a page cap, a
  * per-page pixel cap, and an overall time budget.
  */
-import { createCanvas, type Canvas, type CanvasRenderingContext2D } from "canvas";
+import type { Canvas, CanvasRenderingContext2D } from "canvas";
 import { log } from "../util/log";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -109,6 +109,11 @@ export async function rasterizePdf(
   opts: RasterOptions = {},
   onPage?: (page: RasterPage) => Promise<void> | void
 ): Promise<RasterReport> {
+  // Canvas is only needed for the full-page PDF fallback. Keep it lazy so
+  // mock mode, native-text PDFs and image OCR can run on installations that
+  // intentionally omit the optional native canvas build.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { createCanvas } = require("canvas");
   const o = { ...RASTER_DEFAULTS, ...opts };
   const started = Date.now();
   const report: RasterReport = { rendered: 0, skipped: 0, overCap: 0, timedOut: false };
@@ -198,6 +203,12 @@ export async function preprocessImage(buf: Buffer): Promise<Buffer | null> {
     const sharp = require("sharp");
     return await sharp(buf, { animated: false })
       .rotate() // auto-rotate by EXIF orientation
+      // Phone cameras often produce a very large, slightly blurred image.
+      // Put it in a predictable OCR range, then improve local contrast and
+      // edges without destroying colour information used by some IDs.
+      .resize({ width: 2400, height: 3200, fit: "inside", withoutEnlargement: false })
+      .normalize()
+      .sharpen({ sigma: 1 })
       .png()
       .toBuffer();
   } catch (e) {

@@ -516,15 +516,14 @@ describe("production-readiness pass", () => {
     repo.syncFlags(a.id, []);
   });
 
-  it("branding is fixed to Riara University — no institution-name setting", async () => {
+  it("workspace branding is configurable and defaults to Riara University", async () => {
     const { cookie } = await login();
-    // Even if a stale value sits in the DB, the UI never shows or edits it.
     repo.setSetting("institution_name", "Test College");
     const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-    expect(home).not.toContain("Test College");
+    expect(home).toContain("Test College");
     const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
-    expect(settings).not.toContain("Institution name");
-    expect(settings).not.toContain('name="institution_name"');
+    expect(settings).toContain("Organisation / school name");
+    expect(settings).toContain('name="institution_name"');
     const loginHtml = await (await fetch(`${base}/login`)).text();
     expect(loginHtml).toContain("Riara University");
   });

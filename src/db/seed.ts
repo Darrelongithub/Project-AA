@@ -125,12 +125,12 @@ Kind regards,
 /** The official admission letter (OR-7: also the reset default). */
 export const ADMISSION_LETTER_DEFAULT = {
   name: "Admission letter (with full admission pack)",
-  subject: "Welcome to Riara University — Your Admission to {programme}",
+  subject: "Welcome to {institution} — Your Admission to {programme}",
   body: `Dear {name},
 
-Welcome to Riara University!
+Welcome to {institution}!
 
-Congratulations on your admission to the {programme} programme. We are delighted to extend our warmest greetings as you embark on an exciting academic journey with us. Your admission to Riara University (RU) signifies the beginning of an enriching and transformative experience, and we are thrilled to have you as part of our vibrant community.
+Congratulations on your admission to the {programme} programme. We are delighted to extend our warmest greetings as you embark on an exciting academic journey with us. Your admission to {institution} signifies the beginning of an enriching and transformative experience, and we are thrilled to have you as part of our vibrant community.
 
 In preparation for the upcoming semester, please note the following important information and deadlines:
 

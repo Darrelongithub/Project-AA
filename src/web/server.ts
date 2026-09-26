@@ -35,7 +35,7 @@ import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { gmailRedirectUri } from "./oauth";
 import { LoginThrottle } from "./throttle";
-import { INSTITUTION, emailBanner } from "../branding";
+import { emailBanner, institutionName } from "../branding";
 import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
 import { EXAM_SYSTEMS } from "../config";
 import * as fs from "fs";
@@ -48,13 +48,18 @@ export interface WebDeps {
   gmailSync?: () => Promise<Error | null>;
   /** One-off backfill hook — one pass over a deeper window (30/90/365 days). */
   gmailBackfill?: (days: number) => Promise<Error | null>;
+  /** True when the running process has live environment Gmail credentials. */
+  gmailConfigured?: boolean;
+  gmailAddress?: string;
+  /** Test the active Gmail client, including env-only deployments. */
+  gmailTest?: () => Promise<Error | null>;
 }
 
 export function createApp(deps: WebDeps): Express {
-  const { repo, ctx, gmailSync, gmailBackfill } = deps;
+  const { repo, ctx, gmailSync, gmailBackfill, gmailConfigured } = deps;
   const app = express();
-  /** Institution name for all branding — fixed; no settings field exists. */
-  const instName = (): string => INSTITUTION;
+  /** Workspace name for UI and outgoing templates; Riara remains the default. */
+  const instName = (): string => institutionName(repo);
 
   app.disable("x-powered-by");
   // Behind any reverse proxy (the preview environment included) req.ip is the
@@ -68,10 +73,12 @@ export function createApp(deps: WebDeps): Express {
   const c = (req: Request) => ({
     repo,
     user: req.staff!,
-    unread: repo.unreadCount(req.staff!.id, req.staff!.demo),
+    unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
     csrf: req.csrfToken ?? "",
     theme: req.theme,
     institution: instName(),
+    gmailConfigured: Boolean(gmailConfigured) && repo.getSetting("gmail_disabled", "") !== "1",
+    gmailAddress: deps.gmailAddress,
   });
 
   const backToCase = (id: string | number, msg: string) => `/case/${id}?msg=${encodeURIComponent(msg)}`;
@@ -399,7 +406,7 @@ export function createApp(deps: WebDeps): Express {
         title: "Outside your schools",
         institution: instName(),
         user: req.staff,
-        unread: repo.unreadCount(req.staff!.id),
+        unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
         csrf: req.csrfToken,
         content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
           <h1>This case is outside your assigned schools</h1>
@@ -720,7 +727,7 @@ export function createApp(deps: WebDeps): Express {
         title: "Conversation not found",
         institution: instName(),
         user: req.staff,
-        unread: repo.unreadCount(req.staff!.id),
+        unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
         csrf: req.csrfToken,
         content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
           <h1>Conversation not found</h1>
@@ -789,7 +796,7 @@ export function createApp(deps: WebDeps): Express {
       title: "Outside your schools",
       institution: instName(),
       user: req.staff,
-      unread: repo.unreadCount(req.staff!.id),
+      unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
       csrf: req.csrfToken,
       content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
         <h1>This case is outside your assigned schools</h1>
@@ -1445,10 +1452,12 @@ export function createApp(deps: WebDeps): Express {
   const settingsBack = (msg: string) => `/settings?msg=${encodeURIComponent(msg)}#connections`;
 
   app.post("/settings/gmail/credentials", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    // Saving credentials is an explicit reconnect/enable action.
+    repo.setSetting("gmail_disabled", "");
     repo.setSetting("gmail_address", String(req.body.gmail_address ?? "").trim());
     repo.setSetting("gmail_client_id", String(req.body.gmail_client_id ?? "").trim());
-    // Always the inbox (the watcher is the same for everyone). pin the OAuth
-    // origin only for reverse-proxy / HTTPS deployments — advanced field.
+    // The watcher reads incoming All Mail (the same region for everyone).
+    // Pin the OAuth origin only for reverse-proxy / HTTPS deployments — advanced field.
     repo.setSetting("gmail_public_base_url", String(req.body.gmail_public_base_url ?? "").trim());
     // Secret is write-only in the UI: kept if the field is left blank.
     const secret = String(req.body.gmail_client_secret ?? "").trim();
@@ -1516,6 +1525,7 @@ export function createApp(deps: WebDeps): Express {
         ));
       }
       repo.setSetting("gmail_refresh_token", json.refresh_token);
+      repo.setSetting("gmail_disabled", "");
       repo.audit(null, req.staff!.username, "gmail_connected", repo.getSetting("gmail_address", ""));
       res.redirect(settingsBack("Gmail connected — live sorting starts within a minute."));
     } catch (e) {
@@ -1534,6 +1544,17 @@ export function createApp(deps: WebDeps): Express {
       refreshToken: repo.getSetting("gmail_refresh_token", ""),
     };
     if (!cfg.address || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
+      if (deps.gmailTest && gmailConfigured && repo.getSetting("gmail_disabled", "") !== "1") {
+        const envError = await deps.gmailTest();
+        if (!envError) {
+          repo.setSetting("gmail_last_error", "");
+          repo.audit(null, req.staff!.username, "gmail_tested", "environment-configured Gmail connection succeeded");
+          return res.redirect(settingsBack("Gmail test connection succeeded — the environment-configured mailbox is reachable."));
+        }
+        repo.setSetting("gmail_last_error", envError.message.slice(0, 300));
+        repo.audit(null, req.staff!.username, "gmail_test_failed", envError.message.slice(0, 200));
+        return res.redirect(settingsBack(`Gmail test connection failed: ${envError.message}`));
+      }
       return res.redirect(settingsBack("Gmail is not fully configured yet — save credentials (and connect, or paste a refresh token) first."));
     }
     try {
@@ -1555,12 +1576,14 @@ export function createApp(deps: WebDeps): Express {
   });
 
   app.post("/settings/gmail/disconnect", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    // Pause an environment-managed client without deleting its env secret.
+    repo.setSetting("gmail_disabled", "1");
     repo.setSetting("gmail_refresh_token", "");
     repo.audit(null, req.staff!.username, "gmail_disconnected", "");
     res.redirect(settingsBack("Gmail disconnected — live fetching stopped."));
   });
 
-  // Manual "Sync now": pull the inbox immediately instead of waiting for the
+  // Manual "Sync now": pull incoming All Mail immediately instead of waiting for the
   // next 60s poll. Errors are surfaced verbatim on the config page — a broken
   // connection is never silently ignored.
   app.post("/settings/gmail/sync", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
@@ -1674,7 +1697,7 @@ export function createApp(deps: WebDeps): Express {
     const numOk = (v: string) => /^\d+(\.\d+)?$/.test(v) && Number(v) > 0;
     const ladderOk = (v: string) => v.split(",").every((p) => /^\d+$/.test(p.trim()) && Number(p.trim()) > 0);
     for (const key of [
-      "ref_prefix", "sla_target_hours", "escalation_hours", "from_name",
+      "institution_name", "ref_prefix", "sla_target_hours", "escalation_hours", "from_name",
       "unanswered_target_hours", "followup_ladder_days", "retention_days",
       "reg_date", "orientation_dates", "intake_hotwords",
     ]) {
@@ -1837,12 +1860,16 @@ export function createApp(deps: WebDeps): Express {
     if (unknown.length) {
       return res.redirect(`/staff?msg=${encodeURIComponent(`Unknown school(s): ${unknown.join(", ")} — nothing saved.`)}#scopes`);
     }
-    repo.setScopes(staffId, schools);
+    const restoreFull = String(req.body.scope_mode ?? "") === "unscoped";
+    if (restoreFull) repo.clearScopes(staffId);
+    else repo.setScopes(staffId, schools);
     repo.audit(null, req.staff!.username, "scope_changed",
-      `${member.username}: ${schools.length ? schools.join(", ") : "scope cleared (full visibility)"}`);
-    res.redirect(`/staff?msg=${encodeURIComponent(schools.length
-      ? `${member.display_name} now sees: ${schools.join(", ")}.`
-      : `${member.display_name}'s scope cleared — they see all schools again.`)}#scopes`);
+      `${member.username}: ${restoreFull ? "scope cleared (full visibility)" : schools.length ? schools.join(", ") : "no access"}`);
+    res.redirect(`/staff?msg=${encodeURIComponent(restoreFull
+      ? `${member.display_name}'s scope cleared — they see all schools again.`
+      : schools.length
+        ? `${member.display_name} now sees: ${schools.join(", ")}.`
+        : `${member.display_name} now has no school access until an administrator assigns one.`)}#scopes`);
   });
 
   app.get("/staff", requireLogin, requireRole("admin"), (req, res) =>
@@ -2021,7 +2048,7 @@ export function createApp(deps: WebDeps): Express {
       institution: instName(),
       publicPage: !req.staff,
       user: req.staff,
-      unread: req.staff ? repo.unreadCount(req.staff.id) : undefined,
+      unread: req.staff ? repo.unreadCount(req.staff.id, req.staff.demo, repo.visibleSchoolsFor(req.staff)) : undefined,
       csrf: req.staff ? req.csrfToken : undefined,
       content: `<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
         <h1>Page not found</h1>

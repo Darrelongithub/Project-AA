@@ -1,11 +1,16 @@
 /**
- * Branding is FIXED to the institution — there is deliberately no settings
- * field for it (removed at the user's request). Every applicant-facing and
- * UI string takes the name from here.
+ * Branding defaults to Riara for the shipped admissions configuration, but a
+ * deployment can rename its workspace without changing code. This keeps the
+ * engine useful for another school, employer or organisation while preserving
+ * the school's customised admissions workflow.
  */
 export const INSTITUTION = "Riara University";
 
 import type { Repo } from "./db/repo";
+
+export function institutionName(repo: Pick<Repo, "getSetting">): string {
+  return repo.getSetting("institution_name", INSTITUTION).trim() || INSTITUTION;
+}
 import { defaultEmailBanner } from "./pack";
 
 /** The changeable email banner: staff-uploaded override, else the bundled default. */

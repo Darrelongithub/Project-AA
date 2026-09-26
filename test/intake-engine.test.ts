@@ -166,6 +166,24 @@ describe("the pipeline uses the engine (gate behaviour end-to-end)", () => {
     expect(repo.getApplicant(res.applicantId!)).toBeDefined();
   });
 
+  it("an admissions eligibility screenshot stays in human enquiry triage, not awaiting documents", async () => {
+    repo = new Repo(openDb(":memory:"));
+    seedDefaults(repo);
+    const sender = new MockSender();
+    ctx = { repo, adapters: { vision: null as never, ocr: null as never, watcher: null as never, sender } };
+    const res = await processEmail(mail({
+      from: "bbit.student@example.org",
+      subject: "Inquiry Regarding BBIT Admission Eligibility (KCSE B- Mean)",
+      body: "I am writing to inquire about admission into the Bachelor of Business Information Technology programme. I have attached a screenshot of my KCSE results for your reference.",
+      attachments: [{ filename: "kcse-screenshot.jpg", mimeType: "image/jpeg", content: Buffer.from("not-an-image") }],
+    }), ctx);
+    expect(res.category).toBe("admission_enquiry");
+    expect(res.autoKind).toBeNull();
+    expect(res.autoSent).toBe(false);
+    expect(res.lifecycle).toBe("application_received");
+    expect(repo.getApplicant(res.applicantId!)!.lifecycle).toBe("application_received");
+  });
+
   it("a job application is parked and the audit records the score + signals", async () => {
     repo = new Repo(openDb(":memory:"));
     seedDefaults(repo);

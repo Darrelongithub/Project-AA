@@ -26,8 +26,11 @@ interface Ctx {
   unread: number;
   csrf: string;
   theme?: Theme;
-  /** Fixed institution name — there is no settings field for it. */
+  /** Configured workspace name (Riara University by default). */
   institution: string;
+  /** The running server may have env-only Gmail credentials. */
+  gmailConfigured?: boolean;
+  gmailAddress?: string;
 }
 
 function head(c: Ctx, title: string, active: string, content: string): string {
@@ -168,7 +171,7 @@ function adminDashboard(c: Ctx): string {
   const all = repo.allApplicants(realm, scope);
   const missingDocs = repo.commonMissingDocs(realm, scope, 5);
   const triage = repo.triageCounts(realm, scope);
-  const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
+  const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", "")) || Boolean(c.gmailConfigured);
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
   const globalMode = repo.getSetting("automation_mode", "auto");
 
@@ -1697,7 +1700,7 @@ export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string):
     "settings",
     `
 <h1>Settings</h1>
-<div class="sub">How the console behaves — automation, response targets, retention.</div>
+<div class="sub">How the console behaves — automation, response targets, retention and workspace identity.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 
 ${connectionsSection(c, gmailRedirectUri)}
@@ -1764,6 +1767,7 @@ ${connectionsSection(c, gmailRedirectUri)}
   <form method="post" action="/settings/general">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
+      ${settingInput("institution_name", "Organisation / school name")}
       ${settingInput("ref_prefix", "Reference prefix")}
       ${settingInput("from_name", "From name")}
     </div>
@@ -1788,11 +1792,11 @@ ${connectionsSection(c, gmailRedirectUri)}
 export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
-  const gAddress = settings["gmail_address"] ?? "";
+  const gAddress = settings["gmail_address"] || c.gmailAddress || "";
   const gClientId = settings["gmail_client_id"] ?? "";
   const gClientSecret = settings["gmail_client_secret"] ?? "";
   const gRefresh = settings["gmail_refresh_token"] ?? "";
-  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
+  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh) || Boolean(c.gmailConfigured);
   // AUX-2: a plain-`http://` redirect URI on a NON-LOOPBACK host can never
   // be registered with a Google OAuth web client — the classic
   // behind-a-proxy trap (the app sees the plain-http hop to the proxy,
@@ -1856,9 +1860,9 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
     <form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>
   </div>` : ""}
   <p class="small muted" style="margin-top:10px">${connected
-    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically every minute, covering the last ${resolveLookbackDays(repo, undefined)} days — older mail is brought in with “Pull older mail”.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
+    ? `Signed in as <b>${esc(gAddress)}</b>. New incoming mail is fetched automatically every minute from <b>All Mail</b> (excluding sent, spam and trash), covering the last ${resolveLookbackDays(repo, undefined)} days — older mail is brought in with “Pull older mail”.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
     : "Mail is not being fetched yet — the console still works; process mail manually or connect when ready."}</p>
-  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again (or paste a fresh refresh token). If new mail still doesn’t appear after a good sync, check that the message is in the inbox of <b>${esc(gAddress || "the connected address")}</b> and within the lookback window.</span></p>` : ""}
+  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again (or paste a fresh refresh token). If new mail still doesn’t appear after a good sync, check that it is in <b>All Mail</b> for ${esc(gAddress || "the connected address")} and within the lookback window.</span></p>` : ""}
 </div>
 
 <div class="card" id="gemini">
@@ -2496,6 +2500,8 @@ function scopeMatrix(c: Ctx): string {
       </tr>`;
     }
     const current = new Set(repo.scopesFor(m.id));
+    const mode = repo.scopeModeFor(m.id);
+    const state = mode === "none" ? "no access" : mode === "scoped" ? "assigned schools only" : "unscoped — sees everything";
     return `<tr>
       <td><b>${esc(m.display_name)}</b><br><span class="muted small">@${esc(m.username)}</span></td>
       <form method="post" action="/staff/scopes"><td colspan="${schools.length + 1}" style="display:table-cell">
@@ -2503,15 +2509,16 @@ function scopeMatrix(c: Ctx): string {
           <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
           <input type="hidden" name="staff_id" value="${m.id}">
           ${schools.map((s) => `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="schools" value="${esc(s)}" style="width:auto" ${current.has(s) ? "checked" : ""}> ${esc(s)}</label>`).join("")}
-          <button class="btn small ghost">Save scope</button>
-          ${current.size ? "" : `<span class="muted small">no scope — sees everything</span>`}
+          <button class="btn small ghost">Save assigned schools</button>
+          <button class="btn small ghost" name="scope_mode" value="unscoped">Restore full visibility</button>
+          <span class="muted small">${esc(state)}</span>
         </div>
       </td></form>
     </tr>`;
   }).join("");
   return `<section class="card nopad" id="scopes">
     <div class="card-head"><h2>Visibility scope</h2></div>
-    <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the schools each officer handles and press <b>Save scope</b> — one action per person. From then on they see only cases from those schools, everywhere: queues, levels, search, direct links and the API. Untick everything and save to give full visibility back. Schools are managed in <a href="/config?tab=courses#schools">Configuration</a>.</p>
+    <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the schools each officer handles and press <b>Save assigned schools</b> — one action per person. From then on they see only cases from those schools, everywhere: queues, levels, search, direct links and the API. Saving an empty selection gives <b>no case access</b>; use <b>Restore full visibility</b> when that is intentional. Schools are managed in <a href="/config?tab=courses#schools">Configuration</a>.</p>
     ${schools.length ? `<table><tr><th>Staff member</th><th>Schools they may see</th></tr>${rows}</table>` : `<div class="empty"><p>Add a school in Configuration first.</p></div>`}
   </section>`;
 }

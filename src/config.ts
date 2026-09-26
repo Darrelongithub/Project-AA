@@ -55,7 +55,10 @@ export function loadConfig(): AppConfig {
           label: env.GMAIL_LABEL || undefined,
         }
       : undefined,
-    ingestLookbackDays: Number(env.INGEST_LOOKBACK_DAYS || 2),
+    // A two-day default silently hid older applications. Settings can still
+    // override this per deployment, but a fresh server starts with a useful
+    // two-week history window (the web UI can backfill 30/90/365 days).
+    ingestLookbackDays: Number(env.INGEST_LOOKBACK_DAYS || 14),
     disableOcr: env.DISABLE_OCR === "1",
     logToFile: env.LOG_TO_FILE !== "0",
     autoMissingDocsEmails: env.AUTO_MISSING_DOCS_EMAILS !== "0",
@@ -156,6 +159,7 @@ export const DEFAULT_INTAKES = ["September 2026", "January 2027"];
 
 /** Default SLA / behaviour settings (editable in Settings). */
 export const DEFAULT_SETTINGS: Record<string, string> = {
+  institution_name: "Riara University",
   ref_prefix: "RU",
   sla_target_hours: "4",
   escalation_hours: "8",

@@ -2,14 +2,15 @@
  * /admissions/evaluate — orchestration: documents → values → rule trees →
  * routing.
  *
- * The three automated outcomes (and NOTHING else):
+ * The automated evaluation outcomes are evidence and routing guidance only:
  *
- *   QUALIFIED              → AUTO-ADMIT          (audit: admission_auto_qualified)
+ *   QUALIFIED              → HUMAN REVIEW        (never a final admission)
  *   NOT CLEARLY QUALIFIED  → HUMAN REVIEW        (never an automatic rejection)
  *   INCOMPLETE             → WAITING FOR DOCUMENTS (missing ≠ failed)
  *
  * Eligibility (requirement result), routing and the admission DECISION are
  * separate concepts — see applicants.req_result / routing / admission_decision.
+ * A human must confirm every final admission outcome.
  */
 import type { Repo } from "../db/repo";
 import type {
@@ -319,9 +320,9 @@ export function evaluateAdmission(
       );
     }
     return persist(
-      "passed", "auto_admit",
-      `All configured admission requirements satisfied (${tree.rulesSatisfied}/${tree.rulesTotal} rules) and no blocking flags detected.`,
-      "qualified", set
+      "passed", "human_review",
+      `All configured admission requirements satisfied (${tree.rulesSatisfied}/${tree.rulesTotal} rules). Human confirmation is still required; the system never makes the final admission decision.`,
+      "qualified_human_review", set
     );
   }
 

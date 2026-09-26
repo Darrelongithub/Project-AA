@@ -223,6 +223,8 @@ CREATE TABLE IF NOT EXISTS staff_users (
   display_name  TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'user',      -- admin | user (round 18)
+  -- unscoped = full visibility, scoped = the rows below, none = no access
+  scope_mode    TEXT NOT NULL DEFAULT 'unscoped',
   active        INTEGER NOT NULL DEFAULT 1,
   demo          INTEGER NOT NULL DEFAULT 0,        -- 1 = seeded demo-dataset account
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
@@ -428,6 +430,10 @@ function migrate(db: Database.Database): void {
   // Accounts seeded by the demo dataset are marked, so the UI can label them
   // and production accounts are never confused with sample ones.
   addColumn("staff_users", "demo", "INTEGER NOT NULL DEFAULT 0");
+  // OR-8: distinguish an intentionally empty/no-access scope from an
+  // unscoped officer (full visibility). Without this marker, deleting the
+  // last school made the empty-list SQL branch unreachable.
+  addColumn("staff_users", "scope_mode", "TEXT NOT NULL DEFAULT 'unscoped'");
   addColumn("intakes", "deadline", "TEXT");
   // v5: requirement rules speak GRADES, not points. New columns carry the
   // published mean grade ("C+") and per-subject lines ("C+ in English and Maths").

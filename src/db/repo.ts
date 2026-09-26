@@ -853,6 +853,9 @@ export class Repo {
   mailThreads(opts: {
     schools?: string[] | null; demo?: number; q?: string; unreadOnly?: boolean; page?: number; folder?: string;
   }): Array<EmailRecord & { tkey: string; thread_n: number; unread_n: number; star_n: number; imp_n: number; a_name: string | null; a_email: string | null; ref_number: string | null; programme: string | null; lifecycle: string | null }> {
+    // Parked applicant-less mail has no school to match. It must not bypass
+    // an explicitly empty staff scope and become a data leak in All Mail.
+    if (opts.schools?.length === 0) return [];
     const where: string[] = [];
     const params: unknown[] = [];
     // Round 9: applicant rows are realm- and school-scoped through the join;
@@ -924,6 +927,9 @@ export class Repo {
 
   /** Sidebar counts per folder (conversations), one aggregate query. */
   mailFolderCounts(opts: { schools?: string[] | null; demo?: number }): Record<string, number> {
+    if (opts.schools?.length === 0) {
+      return Object.fromEntries(Object.keys(Repo.MAIL_FOLDER_WHERE).map((folder) => [folder, 0]));
+    }
     const where: string[] = [];
     const params: unknown[] = [];
     // Round 9: same realm rule as mailThreads — parked (applicant-less)
@@ -1222,14 +1228,19 @@ export class Repo {
       .all(demo === undefined ? [params[0], ...scope.params, params[1]] : [params[0], params[1], ...scope.params, params[2]]) as never[];
   }
 
-  unreadCount(staffId: number, demo?: number): number {
+  unreadCount(staffId: number, demo?: number, schools?: string[] | null): number {
+    if (schools?.length === 0) return 0;
     const realmSql = demo === undefined ? "" : " AND (n.applicant_id IS NULL OR a.demo = ?)";
-    const params: unknown[] = demo === undefined ? [staffId] : [staffId, demo];
+    const scope = this.scopePred("a", schools);
+    const scopeSql = scope.sql ? ` AND (n.applicant_id IS NULL OR 1=1${scope.sql})` : "";
+    const params: unknown[] = demo === undefined
+      ? [staffId, ...scope.params]
+      : [staffId, demo, ...scope.params];
     return (
       this.db
         .prepare(
           `SELECT COUNT(*) AS n FROM notifications n LEFT JOIN applicants a ON a.id = n.applicant_id
-           WHERE (n.staff_id IS NULL OR n.staff_id = ?) AND n.read = 0${realmSql}`
+           WHERE (n.staff_id IS NULL OR n.staff_id = ?) AND n.read = 0${realmSql}${scopeSql}`
         )
         .get(...params) as { n: number }
     ).n;
@@ -2023,13 +2034,19 @@ export class Repo {
 
   // ── OR-8: visibility scoping — the ONLY place scope is decided ─────────
 
-  /** The schools a staff member may see, or null = full visibility.
-   * Admins are NEVER scoped; staff without assigned schools keep full
-   * visibility (scoping is opt-in and reversible). */
+  /** The schools a staff member may see.
+   *
+   * null = deliberately unscoped/full visibility (the default), a non-empty
+   * array = assigned schools, and [] = deliberately no access. Keeping the
+   * last state in staff_users makes an empty scope real instead of silently
+   * turning it into unrestricted access.
+   */
   visibleSchoolsFor(staff: { id: number; role: string }): string[] | null {
     if (staff.role === "admin") return null;
     const rows = this.scopesFor(staff.id);
-    return rows.length ? rows : null;
+    if (rows.length) return rows;
+    const mode = (this.db.prepare("SELECT scope_mode FROM staff_users WHERE id = ?").get(staff.id) as { scope_mode?: string } | undefined)?.scope_mode;
+    return mode === "none" ? [] : null;
   }
 
   /** Would this staff member see this applicant anywhere in the console?
@@ -2044,8 +2061,8 @@ export class Repo {
   }
 
   /** SQL predicate restricting applicant rows to the given schools.
-   * `schools === null/undefined` = unscoped; an EMPTY scoped list matches
-   * nothing (never accidentally everything). */
+   * `schools === null/undefined` = full visibility; an EMPTY scoped list
+   * matches nothing (never accidentally everything). */
   private scopePred(alias: string, schools?: string[] | null): { sql: string; params: string[] } {
     if (schools === undefined || schools === null) return { sql: "", params: [] };
     if (schools.length === 0) return { sql: " AND 0 = 1", params: [] };
@@ -2105,14 +2122,32 @@ export class Repo {
     return rows.map((x) => x.school);
   }
 
-  /** Replace a staff member's whole school set in ONE action. */
+  /** Replace a staff member's whole school set in ONE action.
+   * An empty set is an explicit no-access scope; use clearScopes() when an
+   * administrator wants to restore full visibility. */
   setScopes(staffId: number, schools: string[]): void {
+    const clean = [...new Set(schools.map((x) => x.trim()).filter(Boolean))];
     const tx = this.db.transaction(() => {
       this.db.prepare("DELETE FROM staff_scopes WHERE staff_id = ?").run(staffId);
+      this.db.prepare("UPDATE staff_users SET scope_mode = ? WHERE id = ?").run(clean.length ? "scoped" : "none", staffId);
       const ins = this.db.prepare("INSERT OR IGNORE INTO staff_scopes (staff_id, school) VALUES (?, ?)");
-      for (const s of new Set(schools.map((x) => x.trim()).filter(Boolean))) ins.run(staffId, s);
+      for (const s of clean) ins.run(staffId, s);
     });
     tx();
+  }
+
+  /** Restore an officer's default full visibility explicitly. */
+  clearScopes(staffId: number): void {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM staff_scopes WHERE staff_id = ?").run(staffId);
+      this.db.prepare("UPDATE staff_users SET scope_mode = 'unscoped' WHERE id = ?").run(staffId);
+    })();
+  }
+
+  scopeModeFor(staffId: number): "unscoped" | "scoped" | "none" {
+    const row = this.db.prepare("SELECT scope_mode FROM staff_users WHERE id = ?").get(staffId) as { scope_mode?: string } | undefined;
+    if (row?.scope_mode === "none" || row?.scope_mode === "scoped") return row.scope_mode;
+    return "unscoped";
   }
 
   // ── Schools (OR-6: first-class, editable, shared with courses page) ─────

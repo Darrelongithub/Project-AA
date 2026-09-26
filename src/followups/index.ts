@@ -21,7 +21,7 @@ import { fillSlots } from "../documents/matrix";
 import { docLabel } from "../rules";
 import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
-import { INSTITUTION } from "../branding";
+import { institutionName } from "../branding";
 
 const nowIso = () => new Date().toISOString();
 
@@ -71,7 +71,7 @@ export async function runFollowUpSweep(repo: Repo, _ctx: PipelineContext): Promi
       if (tpl) {
         const rendered = renderTemplate(tpl.subject, tpl.body, {
           ref: a.ref_number,
-          institution: INSTITUTION,
+          institution: institutionName(repo),
           name: a.full_name ?? undefined,
           missingLabels: missing.map((m) => docLabel(m.document_type)),
           checklist: checklistText({ requirements, presentTypes: present }),

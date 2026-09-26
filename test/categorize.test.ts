@@ -31,6 +31,14 @@ describe("email categorization (feature 26)", () => {
     expect(categorizeEmail("Admission enquiry", "When does the January intake close for admission?", false)).toBe("admission_enquiry");
   });
 
+  it("an eligibility question with a screenshot remains an enquiry, not document receipt", () => {
+    expect(categorizeEmail(
+      "Inquiry Regarding BBIT Admission Eligibility (KCSE B- Mean)",
+      "I am writing to inquire about admission into the Bachelor of Business Information Technology programme. I have attached a screenshot of my KCSE results for your reference.",
+      true
+    )).toBe("admission_enquiry");
+  });
+
   it("fallback → other", () => {
     expect(categorizeEmail("Hello", "Habari yako?", false)).toBe("other");
   });

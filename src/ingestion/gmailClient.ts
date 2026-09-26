@@ -79,7 +79,7 @@ export class GmailClient {
 
   /** Which mailbox region we read from — shown on the Configuration page. */
   watchTarget(): string {
-    return this.label ? `label:${this.label}` : "in:inbox";
+    return this.label ? `label:${this.label}` : "all mail (excluding sent, spam and trash)";
   }
 
   async listRecentMessageIds(
@@ -88,7 +88,12 @@ export class GmailClient {
   ): Promise<string[]> {
     const perPage = Math.min(opts.perPage ?? 100, 500);
     const maxPages = opts.maxPages ?? 10;
-    const scope = this.label ? `label:${this.label}` : "in:inbox";
+    // `in:inbox` misses archived mail — a common reason an applicant appears
+    // in Gmail but never reaches the console. Read the mailbox-wide region by
+    // default, while excluding messages the admissions app should never
+    // triage: sent mail, spam and trash. A configured label remains an
+    // intentional narrower watch target.
+    const scope = this.label ? `label:${this.label}` : "in:anywhere -in:spam -in:trash -from:me";
     const q = `${scope} newer_than:${lookbackDays}d`;
 
     const ids: string[] = [];
@@ -137,7 +142,9 @@ export class GmailClient {
 
     const walk = (part: MimePartNode) => {
       const disposition = (part.headers || []).find((h) => h.name.toLowerCase() === "content-disposition")?.value || "";
-      const isDocumentish = /^(application\/pdf|image\/(png|jpe?g|tiff?))$/i.test(part.mimeType);
+      const isDocumentish =
+        /^(application\/pdf|image\/(png|jpe?g|tiff?|webp|heic|heif))$/i.test(part.mimeType) ||
+        /\.(pdf|png|jpe?g|tiff?|webp|heic|heif)$/i.test(part.filename || "");
       if (part.body?.attachmentId) {
         // Named attachments always; INLINE images of document types too —
         // phone users paste their scan into the message body itself.

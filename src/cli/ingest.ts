@@ -1,5 +1,5 @@
 /**
- * `npm run ingest` — live mode: pull recent mail from the Gmail test inbox
+ * `npm run ingest` — live mode: pull recent incoming mail from Gmail All Mail
  * and run it through the pipeline.
  *
  *   npm run ingest            # one pass over recent mail
