@@ -149,6 +149,7 @@ export interface StaffUser {
   active: number;
   /** 1 when the account belongs to the seeded demo dataset. */
   demo?: number;
+  organization_id?: number | null;
 }
 
 // ── Requirements ───────────────────────────────────────────────────────────
@@ -245,7 +246,9 @@ export const ADMISSION_SYSTEMS: AdmissionSystem[] = [
 /** What a condition compares. */
 export type RuleField =
   | "mean_grade" | "subject" | "credits" | "principals"
-  | "subsidiaries" | "points" | "gpa" | "class";
+  | "subsidiaries" | "points" | "gpa" | "class"
+  /** Generic organization-defined scalar used by non-academic case types. */
+  | "numeric" | (string & {});
 
 /** One node of a requirement tree. Groups combine children; conditions compare one value. */
 export interface RuleNode {
@@ -258,7 +261,7 @@ export interface RuleNode {
   /** Conditions only. */
   field?: RuleField;
   subject?: string | null;
-  comparator?: ">=";
+  comparator?: ">=" | ">" | "<=" | "<" | "=" | "!=";
   value?: string | null;
   position?: number;
   children?: RuleNode[];
@@ -318,6 +321,36 @@ export interface EvaluationReport {
 }
 
 export type AdmissionDecision = "undecided" | "auto_admitted" | "admitted_after_review" | "not_admitted";
+
+/** Generic vocabulary for the configurable intake engine. The admissions
+ * names above remain as source-compatible aliases for existing deployments. */
+export type CaseOutcome = "undecided" | "auto_approved" | "approved_after_review" | "not_approved";
+export type Case = ApplicantRow;
+export type CaseType = {
+  id: number;
+  organization_id: number;
+  code: string;
+  name: string;
+  category: string;
+  config?: Record<string, unknown> | null;
+  active?: number;
+};
+export interface OrganizationTheme { primary: string; accent: string; }
+export interface Organization {
+  id: number;
+  name: string;
+  logo?: string | null;
+  theme: OrganizationTheme;
+}
+export interface DocumentDefinition {
+  id?: number;
+  case_type_id: number;
+  key: string;
+  label: string;
+  required: boolean;
+  blocking: boolean;
+  position?: number;
+}
 
 // ── Documents & extraction ─────────────────────────────────────────────────
 
@@ -516,6 +549,12 @@ export interface ApplicantRow {
   transfer: number;
   /** Realm flag: 1 = seeded demo applicant, 0 = live data (0/1). */
   demo: number;
+  /** Canonical generic ownership fields; null only for pre-migration rows. */
+  organization_id?: number | null;
+  case_type_id?: number | null;
+  /** Canonical aliases; programme/admission_decision remain compatibility fields. */
+  category?: string | null;
+  outcome?: CaseOutcome;
   priority: Priority;
   assigned_to: number | null;
   lifecycle: LifecycleStage;

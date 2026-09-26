@@ -55,7 +55,10 @@ export function loadConfig(): AppConfig {
           label: env.GMAIL_LABEL || undefined,
         }
       : undefined,
-    ingestLookbackDays: Number(env.INGEST_LOOKBACK_DAYS || 2),
+    // A two-day default silently hid older applications. Settings can still
+    // override this per deployment, but a fresh server starts with a useful
+    // two-week history window (the web UI can backfill 30/90/365 days).
+    ingestLookbackDays: Number(env.INGEST_LOOKBACK_DAYS || 14),
     disableOcr: env.DISABLE_OCR === "1",
     logToFile: env.LOG_TO_FILE !== "0",
     autoMissingDocsEmails: env.AUTO_MISSING_DOCS_EMAILS !== "0",
@@ -156,10 +159,11 @@ export const DEFAULT_INTAKES = ["September 2026", "January 2027"];
 
 /** Default SLA / behaviour settings (editable in Settings). */
 export const DEFAULT_SETTINGS: Record<string, string> = {
+  institution_name: "Organization",
   ref_prefix: "RU",
   sla_target_hours: "4",
   escalation_hours: "8",
-  from_name: "Riara University Admissions",
+  from_name: "Admissions",
   // v3
   unanswered_target_hours: "4", // unanswered-email panel threshold
   followup_ladder_days: "3,7,10", // Day 3 reminder, Day 7 final, Day 10 → human
@@ -258,7 +262,7 @@ export const DEFAULT_STRUCTURED_COURSES: Array<{ programme: string; block: Syste
   { programme: "BIR", block: B("KCSE", { overall: "C+", subjects: [{ subject: "English", grade: "C+", alts: ["Kiswahili"] }] }) },
   { programme: "BIR", block: B("ALEVEL", { minPrincipals: 2, minSubsidiaries: 1 }) },
   { programme: "BIR", block: B("IGCSE", { minCredits: 5 }) },
-  { programme: "BIR", block: B("DIPLOMA", { minGpa: 2.0 }) }, // Riara IR diploma, GPA 2.00/C
+  { programme: "BIR", block: B("DIPLOMA", { minGpa: 2.0 }) }, // International-relations diploma route, GPA 2.00/C
   // B. Communication & Multimedia Journalism: C+, C+ English/Kiswahili, D+ Maths.
   { programme: "BCJ", block: B("KCSE", { overall: "C+", subjects: [{ subject: "English", grade: "C+", alts: ["Kiswahili"] }, { subject: "Mathematics", grade: "D+" }] }) },
   { programme: "BCJ", block: B("DIPLOMA", { minClass: "Credit" }) },

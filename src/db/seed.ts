@@ -6,7 +6,7 @@
  */
 import type { Repo } from "./repo";
 import { DEFAULT_INTAKES, DEFAULT_PROGRAMMES, DEFAULT_SETTINGS, DEFAULT_STRUCTURED_BASE, DEFAULT_STRUCTURED_COURSES } from "../config";
-import { defaultEmailBanner } from "../pack";
+import { migratedOrganizationOne } from "../pack";
 import { blockToNodes, CATALOGUE_SEED } from "../admissions/convert";
 import type { CourseLevel, RuleNode } from "../types";
 
@@ -125,12 +125,12 @@ Kind regards,
 /** The official admission letter (OR-7: also the reset default). */
 export const ADMISSION_LETTER_DEFAULT = {
   name: "Admission letter (with full admission pack)",
-  subject: "Welcome to Riara University — Your Admission to {programme}",
+  subject: "Welcome to {institution} — Your Admission to {programme}",
   body: `Dear {name},
 
-Welcome to Riara University!
+Welcome to {institution}!
 
-Congratulations on your admission to the {programme} programme. We are delighted to extend our warmest greetings as you embark on an exciting academic journey with us. Your admission to Riara University (RU) signifies the beginning of an enriching and transformative experience, and we are thrilled to have you as part of our vibrant community.
+Congratulations on your admission to the {programme} programme. We are delighted to extend our warmest greetings as you embark on an exciting academic journey with us. Your admission to {institution} signifies the beginning of an enriching and transformative experience, and we are thrilled to have you as part of our vibrant community.
 
 In preparation for the upcoming semester, please note the following important information and deadlines:
 
@@ -160,7 +160,43 @@ export const TEMPLATE_DEFAULTS: Record<string, { name: string; subject: string; 
     ["admission_letter", ADMISSION_LETTER_DEFAULT],
   ]);
 
+function seedGenericModel(repo: Repo): void {
+  const org = repo.db.prepare("SELECT id FROM organizations WHERE id = 1").get();
+  const migrated = migratedOrganizationOne();
+  if (!org) {
+    repo.db.prepare("INSERT INTO organizations (id, name, theme) VALUES (1, ?, ?)")
+      .run(migrated?.name || DEFAULT_SETTINGS.institution_name || "Organization", JSON.stringify({ primary: "#334155", accent: "#0f766e" }));
+  }
+  if (migrated?.tagline && !repo.getSetting("splash_tagline", "")) repo.setSetting("splash_tagline", migrated.tagline);
+  // Case types are the canonical generic equivalent of the legacy programme
+  // catalogue. Codes are stable, so this is safe on every boot.
+  for (const p of DEFAULT_PROGRAMMES) {
+    repo.createCaseType(1, { code: p.code, name: p.name, category: p.school || "general" });
+  }
+  repo.createCaseType(1, { code: "GENERAL", name: "General enquiry", category: "general" });
+  const categories = [
+    ["admission", "Admission enquiry"], ["normal", "Normal enquiry"],
+    ["document_submission", "Document submission"], ["support", "Support"],
+  ] as const;
+  for (const [key, label] of categories) repo.addEmailCategory(1, { key, label });
+  for (const key of [
+    "application-form", "brochure-2026", "student-medical-form", "data-protection-form",
+    "next-of-kin-form", "hostels-list", "fee-structure-2026", "sponsorship-form",
+    "orientation-programme-2026", "credit-transfer-form",
+  ]) {
+    const exists = repo.db.prepare("SELECT 1 FROM organization_pack_slots WHERE organization_id = 1 AND key = ?").get(key);
+    if (!exists) repo.db.prepare("INSERT INTO organization_pack_slots (organization_id, key) VALUES (1, ?)").run(key);
+  }
+  // Backfill ownership without rewriting or deleting any legacy row.
+  repo.db.prepare("UPDATE applicants SET organization_id = 1 WHERE organization_id IS NULL").run();
+  repo.db.prepare("UPDATE applicants SET category = COALESCE(category, programme) WHERE category IS NULL").run();
+  repo.db.prepare("UPDATE applicants SET case_type_id = (SELECT id FROM case_types WHERE organization_id = 1 AND code = applicants.programme) WHERE case_type_id IS NULL AND programme IS NOT NULL").run();
+  repo.db.prepare("UPDATE staff_users SET organization_id = 1 WHERE organization_id IS NULL").run();
+  repo.db.prepare("UPDATE templates SET organization_id = 1 WHERE organization_id IS NULL").run();
+}
+
 export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
+  seedGenericModel(repo);
   // Older versions had a NULL-broken rule upsert that duplicated every base
   // requirement row on each re-seed. Clean that up idempotently.
   repo.dedupeRules();
@@ -267,15 +303,8 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
   if (!repo.getSetting("reg_date", "")) repo.setSetting("reg_date", "Monday 31st August, 2026");
   if (!repo.getSetting("orientation_dates", "")) repo.setSetting("orientation_dates", "Thursday 3rd and Friday 4th September, 2026");
 
-  // Email banner: seed the bundled official banner once; staff can replace it
-  // in Configuration → Email branding.
-  if (!repo.getSetting("email_banner", "")) {
-    const banner = defaultEmailBanner();
-    if (banner) {
-      repo.setSetting("email_banner", banner.base64);
-      repo.setSetting("email_banner_mime", banner.mime);
-    }
-  }
+  // No generic banner is seeded. An organization can upload its own logo or
+  // configure a banner through the organization-owned branding settings.
 
   repo.purgeExpiredSessions();
 }

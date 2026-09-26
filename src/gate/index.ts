@@ -12,6 +12,39 @@ export interface GateDecision {
   reason: string;
 }
 
+export interface CaseTypeGateInput {
+  matrixComplete: boolean;
+  ruleTreePassed: boolean;
+  watcher: { ran: boolean; flagged: boolean };
+  confidenceFloorMet: boolean;
+}
+
+export interface CaseTypeGateDecision {
+  action: "auto_approve" | "human_review";
+  outcome: "auto_approved" | "undecided";
+  reason: string;
+}
+
+/**
+ * The only code path permitted to produce a generic auto-approval. Every
+ * prerequisite is explicit: a complete case-type matrix, deterministic rule
+ * pass, clean watcher, and the configured confidence floor. Gemini facts and
+ * category labels cannot satisfy any prerequisite themselves.
+ */
+export function caseTypeGate(input: CaseTypeGateInput): CaseTypeGateDecision {
+  if (input.matrixComplete && input.ruleTreePassed && input.watcher.ran && !input.watcher.flagged && input.confidenceFloorMet) {
+    return { action: "auto_approve", outcome: "auto_approved", reason: "complete matrix, code rule tree, confidence floor and clean watcher" };
+  }
+  const reasons = [
+    !input.matrixComplete && "document matrix is incomplete",
+    !input.ruleTreePassed && "code rule tree did not pass",
+    !input.watcher.ran && "watcher did not run",
+    input.watcher.flagged && "watcher flagged the case",
+    !input.confidenceFloorMet && "confidence is below the configured floor",
+  ].filter(Boolean).join("; ");
+  return { action: "human_review", outcome: "undecided", reason: reasons || "human review required" };
+}
+
 export function gate(
   finalStatus: Classification,
   watcher: { ran: boolean; flagged: boolean }

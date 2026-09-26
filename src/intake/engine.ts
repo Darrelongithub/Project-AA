@@ -123,6 +123,7 @@ const NEG_PHRASES = [
   "payment already made",
 ];
 const NEG_KEYWORDS = ["cv", "resume", "recruitment", "vacancy", "complaint", "refund", "invoice"];
+const ALWAYS_NON_ADMISSIONS = new Set(["cv", "resume", "recruitment", "vacancy"]);
 
 /** Filenames that look like admissions documents boost the score (+2 once). */
 const ATTACHMENT_RE = /application|transcript|certificate|statement|result|form|national\s?id|\bid\b/i;
@@ -244,18 +245,30 @@ export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
   }
 
   // ── Negatives ──────────────────────────────────────────────────────────
+  // Disambiguation is contextual. CV/vacancy/recruitment language is a hard
+  // non-admissions signal, but “complaint about my admission application” or
+  // “refund of my application fee” is still applicant mail and must reach a
+  // human. The old flat penalty parked those legitimate cases.
+  const corpus = `${subject}\n${body}`;
+  const admissionsContext =
+    APP_KEYWORDS.some((kw) => has(corpus, kw)) ||
+    ENQ_PHRASES.some((phrase) => has(corpus, phrase)) ||
+    ENQ_KEYWORDS.some((kw) => has(corpus, kw)) ||
+    input.courseNames.some((course) => course && has(corpus, course.toLowerCase()));
   let penalty = 0;
   for (const phrase of NEG_PHRASES) {
-    if (has(`${subject}\n${body}`, phrase)) {
+    if (!has(corpus, phrase)) continue;
+    const tiedToAdmissions = admissionsContext && phrase === "parent evening";
+    if (!tiedToAdmissions) {
       penalty += 6;
       negatives.push(`"${phrase}"`);
     }
   }
   for (const kw of NEG_KEYWORDS) {
-    if (has(`${subject}\n${body}`, kw)) {
-      penalty += 4;
-      negatives.push(kw);
-    }
+    if (!has(corpus, kw)) continue;
+    if (!ALWAYS_NON_ADMISSIONS.has(kw) && admissionsContext) continue;
+    penalty += 4;
+    negatives.push(kw);
   }
   const net = score - penalty;
 
@@ -289,6 +302,14 @@ export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
   if (hotwordHit) {
     verdict.category = "application";
     verdict.via = "hotword";
+    return verdict;
+  }
+  const studentRelatedIssue =
+    admissionsContext && negatives.length === 0 &&
+    ["complaint", "refund", "invoice"].some((kw) => has(corpus, kw));
+  if (studentRelatedIssue && score >= 1) {
+    verdict.category = enq >= ENQ_THRESHOLD ? "enquiry" : "application";
+    verdict.via = "score";
     return verdict;
   }
   if (net >= APP_THRESHOLD) {

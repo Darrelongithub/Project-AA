@@ -35,8 +35,8 @@ import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { gmailRedirectUri } from "./oauth";
 import { LoginThrottle } from "./throttle";
-import { INSTITUTION, emailBanner } from "../branding";
-import { admissionPack, applicationPack, PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
+import { emailBanner, organizationName } from "../branding";
+import { organizationPack, PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
 import { EXAM_SYSTEMS } from "../config";
 import * as fs from "fs";
 import * as path from "path";
@@ -48,13 +48,19 @@ export interface WebDeps {
   gmailSync?: () => Promise<Error | null>;
   /** One-off backfill hook — one pass over a deeper window (30/90/365 days). */
   gmailBackfill?: (days: number) => Promise<Error | null>;
+  /** True when the running process has live environment Gmail credentials. */
+  gmailConfigured?: boolean;
+  gmailAddress?: string;
+  /** Test the active Gmail client, including env-only deployments. */
+  gmailTest?: () => Promise<Error | null>;
 }
 
 export function createApp(deps: WebDeps): Express {
-  const { repo, ctx, gmailSync, gmailBackfill } = deps;
+  const { repo, ctx, gmailSync, gmailBackfill, gmailConfigured } = deps;
   const app = express();
-  /** Institution name for all branding — fixed; no settings field exists. */
-  const instName = (): string => INSTITUTION;
+  const organizationId = (req?: Request): number => req?.staff?.organization_id ?? 1;
+  const instName = (req?: Request): string => organizationName(repo, organizationId(req));
+  const authName = (): string => repo.getOrganization(1)?.name?.trim() || organizationName(repo, 1);
 
   app.disable("x-powered-by");
   // Behind any reverse proxy (the preview environment included) req.ip is the
@@ -68,10 +74,17 @@ export function createApp(deps: WebDeps): Express {
   const c = (req: Request) => ({
     repo,
     user: req.staff!,
-    unread: repo.unreadCount(req.staff!.id, req.staff!.demo),
+    unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
     csrf: req.csrfToken ?? "",
     theme: req.theme,
-    institution: instName(),
+    institution: instName(req),
+    brand: repo.getOrganization(organizationId(req)) ? {
+      ...repo.getOrganization(organizationId(req))!.theme,
+      logo: repo.getOrganization(organizationId(req))!.logo,
+      tagline: organizationId(req) === 1 ? repo.getSetting("splash_tagline", "") : "",
+    } : undefined,
+    gmailConfigured: Boolean(gmailConfigured) && repo.getSetting("gmail_disabled", "") !== "1",
+    gmailAddress: deps.gmailAddress,
   });
 
   const backToCase = (id: string | number, msg: string) => `/case/${id}?msg=${encodeURIComponent(msg)}`;
@@ -101,8 +114,7 @@ export function createApp(deps: WebDeps): Express {
     res.send(Buffer.from(LOGO_WHITE_BASE64, "base64"));
   });
 
-  // Browser-tab mark: the purple "R" app tile — crisp at 16px, unmistakably
-  // Riara. A real favicon (not the wide crest squashed into a square).
+  // Browser-tab mark: a neutral compatibility asset; tenant logos are stored on the organization row.
   app.get("/assets/favicon", (_req, res) => {
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "public, max-age=604800");
@@ -124,8 +136,8 @@ export function createApp(deps: WebDeps): Express {
   }
 
   /** Current email banner (used by the Configuration preview). */
-  app.get("/assets/email-banner", requireLogin, (_req, res) => {
-    const b = emailBanner(repo);
+  app.get("/assets/email-banner", requireLogin, (req, res) => {
+    const b = emailBanner(repo, organizationId(req));
     if (!b) return res.status(404).send("No banner configured.");
     res.setHeader("Content-Type", b.mime);
     res.setHeader("Cache-Control", "no-store");
@@ -156,6 +168,27 @@ export function createApp(deps: WebDeps): Express {
     }
   );
 
+  /** Organization-owned logo upload; the bytes are stored in the tenant row,
+   * never read from a bundled institution asset. */
+  app.post(
+    "/config/organization/logo",
+    requireLogin,
+    requireRole("admin"),
+    csrfCheck,
+    express.raw({ type: ["image/jpeg", "image/png", "image/svg+xml"], limit: "2mb" }),
+    (req, res) => {
+      const buf = req.body as Buffer;
+      if (!Buffer.isBuffer(buf) || buf.length < 16) return res.status(400).send("Logo missing");
+      const png = buf.length > 8 && buf.readUInt32BE(0) === 0x89504e47 && buf.subarray(4, 8).toString("hex") === "0d0a1a0a";
+      const jpg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+      const svg = String(buf.subarray(0, 256)).trimStart().startsWith("<svg");
+      if (!png && !jpg && !svg) return res.status(415).send("Logo must be PNG, JPEG or SVG");
+      repo.updateOrganization(organizationId(req), { logo: `data:${png ? "image/png" : jpg ? "image/jpeg" : "image/svg+xml"};base64,${buf.toString("base64")}` });
+      repo.audit(null, req.staff!.username, "organization_logo_changed", `${buf.length} bytes`);
+      res.status(204).end();
+    }
+  );
+
   // OR-1: on a fresh install the whole console reduces to one screen — the
   // first-run setup where the owner creates their own admin account.
   const setupTokens = new Map<string, number>(); // one-time token -> expiry (epoch ms)
@@ -179,7 +212,7 @@ export function createApp(deps: WebDeps): Express {
       res.status(404).send("Not found");
       return;
     }
-    res.send(setupPage(newSetupToken(), undefined, req.theme, instName()));
+    res.send(setupPage(newSetupToken(), undefined, req.theme, authName()));
   });
 
   app.post("/setup", (req, res) => {
@@ -187,7 +220,7 @@ export function createApp(deps: WebDeps): Express {
       res.status(404).send("Not found");
       return;
     }
-    const fail = (msg: string) => res.status(200).send(setupPage(newSetupToken(), msg, req.theme, instName()));
+    const fail = (msg: string) => res.status(200).send(setupPage(newSetupToken(), msg, req.theme, authName()));
     const token = String(req.body._setup ?? "");
     const exp = setupTokens.get(token);
     setupTokens.delete(token);
@@ -227,7 +260,7 @@ export function createApp(deps: WebDeps): Express {
       return;
     }
     // ?msg= carries the one success notice (password just reset via code).
-    res.send(loginPage(undefined, req.theme, instName(), newLoginCsrf(res), req.query.msg ? String(req.query.msg) : undefined));
+    res.send(loginPage(undefined, req.theme, authName(), newLoginCsrf(res), req.query.msg ? String(req.query.msg) : undefined));
   });
 
   /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
@@ -263,7 +296,7 @@ export function createApp(deps: WebDeps): Express {
   app.post("/login", (req, res) => {
     const ip = req.ip ?? "?";
     if (loginBlocked(ip)) {
-      res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, instName(), newLoginCsrf(res)));
+      res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, authName(), newLoginCsrf(res)));
       return;
     }
     // Login-CSRF: the token the page rendered must come back in the body AND
@@ -271,13 +304,13 @@ export function createApp(deps: WebDeps): Express {
     const provided = String(req.body._lcsrf ?? "");
     const cookieToken = parseCookies(req.headers.cookie)["lcsrf"] ?? "";
     if (!provided || provided !== cookieToken) {
-      res.status(403).send(loginPage("That sign-in page expired — please try again.", req.theme, instName(), newLoginCsrf(res)));
+      res.status(403).send(loginPage("That sign-in page expired — please try again.", req.theme, authName(), newLoginCsrf(res)));
       return;
     }
     const staff = loginAttempt(repo, String(req.body.username ?? ""), String(req.body.password ?? ""));
     if (!staff) {
       loginRecordFail(ip);
-      res.status(401).send(loginPage("Invalid username or password.", req.theme, instName(), newLoginCsrf(res)));
+      res.status(401).send(loginPage("Invalid username or password.", req.theme, authName(), newLoginCsrf(res)));
       return;
     }
     const session = repo.createSession(staff.id);
@@ -305,21 +338,21 @@ export function createApp(deps: WebDeps): Express {
   const resetThrottle = new LoginThrottle({ windowMs: 10 * 60_000, maxFails: 5 });
 
   app.get("/reset-password", (req, res) => {
-    res.send(resetPasswordPage(undefined, req.theme, instName(), newLoginCsrf(res)));
+    res.send(resetPasswordPage(undefined, req.theme, authName(), newLoginCsrf(res)));
   });
 
   app.post("/reset-password", (req, res) => {
     const ip = req.ip ?? "?";
     if (!resetThrottle.allowed(ip)) {
-      return res.status(429).send(resetPasswordPage("Too many reset attempts from this address — please wait a few minutes.", req.theme, instName(), newLoginCsrf(res)));
+      return res.status(429).send(resetPasswordPage("Too many reset attempts from this address — please wait a few minutes.", req.theme, authName(), newLoginCsrf(res)));
     }
     // Same anonymous double-submit CSRF as /login.
     const provided = String(req.body._lcsrf ?? "");
     const cookieToken = parseCookies(req.headers.cookie)["lcsrf"] ?? "";
     if (!provided || provided !== cookieToken) {
-      return res.status(403).send(resetPasswordPage("That page expired — please try again.", req.theme, instName(), newLoginCsrf(res)));
+      return res.status(403).send(resetPasswordPage("That page expired — please try again.", req.theme, authName(), newLoginCsrf(res)));
     }
-    const refuse = (m: string) => res.send(resetPasswordPage(m, req.theme, instName(), newLoginCsrf(res)));
+    const refuse = (m: string) => res.send(resetPasswordPage(m, req.theme, authName(), newLoginCsrf(res)));
     const GENERIC = "We couldn't verify that username and code. Check both, or ask your admin for a fresh code.";
     const username = String(req.body.username ?? "").trim();
     const code = String(req.body.code ?? "").trim();
@@ -397,9 +430,9 @@ export function createApp(deps: WebDeps): Express {
     if (!a || !repo.applicantVisibleTo(req.staff!, a)) {
       res.status(403).send(layout({
         title: "Outside your schools",
-        institution: instName(),
+        institution: instName(req),
         user: req.staff,
-        unread: repo.unreadCount(req.staff!.id),
+        unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
         csrf: req.csrfToken,
         content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
           <h1>This case is outside your assigned schools</h1>
@@ -487,11 +520,11 @@ export function createApp(deps: WebDeps): Express {
     if (!repo.claimOutboxDraft(draft.id, new Date().toISOString())) {
       return res.redirect(backToCase(id, "That draft is already being sent — refresh before trying again."));
     }
-    const draftTpl = draft.template_key ? repo.getTemplate(draft.template_key) : undefined;
+    const draftTpl = draft.template_key ? repo.getTemplate(draft.template_key, organizationId(req)) : undefined;
     const pack = packForTemplate(draftTpl?.attach_pack, id, req.staff!.username);
     try {
       await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
-        banner: draftTpl && draftTpl.include_banner === 0 ? null : emailBanner(repo),
+        banner: draftTpl && draftTpl.include_banner === 0 ? null : emailBanner(repo, organizationId(req)),
         attachments: pack ? pack.files : [],
       });
       repo.insertEmail({
@@ -562,7 +595,8 @@ export function createApp(deps: WebDeps): Express {
    * worst kind of failure. */
   const packForTemplate = (flag: string | undefined, applicantId: number, actor: string): { files: PackFile[]; label: string } | null => {
     if (flag !== "application" && flag !== "admission") return null;
-    const pack = flag === "admission" ? admissionPack() : applicationPack();
+    const applicant = repo.getApplicant(applicantId);
+    const pack = organizationPack(repo, applicant?.organization_id ?? 1, [flag]);
     if (pack.issues.length) repo.audit(applicantId, actor, "pack_incomplete", pack.issues.join("; "));
     return { files: pack.files, label: flag };
   };
@@ -571,7 +605,7 @@ export function createApp(deps: WebDeps): Express {
     const id = Number(req.params.id);
     const a = repo.getApplicant(id);
     if (!a) return res.status(404).send("Case not found.");
-    const tpl = repo.getTemplate(String(req.body.template ?? ""));
+    const tpl = repo.getTemplate(String(req.body.template ?? ""), organizationId(req));
     if (!tpl) return res.redirect(backToCase(id, "Unknown template."));
     if (req.body.preview === undefined && !sendGuardOk(`${req.staff!.id}:${id}:${tpl.key}`)) {
       return res.redirect(backToCase(id, "Duplicate send ignored — that reply was just sent."));
@@ -582,7 +616,7 @@ export function createApp(deps: WebDeps): Express {
     const { missing } = fillSlots(requirements, present);
     const rendered = renderTemplate(tpl.subject, tpl.body, {
       ref: a.ref_number,
-      institution: instName(),
+      institution: instName(req),
       name: a.full_name ?? undefined,
       missingLabels: missing.map((m) => docLabel(m.document_type)),
       checklist: checklistText({ requirements, presentTypes: present }),
@@ -595,7 +629,7 @@ export function createApp(deps: WebDeps): Express {
     const pack = packForTemplate(tpl.attach_pack, id, req.staff!.username);
     try {
       await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
-        banner: tpl.include_banner === 0 ? null : emailBanner(repo),
+        banner: tpl.include_banner === 0 ? null : emailBanner(repo, organizationId(req)),
         attachments: pack ? pack.files : [],
       });
     } catch (e) {
@@ -622,11 +656,11 @@ export function createApp(deps: WebDeps): Express {
     if (!isAdmission && kind !== "application") {
       return res.redirect(backToCase(id, "Unknown pack — nothing sent."));
     }
-    const tpl = repo.getTemplate(isAdmission ? "admission_letter" : "docs_request");
+    const tpl = repo.getTemplate(isAdmission ? "admission_letter" : "docs_request", organizationId(req));
     if (!tpl) return res.redirect(backToCase(id, "Template missing — nothing sent."));
     const rendered = renderTemplate(tpl.subject, tpl.body, {
       ref: a.ref_number,
-      institution: instName(),
+      institution: instName(req),
       name: a.full_name ?? undefined,
       missingLabels: [],
       checklist: "",
@@ -635,14 +669,14 @@ export function createApp(deps: WebDeps): Express {
       regDate: repo.getSetting("reg_date", ""),
       orientationDates: repo.getSetting("orientation_dates", ""),
     });
-    const pack = isAdmission ? admissionPack() : applicationPack();
+    const pack = organizationPack(repo, a.organization_id ?? organizationId(req), [isAdmission ? "admission" : "application"]);
     // Missing pack files must never be a silent gap in a real send.
     if (pack.issues.length) {
       repo.audit(id, req.staff!.username, "pack_incomplete", pack.issues.join("; "));
     }
     try {
       await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
-        banner: tpl.include_banner === 0 ? null : emailBanner(repo),
+        banner: tpl.include_banner === 0 ? null : emailBanner(repo, organizationId(req)),
         attachments: pack.files,
       });
     } catch (e) {
@@ -671,7 +705,7 @@ export function createApp(deps: WebDeps): Express {
   const renderFor = (a: ApplicantRow, subject: string, body: string) =>
     renderTemplate(subject, body, {
       ref: a.ref_number,
-      institution: instName(),
+      institution: organizationName(repo, a.organization_id ?? 1),
       name: a.full_name ?? undefined,
       missingLabels: repo.effectiveRequirements(a)
         .filter((r) => r.required)
@@ -718,9 +752,9 @@ export function createApp(deps: WebDeps): Express {
     if (!emails.length) {
       return res.status(404).send(layout({
         title: "Conversation not found",
-        institution: instName(),
+        institution: instName(req),
         user: req.staff,
-        unread: repo.unreadCount(req.staff!.id),
+        unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
         csrf: req.csrfToken,
         content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
           <h1>Conversation not found</h1>
@@ -787,9 +821,9 @@ export function createApp(deps: WebDeps): Express {
   const refuseScope = (req: Request, res: Response, backHref = "/compose", backLabel = "← Back to the composer"): void => {
     res.status(403).send(layout({
       title: "Outside your schools",
-      institution: instName(),
+      institution: instName(req),
       user: req.staff,
-      unread: repo.unreadCount(req.staff!.id),
+      unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
       csrf: req.csrfToken,
       content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
         <h1>This case is outside your assigned schools</h1>
@@ -814,7 +848,7 @@ export function createApp(deps: WebDeps): Express {
       const a = composeCase(req, caseId);
       if (a === "refused") return refuseScope(req, res);
       if (a) {
-        const tpl = templateKey ? repo.getTemplate(templateKey) : undefined;
+        const tpl = templateKey ? repo.getTemplate(templateKey, organizationId(req)) : undefined;
         const rendered = tpl ? renderFor(a, tpl.subject, tpl.body) : undefined;
         return res.send(composeWindowPage(c(req), {
           applicant: a, templateKey: tpl?.key,
@@ -837,7 +871,7 @@ export function createApp(deps: WebDeps): Express {
     // Template choice happens via GET (chips re-render the draft); the POST
     // has exactly one job: send. The template only decides pack + banner.
     const tplKey = String(req.body.template ?? "");
-    const tpl = tplKey ? repo.getTemplate(tplKey) : undefined;
+    const tpl = tplKey ? repo.getTemplate(tplKey, organizationId(req)) : undefined;
 
     const subject = String(req.body.subject ?? "").trim();
     const body = String(req.body.body ?? "").trim();
@@ -850,7 +884,7 @@ export function createApp(deps: WebDeps): Express {
     const pack = packForTemplate(tpl?.attach_pack, a.id, req.staff!.username);
     try {
       await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
-        banner: tpl && tpl.include_banner === 0 ? null : emailBanner(repo),
+        banner: tpl && tpl.include_banner === 0 ? null : emailBanner(repo, organizationId(req)),
         attachments: pack ? pack.files : [],
       });
     } catch (e) {
@@ -873,7 +907,7 @@ export function createApp(deps: WebDeps): Express {
   app.get("/case/:id/compose", requireLogin, (req, res) => {
     const a = repo.getApplicant(Number(req.params.id));
     if (!a) return res.status(404).send("Case not found.");
-    const tpl = repo.getTemplate(String(req.query.template ?? ""));
+    const tpl = repo.getTemplate(String(req.query.template ?? ""), organizationId(req));
     if (!tpl) return res.redirect(backToCase(a.id, "Unknown template."));
     const rendered = renderFor(a, tpl.subject, tpl.body);
     res.send(composePage(c(req), a, tpl, rendered));
@@ -883,7 +917,7 @@ export function createApp(deps: WebDeps): Express {
     const a = repo.getApplicant(Number(req.params.id));
     if (!a) return res.status(404).send("Case not found.");
     const tplKey = String(req.body.template ?? "");
-    const tpl = repo.getTemplate(tplKey);
+    const tpl = repo.getTemplate(tplKey, organizationId(req));
     if (!tpl) return res.redirect(backToCase(a.id, "Unknown template."));
     const subject = String(req.body.subject ?? "").trim();
     const body = String(req.body.body ?? "").trim();
@@ -894,7 +928,7 @@ export function createApp(deps: WebDeps): Express {
     const pack = packForTemplate(tpl.attach_pack, a.id, req.staff!.username);
     try {
       await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
-        banner: tpl.include_banner === 0 ? null : emailBanner(repo),
+        banner: tpl.include_banner === 0 ? null : emailBanner(repo, organizationId(req)),
         attachments: pack ? pack.files : [],
       });
     } catch (e) {
@@ -1414,10 +1448,14 @@ export function createApp(deps: WebDeps): Express {
   app.get("/pack/:key", requireLogin, (req, res) => {
     const slot = PACK_SLOTS.find((x) => x.key === req.params.key);
     if (!slot) return res.status(404).send("Unknown pack file.");
+    const owned = repo.listOrganizationPackSlots(organizationId(req)).find((x) => x.key === slot.key);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${owned?.filename || slot.pretty}"`);
+    if (owned?.content) return res.send(owned.content);
+    // Only the migrated Organization #1 dataset may read bundled PDFs.
+    if (organizationId(req) !== 1) return res.status(404).send("Pack file missing.");
     const file = path.join(PACK_DIR, slot.file);
     if (!fs.existsSync(file)) return res.status(404).send("Pack file missing.");
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${slot.pretty}"`);
     res.sendFile(file);
   });
   app.post(
@@ -1433,8 +1471,12 @@ export function createApp(deps: WebDeps): Express {
       if (!Buffer.isBuffer(body) || body.length < 512 || body.subarray(0, 5).toString() !== "%PDF-") {
         return res.status(400).send("Not a PDF.");
       }
-      fs.writeFileSync(path.join(PACK_DIR, slot.file), body);
-      repo.audit(null, req.staff!.username, "pack_file_replaced", `${slot.file} replaced (${body.length} bytes)`);
+      repo.setOrganizationPackSlot(organizationId(req), slot.key, {
+        filename: slot.pretty,
+        mime: "application/pdf",
+        content: body,
+      });
+      repo.audit(null, req.staff!.username, "pack_file_replaced", `${slot.key} replaced (${body.length} bytes)`);
       res.status(200).send("saved");
     }
   );
@@ -1445,10 +1487,12 @@ export function createApp(deps: WebDeps): Express {
   const settingsBack = (msg: string) => `/settings?msg=${encodeURIComponent(msg)}#connections`;
 
   app.post("/settings/gmail/credentials", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    // Saving credentials is an explicit reconnect/enable action.
+    repo.setSetting("gmail_disabled", "");
     repo.setSetting("gmail_address", String(req.body.gmail_address ?? "").trim());
     repo.setSetting("gmail_client_id", String(req.body.gmail_client_id ?? "").trim());
-    // Always the inbox (the watcher is the same for everyone). pin the OAuth
-    // origin only for reverse-proxy / HTTPS deployments — advanced field.
+    // The watcher reads incoming All Mail (the same region for everyone).
+    // Pin the OAuth origin only for reverse-proxy / HTTPS deployments — advanced field.
     repo.setSetting("gmail_public_base_url", String(req.body.gmail_public_base_url ?? "").trim());
     // Secret is write-only in the UI: kept if the field is left blank.
     const secret = String(req.body.gmail_client_secret ?? "").trim();
@@ -1516,6 +1560,7 @@ export function createApp(deps: WebDeps): Express {
         ));
       }
       repo.setSetting("gmail_refresh_token", json.refresh_token);
+      repo.setSetting("gmail_disabled", "");
       repo.audit(null, req.staff!.username, "gmail_connected", repo.getSetting("gmail_address", ""));
       res.redirect(settingsBack("Gmail connected — live sorting starts within a minute."));
     } catch (e) {
@@ -1534,6 +1579,17 @@ export function createApp(deps: WebDeps): Express {
       refreshToken: repo.getSetting("gmail_refresh_token", ""),
     };
     if (!cfg.address || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
+      if (deps.gmailTest && gmailConfigured && repo.getSetting("gmail_disabled", "") !== "1") {
+        const envError = await deps.gmailTest();
+        if (!envError) {
+          repo.setSetting("gmail_last_error", "");
+          repo.audit(null, req.staff!.username, "gmail_tested", "environment-configured Gmail connection succeeded");
+          return res.redirect(settingsBack("Gmail test connection succeeded — the environment-configured mailbox is reachable."));
+        }
+        repo.setSetting("gmail_last_error", envError.message.slice(0, 300));
+        repo.audit(null, req.staff!.username, "gmail_test_failed", envError.message.slice(0, 200));
+        return res.redirect(settingsBack(`Gmail test connection failed: ${envError.message}`));
+      }
       return res.redirect(settingsBack("Gmail is not fully configured yet — save credentials (and connect, or paste a refresh token) first."));
     }
     try {
@@ -1555,12 +1611,14 @@ export function createApp(deps: WebDeps): Express {
   });
 
   app.post("/settings/gmail/disconnect", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    // Pause an environment-managed client without deleting its env secret.
+    repo.setSetting("gmail_disabled", "1");
     repo.setSetting("gmail_refresh_token", "");
     repo.audit(null, req.staff!.username, "gmail_disconnected", "");
     res.redirect(settingsBack("Gmail disconnected — live fetching stopped."));
   });
 
-  // Manual "Sync now": pull the inbox immediately instead of waiting for the
+  // Manual "Sync now": pull incoming All Mail immediately instead of waiting for the
   // next 60s poll. Errors are surfaced verbatim on the config page — a broken
   // connection is never silently ignored.
   app.post("/settings/gmail/sync", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
@@ -1667,6 +1725,20 @@ export function createApp(deps: WebDeps): Express {
     }
   });
 
+  app.post("/settings/organization", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const name = String(req.body.organization_name ?? "").trim();
+    const primary = String(req.body.primary_color ?? "").trim();
+    const accent = String(req.body.accent_color ?? "").trim();
+    const validColor = (value: string) => /^#[0-9a-f]{6}$/i.test(value);
+    if (!name) return res.redirect(`/settings?msg=${encodeURIComponent("Organization name is required.")}#letters`);
+    if (!validColor(primary) || !validColor(accent)) {
+      return res.redirect(`/settings?msg=${encodeURIComponent("Colours must be six-digit hexadecimal values.")}#letters`);
+    }
+    repo.updateOrganization(organizationId(req), { name, theme: { primary, accent } });
+    repo.audit(null, req.staff!.username, "organization_identity_changed", `${name} (${primary}, ${accent})`);
+    res.redirect(`/settings?msg=${encodeURIComponent("Organization identity saved.")}#letters`);
+  });
+
   app.post("/settings/general", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     // Blank identity fields keep their current value (an empty ref prefix
     // would break ref generation); numbers are validated.
@@ -1674,7 +1746,7 @@ export function createApp(deps: WebDeps): Express {
     const numOk = (v: string) => /^\d+(\.\d+)?$/.test(v) && Number(v) > 0;
     const ladderOk = (v: string) => v.split(",").every((p) => /^\d+$/.test(p.trim()) && Number(p.trim()) > 0);
     for (const key of [
-      "ref_prefix", "sla_target_hours", "escalation_hours", "from_name",
+      "institution_name", "ref_prefix", "sla_target_hours", "escalation_hours", "from_name",
       "unanswered_target_hours", "followup_ladder_days", "retention_days",
       "reg_date", "orientation_dates", "intake_hotwords",
     ]) {
@@ -1692,7 +1764,10 @@ export function createApp(deps: WebDeps): Express {
         ignored.push(key.replace(/_/g, " "));
         continue;
       }
-      repo.setSetting(key, v);
+      if (!(key === "institution_name" && organizationId(req) !== 1)) repo.setSetting(key, v);
+      if (key === "institution_name" && organizationId(req) !== 1 && v) {
+        repo.updateOrganization(organizationId(req), { name: v });
+      }
     }
     repo.audit(null, req.staff!.username, "settings_changed", "general settings updated");
     res.redirect(
@@ -1790,12 +1865,12 @@ export function createApp(deps: WebDeps): Express {
   app.get("/templates", requireLogin, requireRole("admin"), (req, res) => {
     const key = String(req.query.template ?? "");
     const msg = req.query.msg ? String(req.query.msg) : undefined;
-    res.send(templatesPage(c(req), repo.listTemplates().some((t) => t.key === key) ? key : undefined, msg));
+    res.send(templatesPage(c(req), repo.listTemplates(organizationId(req)).some((t) => t.key === key) ? key : undefined, msg));
   });
 
   app.post("/templates/save", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const key = String(req.body.key ?? "");
-    const existing = repo.getTemplate(key);
+    const existing = repo.getTemplate(key, organizationId(req));
     if (!existing) return res.redirect(`/templates?msg=${encodeURIComponent("Unknown template — nothing saved.")}`);
     const name = String(req.body.name ?? "").trim();
     const subject = String(req.body.subject ?? "").trim();
@@ -1837,12 +1912,16 @@ export function createApp(deps: WebDeps): Express {
     if (unknown.length) {
       return res.redirect(`/staff?msg=${encodeURIComponent(`Unknown school(s): ${unknown.join(", ")} — nothing saved.`)}#scopes`);
     }
-    repo.setScopes(staffId, schools);
+    const restoreFull = String(req.body.scope_mode ?? "") === "unscoped";
+    if (restoreFull) repo.clearScopes(staffId);
+    else repo.setScopes(staffId, schools);
     repo.audit(null, req.staff!.username, "scope_changed",
-      `${member.username}: ${schools.length ? schools.join(", ") : "scope cleared (full visibility)"}`);
-    res.redirect(`/staff?msg=${encodeURIComponent(schools.length
-      ? `${member.display_name} now sees: ${schools.join(", ")}.`
-      : `${member.display_name}'s scope cleared — they see all schools again.`)}#scopes`);
+      `${member.username}: ${restoreFull ? "scope cleared (full visibility)" : schools.length ? schools.join(", ") : "no access"}`);
+    res.redirect(`/staff?msg=${encodeURIComponent(restoreFull
+      ? `${member.display_name}'s scope cleared — they see all schools again.`
+      : schools.length
+        ? `${member.display_name} now sees: ${schools.join(", ")}.`
+        : `${member.display_name} now has no school access until an administrator assigns one.`)}#scopes`);
   });
 
   app.get("/staff", requireLogin, requireRole("admin"), (req, res) =>
@@ -2018,10 +2097,10 @@ export function createApp(deps: WebDeps): Express {
     }
     res.status(404).send(layout({
       title: "Page not found",
-      institution: instName(),
+      institution: instName(req),
       publicPage: !req.staff,
       user: req.staff,
-      unread: req.staff ? repo.unreadCount(req.staff.id) : undefined,
+      unread: req.staff ? repo.unreadCount(req.staff.id, req.staff.demo, repo.visibleSchoolsFor(req.staff)) : undefined,
       csrf: req.staff ? req.csrfToken : undefined,
       content: `<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
         <h1>Page not found</h1>
@@ -2041,7 +2120,7 @@ export function createApp(deps: WebDeps): Express {
     }
     res.status(500).send(layout({
       title: "Something went wrong",
-      institution: instName(),
+      institution: instName(req),
       publicPage: !req.staff,
       user: req.staff,
       content: `<div class="card" style="max-width:520px;margin:60px auto;text-align:center">

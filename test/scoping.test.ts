@@ -7,7 +7,8 @@
  *     direct case URLs, case actions and the search API.
  *  2. Scoping is assigned in ONE action (a single save covers the whole
  *     school set) from ONE matrix page (Staff configuration) — nowhere else.
- *  3. Admins are never scoped; staff with no scope keep full visibility.
+ *  3. Admins are never scoped; unscoped staff keep full visibility, while an
+ *     explicitly empty scope means no access.
  *  4. Cases with no programme are never visible to scoped staff (no
  *     accidental over-sharing), and out-of-scope access is refused loudly.
  */
@@ -185,6 +186,31 @@ describe("one matrix page, one action", () => {
     });
     expect(res2.status).toBe(302);
     expect(repo.scopesFor(floId)).toEqual(["School of Nursing"]);
+  });
+
+  it("an empty saved selection is explicit no access, and full visibility is a separate action", async () => {
+    const { base } = await startServer();
+    const admin = await loginAs(base, "admin", "admin123");
+    const floId = repo.getStaffByUsername("flo")!.id;
+    const noAccess = await fetch(`${base}/staff/scopes`, {
+      method: "POST", headers: { cookie: admin.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${admin.csrf}&staff_id=${floId}`,
+      redirect: "manual",
+    });
+    expect(noAccess.status).toBe(302);
+    expect(repo.visibleSchoolsFor(repo.getStaff(floId)!)).toEqual([]);
+    expect(repo.mailFolderCounts({ schools: [] }).all).toBe(0);
+
+    const restore = await fetch(`${base}/staff/scopes`, {
+      method: "POST", headers: { cookie: admin.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${admin.csrf}&staff_id=${floId}&scope_mode=unscoped`,
+      redirect: "manual",
+    });
+    expect(restore.status).toBe(302);
+    expect(repo.visibleSchoolsFor(repo.getStaff(floId)!)).toBeNull();
+    const page = await (await fetch(`${base}/staff`, { headers: { cookie: admin.cookie } })).text();
+    expect(page).toContain("Saving an empty selection gives");
+    expect(page).toContain("Restore full visibility");
   });
 
   it("no other page hosts scope editing", async () => {

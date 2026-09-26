@@ -26,12 +26,16 @@ interface Ctx {
   unread: number;
   csrf: string;
   theme?: Theme;
-  /** Fixed institution name — there is no settings field for it. */
+  /** Organization-owned name and theme; admissions remains a configuration, not a code identity. */
   institution: string;
+  brand?: { primary: string; accent: string; logo?: string | null; tagline?: string };
+  /** The running server may have env-only Gmail credentials. */
+  gmailConfigured?: boolean;
+  gmailAddress?: string;
 }
 
 function head(c: Ctx, title: string, active: string, content: string): string {
-  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution });
+  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution, brand: c.brand });
 }
 
 /** "it" → "IT", else first-letter title: polite, readable labels. */
@@ -52,7 +56,7 @@ export function kindLabel(kind: string): string {
 
 // ── Login ──────────────────────────────────────────────────────────────────
 
-export function loginPage(error?: string, theme?: Theme, institution = "Riara University", loginCsrf?: string, okMsg?: string): string {
+export function loginPage(error?: string, theme?: Theme, institution = "Organization", loginCsrf?: string, okMsg?: string): string {
   return layout({
     title: `Sign in — ${institution}`,
     institution,
@@ -80,7 +84,7 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
 }
 
 /** Forgot-password: redeem an admin-issued one-time reset code. Anonymous. */
-export function resetPasswordPage(error?: string, theme?: Theme, institution = "Riara University", loginCsrf?: string): string {
+export function resetPasswordPage(error?: string, theme?: Theme, institution = "Organization", loginCsrf?: string): string {
   return layout({
     title: `Reset password — ${institution}`,
     institution,
@@ -111,7 +115,7 @@ export function resetPasswordPage(error?: string, theme?: Theme, institution = "
 
 
 /** OR-1: one-time first-run screen — the owner creates their own admin account. */
-export function setupPage(token: string, error?: string, theme?: Theme, institution = "Riara University"): string {
+export function setupPage(token: string, error?: string, theme?: Theme, institution = "Organization"): string {
   return layout({
     title: `First-run setup — ${institution}`,
     institution,
@@ -168,7 +172,7 @@ function adminDashboard(c: Ctx): string {
   const all = repo.allApplicants(realm, scope);
   const missingDocs = repo.commonMissingDocs(realm, scope, 5);
   const triage = repo.triageCounts(realm, scope);
-  const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
+  const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", "")) || Boolean(c.gmailConfigured);
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
   const globalMode = repo.getSetting("automation_mode", "auto");
 
@@ -951,7 +955,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
   const audit = repo.auditForApplicant(a.id);
   const decisions = repo.decisionLogs(a.id);
   const staff = repo.listStaff();
-  const templates = repo.listTemplates();
+  const templates = repo.listTemplates(c.user.organization_id ?? 1);
   const outbox = repo.queuedOutbox(a.id);
   // "INTERNAL — DO NOT AUTO-SEND" boilerplate never reaches the UI; staff see
   // the suggested reply (if any) and whether the draft is held for approval.
@@ -1454,7 +1458,7 @@ export function composeWindowPage(
   // Enter sends. Template choice is a link that re-renders the draft — it
   // never competes with the send button and can never wipe typed text.
   const a = opts.applicant;
-  const templates = repo.listTemplates();
+  const templates = repo.listTemplates(c.user.organization_id ?? 1);
   const tpl = opts.templateKey ? templates.find((t) => t.key === opts.templateKey) : undefined;
   const prog = a.programme ? repo.programmeByCode(a.programme) : undefined;
   const chips = [
@@ -1688,8 +1692,12 @@ ${msgs}`);
 export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
+  const organizationId = c.user.organization_id ?? 1;
+  const organization = repo.getOrganization(organizationId);
   const settingInput = (key: string, label: string) =>
     `<div><label>${esc(label)}</label><input type="text" name="${esc(key)}" value="${esc(settings[key] ?? "")}"></div>`;
+  const organizationInput = (key: string, label: string, value: string) =>
+    `<div><label>${esc(label)}</label><input type="text" name="${esc(key)}" value="${esc(value)}"></div>`;
 
   return head(
     c,
@@ -1697,7 +1705,7 @@ export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string):
     "settings",
     `
 <h1>Settings</h1>
-<div class="sub">How the console behaves — automation, response targets, retention.</div>
+<div class="sub">How the console behaves — automation, response targets, retention and workspace identity.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 
 ${connectionsSection(c, gmailRedirectUri)}
@@ -1760,10 +1768,29 @@ ${connectionsSection(c, gmailRedirectUri)}
 
 <div class="card" id="letters">
   <h2>Letters &amp; identity</h2>
-  <p class="small muted" style="margin-top:-6px">Details that appear on generated letters and outgoing mail. Response timing is fully automated — replies go out the moment a decision is made, so there are no target hours or retention dials to tune.</p>
-  <form method="post" action="/settings/general">
+  <p class="small muted" style="margin-top:-6px">Identity and theme belong to this organization. The same values are used by the console, outgoing messages and generated documents.</p>
+  <form method="post" action="/settings/organization">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
+      ${organizationInput("organization_name", "Organisation / school name", organization?.name ?? c.institution)}
+      ${organizationInput("primary_color", "Primary colour", organization?.theme.primary ?? "#334155")}
+      ${organizationInput("accent_color", "Accent colour", organization?.theme.accent ?? "#0f766e")}
+    </div>
+    <p><button class="btn">Save identity &amp; colours</button></p>
+  </form>
+  <div class="card" style="margin:14px 0 0;padding:14px;background:var(--card2)">
+    <b>Logo</b><p class="small muted" style="margin:3px 0 10px">Upload a PNG, JPEG or SVG logo for this organization. It replaces the neutral mark across the workspace.</p>
+    <form method="post" action="/config/organization/logo" enctype="application/octet-stream">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <input type="file" name="logo" accept="image/png,image/jpeg,image/svg+xml" data-logo-upload>
+      <button class="btn small ghost" type="button" data-logo-save>Upload logo</button>
+      <span class="small muted" data-logo-message></span>
+    </form>
+  </div>
+  <form method="post" action="/settings/general" style="margin-top:14px">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      ${settingInput("institution_name", "Legacy identity setting")}
       ${settingInput("ref_prefix", "Reference prefix")}
       ${settingInput("from_name", "From name")}
     </div>
@@ -1771,9 +1798,24 @@ ${connectionsSection(c, gmailRedirectUri)}
       ${settingInput("reg_date", "Registration date (admission letter)")}
       ${settingInput("orientation_dates", "Orientation dates (admission letter)")}
     </div>
-    <p><button class="btn">Save settings</button></p>
+    <p><button class="btn ghost">Save response settings</button></p>
   </form>
-</div>`
+</div>
+<script>
+(function () {
+  var save = document.querySelector("[data-logo-save]");
+  if (!save) return;
+  save.addEventListener("click", function () {
+    var input = document.querySelector("[data-logo-upload]");
+    var msg = document.querySelector("[data-logo-message]");
+    if (!input.files[0]) { msg.textContent = "Choose an image first."; return; }
+    msg.textContent = "Uploading…";
+    fetch("/config/organization/logo", { method: "POST", headers: { "x-csrf-token": "${esc(c.csrf)}", "content-type": input.files[0].type }, body: input.files[0] })
+      .then(function (r) { msg.textContent = r.ok ? "Logo saved." : "Upload failed."; if (r.ok) window.location.reload(); })
+      .catch(function () { msg.textContent = "Upload failed — network error."; });
+  });
+})();
+</script>`
   );
 }
 
@@ -1788,11 +1830,11 @@ ${connectionsSection(c, gmailRedirectUri)}
 export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
-  const gAddress = settings["gmail_address"] ?? "";
+  const gAddress = settings["gmail_address"] || c.gmailAddress || "";
   const gClientId = settings["gmail_client_id"] ?? "";
   const gClientSecret = settings["gmail_client_secret"] ?? "";
   const gRefresh = settings["gmail_refresh_token"] ?? "";
-  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
+  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh) || Boolean(c.gmailConfigured);
   // AUX-2: a plain-`http://` redirect URI on a NON-LOOPBACK host can never
   // be registered with a Google OAuth web client — the classic
   // behind-a-proxy trap (the app sees the plain-http hop to the proxy,
@@ -1856,9 +1898,9 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
     <form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>
   </div>` : ""}
   <p class="small muted" style="margin-top:10px">${connected
-    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically every minute, covering the last ${resolveLookbackDays(repo, undefined)} days — older mail is brought in with “Pull older mail”.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
+    ? `Signed in as <b>${esc(gAddress)}</b>. New incoming mail is fetched automatically every minute from <b>All Mail</b> (excluding sent, spam and trash), covering the last ${resolveLookbackDays(repo, undefined)} days — older mail is brought in with “Pull older mail”.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
     : "Mail is not being fetched yet — the console still works; process mail manually or connect when ready."}</p>
-  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again (or paste a fresh refresh token). If new mail still doesn’t appear after a good sync, check that the message is in the inbox of <b>${esc(gAddress || "the connected address")}</b> and within the lookback window.</span></p>` : ""}
+  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again (or paste a fresh refresh token). If new mail still doesn’t appear after a good sync, check that it is in <b>All Mail</b> for ${esc(gAddress || "the connected address")} and within the lookback window.</span></p>` : ""}
 </div>
 
 <div class="card" id="gemini">
@@ -1943,7 +1985,7 @@ ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(
 // ── Entry requirements editor (structured, per qualification system) ──────
 
 function documentsPackCard(c: Ctx): string {
-  const manifest = packManifest();
+  const manifest = packManifest(c.repo, c.user.organization_id ?? 1);
   const app = manifest.filter((m) => m.pack === "application");
   const adm = manifest.filter((m) => m.pack === "admission");
   const fmt = (b: number) => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`;
@@ -1961,7 +2003,7 @@ function documentsPackCard(c: Ctx): string {
   return `<div class="card" id="documents">
   <div class="card-head"><h2>Documents &amp; application packs</h2></div>
   <div style="padding:14px 24px 22px">
-    <p class="small muted" style="margin-top:-4px">The official PDFs the university sends. The <b>application pack</b> (form + brochure) is attached when staff send the pack on an enquiry; the <b>admission pack</b> goes out with the admission letter. Replacing a file here swaps it everywhere immediately.</p>
+    <p class="small muted" style="margin-top:-4px">The PDFs this organization sends. The <b>application pack</b> is attached when staff send the pack on an enquiry; the <b>admission pack</b> goes out with the admission letter. Replacing a file here swaps it everywhere immediately.</p>
     <h3>Application pack</h3>
     <table><tr><th>Document</th><th>Used for</th><th>Size</th><th></th><th>Replace (PDF)</th></tr>${rows(app)}</table>
     <h3 style="margin-top:18px">Admission pack</h3>
@@ -2380,8 +2422,9 @@ const PLACEHOLDER_DOCS: Array<[string, string]> = [
 
 export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): string {
   const { repo } = c;
-  const templates = repo.listTemplates();
-  const tpl = (selectedKey ? templates.find((t) => t.key === selectedKey) : undefined) ?? templates[0];
+  const templates = repo.listTemplates(c.user.organization_id ?? 1);
+  const emptyTemplate = { key: "generic", name: "Generic reply", subject: "Your enquiry", body: "Hello {name},\\n\\nThank you for contacting {institution}. We will review your enquiry and reply shortly.\\n\\nKind regards,\\n{institution}", include_banner: 0, attach_pack: "none" };
+  const tpl = (selectedKey ? templates.find((t) => t.key === selectedKey) : undefined) ?? templates[0] ?? emptyTemplate;
 
   const picker = `<form class="inline" method="get" action="/templates" style="margin-bottom:6px">
     <label class="small muted">Template</label>
@@ -2397,7 +2440,7 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
   // will produce, so staff see the real output before anyone receives it.
   const preview = renderTemplate(tpl.subject, tpl.body, {
     ref: "RU-2026-000001",
-    institution: repo.getSetting("institution_name", "Riara University"),
+    institution: c.institution,
     name: "Wanjiku Kamau",
     missingLabels: ["Leaving Certificate", "Passport Photo"],
     checklist: "✓ Application Form\n✗ Leaving Certificate\n✗ Passport Photo",
@@ -2496,6 +2539,8 @@ function scopeMatrix(c: Ctx): string {
       </tr>`;
     }
     const current = new Set(repo.scopesFor(m.id));
+    const mode = repo.scopeModeFor(m.id);
+    const state = mode === "none" ? "no access" : mode === "scoped" ? "assigned schools only" : "unscoped — sees everything";
     return `<tr>
       <td><b>${esc(m.display_name)}</b><br><span class="muted small">@${esc(m.username)}</span></td>
       <form method="post" action="/staff/scopes"><td colspan="${schools.length + 1}" style="display:table-cell">
@@ -2503,15 +2548,16 @@ function scopeMatrix(c: Ctx): string {
           <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
           <input type="hidden" name="staff_id" value="${m.id}">
           ${schools.map((s) => `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="schools" value="${esc(s)}" style="width:auto" ${current.has(s) ? "checked" : ""}> ${esc(s)}</label>`).join("")}
-          <button class="btn small ghost">Save scope</button>
-          ${current.size ? "" : `<span class="muted small">no scope — sees everything</span>`}
+          <button class="btn small ghost">Save assigned schools</button>
+          <button class="btn small ghost" name="scope_mode" value="unscoped">Restore full visibility</button>
+          <span class="muted small">${esc(state)}</span>
         </div>
       </td></form>
     </tr>`;
   }).join("");
   return `<section class="card nopad" id="scopes">
     <div class="card-head"><h2>Visibility scope</h2></div>
-    <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the schools each officer handles and press <b>Save scope</b> — one action per person. From then on they see only cases from those schools, everywhere: queues, levels, search, direct links and the API. Untick everything and save to give full visibility back. Schools are managed in <a href="/config?tab=courses#schools">Configuration</a>.</p>
+    <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the schools each officer handles and press <b>Save assigned schools</b> — one action per person. From then on they see only cases from those schools, everywhere: queues, levels, search, direct links and the API. Saving an empty selection gives <b>no case access</b>; use <b>Restore full visibility</b> when that is intentional. Schools are managed in <a href="/config?tab=courses#schools">Configuration</a>.</p>
     ${schools.length ? `<table><tr><th>Staff member</th><th>Schools they may see</th></tr>${rows}</table>` : `<div class="empty"><p>Add a school in Configuration first.</p></div>`}
   </section>`;
 }

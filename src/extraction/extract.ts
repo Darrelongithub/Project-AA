@@ -277,7 +277,13 @@ export async function extractAttachment(
 
   const isPdf =
     att.mimeType === "application/pdf" || /\.pdf$/i.test(att.filename);
-  const isImage = /^image\/(png|jpe?g|tiff?)$/i.test(att.mimeType);
+  // Gmail normally supplies a useful image MIME type, but forwarded phone
+  // photos sometimes arrive as application/octet-stream (and newer phones
+  // can use HEIC/WebP). The filename is a safe second signal; sharp will
+  // still validate the bytes before OCR touches them.
+  const isImage =
+    /^image\/(png|jpe?g|tiff?|webp|heic|heif)$/i.test(att.mimeType) ||
+    /\.(png|jpe?g|tiff?|webp|heic|heif)$/i.test(att.filename);
 
   // ── Tier 3 (Gemini vision) shared by both branches ───────────────────────
   // Images try it FIRST (round 11 — phone photos are exactly where a vision
@@ -290,7 +296,12 @@ export async function extractAttachment(
     visionTried = true;
     let v: Awaited<ReturnType<VisionAdapter["extractDocument"]>> = null;
     try {
-      v = await deps.vision.extractDocument(att);
+      const ext = att.filename.match(/\.(png|jpe?g|tiff?|webp|heic|heif)$/i)?.[1]?.toLowerCase();
+      const inferredMime = ext
+        ? ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "tif" || ext === "tiff" ? "image/tiff" : `image/${ext}`
+        : att.mimeType;
+      const visionAttachment = /^image\//i.test(att.mimeType) ? att : { ...att, mimeType: inferredMime };
+      v = await deps.vision.extractDocument(visionAttachment);
     } catch (e) {
       if (e instanceof VisionUnavailableError) visionError = e;
       else throw e;
@@ -310,6 +321,18 @@ export async function extractAttachment(
       tier,
     });
     log(`extraction: ${att.filename} → Gemini vision (${verdict.confidence} confidence, score ${verdict.score})`);
+    // A successful HTTP response is not necessarily a useful reading. Some
+    // vision responses contain an empty/unknown JSON object; treating that as
+    // authoritative used to skip OCR and lose a perfectly readable photo.
+    // Let the local photo path have a chance whenever the model returned no
+    // text and no fields at all.
+    const usefulField = Object.values(fields).some((value) => {
+      if (value === null || value === undefined || value === "") return false;
+      if (typeof value === "string") return value.trim().length > 0;
+      if (typeof value === "object") return Object.keys(value as object).length > 0;
+      return true;
+    });
+    if (!v.text?.trim() && !usefulField) return null;
     return {
       filename: att.filename,
       document_type,
@@ -425,14 +448,27 @@ export async function extractAttachment(
     // still happens for the OCR fallback (sideways phone shots of IDs).
     const vFirst = await runVision();
     if (vFirst) return vFirst;
-    const prep = await preprocessImage(att.content);
-    const t = deps.ocr ? await deps.ocr(prep ?? att.content, "png") : null;
-    if (t && isGoodText(t, classifyDocumentType(t))) {
-      log(`extraction: ${att.filename} → Tesseract OCR on image (medium confidence)`);
-      const screenshotNote = /screen\s?shot|screen\s?capture|screencap/i.test(att.filename)
-        ? "This looks like a screenshot. Where possible, please send the official document as a PDF or a photo of the paper original."
-        : undefined;
-      return { ...finish(att.filename, t, "ocr", "medium", screenshotNote), sha256 };
+    if (deps.ocr) {
+      const prep = await preprocessImage(att.content);
+      // Try the EXIF-corrected, contrast-normalised image first. If a
+      // decoder/preprocessor produced a bad result, retry the original bytes
+      // rather than declaring a phone photo unreadable. This matters for
+      // screenshots and low-light images where normalisation can remove
+      // coloured text.
+      const candidates: Buffer[] = [];
+      for (const candidate of [prep, att.content]) {
+        if (candidate && !candidates.some((seen) => seen.equals(candidate))) candidates.push(candidate);
+      }
+      for (const candidate of candidates) {
+        const t = await deps.ocr(candidate, "png");
+        if (t && isGoodText(t, classifyDocumentType(t))) {
+          log(`extraction: ${att.filename} → Tesseract OCR on image (medium confidence)`);
+          const screenshotNote = /screen\s?shot|screen\s?capture|screencap/i.test(att.filename)
+            ? "This looks like a screenshot. Where possible, please send the official document as a PDF or a photo of the paper original."
+            : undefined;
+          return { ...finish(att.filename, t, "ocr", "medium", screenshotNote), sha256 };
+        }
+      }
     }
   }
 
