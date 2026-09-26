@@ -2643,7 +2643,7 @@ function scopeMatrix(c: Ctx): string {
 
 /**
  * Round 3 — course configuration lives in ONE place: the staff area.
- * Everything that used to sit behind Configuration → "Case configuration"
+ * Everything that used to sit behind Configuration → "Course configuration"
  * (schools, course details, ownership, enforced rules, intakes, add forms)
  * plus the NEW per-course document checklists (checkboxes).
  */
@@ -2699,7 +2699,7 @@ function coursesConfigHtml(c: Ctx): string {
             <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
             <input type="hidden" name="programme" value="${esc(pr.code)}">
             <div style="flex:1">
-              <input type="text" name="name" value="${esc(pr.name)}" title="Case name" style="margin-bottom:6px">
+              <input type="text" name="name" value="${esc(pr.name)}" title="Course name" style="margin-bottom:6px">
               <textarea name="entry_requirements" rows="3" title="Reference notes (not enforced — the enforced rules are shown below)" placeholder="Reference notes only — prospectus wording, special cases…" style="min-height:64px;font-size:12.5px">${esc(pr.entry_requirements)}</textarea>
             </div>
             <button class="btn small ghost" title="Save course details">Save</button>
@@ -2779,7 +2779,7 @@ function coursesConfigHtml(c: Ctx): string {
   <div class="card-head"><h2>Courses &amp; ownership</h2></div>
   <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone — assign the responsible officer here. The notes column is free-text reference; the <b>enforced</b> subject-and-grade rules for each course live in the <a href="/config?tab=requirements">Requirements tab</a>.</p>
   ${programmes.length
-    ? `<table><tr><th>CaseType</th><th>Case details &amp; reference notes</th><th>Handled by</th></tr>${courseRows}</table>`
+    ? `<table><tr><th>Programme</th><th>Course details &amp; reference notes</th><th>Handled by</th></tr>${courseRows}</table>`
     : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
   <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
     <h2>Required documents — per course</h2>
@@ -2794,7 +2794,7 @@ function coursesConfigHtml(c: Ctx): string {
     <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
       <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
       <div><label>New programme code</label><input type="text" name="prog_code" placeholder="e.g. MED"></div>
-      <div style="flex:2"><label>CaseType name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
+      <div style="flex:2"><label>Programme name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
       <div><label>School</label><select name="prog_school"><option value="">No school yet</option>${schools.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}</select></div>
       <div><label>Level</label><select name="prog_level"><option value="degree">Degree</option><option value="diploma">Diploma</option><option value="certificate">Certificate</option><option value="masters">Master's</option><option value="phd">PhD</option></select></div>
       <div><label>New intake</label><input type="text" name="intake" placeholder="e.g. May 2027"></div>
