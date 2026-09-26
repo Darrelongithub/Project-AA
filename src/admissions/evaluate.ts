@@ -2,14 +2,15 @@
  * /admissions/evaluate — orchestration: documents → values → rule trees →
  * routing.
  *
- * The three automated outcomes (and NOTHING else):
+ * The automated evaluation outcomes are evidence and routing guidance only:
  *
- *   QUALIFIED              → AUTO-ADMIT          (audit: admission_auto_qualified)
+ *   QUALIFIED              → HUMAN REVIEW        (never a final admission)
  *   NOT CLEARLY QUALIFIED  → HUMAN REVIEW        (never an automatic rejection)
  *   INCOMPLETE             → WAITING FOR DOCUMENTS (missing ≠ failed)
  *
  * Eligibility (requirement result), routing and the admission DECISION are
  * separate concepts — see applicants.req_result / routing / admission_decision.
+ * A human must confirm every final admission outcome.
  */
 import type { Repo } from "../db/repo";
 import type {
@@ -43,6 +44,66 @@ export interface AdmissionEvaluation {
   report: EvaluationReport;
   /** Flags derived from the evaluation itself (feed syncFlags). */
   derivedFlags: DerivedFlag[];
+}
+
+export interface CaseTypeRuleEvaluation {
+  result: "passed" | "failed" | "undetermined";
+  routing: "human_review";
+  /** A rule tree is evidence only; it cannot write an approval decision. */
+  outcome: "undecided";
+  passed: number;
+  total: number;
+}
+
+/**
+ * Generic rule-tree entry point. It reuses the same AND/OR/NOT semantics as
+ * the admissions evaluator, but accepts organization-defined fields so a
+ * workplace or school workflow does not have to pretend every value is an
+ * academic grade. Failure and missing values remain human-review outcomes.
+ */
+export function evaluateCaseTypeRules(
+  _repo: Repo,
+  _caseType: { id: number; code: string },
+  nodes: Array<import("../types").RuleNode>,
+  facts: Record<string, unknown>
+): CaseTypeRuleEvaluation {
+  let passed = 0;
+  let total = 0;
+  const compare = (actual: unknown, comparator: string, expected: unknown): boolean | null => {
+    if (actual === undefined || actual === null || expected === undefined || expected === null) return null;
+    const an = typeof actual === "number" ? actual : Number(actual);
+    const en = typeof expected === "number" ? expected : Number(expected);
+    const numeric = Number.isFinite(an) && Number.isFinite(en);
+    const left = numeric ? an : String(actual);
+    const right = numeric ? en : String(expected);
+    switch (comparator) {
+      case ">=": return left >= right;
+      case ">": return left > right;
+      case "<=": return left <= right;
+      case "<": return left < right;
+      case "=": return left === right;
+      case "!=": return left !== right;
+      default: return null;
+    }
+  };
+  const visit = (node: import("../types").RuleNode): boolean | null => {
+    if (node.kind === "condition") {
+      total += 1;
+      const actual = node.subject ? (facts[node.subject] as unknown) : facts[node.field ?? ""];
+      const value = compare(actual, node.comparator ?? ">=", node.value);
+      if (value === true) passed += 1;
+      return value;
+    }
+    const children = (node.children ?? []).map(visit);
+    const logic = node.logic ?? "AND";
+    if (children.length === 0) return null;
+    if (logic === "OR") return children.some((x) => x === true) ? true : children.every((x) => x === false) ? false : null;
+    if (logic === "NOT") return children.length === 1 && children[0] !== null ? !children[0] : null;
+    return children.every((x) => x === true) ? true : children.some((x) => x === false) ? false : null;
+  };
+  const results = nodes.map(visit);
+  const value = results.length === 0 ? null : results.every((x) => x === true) ? true : results.some((x) => x === false) ? false : null;
+  return { result: value === true ? "passed" : value === false ? "failed" : "undetermined", routing: "human_review", outcome: "undecided", passed, total };
 }
 
 const nowIso = () => new Date().toISOString();
@@ -319,9 +380,9 @@ export function evaluateAdmission(
       );
     }
     return persist(
-      "passed", "auto_admit",
-      `All configured admission requirements satisfied (${tree.rulesSatisfied}/${tree.rulesTotal} rules) and no blocking flags detected.`,
-      "qualified", set
+      "passed", "human_review",
+      `All configured admission requirements satisfied (${tree.rulesSatisfied}/${tree.rulesTotal} rules). Human confirmation is still required; the system never makes the final admission decision.`,
+      "qualified_human_review", set
     );
   }
 

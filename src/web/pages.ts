@@ -4,9 +4,12 @@
  */
 import { DEAD_GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 import { missingGmailCredentials, resolveLookbackDays } from "../ingestion/sync";
-import { documentRequirementsFor, type ProgrammeLevel } from "../documents/matrix";
+import { documentRequirementsFor } from "../documents/matrix";
 import type { Repo } from "../db/repo";
-import type { AdmissionSystem, ApplicantRow, CourseLevel, DocType, EmailRecord, Programme, RuleNode, StaffUser } from "../types";
+import type { AdmissionSystem, ApplicantRow, CaseType, DocType, EmailRecord, RuleNode, StaffUser } from "../types";
+
+type LegacyAcademicLevel = "degree" | "diploma" | "certificate" | "masters" | "phd";
+type LegacyAcademicProgramme = ReturnType<Repo["listProgrammes"]>[number];
 import { ADMISSION_SYSTEMS, DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
 import { SYSTEM_LABELS } from "../admissions/systems";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../admissions/queues";
@@ -26,12 +29,16 @@ interface Ctx {
   unread: number;
   csrf: string;
   theme?: Theme;
-  /** Fixed institution name — there is no settings field for it. */
+  /** Organization-owned name and theme; admissions remains a configuration, not a code identity. */
   institution: string;
+  brand?: { primary: string; accent: string; logo?: string | null; tagline?: string };
+  /** The running server may have env-only Gmail credentials. */
+  gmailConfigured?: boolean;
+  gmailAddress?: string;
 }
 
 function head(c: Ctx, title: string, active: string, content: string): string {
-  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution });
+  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution, brand: c.brand });
 }
 
 /** "it" → "IT", else first-letter title: polite, readable labels. */
@@ -52,7 +59,7 @@ export function kindLabel(kind: string): string {
 
 // ── Login ──────────────────────────────────────────────────────────────────
 
-export function loginPage(error?: string, theme?: Theme, institution = "Riara University", loginCsrf?: string, okMsg?: string): string {
+export function loginPage(error?: string, theme?: Theme, institution = "Organization", loginCsrf?: string, okMsg?: string): string {
   return layout({
     title: `Sign in — ${institution}`,
     institution,
@@ -80,7 +87,7 @@ export function loginPage(error?: string, theme?: Theme, institution = "Riara Un
 }
 
 /** Forgot-password: redeem an admin-issued one-time reset code. Anonymous. */
-export function resetPasswordPage(error?: string, theme?: Theme, institution = "Riara University", loginCsrf?: string): string {
+export function resetPasswordPage(error?: string, theme?: Theme, institution = "Organization", loginCsrf?: string): string {
   return layout({
     title: `Reset password — ${institution}`,
     institution,
@@ -111,7 +118,7 @@ export function resetPasswordPage(error?: string, theme?: Theme, institution = "
 
 
 /** OR-1: one-time first-run screen — the owner creates their own admin account. */
-export function setupPage(token: string, error?: string, theme?: Theme, institution = "Riara University"): string {
+export function setupPage(token: string, error?: string, theme?: Theme, institution = "Organization"): string {
   return layout({
     title: `First-run setup — ${institution}`,
     institution,
@@ -168,7 +175,7 @@ function adminDashboard(c: Ctx): string {
   const all = repo.allApplicants(realm, scope);
   const missingDocs = repo.commonMissingDocs(realm, scope, 5);
   const triage = repo.triageCounts(realm, scope);
-  const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", ""));
+  const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", "")) || Boolean(c.gmailConfigured);
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
   const globalMode = repo.getSetting("automation_mode", "auto");
 
@@ -284,7 +291,7 @@ ${triageTile(triage)}
 <section class="card nopad">
   <div class="card-head"><h2>Completed files &amp; approvals <span class="muted small" style="text-transform:none;letter-spacing:0">— who finished what, and when</span></h2></div>
   ${completedFiles
-    ? `<table><tr><th>Ref</th><th>Applicant</th><th>Course</th><th>Decision / completed by</th><th>When</th></tr>${completedFiles}</table>`
+    ? `<table><tr><th>Ref</th><th>Applicant</th><th>Case</th><th>Decision / completed by</th><th>When</th></tr>${completedFiles}</table>`
     : `<div class="empty"><p>No completed files yet — approvals appear here as cases finish.</p></div>`}
 </section>
 
@@ -764,7 +771,7 @@ export function applicantsPage(
   ${searchMode ? "" : `<div class="chips">${chips}</div>`}
   ${shown.length
     ? `<table>
-        <tr><th>Ref</th><th>Applicant</th><th>Programme</th><th>Why it's here</th><th>Requirement result</th><th>Admission decision</th><th>Opened</th><th></th></tr>
+        <tr><th>Ref</th><th>Applicant</th><th>CaseType</th><th>Why it's here</th><th>Requirement result</th><th>Admission decision</th><th>Opened</th><th></th></tr>
         ${trs}
       </table>`
     : searchMode
@@ -951,7 +958,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
   const audit = repo.auditForApplicant(a.id);
   const decisions = repo.decisionLogs(a.id);
   const staff = repo.listStaff();
-  const templates = repo.listTemplates();
+  const templates = repo.listTemplates(c.user.organization_id ?? 1);
   const outbox = repo.queuedOutbox(a.id);
   // "INTERNAL — DO NOT AUTO-SEND" boilerplate never reaches the UI; staff see
   // the suggested reply (if any) and whether the draft is held for approval.
@@ -1454,7 +1461,7 @@ export function composeWindowPage(
   // Enter sends. Template choice is a link that re-renders the draft — it
   // never competes with the send button and can never wipe typed text.
   const a = opts.applicant;
-  const templates = repo.listTemplates();
+  const templates = repo.listTemplates(c.user.organization_id ?? 1);
   const tpl = opts.templateKey ? templates.find((t) => t.key === opts.templateKey) : undefined;
   const prog = a.programme ? repo.programmeByCode(a.programme) : undefined;
   const chips = [
@@ -1688,8 +1695,12 @@ ${msgs}`);
 export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
+  const organizationId = c.user.organization_id ?? 1;
+  const organization = repo.getOrganization(organizationId);
   const settingInput = (key: string, label: string) =>
     `<div><label>${esc(label)}</label><input type="text" name="${esc(key)}" value="${esc(settings[key] ?? "")}"></div>`;
+  const organizationInput = (key: string, label: string, value: string) =>
+    `<div><label>${esc(label)}</label><input type="text" name="${esc(key)}" value="${esc(value)}"></div>`;
 
   return head(
     c,
@@ -1697,7 +1708,7 @@ export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string):
     "settings",
     `
 <h1>Settings</h1>
-<div class="sub">How the console behaves — automation, response targets, retention.</div>
+<div class="sub">How the console behaves — automation, response targets, retention and workspace identity.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 
 ${connectionsSection(c, gmailRedirectUri)}
@@ -1760,20 +1771,54 @@ ${connectionsSection(c, gmailRedirectUri)}
 
 <div class="card" id="letters">
   <h2>Letters &amp; identity</h2>
-  <p class="small muted" style="margin-top:-6px">Details that appear on generated letters and outgoing mail. Response timing is fully automated — replies go out the moment a decision is made, so there are no target hours or retention dials to tune.</p>
-  <form method="post" action="/settings/general">
+  <p class="small muted" style="margin-top:-6px">Identity and theme belong to this organization. The same values are used by the console, outgoing messages and generated documents.</p>
+  <form method="post" action="/settings/organization">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
-      ${settingInput("ref_prefix", "Reference prefix")}
+      ${organizationInput("organization_name", "Organisation / school name", organization?.name ?? c.institution)}
+      ${organizationInput("primary_color", "Primary colour", organization?.theme.primary ?? "#334155")}
+      ${organizationInput("accent_color", "Accent colour", organization?.theme.accent ?? "#0f766e")}
+      <div><label>Reference prefix</label><input name="ref_prefix" value="${esc(organization?.ref_prefix ?? repo.organizationRefPrefix(c.user.organization_id ?? 1))}" pattern="[A-Za-z]{1,8}" maxlength="8" required></div>
+    </div>
+    <p><button class="btn">Save identity &amp; colours</button></p>
+  </form>
+  <div class="card" style="margin:14px 0 0;padding:14px;background:var(--card2)">
+    <b>Logo</b><p class="small muted" style="margin:3px 0 10px">Upload a PNG, JPEG or SVG logo for this organization. It replaces the neutral mark across the workspace.</p>
+    <form method="post" action="/config/organization/logo" enctype="application/octet-stream">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <input type="file" name="logo" accept="image/png,image/jpeg,image/svg+xml" data-logo-upload>
+      <button class="btn small ghost" type="button" data-logo-save>Upload logo</button>
+      <span class="small muted" data-logo-message></span>
+    </form>
+  </div>
+  <form method="post" action="/settings/general" style="margin-top:14px">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      ${settingInput("institution_name", "Legacy identity setting")}
       ${settingInput("from_name", "From name")}
     </div>
     <div class="formrow">
       ${settingInput("reg_date", "Registration date (admission letter)")}
       ${settingInput("orientation_dates", "Orientation dates (admission letter)")}
     </div>
-    <p><button class="btn">Save settings</button></p>
+    <p><button class="btn ghost">Save response settings</button></p>
   </form>
-</div>`
+</div>
+<script>
+(function () {
+  var save = document.querySelector("[data-logo-save]");
+  if (!save) return;
+  save.addEventListener("click", function () {
+    var input = document.querySelector("[data-logo-upload]");
+    var msg = document.querySelector("[data-logo-message]");
+    if (!input.files[0]) { msg.textContent = "Choose an image first."; return; }
+    msg.textContent = "Uploading…";
+    fetch("/config/organization/logo", { method: "POST", headers: { "x-csrf-token": "${esc(c.csrf)}", "content-type": input.files[0].type }, body: input.files[0] })
+      .then(function (r) { msg.textContent = r.ok ? "Logo saved." : "Upload failed."; if (r.ok) window.location.reload(); })
+      .catch(function () { msg.textContent = "Upload failed — network error."; });
+  });
+})();
+</script>`
   );
 }
 
@@ -1788,11 +1833,11 @@ ${connectionsSection(c, gmailRedirectUri)}
 export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
-  const gAddress = settings["gmail_address"] ?? "";
+  const gAddress = settings["gmail_address"] || c.gmailAddress || "";
   const gClientId = settings["gmail_client_id"] ?? "";
   const gClientSecret = settings["gmail_client_secret"] ?? "";
   const gRefresh = settings["gmail_refresh_token"] ?? "";
-  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh);
+  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh) || Boolean(c.gmailConfigured);
   // AUX-2: a plain-`http://` redirect URI on a NON-LOOPBACK host can never
   // be registered with a Google OAuth web client — the classic
   // behind-a-proxy trap (the app sees the plain-http hop to the proxy,
@@ -1856,9 +1901,9 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
     <form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>
   </div>` : ""}
   <p class="small muted" style="margin-top:10px">${connected
-    ? `Signed in as <b>${esc(gAddress)}</b>. New mail is fetched automatically every minute, covering the last ${resolveLookbackDays(repo, undefined)} days — older mail is brought in with “Pull older mail”.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
+    ? `Signed in as <b>${esc(gAddress)}</b>. New incoming mail is fetched automatically every minute from <b>All Mail</b> (excluding sent, spam and trash), covering the last ${resolveLookbackDays(repo, undefined)} days — older mail is brought in with “Pull older mail”.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
     : "Mail is not being fetched yet — the console still works; process mail manually or connect when ready."}</p>
-  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again (or paste a fresh refresh token). If new mail still doesn’t appear after a good sync, check that the message is in the inbox of <b>${esc(gAddress || "the connected address")}</b> and within the lookback window.</span></p>` : ""}
+  ${settings["gmail_last_error"] ? `<p class="small" style="color:var(--red)">Last sync failed: ${esc(settings["gmail_last_error"])}<br><span class="muted">If this says <span class="mono">invalid_grant</span>, the refresh token expired — press “Connect with Google…” again (or paste a fresh refresh token). If new mail still doesn’t appear after a good sync, check that it is in <b>All Mail</b> for ${esc(gAddress || "the connected address")} and within the lookback window.</span></p>` : ""}
 </div>
 
 <div class="card" id="gemini">
@@ -1943,7 +1988,7 @@ ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(
 // ── Entry requirements editor (structured, per qualification system) ──────
 
 function documentsPackCard(c: Ctx): string {
-  const manifest = packManifest();
+  const manifest = packManifest(c.repo, c.user.organization_id ?? 1);
   const app = manifest.filter((m) => m.pack === "application");
   const adm = manifest.filter((m) => m.pack === "admission");
   const fmt = (b: number) => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`;
@@ -1961,7 +2006,7 @@ function documentsPackCard(c: Ctx): string {
   return `<div class="card" id="documents">
   <div class="card-head"><h2>Documents &amp; application packs</h2></div>
   <div style="padding:14px 24px 22px">
-    <p class="small muted" style="margin-top:-4px">The official PDFs the university sends. The <b>application pack</b> (form + brochure) is attached when staff send the pack on an enquiry; the <b>admission pack</b> goes out with the admission letter. Replacing a file here swaps it everywhere immediately.</p>
+    <p class="small muted" style="margin-top:-4px">The PDFs this organization sends. The <b>application pack</b> is attached when staff send the pack on an enquiry; the <b>admission pack</b> goes out with the admission letter. Replacing a file here swaps it everywhere immediately.</p>
     <h3>Application pack</h3>
     <table><tr><th>Document</th><th>Used for</th><th>Size</th><th></th><th>Replace (PDF)</th></tr>${rows(app)}</table>
     <h3 style="margin-top:18px">Admission pack</h3>
@@ -2018,7 +2063,7 @@ const GRADE_CLASS_LADDERS: Record<string, string[]> = {
   diploma: ["Pass", "Credit", "Distinction"],
 };
 
-function conditionValuePicker(system: string, level: CourseLevel, node: RuleNode): string {
+function conditionValuePicker(system: string, level: LegacyAcademicLevel, node: RuleNode): string {
   const v = node.value ?? "";
   const picker = (opts: string[], attr: string): string =>
     `<select name="value" data-grade-picker="${esc(attr)}" style="width:auto;min-width:130px">
@@ -2042,7 +2087,7 @@ function conditionValuePicker(system: string, level: CourseLevel, node: RuleNode
 }
 
 /** Recursive visual builder for one node of the rule tree. */
-function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, depth: number, subjects: string[], level: CourseLevel): string {
+function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, depth: number, subjects: string[], level: LegacyAcademicLevel): string {
   const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
   const targetFields = `<input type="hidden" name="target" value="${esc(target)}"><input type="hidden" name="system" value="${esc(system)}">`;
   const pad = depth * 18;
@@ -2102,7 +2147,7 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
   ];
   const target = reqsTarget && targetOptions.some(([v]) => v === reqsTarget) ? reqsTarget : "BASE:degree";
   const isBase = target.startsWith("BASE:");
-  const level = (isBase ? target.slice(5) : repo.programmeByCode(target)?.level ?? "degree") as CourseLevel;
+  const level = (isBase ? target.slice(5) : repo.programmeByCode(target)?.level ?? "degree") as LegacyAcademicLevel;
   const programme = isBase ? null : target.toUpperCase();
 
   const active = repo.listRuleSets({ programme, status: "active", system }).find((s) => s.level === level);
@@ -2115,7 +2160,7 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
 
   const targetBar = `<form class="inline" method="get" action="/config" id="reqbuilder" style="margin-bottom:18px">
     <input type="hidden" name="tab" value="requirements">
-    <label class="small muted">Programme</label>
+    <label class="small muted">CaseType</label>
     <select name="reqs" onchange="this.form.submit()">
       ${targetOptions.map(([v, l]) => `<option value="${esc(v)}" ${target === v ? "selected" : ""}>${esc(l)}</option>`).join("")}
     </select>
@@ -2221,9 +2266,9 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
 </section>`;
 
   // OR-5: the document checklist is generated deterministically — read-only here.
-  // OR-6: CourseLevel now carries masters/phd directly (legacy "postgrad"
+  // OR-6: LegacyAcademicLevel now carries masters/phd directly (legacy "postgrad"
   // rows are migrated on open; keep a defensive alias anyway).
-  const genLevel: ProgrammeLevel = ((level as string) === "postgrad" ? "masters" : level) as ProgrammeLevel;
+  const genLevel: LegacyAcademicLevel = ((level as string) === "postgrad" ? "masters" : level) as LegacyAcademicLevel;
   const matrixSpecs = documentRequirementsFor({ level: genLevel, route: "fresh", nationality: "unknown", programmeCode: isBase ? null : target });
   const matrixRows = matrixSpecs
     .map(
@@ -2269,13 +2314,89 @@ ${shown ? `<section class="card" id="reqpreview">${preview}</section>` : ""}
 ${opsCard}`;
 }
 
-export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsSystem?: string): string {
+function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
+  const organizations = c.repo.listOrganizations();
+  const organizationId = selectedOrganizationId && organizations.some((o) => o.id === selectedOrganizationId)
+    ? selectedOrganizationId
+    : c.user.organization_id ?? 1;
+  const organization = c.repo.getOrganization(organizationId);
+  const caseTypes = c.repo.listCaseTypes(organizationId);
+  const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
+  const orgPicker = `<form method="get" action="/config" class="inline" style="margin-bottom:16px">
+    <input type="hidden" name="tab" value="case-types">
+    <label class="small muted">Organization</label>
+    <select name="organization" onchange="this.form.submit()">${organizations.map((o) => `<option value="${o.id}" ${o.id === organizationId ? "selected" : ""}>${esc(o.name)} · ${esc(o.ref_prefix)}</option>`).join("")}</select>
+  </form>`;
+  const typeCard = (ct: CaseType): string => {
+    const definitions = c.repo.listDocumentDefinitions(ct.id);
+    const rules = c.repo.caseTypeRules(ct);
+    const documentRows = definitions.map((d) => `<tr>
+      <td class="mono small">${esc(d.key)}</td><td>${esc(d.label)}</td>
+      <td>${d.required ? "required" : "optional"} · ${d.blocking ? "blocks gate" : "non-blocking"}</td>
+      <td><form method="post" action="/config/case-types/document-delete" style="margin:0">${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}"><input type="hidden" name="key" value="${esc(d.key)}"><button class="btn small ghost">Remove</button></form></td>
+    </tr>`).join("");
+    return `<section class="card" id="case-type-${ct.id}">
+      <h2>${esc(ct.name)} <span class="mono small muted">${esc(ct.code)}</span></h2>
+      <p class="small muted">Category: ${esc(ct.category)} · This CaseType has no academic qualification picker or inherited document defaults.</p>
+      <h3>Document matrix</h3>
+      ${definitions.length ? `<table><tr><th>Key</th><th>Label</th><th>Gate behavior</th><th></th></tr>${documentRows}</table>` : `<p class="small muted">No document slots configured yet.</p>`}
+      <form method="post" action="/config/case-types/document" class="formrow" style="margin-top:10px">
+        ${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}">
+        <div><label>Document key</label><input name="key" placeholder="employee_id" required></div>
+        <div style="flex:2"><label>Applicant-facing label</label><input name="label" placeholder="Signed employee ID" required></div>
+        <div><label>Required</label><select name="required"><option value="1">Yes</option><option value="0">No</option></select></div>
+        <div><label>Blocking</label><select name="blocking"><option value="1">Yes</option><option value="0">No</option></select></div>
+        <div style="flex:0"><label>&nbsp;</label><button class="btn small">Save document slot</button></div>
+      </form>
+      <h3 style="margin-top:20px">Rule tree</h3>
+      <p class="small muted">Use organization-defined fact keys. The evaluator supports nested AND, OR and NOT groups; a failed or incomplete tree routes to human review, never an automatic rejection.</p>
+      <form method="post" action="/config/case-types/rules" style="margin:0">
+        ${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}">
+        <textarea name="rules_json" style="min-height:180px;font-family:monospace" spellcheck="false">${esc(JSON.stringify(rules, null, 2))}</textarea>
+        <button class="btn small" style="margin-top:8px">Save rule tree</button>
+      </form>
+      <p class="small muted" style="margin-top:8px">Currently ${rules.length} top-level node${rules.length === 1 ? "" : "s"}; fields such as <span class="mono">employment_type</span> or <span class="mono">start_date</span> are valid when the organization supplies those facts.</p>
+    </section>`;
+  };
+  return `<div id="case-types">
+    <section class="card">
+      <h2>Organizations &amp; CaseTypes</h2>
+      <p class="small muted">Organizations own their CaseTypes, document definitions, rule trees, axes and reference prefixes. A new organization starts empty: no academic catalogue, qualification systems or migrated identity data are copied.</p>
+      <p class="small muted">The migrated Organization 1 compatibility matrix remains generated deterministically from its official pack; it is not a default for new CaseTypes.</p>
+      ${orgPicker}
+      <form method="post" action="/config/organizations/create" class="formrow">
+        ${csrf}<div style="flex:2"><label>New organization</label><input name="name" placeholder="People Operations" required></div>
+        <div><label>Reference prefix</label><input name="ref_prefix" placeholder="HR" pattern="[A-Za-z]{1,8}" required></div>
+        <div style="flex:0"><label>&nbsp;</label><button class="btn">Create organization</button></div>
+      </form>
+      <form method="post" action="/config/case-types/create" class="formrow" style="border-top:1px solid var(--line2);padding-top:14px;margin-top:14px">
+        ${csrf}<input type="hidden" name="organization_id" value="${organizationId}">
+        <div><label>CaseType code</label><input name="code" placeholder="HR_ONBOARDING" required></div>
+        <div style="flex:2"><label>CaseType name</label><input name="name" placeholder="HR onboarding" required></div>
+        <div><label>Category</label><input name="category" value="general"></div>
+        <div style="flex:0"><label>&nbsp;</label><button class="btn">Create CaseType</button></div>
+      </form>
+      <h3 style="margin-top:20px">Configurable axes</h3>
+      <p class="small muted">Axes are organization vocabulary, not hardcoded level, curriculum or status fields. Save one JSON array of <span class="mono">{key,label,values}</span> objects.</p>
+      <form method="post" action="/config/case-types/axes" style="margin:0">
+        ${csrf}<input type="hidden" name="organization_id" value="${organizationId}">
+        <textarea name="axes_json" style="min-height:80px;font-family:monospace" spellcheck="false">${esc(JSON.stringify(c.repo.listOrganizationDocumentAxes(organizationId), null, 2))}</textarea>
+        <button class="btn small" style="margin-top:8px">Save axes</button>
+      </form>
+      <p class="small muted" style="margin-bottom:0">Configure the selected organization, then create a CaseType such as <b>HR_ONBOARDING</b>. Empty rule trees remain undecided and are sent to a human.</p>
+    </section>
+    ${caseTypes.map(typeCard).join("") || `<div class="empty"><p>No CaseTypes yet for ${esc(organization?.name ?? "this organization")}.</p></div>`}
+  </div>`;
+}
+
+export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsSystem?: string, caseTypesOrganizationId?: number): string {
 
   // Round 3: the courses tab moved to the staff area (one home for course
   // configuration); /config?tab=courses redirects there at the route level.
-  const tab = tabChoice === "replies" || tabChoice === "pack" ? tabChoice : "requirements";
+  const tab = tabChoice === "replies" || tabChoice === "pack" || tabChoice === "requirements" ? tabChoice : "case-types";
   const tabBar = `<div class="tabs" style="margin:0 0 20px">
-    <a href="/config?tab=requirements" class="${tab === "requirements" ? "on" : ""}">Requirements</a>
+    <a href="/config?tab=case-types" class="${tab === "case-types" ? "on" : ""}">CaseTypes</a>
+    <a href="/config?tab=requirements" class="${tab === "requirements" ? "on" : ""}">Legacy requirements</a>
     <a href="/config?tab=replies" class="${tab === "replies" ? "on" : ""}">Reply configuration</a>
     <a href="/config?tab=pack" class="${tab === "pack" ? "on" : ""}">Document pack</a>
   </div>`;
@@ -2341,7 +2462,7 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
 <div class="sub">Requirements, deadlines and reply behaviour — course configuration (courses, ownership, document checklists) lives in the <a href="/staff">Staff area</a>. Changes apply to newly processed email immediately.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 ${tabBar}
-${tab === "pack" ? documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : replyHtml}
+${tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : replyHtml}
 `
   );
 }
@@ -2380,8 +2501,9 @@ const PLACEHOLDER_DOCS: Array<[string, string]> = [
 
 export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): string {
   const { repo } = c;
-  const templates = repo.listTemplates();
-  const tpl = (selectedKey ? templates.find((t) => t.key === selectedKey) : undefined) ?? templates[0];
+  const templates = repo.listTemplates(c.user.organization_id ?? 1);
+  const emptyTemplate = { key: "generic", name: "Generic reply", subject: "Your enquiry", body: "Hello {name},\\n\\nThank you for contacting {institution}. We will review your enquiry and reply shortly.\\n\\nKind regards,\\n{institution}", include_banner: 0, attach_pack: "none" };
+  const tpl = (selectedKey ? templates.find((t) => t.key === selectedKey) : undefined) ?? templates[0] ?? emptyTemplate;
 
   const picker = `<form class="inline" method="get" action="/templates" style="margin-bottom:6px">
     <label class="small muted">Template</label>
@@ -2396,8 +2518,8 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
   // Live preview against a sample applicant — exactly what renderTemplate
   // will produce, so staff see the real output before anyone receives it.
   const preview = renderTemplate(tpl.subject, tpl.body, {
-    ref: "RU-2026-000001",
-    institution: repo.getSetting("institution_name", "Riara University"),
+    ref: `${repo.organizationRefPrefix(c.user.organization_id ?? 1)}-${new Date().getFullYear()}-000001`,
+    institution: c.institution,
     name: "Wanjiku Kamau",
     missingLabels: ["Leaving Certificate", "Passport Photo"],
     checklist: "✓ Application Form\n✗ Leaving Certificate\n✗ Passport Photo",
@@ -2496,6 +2618,8 @@ function scopeMatrix(c: Ctx): string {
       </tr>`;
     }
     const current = new Set(repo.scopesFor(m.id));
+    const mode = repo.scopeModeFor(m.id);
+    const state = mode === "none" ? "no access" : mode === "scoped" ? "assigned schools only" : "unscoped — sees everything";
     return `<tr>
       <td><b>${esc(m.display_name)}</b><br><span class="muted small">@${esc(m.username)}</span></td>
       <form method="post" action="/staff/scopes"><td colspan="${schools.length + 1}" style="display:table-cell">
@@ -2503,26 +2627,33 @@ function scopeMatrix(c: Ctx): string {
           <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
           <input type="hidden" name="staff_id" value="${m.id}">
           ${schools.map((s) => `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="schools" value="${esc(s)}" style="width:auto" ${current.has(s) ? "checked" : ""}> ${esc(s)}</label>`).join("")}
-          <button class="btn small ghost">Save scope</button>
-          ${current.size ? "" : `<span class="muted small">no scope — sees everything</span>`}
+          <button class="btn small ghost">Save assigned schools</button>
+          <button class="btn small ghost" name="scope_mode" value="unscoped">Restore full visibility</button>
+          <span class="muted small">${esc(state)}</span>
         </div>
       </td></form>
     </tr>`;
   }).join("");
   return `<section class="card nopad" id="scopes">
     <div class="card-head"><h2>Visibility scope</h2></div>
-    <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the schools each officer handles and press <b>Save scope</b> — one action per person. From then on they see only cases from those schools, everywhere: queues, levels, search, direct links and the API. Untick everything and save to give full visibility back. Schools are managed in <a href="/config?tab=courses#schools">Configuration</a>.</p>
+    <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the schools each officer handles and press <b>Save assigned schools</b> — one action per person. From then on they see only cases from those schools, everywhere: queues, levels, search, direct links and the API. Saving an empty selection gives <b>no case access</b>; use <b>Restore full visibility</b> when that is intentional. Schools are managed in <a href="/config?tab=courses#schools">Configuration</a>.</p>
     ${schools.length ? `<table><tr><th>Staff member</th><th>Schools they may see</th></tr>${rows}</table>` : `<div class="empty"><p>Add a school in Configuration first.</p></div>`}
   </section>`;
 }
 
 /**
  * Round 3 — course configuration lives in ONE place: the staff area.
- * Everything that used to sit behind Configuration → "Course configuration"
+ * Everything that used to sit behind Configuration → "Case configuration"
  * (schools, course details, ownership, enforced rules, intakes, add forms)
  * plus the NEW per-course document checklists (checkboxes).
  */
 function coursesConfigHtml(c: Ctx): string {
+  // Compatibility surface: the migrated Organization #1 may still inspect
+  // academic catalogue data, but new tenants only see the generic CaseType
+  // editor. This prevents academic labels from becoming a runtime default.
+  if ((c.user.organization_id ?? 1) !== 1) {
+    return `<section class="card"><h2>CaseTypes</h2><p class="small muted">This organization has no academic catalogue. Configure its document matrix and rule trees in <a href="/config?tab=case-types">CaseTypes</a>.</p></section>`;
+  }
   const { repo } = c;
   const programmes = repo.listProgrammes();
   const staffList = repo.listStaff().filter((m) => m.active);
@@ -2561,14 +2692,14 @@ function coursesConfigHtml(c: Ctx): string {
         </form>` : ""}
       </div>
     </td></tr>`;
-  const courseRow = (pr: Programme): string => `<tr>
+  const courseRow = (pr: LegacyAcademicProgramme): string => `<tr>
         <td><b>${esc(pr.code)}</b><br><span class="small muted">${esc(pr.name)}</span><br><span class="badge ${pr.level === "phd" || pr.level === "masters" ? "b-purple" : "b-gray"}" style="margin-top:4px">${pr.level === "phd" ? "PhD" : capFirst(pr.level)}</span></td>
         <td>
           <form method="post" action="/config/programme/edit" style="display:flex;gap:6px;align-items:flex-start;max-width:640px">
             <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
             <input type="hidden" name="programme" value="${esc(pr.code)}">
             <div style="flex:1">
-              <input type="text" name="name" value="${esc(pr.name)}" title="Course name" style="margin-bottom:6px">
+              <input type="text" name="name" value="${esc(pr.name)}" title="Case name" style="margin-bottom:6px">
               <textarea name="entry_requirements" rows="3" title="Reference notes (not enforced — the enforced rules are shown below)" placeholder="Reference notes only — prospectus wording, special cases…" style="min-height:64px;font-size:12.5px">${esc(pr.entry_requirements)}</textarea>
             </div>
             <button class="btn small ghost" title="Save course details">Save</button>
@@ -2591,7 +2722,7 @@ function coursesConfigHtml(c: Ctx): string {
   // default; ticking (or un-ticking) boxes and saving configures THIS course
   // only. Conditional items are "asked for, never assumed" and are not
   // toggled here.
-  const courseDocChecklist = (pr: Programme): string => {
+  const courseDocChecklist = (pr: LegacyAcademicProgramme): string => {
     const configured = repo.courseDocConfig(pr.code);
     const defaults = new Set(
       repo.resolveRequirements(pr.code, null, {}).filter((e) => e.required).map((e) => e.document_type)
@@ -2648,7 +2779,7 @@ function coursesConfigHtml(c: Ctx): string {
   <div class="card-head"><h2>Courses &amp; ownership</h2></div>
   <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone — assign the responsible officer here. The notes column is free-text reference; the <b>enforced</b> subject-and-grade rules for each course live in the <a href="/config?tab=requirements">Requirements tab</a>.</p>
   ${programmes.length
-    ? `<table><tr><th>Programme</th><th>Course details &amp; reference notes</th><th>Handled by</th></tr>${courseRows}</table>`
+    ? `<table><tr><th>CaseType</th><th>Case details &amp; reference notes</th><th>Handled by</th></tr>${courseRows}</table>`
     : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
   <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
     <h2>Required documents — per course</h2>
@@ -2663,7 +2794,7 @@ function coursesConfigHtml(c: Ctx): string {
     <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
       <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
       <div><label>New programme code</label><input type="text" name="prog_code" placeholder="e.g. MED"></div>
-      <div style="flex:2"><label>Programme name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
+      <div style="flex:2"><label>CaseType name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
       <div><label>School</label><select name="prog_school"><option value="">No school yet</option>${schools.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}</select></div>
       <div><label>Level</label><select name="prog_level"><option value="degree">Degree</option><option value="diploma">Diploma</option><option value="certificate">Certificate</option><option value="masters">Master's</option><option value="phd">PhD</option></select></div>
       <div><label>New intake</label><input type="text" name="intake" placeholder="e.g. May 2027"></div>

@@ -149,7 +149,7 @@ describe("E3 — unknown programme is human territory, not degree-floor territor
 
     repo.updateApplicant(id, { programme: "BCS" });
     const after = evaluateAdmission(repo, id).report;
-    expect(after.routing).toBe("auto_admit");
+    expect(after.routing).toBe("human_review");
     expect(after.frozenAt).toBeTruthy();
   });
 });
@@ -214,6 +214,6 @@ describe("E5 — an unread academic document forces review", () => {
       [{ type: "kcpe_cert", fields: { name: "RT4 KCPE" } }]
     );
     const { report } = evaluateAdmission(repo, id);
-    expect(report.routing).toBe("auto_admit");
+    expect(report.routing).toBe("human_review");
   });
 });

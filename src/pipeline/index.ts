@@ -32,17 +32,17 @@ import { extractAttachment, MIN_AUTO_PASS_SCORE } from "../extraction/extract";
 import { consistencyCheck } from "../extraction/crosscheck";
 import { readBackText, documentIssuesText, internalNote } from "../extraction/feedback";
 import { decide, docLabel, normalizeName } from "../rules";
-import { evaluateAdmission, downgradeRoutingForWatcher } from "../admissions/evaluate";
-import { SYSTEM_LABELS } from "../admissions/systems";
-import { gate } from "../gate";
-import { categorizeEmail, priorityForCategory } from "../categorize";
+import { evaluateAdmission, evaluateCaseTypeRules, downgradeRoutingForWatcher } from "../admissions/evaluate";
+import { caseTypeGate, gate } from "../gate";
+import { fillSlots } from "../documents/matrix";
+import { categorizeEmail, classifyWithConfiguredCategories, priorityForCategory } from "../categorize";
 import { emailTargetsKnownApplicant } from "../matching";
 import { classifyIntakeEmail, DEFAULT_INTAKE_HOTWORDS, intakeHotwordList } from "../intake";
 import { extractPhone, inferIntake, inferProgramme, inferTransfer } from "../enrich";
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
-import { INSTITUTION, emailBanner } from "../branding";
-import { admissionPack, applicationPack } from "../pack";
+import { emailBanner, organizationName } from "../branding";
+import { organizationPack } from "../pack";
 import type { SendExtras } from "./adapters";
 import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
@@ -94,6 +94,7 @@ async function processEmailInner(
   opts: PipelineOptions
 ): Promise<ProcessResult> {
   const { repo, adapters } = ctx;
+  const intakeOrganizationId = email.organizationId ?? 1;
 
   // ── Intake gate (round 9) ────────────────────────────────────────────────
   // Only admissions intake becomes a case: the mail carries an intake
@@ -110,7 +111,13 @@ async function processEmailInner(
     subject: email.subject,
     body: email.body,
     attachmentFilenames: (email.attachments ?? []).map((a) => a.filename),
-    courseNames: repo.listProgrammes().map((p) => p.name),
+    // Both the editable display name and the stable course code are hotwords.
+    // Applicants commonly write “BBIT”/“BCS” rather than the full catalogue
+    // name, and codes are less ambiguous than a generic word such as “business”.
+    courseNames: [
+      ...(intakeOrganizationId === 1 ? repo.listProgrammes().flatMap((p) => [p.name, p.code]) : []),
+      ...repo.listCaseTypes(intakeOrganizationId).flatMap((t) => [t.name, t.code]),
+    ],
     customHotwords: intakeHotwordList(hotwords),
     knownApplicant: emailTargetsKnownApplicant(repo, email),
   });
@@ -155,14 +162,51 @@ async function processEmailInner(
   }
 
   // ── Categorize (feature 26) ──────────────────────────────────────────────
-  const category: EmailCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
+  // Gemini may provide only an organization-owned routing label. Code maps
+  // that label to the legacy workflow enum; it never produces an outcome.
+  const configuredKeys = repo.listEmailCategories(intakeOrganizationId).map((x) => x.key);
+  const fallbackCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
+  let category: EmailCategory = fallbackCategory;
+  if (process.env.GEMINI_API_KEY && configuredKeys.length > 0) {
+    const label = await classifyWithConfiguredCategories(
+      { subject: email.subject, body: email.body }, configuredKeys
+    );
+    const normalized = label.label.toLowerCase();
+    const mapped: Record<string, EmailCategory> = {
+      admission: "admission_enquiry", admission_enquiry: "admission_enquiry",
+      application: "application", document_submission: "document_submission",
+      missing_document: "missing_document", fee_enquiry: "fee_enquiry",
+      follow_up: "follow_up", complaint: "complaint", other: "other", normal: "other",
+    };
+    category = mapped[normalized] ?? "other";
+    repo.audit(null, "system", "email_labelled", `label=${label.label} confidence=${label.confidence} source=${label.source ?? "gemini"}; routing metadata only`);
+  }
+
+  // An eligibility/requirements question may carry a screenshot as evidence.
+  // Keep it in the enquiry workflow: OCR can still preserve the evidence, but
+  // the attachment must not turn a question into a documents-received or
+  // awaiting-documents case.
+  const enquiryOnly = category === "admission_enquiry";
+  let humanTriageOnly = enquiryOnly || category === "complaint" || category === "fee_enquiry";
 
   // ── Resolve/create applicant with reference number (features 1, 2) ──────
   // v3 identity matching: quoted reference number → known sender (any thread)
   // → new applicant. Low-confidence matches get an identity_check flag.
-  const refPrefix = repo.getSetting("ref_prefix", "RU");
-  const identity = resolveIdentity(repo, email, { refPrefix });
+  // New inbound mail enters the migrated tenant unless a known case already
+  // identifies another organization; reference prefixes belong to that tenant.
+  const refPrefix = repo.organizationRefPrefix(intakeOrganizationId);
+  const identity = resolveIdentity(repo, email, {
+    refPrefix,
+    organizationId: intakeOrganizationId,
+    caseTypeCode: email.caseTypeCode,
+  });
   const applicant = identity.applicant;
+  const genericCaseType = repo.caseTypeForCase(applicant.id);
+  // Generic CaseTypes are evidence/routing workflows, never admission
+  // workflows. They stay in human triage even when their configured matrix
+  // and rule tree are complete.
+  const legacyAcademicCaseType = genericCaseType && (applicant.organization_id ?? 1) === 1 && (genericCaseType.code === "GENERAL" || Boolean(repo.programmeByCode(genericCaseType.code)));
+  if (genericCaseType && !legacyAcademicCaseType) humanTriageOnly = true;
   const preFlags: DerivedFlag[] = [];
   if (identity.concern) {
     preFlags.push({ type: "identity_check", detail: identity.concern });
@@ -177,8 +221,9 @@ async function processEmailInner(
   //    again with substance → reopen the SAME case, never create a duplicate.
   const reopenable = applicant.lifecycle === "completed" || applicant.lifecycle === "verification";
   const actionable =
-    email.attachments.length > 0 ||
-    ["application", "document_submission", "complaint", "missing_document"].includes(category);
+    !humanTriageOnly &&
+    (email.attachments.length > 0 ||
+      ["application", "document_submission", "complaint", "missing_document"].includes(category));
   if (reopenable && actionable) {
     repo.setLifecycle(applicant.id, "awaiting_review", "system", "case reopened: applicant emailed again after completion");
     repo.audit(applicant.id, "system", "case_reopened", `new ${category} email after ${applicant.lifecycle}`);
@@ -229,6 +274,17 @@ async function processEmailInner(
   const duplicateFlags: DerivedFlag[] = [];
   for (const att of email.attachments) {
     const res = await extractAttachment(att, { vision: adapters.vision, ocr: adapters.ocr });
+    // Generic document slots are organization-owned. A configured key or
+    // label in the supplied filename/text is a routing hint only; extraction
+    // fields and the human gate still decide whether the evidence is usable.
+    if (genericCaseType && !legacyAcademicCaseType) {
+      const haystack = `${att.filename} ${res.text}`.toLowerCase();
+      const configured = repo.listDocumentDefinitions(genericCaseType.id).find((d) => {
+        const words = `${d.key} ${d.label}`.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2);
+        return words.some((word) => haystack.includes(word));
+      });
+      if (configured) res.document_type = configured.key as typeof res.document_type;
+    }
     const dup = repo.findDuplicate(applicant.id, res.sha256);
     if (dup) {
       repo.insertDocument({
@@ -386,16 +442,48 @@ async function processEmailInner(
     repo.audit(applicant.id, "system", "late_submission", `after ${applicantNow.intake} deadline ${deadline}`);
   }
 
-  // ── Admissions rules engine (round 18) ───────────────────────────────────
-  // Structured evaluation of the applicant's academic data against the
-  // frozen requirement trees, then routing: QUALIFIED → auto-admit path,
-  // NOT CLEARLY QUALIFIED → human review (never rejection), INCOMPLETE →
-  // waiting for documents. The engine's own flags feed the classic verdict.
-  const admission = evaluateAdmission(repo, applicant.id, preFlags);
+  // ── Configured CaseType engine ───────────────────────────────────────────
+  // A non-academic tenant uses only its organization-owned matrix and rule
+  // tree. The generic evaluator returns evidence and human_review; it never
+  // writes an approval/rejection decision and never inherits academic fields.
+  let genericRuleResult: ReturnType<typeof evaluateCaseTypeRules> | null = null;
+  if (genericCaseType && !legacyAcademicCaseType) {
+    const facts: Record<string, unknown> = {
+      subject: email.subject,
+      body: email.body,
+      has_attachments: email.attachments.length > 0,
+    };
+    for (const doc of activeDocs) Object.assign(facts, doc.extracted_fields ?? {});
+    genericRuleResult = evaluateCaseTypeRules(repo, genericCaseType, repo.caseTypeRules(genericCaseType), facts);
+    const matrix = fillSlots(requirements, activeDocs.map((d) => d.document_type));
+    const matrixComplete = matrix.missing.length === 0;
+    const configuredGate = caseTypeGate({
+      matrixComplete,
+      ruleTreePassed: genericRuleResult.result === "passed",
+      watcher: { ran: false, flagged: false },
+      confidenceFloorMet: activeDocs.every((d) => (d.confidence_score ?? 0) >= MIN_AUTO_PASS_SCORE),
+    });
+    repo.audit(applicant.id, "system", "case_type_gate", `${genericCaseType.code}: matrix=${matrixComplete}; rules=${genericRuleResult.result}; action=${configuredGate.action}; outcome remains undecided`);
+    if (genericRuleResult.result !== "passed") {
+      preFlags.push({ type: "low_confidence", detail: `Configured ${genericCaseType.name} rule tree is ${genericRuleResult.result}; human review required` });
+    }
+  }
+  const admission = genericRuleResult ? { derivedFlags: [] as DerivedFlag[] } : evaluateAdmission(repo, applicant.id, preFlags);
   preFlags.push(...admission.derivedFlags);
 
   // ── Rules: pure deterministic decision (feature 10) ─────────────────────
-  const rulesOut = decide({ requirements, docs: activeDocs, flags: preFlags });
+  const rulesOut = genericRuleResult
+    ? (() => {
+      const missing = fillSlots(requirements, activeDocs.map((d) => d.document_type)).missing.map((x) => x.document_type);
+      const status: Classification = missing.length > 0 || genericRuleResult.result !== "passed" ? "Orange" : "Green";
+      return {
+        status,
+        reasoning: `CaseType matrix ${missing.length ? `missing ${missing.join(", ")}` : "complete"}; rule tree ${genericRuleResult.result}; routing human review; outcome undecided`,
+        derivedFlags: [] as DerivedFlag[],
+        missing,
+      };
+    })()
+    : decide({ requirements, docs: activeDocs, flags: preFlags });
 
   // ── Watcher: Green only, can only downgrade (feature: watcher) ──────────
   let finalStatus: Classification = rulesOut.status;
@@ -431,12 +519,16 @@ async function processEmailInner(
     }
   }
 
+  if (humanTriageOnly) {
+    reasoning += `\nRouting: ${enquiryOnly ? "admission enquiry" : category.replace(/_/g, " ")} — the message is sent to human triage; attachments are evidence, not a document-pack submission.`;
+  }
+
   // Persist flags (blocking + informational duplicates).
   const blockingFlags = [...preFlags, ...rulesOut.derivedFlags, ...watcherFlags];
   repo.syncFlags(applicant.id, [...blockingFlags, ...duplicateFlags]);
   repo.audit(applicant.id, "system", "requirements_checked", `verdict=${finalStatus}; missing=${rulesOut.missing.join(",") || "none"}`);
 
-  // A watcher downgrade after a passing evaluation withholds the auto-admit.
+  // A watcher downgrade after a passing evaluation still forces human review.
   if (watcherFlagged) downgradeRoutingForWatcher(repo, applicant.id);
 
   // ── Gate v2 (features 11, 13, 21) ────────────────────────────────────────
@@ -449,6 +541,7 @@ async function processEmailInner(
     (d) => (d.confidence_score || (d.confidence === "high" ? 100 : 0)) >= MIN_AUTO_PASS_SCORE
   );
   const cleanMissingCase =
+    !humanTriageOnly &&
     finalStatus === "Red" &&
     rulesOut.missing.length > 0 &&
     activeBlockingFlags.length === 0 &&
@@ -470,7 +563,12 @@ async function processEmailInner(
   // The applicant emailed just their reference number ("RU-2026-000003") —
   // answer with the factual status of their own case. Only when the sender IS
   // the case owner; a stranger quoting someone's ref goes to a human.
-  if (opts.autoStatusAnswers && refOnlyOwnCase) {
+  if (humanTriageOnly) {
+    // A screenshot attached to an eligibility question, complaint or fee
+    // enquiry is evidence for the human reply, not a submission of the
+    // admissions document pack.
+    queueForHuman = true;
+  } else if (opts.autoStatusAnswers && refOnlyOwnCase) {
     autoKind = "status_answer";
   } else if (gateDecision.action === "auto_send") {
     autoKind = "ack";
@@ -532,39 +630,13 @@ async function processEmailInner(
     queueForHuman = true;
   }
 
-  // ── Auto-admission (round 18) ────────────────────────────────────────────
-  // QUALIFIED with no blocking issues → the system progresses the file itself
-  // and sends the official admission letter. Draft-first mode holds even this
-  // for a human; the evaluation stays intact and is re-applied on next mail.
-  const admissionRow = repo.getApplicant(applicant.id)!;
-  const willAutoAdmit =
-    admission.report.routing === "auto_admit" &&
-    admissionRow.admission_decision === "undecided" &&
-    fullyQualified &&
-    !heldForApproval &&
-    activeDocs.length > 0;
-  if (willAutoAdmit) {
-    const rep = admission.report;
-    repo.updateApplicant(applicant.id, {
-      admission_decision: "auto_admitted",
-      admission_route: "automated",
-      decision_by: "system",
-      decision_reason: "All configured requirements satisfied",
-      decision_at: new Date().toISOString(),
-    });
-    const values = rep.leaves.map((l) => `${l.label}=${l.applicantValue ?? "?"}`).join(", ");
-    repo.audit(applicant.id, "system", "auto_admission_triggered",
-      `set v${rep.setVersion ?? "?"} (${rep.system ?? "?"}): ${values} · evaluated ${rep.evaluatedAt} · route: automated`);
-    repo.audit(applicant.id, "system", "admission_auto_qualified",
-      `Admission method: Automated · Reason: All configured requirements satisfied (${rep.rulesSatisfied}/${rep.rulesTotal} rules)`);
-    repo.notify("auto_admission",
-      `${admissionRow.ref_number} auto-admitted — ${rep.system ? SYSTEM_LABELS[rep.system] : rep.system} route, all requirements satisfied`,
-      applicant.id);
-    log(`pipeline: ${admissionRow.ref_number} AUTO-ADMITTED (${rep.system ?? "?"} route)`);
-  }
+  // ── Admission safety gate ────────────────────────────────────────────────
+  // A passing rules evaluation is evidence for a reviewer, never an admission
+  // decision. The evaluator may record a provisional route for legacy reports,
+  // but this intake path never sets admission_decision or sends a letter.
 
   // ── Drafting (features 14, 35) ──────────────────────────────────────────
-  const institution = INSTITUTION;
+  const institution = organizationName(repo, applicantNow.organization_id ?? applicant.organization_id ?? 1);
   const requiredReqs = requirements.filter((r) => r.required);
   const presentTypes = activeDocs.map((d) => d.document_type);
   const missingLabels = rulesOut.missing.map((m) => docLabel(m));
@@ -572,8 +644,8 @@ async function processEmailInner(
     activeDocs
       .map((d) => normalizeName(d.extracted_fields?.name as string | undefined))
       .find((n) => n.length >= 3) || freshApplicant.full_name || email.fromName;
-  const lifecycleAfter: LifecycleStage = willAutoAdmit
-    ? "completed"
+  const lifecycleAfter: LifecycleStage = humanTriageOnly
+    ? "application_received"
     : heldForApproval || heldForQualification
       ? activeDocs.length > 0
         ? "documents_received"
@@ -602,13 +674,11 @@ async function processEmailInner(
     documentIssues: documentIssuesText(activeDocs),
   };
 
-  // Auto-admitted applicants get the official admission letter (with the full
-  // admission pack attached) instead of the plain acknowledgement.
-  const templateKey = willAutoAdmit
-    ? "admission_letter"
-    : autoKind === "ack"
-      ? "ack_received"
-      : autoKind === "docs_request"
+  // Admission letters are only available through a human decision; the intake
+  // pipeline drafts factual acknowledgements and review notes only.
+  const templateKey = autoKind === "ack"
+    ? "ack_received"
+    : autoKind === "docs_request"
         ? "docs_request"
         : autoKind === "missing_docs"
           ? "missing_documents"
@@ -616,8 +686,9 @@ async function processEmailInner(
             ? "status_answer"
             : null;
 
+  const organizationId = applicantNow.organization_id ?? applicant.organization_id ?? 1;
   if (templateKey) {
-    const tpl = repo.getTemplate(templateKey);
+    const tpl = repo.getTemplate(templateKey, organizationId);
     if (tpl) {
       const rendered = renderTemplate(tpl.subject, tpl.body, draftCtx);
       draft = { subject: rendered.subject, body: rendered.body, audience: "auto", templateKey };
@@ -646,14 +717,16 @@ async function processEmailInner(
       // OR-7: which pack (if any) rides along is a property of the TEMPLATE,
       // edited in the Templates section — the pipeline no longer hardcodes
       // it, so what staff configure is exactly what applicants receive.
-      // Defaults keep the historical behaviour (enquiry → application pack,
-      // auto-admit → full admission pack).
-      const tplRow = templateKey ? repo.getTemplate(templateKey) : undefined;
+      // Defaults keep the historical behaviour for factual requests: a
+      // document request may carry the configured application pack.
+      const tplRow = templateKey ? repo.getTemplate(templateKey, organizationId) : undefined;
       const packFlag = tplRow?.attach_pack
-        ?? (willAutoAdmit ? "admission" : autoKind === "docs_request" ? "application" : "none");
-      const pack = packFlag === "admission" ? admissionPack() : packFlag === "application" ? applicationPack() : null;
+        ?? (autoKind === "docs_request" ? "application" : "none");
+      const pack = packFlag === "admission" || packFlag === "application"
+        ? organizationPack(repo, organizationId, [packFlag])
+        : null;
       const extras: SendExtras = {
-        banner: tplRow?.include_banner === 0 ? null : emailBanner(repo),
+        banner: tplRow?.include_banner === 0 ? null : emailBanner(repo, organizationId),
         attachments: pack ? pack.files : [],
       };
       // A pack that went out missing files is a silent failure no more:
@@ -742,7 +815,9 @@ async function processEmailInner(
     const due = new Date(Date.now() + slaHours * 3600_000).toISOString();
     const cur = repo.getApplicant(applicant.id)!;
     if (!cur.sla_handled_at) repo.updateApplicant(applicant.id, { sla_due_at: due });
-    const reason = heldForQualification && !heldForApproval
+    const reason = humanTriageOnly
+      ? `${enquiryOnly ? "admission enquiry" : category.replace(/_/g, " ")} — staff response required`
+      : heldForQualification && !heldForApproval
       ? "applicant not fully qualified — suggested reply held for staff (special acceptance may apply)"
       : heldForApproval
         ? "automated reply held for approval (draft-first mode)"
@@ -759,17 +834,13 @@ async function processEmailInner(
   // ── Lifecycle transition + status history (features 15, 16) ─────────────
   const lifecycleNow = repo.getApplicant(applicant.id)!.lifecycle;
   if (lifecycleNow !== lifecycleAfter) {
-    const why = willAutoAdmit
-      ? "auto-admitted: all configured requirements satisfied"
-      : autoKind === "ack"
+    const why = autoKind === "ack"
         ? "all required documents verified automatically"
         : lifecycleAfter === "awaiting_review"
           ? "queued for human review"
           : lifecycleAfter === "documents_received"
             ? "documents received; file not yet complete"
-            : lifecycleAfter === "completed"
-              ? "completed"
-              : "application received";
+            : "application received";
     repo.setLifecycle(applicant.id, lifecycleAfter, "system", why);
   }
 

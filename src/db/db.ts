@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS applicants (
   followup_next_at TEXT,
   followup_base_at TEXT,
   demo           INTEGER NOT NULL DEFAULT 0,
+  organization_id INTEGER,
+  case_type_id    INTEGER,
+  category       TEXT,
+  outcome        TEXT NOT NULL DEFAULT 'undecided',
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (email_address, thread_id)
@@ -223,8 +227,11 @@ CREATE TABLE IF NOT EXISTS staff_users (
   display_name  TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   role          TEXT NOT NULL DEFAULT 'user',      -- admin | user (round 18)
+  -- unscoped = full visibility, scoped = the rows below, none = no access
+  scope_mode    TEXT NOT NULL DEFAULT 'unscoped',
   active        INTEGER NOT NULL DEFAULT 1,
   demo          INTEGER NOT NULL DEFAULT 0,        -- 1 = seeded demo-dataset account
+  organization_id INTEGER,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -260,6 +267,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 CREATE TABLE IF NOT EXISTS templates (
   key        TEXT PRIMARY KEY,
+  organization_id INTEGER,
   name       TEXT NOT NULL,
   subject    TEXT NOT NULL,
   body       TEXT NOT NULL,
@@ -371,6 +379,77 @@ CREATE TABLE IF NOT EXISTS evaluations (
   evaluated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_evaluations_applicant ON evaluations(applicant_id);
+
+-- ══ General intake engine ═══════════════════════════════════════════════════
+-- Organization is the tenant boundary for configuration and data ownership.
+CREATE TABLE IF NOT EXISTS organizations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  logo TEXT,
+  ref_prefix TEXT NOT NULL DEFAULT 'ORG',
+  theme TEXT NOT NULL DEFAULT '{"primary":"#334155","accent":"#0f766e"}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS case_types (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id),
+  code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'general',
+  config TEXT NOT NULL DEFAULT '{}',
+  active INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (organization_id, code)
+);
+CREATE TABLE IF NOT EXISTS organization_categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (organization_id, key)
+);
+CREATE TABLE IF NOT EXISTS organization_document_axes (
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  axis_key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  values_json TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY (organization_id, axis_key)
+);
+CREATE TABLE IF NOT EXISTS document_definitions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_type_id INTEGER NOT NULL REFERENCES case_types(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  required INTEGER NOT NULL DEFAULT 1,
+  blocking INTEGER NOT NULL DEFAULT 1,
+  position INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (case_type_id, key)
+);
+CREATE TABLE IF NOT EXISTS organization_templates (
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  body TEXT NOT NULL,
+  include_banner INTEGER NOT NULL DEFAULT 1,
+  attach_pack TEXT NOT NULL DEFAULT 'none',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (organization_id, key)
+);
+CREATE TABLE IF NOT EXISTS organization_pack_slots (
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  filename TEXT,
+  mime TEXT,
+  content BLOB,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (organization_id, key)
+);
+CREATE TABLE IF NOT EXISTS staff_case_type_scopes (
+  staff_id INTEGER NOT NULL REFERENCES staff_users(id) ON DELETE CASCADE,
+  case_type_code TEXT NOT NULL,
+  PRIMARY KEY (staff_id, case_type_code)
+);
 `;
 
 export function openDb(file: string): Database.Database {
@@ -425,9 +504,22 @@ function migrate(db: Database.Database): void {
   addColumn("programmes", "entry_requirements", "TEXT NOT NULL DEFAULT ''");
   // Whether outgoing mail rendered from this template carries the banner.
   addColumn("templates", "include_banner", "INTEGER NOT NULL DEFAULT 1");
+  addColumn("templates", "organization_id", "INTEGER");
   // Accounts seeded by the demo dataset are marked, so the UI can label them
   // and production accounts are never confused with sample ones.
   addColumn("staff_users", "demo", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("staff_users", "organization_id", "INTEGER");
+  // OR-8: distinguish an intentionally empty/no-access scope from an
+  // unscoped officer (full visibility). Without this marker, deleting the
+  // last school made the empty-list SQL branch unreachable.
+  addColumn("staff_users", "scope_mode", "TEXT NOT NULL DEFAULT 'unscoped'");
+  addColumn("organizations", "ref_prefix", "TEXT NOT NULL DEFAULT 'ORG'");
+  // Organization #1 is the migrated academic tenant. Preserve a valid legacy
+  // prefix once, then keep all future reference reads on the organization row;
+  // every new tenant starts with the neutral ORG prefix.
+  const legacyRef = (db.prepare("SELECT value FROM settings WHERE key = 'ref_prefix'").get() as { value?: string } | undefined)?.value?.trim().toUpperCase();
+  const migratedRef = legacyRef && /^[A-Z]{1,8}$/.test(legacyRef) ? legacyRef : "RU";
+  db.prepare("UPDATE organizations SET ref_prefix = ? WHERE id = 1 AND (ref_prefix IS NULL OR ref_prefix = 'ORG')").run(migratedRef);
   addColumn("intakes", "deadline", "TEXT");
   // v5: requirement rules speak GRADES, not points. New columns carry the
   // published mean grade ("C+") and per-subject lines ("C+ in English and Maths").
@@ -442,6 +534,14 @@ function migrate(db: Database.Database): void {
   // Realm separation: seeded (mock) applicants are flagged so the live admin
   // dashboard never shows demo data, and demo accounts only see demo data.
   addColumn("applicants", "demo", "INTEGER NOT NULL DEFAULT 0");
+  // Generalization vocabulary. Legacy applicant rows remain intact and are
+  // associated with organization 1/case types during seed migration.
+  addColumn("applicants", "organization_id", "INTEGER");
+  addColumn("applicants", "case_type_id", "INTEGER");
+  addColumn("applicants", "category", "TEXT");
+  addColumn("applicants", "outcome", "TEXT NOT NULL DEFAULT 'undecided'");
+  db.exec("UPDATE applicants SET organization_id = 1 WHERE organization_id IS NULL");
+  db.exec("UPDATE applicants SET category = programme WHERE category IS NULL AND programme IS NOT NULL");
   // Numeric PDF readability/confidence (0-100); auto-send requires >= 75.
   addColumn("documents", "confidence_score", "INTEGER NOT NULL DEFAULT 0");
   addColumn("documents", "extraction_note", "TEXT NOT NULL DEFAULT ''");
@@ -453,6 +553,11 @@ function migrate(db: Database.Database): void {
   addColumn("applicants", "admission_rules_frozen", "TEXT");
   addColumn("applicants", "admission_rules_frozen_at", "TEXT");
   addColumn("applicants", "admission_decision", "TEXT NOT NULL DEFAULT 'undecided'");
+  db.exec(`UPDATE applicants SET outcome = CASE admission_decision
+    WHEN 'auto_admitted' THEN 'auto_approved'
+    WHEN 'admitted_after_review' THEN 'approved_after_review'
+    WHEN 'not_admitted' THEN 'not_approved'
+    ELSE 'undecided' END`);
   addColumn("applicants", "admission_route", "TEXT");
   addColumn("applicants", "decision_by", "TEXT");
   addColumn("applicants", "decision_reason", "TEXT");
@@ -530,4 +635,16 @@ function migrate(db: Database.Database): void {
     name TEXT NOT NULL UNIQUE
   )`);
   db.exec(`INSERT OR IGNORE INTO schools (name) SELECT DISTINCT school FROM programmes WHERE school <> ''`);
+  // Compatibility projection: old admissions callers still read applicants,
+  // while generic callers can use cases/outcome/category without losing rows.
+  db.exec(`CREATE VIEW IF NOT EXISTS cases AS
+    SELECT a.*, COALESCE(ct.category, a.programme) AS category,
+      CASE a.admission_decision
+        WHEN 'auto_admitted' THEN 'auto_approved'
+        WHEN 'admitted_after_review' THEN 'approved_after_review'
+        WHEN 'not_admitted' THEN 'not_approved'
+        ELSE 'undecided'
+      END AS outcome,
+      COALESCE(a.organization_id, 1) AS organization_id
+    FROM applicants a LEFT JOIN case_types ct ON ct.id = a.case_type_id`);
 }

@@ -2,7 +2,7 @@
  * Round 18 — admissions rules engine: the 14 mandated scenarios.
  *
  * Design principle under test: rules engine → evaluation → routing →
- * human intervention. Clearly qualified applicants are auto-admitted;
+ * human intervention. Clearly qualified applicants remain undecided until a reviewer confirms the route;
  * everything ambiguous lands with a human; missing data is NEVER failure;
  * and the word "rejected" does not exist anywhere in the flow.
  */
@@ -91,14 +91,15 @@ function mkDocs(
 const QUALIFIED = { meanGrade: "B", subjectGrades: { Mathematics: "C+", Physics: "B", English: "B" } };
 
 describe("admissions rules engine (round 18)", () => {
-  it("1. fully qualified applicant → AUTO-ADMIT, recorded as automated", () => {
+  it("1. fully qualified applicant → HUMAN REVIEW, never an automated admission", () => {
     const id = mkApplicant("BCS");
     mkDocs(id, { fields: QUALIFIED });
     const { report } = evaluateAdmission(repo, id);
     expect(report.result).toBe("passed");
-    expect(report.routing).toBe("auto_admit");
-    expect(report.reasonCode).toBe("qualified");
+    expect(report.routing).toBe("human_review");
+    expect(report.reasonCode).toBe("qualified_human_review");
     expect(report.leaves.some((l) => l.label === "Mean grade" && l.status === "passed")).toBe(true);
+    expect(repo.getApplicant(id)!.admission_decision).toBe("undecided");
   });
 
   it("2. one failed standard requirement → HUMAN REVIEW, never auto-reject", () => {
@@ -115,12 +116,12 @@ describe("admissions rules engine (round 18)", () => {
     expect(a.admission_decision).toBe("undecided"); // nothing decided automatically
   });
 
-  it("3. OR-condition satisfied through an alternative subject → AUTO-ADMIT", () => {
+  it("3. OR-condition satisfied through an alternative subject → HUMAN REVIEW", () => {
     const id = mkApplicant("BCS");
     mkDocs(id, { fields: { meanGrade: "C+", subjectGrades: { Mathematics: "C", Physics: "C+", English: "B" } } });
     const { report } = evaluateAdmission(repo, id);
     expect(report.result).toBe("passed");
-    expect(report.routing).toBe("auto_admit");
+    expect(report.routing).toBe("human_review");
     const math = report.leaves.find((l) => l.label === "Mathematics")!;
     expect(math.status).toBe("failed"); // failed, yet the OR group passes…
     const alt = report.groups.find((g) => g.via === "Physics") ?? report.leaves.find((l) => l.label === "Physics");
@@ -192,7 +193,7 @@ describe("admissions rules engine (round 18)", () => {
     const { report } = evaluateAdmission(repo, id);
     expect(report.system).toBe("DIPLOMA");
     expect(report.result).toBe("passed");
-    expect(report.routing).toBe("auto_admit");
+    expect(report.routing).toBe("human_review");
   });
 
   it("10. a human can ADMIT a standard-rule failure, audited as a human decision", async () => {
@@ -280,20 +281,18 @@ describe("admissions rules engine (round 18)", () => {
     expect(repo.activateDraftSet(restore.id)!.version).toBe(3);
   });
 
-  it("13. auto-admission and human admission are recorded separately", () => {
-    // Automated path: simulate the pipeline's recorded admission.
-    const autoId = mkApplicant("BCS");
-    mkDocs(autoId, { fields: QUALIFIED });
-    const { report } = evaluateAdmission(repo, autoId);
-    expect(report.routing).toBe("auto_admit");
-    repo.updateApplicant(autoId, {
-      admission_decision: "auto_admitted", admission_route: "automated",
-      decision_by: "system", decision_reason: "All configured requirements satisfied",
-      decision_at: new Date().toISOString(),
-    });
-    repo.audit(autoId, "system", "auto_admission_triggered", "set v1: evaluated automatically");
+  it("13. a qualified evaluation stays undecided until a human reviews it", () => {
+    const qualifiedId = mkApplicant("BCS");
+    mkDocs(qualifiedId, { fields: QUALIFIED });
+    const { report } = evaluateAdmission(repo, qualifiedId);
+    expect(report.routing).toBe("human_review");
 
-    // Human path via the real endpoint.
+    const qualified = repo.getApplicant(qualifiedId)!;
+    expect(qualified.admission_decision).toBe("undecided");
+    expect(qualified.decision_by).toBeNull();
+    expect(repo.auditForApplicant(qualifiedId).some((x) => x.event === "auto_admission_triggered")).toBe(false);
+
+    // Human path via the real endpoint remains available and separately audited.
     return (async () => {
       const humanId = mkApplicant("BCS");
       mkDocs(humanId, { fields: { meanGrade: "B", subjectGrades: { Mathematics: "D", Physics: "D" } } });
@@ -306,14 +305,9 @@ describe("admissions rules engine (round 18)", () => {
         redirect: "manual",
       });
 
-      const auto = repo.getApplicant(autoId)!;
       const human = repo.getApplicant(humanId)!;
-      expect(auto.admission_route).toBe("automated");
-      expect(auto.decision_by).toBe("system");
       expect(human.admission_route).toBe("human");
       expect(human.decision_by).toBe("admin");
-      expect(auto.admission_route).not.toBe(human.admission_route);
-      expect(repo.auditForApplicant(autoId).some((x) => x.event === "auto_admission_triggered")).toBe(true);
       expect(repo.auditForApplicant(humanId).some((x) => x.event === "human_admission_decision")).toBe(true);
     })();
   });
