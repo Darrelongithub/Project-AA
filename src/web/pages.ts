@@ -19,6 +19,7 @@ import { docLabel } from "../rules";
 import { renderTemplate } from "../drafting";
 import { EXAM_SYSTEMS } from "../config";
 import { packManifest } from "../pack";
+import { organizationTheme } from "../branding";
 import {
   avatar, categoryBadge, crest, esc, flagLabel, flowLine, fmtDate, gaugeRow,
   heroClock, icon, layout, lifecycleBadge, lifecycleStepper, priorityBadge, readabilityScore, slaText, triageBadge, type Theme,
@@ -75,6 +76,7 @@ export function loginPage(error?: string, theme?: Theme, institution = "Organiza
     content: `
 <div class="loginbox card">
   ${crest(58)}
+  <div class="brand-lockup"><span>PROJECT</span><b>AA</b></div>
   <h1 class="center">Sign in</h1>
   <p class="sub center">${esc(institution)} · Automated admissions</p>
   ${okMsg ? `<div class="flash ok" style="position:static;margin-bottom:14px">${esc(okMsg)}</div>` : ""}
@@ -103,6 +105,7 @@ export function resetPasswordPage(error?: string, theme?: Theme, institution = "
     content: `
 <div class="loginbox card">
   ${crest(58)}
+  <div class="brand-lockup"><span>PROJECT</span><b>AA</b></div>
   <h1 class="center">Reset password</h1>
   <p class="sub center">Enter your username and the one-time reset code your administrator issued for you. It works once and expires after 30 minutes.</p>
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
@@ -134,6 +137,7 @@ export function setupPage(token: string, error?: string, theme?: Theme, institut
     content: `
 <div class="loginbox card">
   ${crest(58)}
+  <div class="brand-lockup"><span>PROJECT</span><b>AA</b></div>
   <h1 class="center">Welcome to ${esc(institution)}</h1>
   <p class="sub center">This is a fresh installation. Create the administrator account — you will not see this screen again.</p>
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
@@ -323,9 +327,9 @@ export function dashboardPage(c: Ctx): string {
 
 /** Round 10: the one explicit Green/Orange/Red counter (checklist §11). */
 function triageTile(t: { green: number; orange: number; red: number }): string {
-  const item = (n: number, label: string, sub: string, hex: string) =>
+  const item = (n: number, label: string, sub: string, tone: "green" | "orange" | "red") =>
     `<div style="display:flex;align-items:center;gap:10px">
-      <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${hex};flex:none"></span>
+      <span class="triage-dot tone-${tone}" aria-hidden="true"></span>
       <b style="font-size:20px;min-width:30px">${n}</b>
       <span class="small"><b>${label}</b><br><span class="muted">${sub}</span></span>
     </div>`;
@@ -333,9 +337,9 @@ function triageTile(t: { green: number; orange: number; red: number }): string {
     <h2>Triage right now</h2>
     <p class="small muted" style="margin-top:-6px">Every case's current marking — Green needs nothing, Orange needs a look, Red needs action.</p>
     <div style="display:flex;gap:34px;flex-wrap:wrap;padding-top:6px">
-      ${item(t.green, "Green", "clean — nothing needs a person", "#1B7F4D")}
-      ${item(t.orange, "Orange", "needs a person to look", "#C77700")}
-      ${item(t.red, "Red", "a problem a person must act on", "#A11F2E")}
+      ${item(t.green, "Green", "clean — nothing needs a person", "green")}
+      ${item(t.orange, "Orange", "needs a person to look", "orange")}
+      ${item(t.red, "Red", "a problem a person must act on", "red")}
     </div>
   </section>`;
 }
@@ -582,11 +586,12 @@ export function admissionsPage(c: Ctx, stage: string): string {
     .map((a) => {
       const owner = a.assigned_to ? staffById.get(a.assigned_to) : null;
       const courseOwner = a.programme ? repo.programmeByCode(a.programme)?.owner_name : null;
-      return `<tr>
-        <td class="mono"><a href="/case/${a.id}">${esc(a.ref_number)}</a></td>
-        <td><div class="nameline">${avatar(a.full_name ?? a.ref_number, 30)}<span><b>${esc(a.full_name ?? "Unknown")}</b><br><span class="muted small">${esc(a.email_address)}</span></span></div></td>
+      const stageTone = a.lifecycle === "completed" ? "green" : a.lifecycle === "awaiting_review" ? "orange" : a.lifecycle === "verification" ? "blue" : "purple";
+      return `<tr class="case-row b-${stageTone}">
+        <td><a class="case-ref" href="/case/${a.id}">${esc(a.ref_number)}</a></td>
+        <td><div class="case-person">${avatar(a.full_name ?? a.ref_number, 34)}<span><b>${esc(a.full_name ?? "Unknown")}</b><span class="muted small">${esc(a.email_address)}</span></span></div></td>
         <td>${a.programme ? `<b>${esc(a.programme)}</b>` : `<span class="muted">—</span>`}<br><span class="muted small">${esc(a.intake ?? "no intake yet")}</span></td>
-        <td>${lifecycleBadge(a.lifecycle)}</td>
+        <td><span class="queue-state"><i class="state-dot" aria-hidden="true"></i>${esc(LIFECYCLE_LABELS[a.lifecycle])}</span></td>
         <td class="small nowrap muted" title="Applied">${esc(fmtDate(a.created_at))}</td>
         <td class="small">${owner ? esc(owner) : courseOwner ? `<span class="muted">course owner: ${esc(courseOwner)}</span>` : `<span class="muted">unassigned</span>`}</td>
         <td class="nowrap">
@@ -741,11 +746,12 @@ export function applicantsPage(
       const detail = evalReasons.get(r.id);
       const why = detail ? esc(detail.length > 96 ? detail.slice(0, 96) + "…" : detail) : "";
       const rowQueue = visibleQueues.find((qm) => qm.key === place.queue) ?? visibleQueues.find((qm) => qm.key === "human_review")!;
-      return `<tr>
-      <td class="mono"><a href="/case/${r.id}">${esc(r.ref_number)}</a></td>
-      <td><div class="nameline">${avatar(r.full_name ?? r.ref_number, 28)}<span>${esc(r.full_name ?? "—")}<br><span class="muted small">${esc(r.email_address)}</span></span></div></td>
-      <td class="small">${eduWorkspace ? `${esc(r.programme ?? "—")}${r.intake ? `<br><span class="muted">${esc(r.intake)}</span>` : ""}` : esc(r.queue || "—")}</td>
-      <td class="small"><span class="badge ${toneClass(rowQueue.tone)}">${esc(SUB_LABELS[place.sub] ?? place.sub)}</span><br><span class="muted">${why}</span></td>
+      const tone = toneClass(rowQueue.tone);
+      return `<tr class="case-row ${tone}">
+      <td><a class="case-ref" href="/case/${r.id}">${esc(r.ref_number)}</a></td>
+      <td><div class="case-person">${avatar(r.full_name ?? r.ref_number, 34)}<span><b>${esc(r.full_name ?? "—")}</b><span class="muted small">${esc(r.email_address)}</span></span></div></td>
+      <td class="small">${eduWorkspace ? `<b>${esc(r.programme ?? "—")}</b>${r.intake ? `<br><span class="muted">${esc(r.intake)}</span>` : ""}` : `<b>${esc(r.queue || "—")}</b>`}</td>
+      <td class="small"><span class="queue-state"><i class="state-dot" aria-hidden="true"></i>${esc(SUB_LABELS[place.sub] ?? place.sub)}</span><br><span class="muted">${why}</span></td>
       <td>${resultBadge(r.req_result)}</td>
       ${eduWorkspace ? `<td>${decisionBadge(r.admission_decision)}</td>` : ""}
       <td class="small muted nowrap">${esc(fmtDate(r.created_at))}</td>
@@ -823,8 +829,8 @@ function whatChanged(repo: Repo, a: ApplicantRow): string | null {
   for (const f of cleared) parts.push(`Flag cleared: <b>${esc(f)}</b>`);
   if (prev.computed_status !== last.computed_status) {
     const dotFor = (st: string): string => {
-      const color = st === "Green" ? "#1F7A3D" : st === "Orange" ? "#9A6A00" : "#A11F2E";
-      return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:4px"></span>`;
+      const tone = st === "Green" ? "green" : st === "Orange" ? "orange" : "red";
+      return `<span class="triage-dot tiny tone-${tone}" aria-hidden="true"></span>`;
     };
     parts.push(`${dotFor(prev.computed_status)}${esc(prev.computed_status)} → ${dotFor(last.computed_status)}<b>${esc(last.computed_status)}</b>`);
   }
@@ -1627,7 +1633,7 @@ export function mailPage(
     const name = t.a_name ?? (parked ? (t.a_email ?? "Unknown sender") : (t.ref_number ?? "(no case)"));
     const threadUrl = `/mail/thread/${encodeURIComponent(t.tkey)}`;
     return `<tr style="cursor:pointer" onclick="location.href='${threadUrl}'">
-      <td style="width:26px;padding-right:0">${unread ? `<span title="Unread" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--purple)"></span>` : ""}</td>
+      <td style="width:26px;padding-right:0">${unread ? `<span title="Unread" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--wine)"></span>` : ""}</td>
       <td style="width:34px;padding-right:0">
         <form class="starform" method="post" action="${threadUrl}/action" onclick="event.stopPropagation()" style="margin:0">
           <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -1641,7 +1647,7 @@ export function mailPage(
       <td style="min-width:0">
         <span style="${unread ? "font-weight:700" : ""}">${esc(t.subject || "(no subject)")}</span>
         <span class="muted"> — ${esc(snippet.slice(0, 140))}${snippet.length > 140 ? "…" : ""}</span>
-        ${t.imp_n ? `<span title="Important" style="color:var(--purple)">${icon("flag", 12)}</span>` : ""}
+        ${t.imp_n ? `<span title="Important" style="color:var(--wine)">${icon("flag", 12)}</span>` : ""}
         ${parked ? `<span class="badge b-gray" title="No intake hotword matched — kept in Mail, never processed as an application">not linked to a case</span>` : ""}
       </td>
       <td class="muted small" style="white-space:nowrap">${t.thread_n > 1 ? `(${t.thread_n})` : ""}</td>
@@ -1728,7 +1734,7 @@ export function mailThreadPage(
     const out = e.direction === "out";
     let attached: string[] = [];
     try { attached = e.attachments ? (JSON.parse(e.attachments) as string[]) : []; } catch { attached = []; }
-    return `<div class="card" style="margin-bottom:14px;border-left:3px solid ${out ? "var(--purple)" : "var(--line)"}">
+    return `<div class="card" style="margin-bottom:14px;border-left:3px solid ${out ? "var(--wine)" : "var(--line)"}">
       <div class="row" style="justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div class="small muted">
           <span class="badge ${out ? "b-purple" : ""}">${out ? (e.auto ? "Sent · automatic" : "Sent") : "Received"}</span>
@@ -1873,8 +1879,8 @@ ${connectionsSection(c, gmailRedirectUri)}
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
       ${organizationInput("organization_name", "Organisation / school name", organization?.name ?? c.institution)}
-      ${organizationInput("primary_color", "Primary colour", organization?.theme.primary ?? "#334155")}
-      ${organizationInput("accent_color", "Accent colour", organization?.theme.accent ?? "#0f766e")}
+      ${organizationInput("primary_color", "Primary colour", organization ? organizationTheme(repo, organizationId).primary : "#672b3c")}
+      ${organizationInput("accent_color", "Accent colour", organization ? organizationTheme(repo, organizationId).accent : "#c7b69e")}
       <div><label>Reference prefix</label><input name="ref_prefix" value="${esc(organization?.ref_prefix ?? repo.organizationRefPrefix(c.user.organization_id ?? 1))}" pattern="[A-Za-z]{1,8}" maxlength="8" required></div>
     </div>
     <div class="formrow">
@@ -2307,7 +2313,7 @@ function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, 
     const addButtons = `<div class="node-add" style="margin-left:${pad + 18}px">
       <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${targetFields}<input type="hidden" name="parent" value="${node.id}"><input type="hidden" name="kind" value="condition"><button class="btn small ghost">+ Condition</button></form>
       <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${targetFields}<input type="hidden" name="parent" value="${node.id}"><input type="hidden" name="kind" value="group"><button class="btn small ghost" title="A nested either/or group inside this one">+ Subgroup (nested either/or)</button></form>
-      <form method="post" action="/config/requirements/node-delete" style="margin:0" onsubmit="return confirm('Remove this group and everything inside it?')">${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}"><button class="btn small ghost" style="color:#A11F2E">Remove group</button></form>
+      <form method="post" action="/config/requirements/node-delete" style="margin:0" onsubmit="return confirm('Remove this group and everything inside it?')">${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}"><button class="btn small ghost" style="color:var(--red)">Remove group</button></form>
     </div>`;
     const children = (node.children ?? []).map((ch) => ruleNodeEditor(c, target, system, ch, depth + 1, subjects, level)).join("");
     return `${logicForm}${addButtons}${children}`;
@@ -2331,7 +2337,7 @@ function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, 
     <input type="hidden" name="comparator" value=">=">
     ${conditionValuePicker(system, level, node)}
     <button class="btn small ghost">Save</button>
-    <form method="post" action="/config/requirements/node-delete" style="margin:0" onsubmit="return confirm('Remove this condition?')">${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}"><button class="btn small ghost" style="color:#A11F2E">✕</button></form>
+    <form method="post" action="/config/requirements/node-delete" style="margin:0" onsubmit="return confirm('Remove this condition?')">${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}"><button class="btn small ghost" style="color:var(--red)">✕</button></form>
   </form>`;
 }
 
@@ -2474,20 +2480,17 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
   const genLevel: LegacyAcademicLevel = ((level as string) === "postgrad" ? "masters" : level) as LegacyAcademicLevel;
   const matrixSpecs = documentRequirementsFor({ level: genLevel, route: "fresh", nationality: "unknown", programmeCode: isBase ? null : target });
   const matrixRows = matrixSpecs
-    .map(
-      (spec, i) => `<tr>
-      <td class="small muted">${i + 1}</td>
-      <td>${esc(spec.label)}</td>
-      <td>${spec.blocking ? `<span class="badge b-purple">required</span>` : `<span class="badge b-gray">post-admission — never blocks</span>`}</td>
-      <td class="small muted">${esc(spec.conditional ?? "")}</td>
-    </tr>`
-    )
+    .map((spec) => `<div class="check-item ${spec.blocking ? "required" : "optional"}">
+      <span class="check-icon" aria-hidden="true">${spec.blocking ? "✓" : "◇"}</span>
+      <span class="check-name">${esc(spec.label)}</span>
+      <span class="check-note">${spec.blocking ? "Required" : "Post-admission · does not block"}${spec.conditional ? ` · ${esc(spec.conditional)}` : ""}</span>
+    </div>`)
     .join("");
   const matrixCard = `
 <section class="card" id="doc-matrix">
   <h2>Document checklist <span class="muted small" style="text-transform:none;letter-spacing:0">— generated deterministically, not staff-configurable</span></h2>
   <p class="small muted" style="margin-top:-4px">What an application file must contain is generated deterministically from the official application-form checklist (data/pack/application-form.pdf, pp. 3–4) — level × curriculum × nationality × route. There are no toggles: conditional items are asked for, never assumed, and post-admission items never block a file. Full matrix: <span class="mono">docs/DOCUMENT_MATRIX.md</span>. Shown for <b>${esc(isBase ? `university-wide ${genLevel}` : `${target} (${genLevel})`)}</b>, fresh applicants:</p>
-  <table><tr><th>#</th><th>Document</th><th>Status</th><th>Applies because</th></tr>${matrixRows}</table>
+  <div class="checklist" role="list" aria-label="Required document checklist">${matrixRows}</div>
 </section>`;
 
   return `
@@ -2538,8 +2541,9 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
       <td>${d.required ? "required" : "optional"} · ${d.blocking ? "blocks gate" : "non-blocking"}</td>
       <td><form method="post" action="/config/case-types/document-delete" style="margin:0">${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}"><input type="hidden" name="key" value="${esc(d.key)}"><button class="btn small ghost">Remove</button></form></td>
     </tr>`).join("");
-    return `<section class="card" id="case-type-${ct.id}">
-      <h2>${esc(ct.name)} <span class="mono small muted">${esc(ct.code)}</span></h2>
+    return `<details class="card type-card" id="case-type-${ct.id}">
+      <summary class="type-card-summary"><span>${esc(ct.name)}</span><span class="mono small muted">${esc(ct.code)}</span><span class="type-card-hint">Edit CaseType</span></summary>
+      <div class="type-content">
       <p class="small muted">Category: ${esc(ct.category)} · This CaseType has no academic qualification picker or inherited document defaults.</p>
       <h3>Document matrix</h3>
       ${definitions.length ? `<table><tr><th>Key</th><th>Label</th><th>Gate behavior</th><th></th></tr>${documentRows}</table>` : `<p class="small muted">No document slots configured yet.</p>`}
@@ -2559,8 +2563,18 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
         <button class="btn small" style="margin-top:8px">Save rule tree</button>
       </form>
       <p class="small muted" style="margin-top:8px">Currently ${rules.length} top-level node${rules.length === 1 ? "" : "s"}; fields such as <span class="mono">employment_type</span> or <span class="mono">start_date</span> are valid when the organization supplies those facts.</p>
-    </section>`;
+      </div>
+    </details>`;
   };
+  const groupedCaseTypes = new Map<string, CaseType[]>();
+  for (const ct of caseTypes) {
+    const category = ct.category?.trim() || "Uncategorised";
+    groupedCaseTypes.set(category, [...(groupedCaseTypes.get(category) ?? []), ct]);
+  }
+  const caseTypeGroups = [...groupedCaseTypes.entries()].map(([category, types]) => `<details class="type-group">
+    <summary><span class="type-group-name">${esc(category)}</span><span class="type-group-count">${types.length} CaseType${types.length === 1 ? "" : "s"}</span></summary>
+    <div class="type-group-body">${types.map(typeCard).join("")}</div>
+  </details>`).join("");
   return `<div id="case-types">
     <section class="card">
       <h2>Organizations &amp; CaseTypes</h2>
@@ -2588,7 +2602,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
       </form>
       <p class="small muted" style="margin-bottom:0">Configure the selected organization, then create a CaseType such as <b>HR_ONBOARDING</b>. Empty rule trees remain undecided and are sent to a human.</p>
     </section>
-    ${caseTypes.map(typeCard).join("") || `<div class="empty"><p>No CaseTypes yet for ${esc(organization?.name ?? "this organization")}.</p></div>`}
+    ${caseTypes.length ? `<div class="type-groups">${caseTypeGroups}</div>` : `<div class="empty"><p>No CaseTypes yet for ${esc(organization?.name ?? "this organization")}.</p></div>`}
   </div>`;
 }
 
@@ -2897,7 +2911,7 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
 <div class="card" id="branding">
   <h2>Email branding</h2>
   <p class="small muted" style="margin-top:-6px">The banner below is placed at the top of <b>every</b> outgoing email — automated replies, template sends and document packs alike. Replace it any time; individual templates can also opt out in the editor above.</p>
-  <img id="banner-preview" src="/assets/email-banner" alt="Email banner" style="width:100%;max-width:720px;border:1px solid var(--lav-line);border-radius:8px;display:block">
+  <img id="banner-preview" src="/assets/email-banner" alt="Email banner" style="width:100%;max-width:720px;border:1px solid var(--wine-line);border-radius:8px;display:block">
   <p class="small" style="margin-top:12px">Change the banner — JPG or PNG, under 900 KB:
     <input type="file" id="banner-file" accept="image/jpeg,image/png" style="width:auto;display:inline-block;margin-left:8px"></p>
   <p class="small muted" id="banner-msg" role="status"></p>
@@ -3093,7 +3107,7 @@ ${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
       <div>${editor}</div>
       <div>
         <h3 style="margin:0 0 6px;font-size:13px">Preview (sample applicant)</h3>
-        <div id="tpl-preview" class="small" style="border:1px solid var(--line2);border-radius:8px;padding:12px;background:var(--panel2,#fff);white-space:pre-wrap;line-height:1.6"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>
+        <div id="tpl-preview" class="small" style="border:1px solid var(--line2);border-radius:8px;padding:12px;background:var(--card2);white-space:pre-wrap;line-height:1.6"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>
         <h3 style="margin:16px 0 6px;font-size:13px">Placeholders</h3>
         <table><tr><th>Token</th><th>Filled with</th></tr>
           ${PLACEHOLDER_DOCS.map(([k, v]) => `<tr><td class="mono small">${esc(k)}</td><td class="small muted">${esc(v)}</td></tr>`).join("")}
@@ -3411,22 +3425,22 @@ ${resetCode ? `
   <span class="muted small">Works once, expires in 30 minutes. Give it to the member — they enter it on the public “Forgot password” page (linked under Sign in). A new issue voids this code. It is shown nowhere else and never appears in a URL.</span>
 </div>` : ""}
 
-<div class="cols wide">
-  <section class="card nopad">
-    <div class="card-head"><h2>Performance</h2></div>
-    <table>
+<div class="staff-performance">
+  <section class="card">
+    <h2>Team at a glance</h2>
+    <div class="metric-ribbon">
+      <div class="stat"><div class="n">${stats.reduce((n, r) => n + r.assignedCases, 0)}</div><div class="l">Assigned cases</div><div class="context">Across ${stats.length} team member${stats.length === 1 ? "" : "s"}</div></div>
+      <div class="stat"><div class="n">${totals.received}</div><div class="l">Emails received</div><div class="context">On currently assigned cases</div></div>
+      <div class="stat"><div class="n">${totals.sent}</div><div class="l">Replies sent</div><div class="context">Human responses to applicants</div></div>
+      <div class="stat"><div class="n">${totals.completed}</div><div class="l">Completed</div><div class="context">Admissions closed by the team</div></div>
+      <div class="stat"><div class="n">${(() => { const values = stats.map((r) => r.avgResponseMinutes).filter((n): n is number => n !== null); return values.length ? esc(formatDuration(values.reduce((sum, n) => sum + n, 0) / values.length)) : "—"; })()}</div><div class="l">Avg response</div><div class="context">Average for measured staff</div></div>
+    </div>
+    <h2>Performance by staff member</h2>
+    <div class="table-scroll"><table>
       <tr><th>Staff member</th><th>Assigned cases</th><th>Emails received</th><th>Replies sent</th><th>Avg response</th><th>Completed</th></tr>
       ${perfRows || `<tr><td colspan="6" class="muted">No staff yet.</td></tr>`}
-    </table>
-  </section>
-  <section class="card">
-    <h2>Totals</h2>
-    <div class="kv">
-      <div><span>Incoming emails (assigned cases)</span><b>${totals.received}</b></div>
-      <div><span>Replies sent by staff</span><b>${totals.sent}</b></div>
-      <div><span>Admissions completed</span><b>${totals.completed}</b></div>
-    </div>
-    <p class="small muted" style="margin-bottom:0">“Emails received” counts incoming mail on cases currently assigned to the person. Response time is measured from an incoming email to the next outgoing reply on their cases.</p>
+    </table></div>
+    <p class="small muted" style="margin:16px 0 0">“Emails received” counts incoming mail on cases currently assigned to the person. Response time is measured from an incoming email to the next outgoing reply on their cases.</p>
   </section>
 </div>
 
