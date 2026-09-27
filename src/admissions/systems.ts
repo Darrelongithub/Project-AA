@@ -107,7 +107,7 @@ export function gradeOptionsFor(system: AdmissionSystem, field: RuleField): stri
 /** Numeric fields (compared as numbers, not grades). */
 export const NUMERIC_FIELDS: RuleField[] = ["credits", "principals", "subsidiaries", "points", "gpa"];
 
-export const FIELD_LABELS: Record<RuleField, string> = {
+export const FIELD_LABELS: Record<string, string> = {
   mean_grade: "Mean grade",
   subject: "Subject",
   credits: "Passes at C or better",
@@ -145,5 +145,7 @@ export function readValue(fields: ExtractedFields, ruleField: RuleField, subject
       return typeof fields.gpa === "number" ? fields.gpa : null;
     case "class":
       return typeof fields.classAwarded === "string" && fields.classAwarded ? fields.classAwarded : null;
+    default:
+      return fields[ruleField] as string | number | null ?? null;
   }
 }

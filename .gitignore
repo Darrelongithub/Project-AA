@@ -6,6 +6,8 @@ dist/
 # The official document packs + email branding ship WITH the repo.
 !/data/pack/
 !/data/branding/
+!/data/migrated/
+!/data/migrated/organization-1.json
 /logs/
 /backups/
 .env

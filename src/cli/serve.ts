@@ -2,8 +2,8 @@
  * `npm run serve` — the staff web console + public status page.
  *
  * In mock mode it runs fully offline (no Gmail/Gemini needed).
- * In live mode with Gmail configured it ALSO polls the inbox every 60s,
- * so new admissions emails flow into the dashboard automatically.
+ * In live mode with Gmail configured it ALSO polls Gmail All Mail every 60s,
+ * so archived and new admissions emails flow into the dashboard automatically.
  */
 import { loadConfig } from "../config";
 import { openDb } from "../db/db";
@@ -26,12 +26,14 @@ class DelegatingSender implements EmailSender {
   }
 }
 
-/** Gmail credentials entered in Settings → GmailClient config (or null). */
-function gmailFromSettings(repo: Repo): { address: string; clientId: string; clientSecret: string; refreshToken: string } | null {
-  const address = repo.getSetting("gmail_address", "");
-  const clientId = repo.getSetting("gmail_client_id", "");
-  const clientSecret = repo.getSetting("gmail_client_secret", "");
-  const refreshToken = repo.getSetting("gmail_refresh_token", "");
+/** Credentials entered in Settings, when a complete DB-managed connection exists. */
+type GmailConnectionConfig = { address: string; clientId: string; clientSecret: string; refreshToken: string };
+
+export function gmailFromSettings(repo: Repo): GmailConnectionConfig | null {
+  const address = repo.getSetting("gmail_address", "").trim();
+  const clientId = repo.getSetting("gmail_client_id", "").trim();
+  const clientSecret = repo.getSetting("gmail_client_secret", "").trim();
+  const refreshToken = repo.getSetting("gmail_refresh_token", "").trim();
   return address && clientId && clientSecret && refreshToken
     ? { address, clientId, clientSecret, refreshToken }
     : null;
@@ -42,13 +44,18 @@ async function main(): Promise<void> {
   const repo = new Repo(openDb(cfg.dbPath));
   seedDefaults(repo, { live: cfg.mode === "live" });
 
+  // Keep track of where the active client came from. An environment-only
+  // deployment deliberately has no Gmail rows in SQLite; that must not look
+  // like a Settings disconnect on the first poll.
   let gmail: GmailClient | null = null;
-  if (cfg.mode === "live" && cfg.gmail) {
+  let gmailSource: "env" | "settings" | null = null;
+  if (cfg.mode === "live" && cfg.gmail && repo.getSetting("gmail_disabled", "") !== "1") {
     gmail = new GmailClient(cfg.gmail);
-    log("serve: live mode — Gmail ingestion enabled");
+    gmailSource = "env";
+    log("serve: live mode — Gmail ingestion enabled from environment");
   } else {
-    // Gmail can still be connected later from Configuration → Gmail connection.
-    log("serve: no Gmail/Gemini connected yet — set both up under Settings → Connections.");
+    // Gmail can still be connected later from Settings → Connections.
+    log("serve: no Gmail/Gemini connected yet — set them up under Settings → Connections.");
   }
   const sender = new DelegatingSender(gmail ? new GmailSender(gmail) : new MockSender());
 
@@ -58,14 +65,30 @@ async function main(): Promise<void> {
   const runSyncOnce = async (backfillDays?: number): Promise<Error | null> => {
     try {
       const fromSettings = gmailFromSettings(repo);
-      if (!gmail && fromSettings) {
+      const settingsDisabled = repo.getSetting("gmail_disabled", "") === "1";
+
+      // Settings credentials take precedence when present. If they are absent,
+      // preserve a valid environment client: MODE=live + GMAIL_* is a fully
+      // supported infrastructure-as-code deployment and normally has no DB
+      // rows at all. The old `gmail && !fromSettings` branch tore that client
+      // down on the first poll and silently replaced it with MockSender.
+      if (fromSettings && !settingsDisabled && (!gmail || gmailSource !== "settings")) {
         gmail = new GmailClient(fromSettings);
+        gmailSource = "settings";
         sender.inner = new GmailSender(gmail);
         log(`serve: Gmail connected via Settings (${fromSettings.address}) — live sorting enabled`);
-      } else if (gmail && !fromSettings) {
+      } else if ((!fromSettings || settingsDisabled) && gmailSource === "settings") {
         log(`serve: Gmail disconnected via Settings — live fetching stopped`);
         gmail = null;
+        gmailSource = null;
         sender.inner = new MockSender();
+      } else if (settingsDisabled && gmailSource === "env") {
+        // An explicit Settings disconnect can pause an env-configured client
+        // for the lifetime of this process without deleting its env secret.
+        gmail = null;
+        gmailSource = null;
+        sender.inner = new MockSender();
+        log("serve: Gmail paused by Settings — live fetching stopped");
       }
       if (!gmail) {
         const missing = missingGmailCredentials(repo);
@@ -90,11 +113,32 @@ async function main(): Promise<void> {
       return err;
     }
   };
+  const testGmail = async (): Promise<Error | null> => {
+    try {
+      const active = gmail ?? (() => {
+        const fromSettings = gmailFromSettings(repo);
+        return fromSettings ? new GmailClient(fromSettings) : cfg.gmail ? new GmailClient(cfg.gmail) : null;
+      })();
+      if (!active) return new Error("Gmail is not configured in the environment or Settings.");
+      await active.listRecentMessageIds(1, { perPage: 1, maxPages: 1 });
+      return null;
+    } catch (e) {
+      return e as Error;
+    }
+  };
   // Overlap guard: a slow pass (OCR / vision latency) must never let the
   // next 60 s tick stack a second pass on top — both would process the same
   // message ids. Overlapped ticks are skipped, not queued.
   const guardedSync = onceAtATime(runSyncOnce);
-  const app = createApp({ repo, ctx, gmailSync: guardedSync, gmailBackfill: guardedSync });
+  const app = createApp({
+    repo,
+    ctx,
+    gmailSync: guardedSync,
+    gmailBackfill: guardedSync,
+    gmailConfigured: cfg.mode === "live" && Boolean(cfg.gmail),
+    gmailAddress: cfg.gmail?.address,
+    gmailTest: testGmail,
+  });
 
   const port = cfg.port;
   app.listen(port, "0.0.0.0", () => {

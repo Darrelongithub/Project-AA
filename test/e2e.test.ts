@@ -58,33 +58,34 @@ const fullSet = async (name: string) => [
 ];
 
 describe("pipeline v2 end-to-end", () => {
-  it("clean complete set → Green, auto-admitted with admission letter and completed lifecycle", async () => {
+  it("clean complete set → Green factual acknowledgement, admission remains for human review", async () => {
     const email = mkEmail("e2e-alice", "alice@example.org", await fullSet("ALICE WANJIKU KAMAU"));
     const res = mustProcessed(await processEmail(email, ctx));
 
     expect(res.finalStatus).toBe("Green");
     expect(res.autoSent).toBe(true);
     expect(res.autoKind).toBe("ack");
-    // Round 18: clearly qualified → AUTO-ADMIT, not a plain acknowledgement.
-    expect(res.lifecycle).toBe("completed");
+    // A clean qualification still receives only a factual acknowledgement;
+    // the final admission decision remains a human action.
+    expect(res.lifecycle).toBe("documents_checked");
     expect(res.refNumber).toMatch(/^[A-Z]{2}-\d{4}-\d{6}$/);
     expect(sender.sent.length).toBe(1);
     expect(sender.sent[0].subject.startsWith(`[${res.refNumber}]`)).toBe(true);
 
     const a = repo.getApplicant(res.applicantId)!;
-    expect(a.admission_decision).toBe("auto_admitted");
-    expect(a.admission_route).toBe("automated");
-    expect(a.decision_by).toBe("system");
+    expect(a.admission_decision).toBe("undecided");
+    expect(a.admission_route).toBeNull();
+    expect(a.decision_by).toBeNull();
     expect(a.req_result).toBe("passed");
-    expect(a.routing).toBe("auto_admit");
+    expect(a.routing).toBe("human_review");
 
     const history = repo.statusHistory(res.applicantId);
-    expect(history.some((h) => h.to_status === "completed" && h.actor === "system")).toBe(true);
+    expect(history.some((h) => h.to_status === "documents_checked" && h.actor === "system")).toBe(true);
     const audit = repo.auditForApplicant(res.applicantId);
     expect(audit.some((a2) => a2.event === "email_received")).toBe(true);
     expect(audit.some((a2) => a2.event === "requirements_checked")).toBe(true);
-    expect(audit.some((a2) => a2.event === "auto_admission_triggered")).toBe(true);
-    expect(audit.some((a2) => a2.event === "admission_auto_qualified")).toBe(true);
+    expect(audit.some((a2) => a2.event === "auto_admission_triggered")).toBe(false);
+    expect(audit.some((a2) => a2.event === "admission_auto_qualified")).toBe(false);
     // The evaluation itself is stored, never overwritten by the admission.
     expect(repo.latestEvaluation(res.applicantId)?.result).toBe("passed");
   });

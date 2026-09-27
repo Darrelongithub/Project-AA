@@ -459,3 +459,105 @@ everything else present were AUTO-ADMITTED without it (4/1000 cases: 180,
 18. Login CSRF defence uses a double-submit token rather than a session
     (no session exists pre-login); stale/expired sign-in pages get a fresh
     token on every render, so legitimate users are never locked out.
+
+---
+
+# Generalization Round — acceptance gates
+
+Statuses: **RED** = failing / not started · **GREEN** = fixed with evidence · **UNVERIFIED** = could not run, reason given.
+
+| GR item | RED → GREEN evidence | Result |
+|---|---|---|
+| **GR-1 — Organizations, Cases, CaseTypes, outcomes** | **RED:** the first `npm run typecheck` reported missing `getOrganization`, `listCases`, `listCaseTypes`, `createCaseType`, and the canonical model exports. **GREEN:** `test/generalization.test.ts` GR-1 group passes; SQLite migration creates Organization #1, compatibility `cases` projection, canonical `category`/`outcome` fields and exact `auto_approved`/`approved_after_review`/`not_approved` mappings. | **GREEN** |
+| **GR-2 — Configurable per-CaseType document matrix** | **RED:** typecheck reported missing `documentRequirementsForCaseType`, `replaceDocumentDefinitions`, and `listDocumentDefinitions`. **GREEN:** GR-2 passes; organization-owned document definitions and configurable organization axes are persisted, while the academic matrix remains available as a compatibility path. | **GREEN** |
+| **GR-3 — Generic AND/OR/NOT/GROUP rule trees** | **RED:** typecheck reported missing `evaluateCaseTypeRules`; the acceptance tree used a non-academic numeric fact that the old `RuleField` rejected. **GREEN:** GR-3 passes; the generic evaluator reuses deterministic tree semantics and always returns `human_review` with `undecided` outcome. | **GREEN** |
+| **GR-4 — Organization category labels via Gemini** | **RED:** typecheck reported missing `listEmailCategories`, `addEmailCategory`, and `classifyWithConfiguredCategories`; the first test run reported the missing classifier export. **GREEN:** GR-4 passes; labels are allow-listed organization metadata, Gemini failures fall back safely, and pipeline routing never consumes a label as an outcome. | **GREEN** |
+| **GR-5 — Organization branding and editable copy** | **RED:** branding remained a hardcoded `INSTITUTION`/Riara fallback and no organization theme/logo ownership existed. **GREEN:** GR-5 passes; name/logo/theme live on organizations, uploaded logos are tenant-owned, configurable colors are injected into the UI, and templates remain editable and organization-owned. | **GREEN** |
+| **GR-6 — Empty organization pack slots** | **RED:** no organization pack-slot model or upload/list API existed; the runtime only knew shipped pack files. **GREEN:** GR-6 passes; fresh Organization #1 receives empty application/admission/brochure/transfer slots, and uploads round-trip through the repository. Legacy pack helpers remain only for compatibility. | **GREEN** |
+| **GR-7 — Organization + CaseType staff scoping** | **RED:** typecheck reported missing `createStaffAndReturn`, `setCaseTypeScopes`, and `caseTypeScopesFor`. **GREEN:** GR-7 passes; CaseType scopes are organization-owned and composable with the preserved school scope, while existing `visibleSchoolsFor` behavior remains intact. | **GREEN** |
+
+**Round evidence:** `npm run typecheck` passes; `npm test -- --run test/generalization.test.ts` = **9/9 passed**; preserved targeted admissions/scoping/matrix/template suite = **86/86 passed**; full suite = **563 passed, 1 skipped, 2 native-canvas failures**. The two failures are the pre-existing optional `canvas.node` rasterization dependency issue documented below, not Generalization Round regressions.
+
+---
+
+# White-Label Round — acceptance gates
+
+Statuses: **RED** = failing / not started · **GREEN** = fixed with evidence · **UNVERIFIED** = could not run, reason given.
+
+| WLR requirement | RED → GREEN evidence | Result |
+|---|---|---|
+| **Organization-owned identity source** | **RED:** generic render/email/document paths still imported the hardcoded branding helper and the source contained an institution constant. **GREEN:** `src/branding.ts` now resolves name, logo, theme and email identity from the active `organizations` row; `INSTITUTION` and the bundled-logo fallback are gone. `Repo.createOrganization()` creates a tenant without copying Organization #1 settings, templates, categories or pack contents. | **GREEN** |
+| **Settings name, logo and colors** | **RED:** Settings had no complete tenant identity editor and logo upload was fixed to Organization #1. **GREEN:** Settings renders organization name, primary color, accent color and logo upload controls; `/settings/organization`, `/settings/general` compatibility handling, and `/config/organization/logo` persist the same active organization configuration. The WLR HTML scan proves both custom colors and the uploaded logo are rendered. | **GREEN** |
+| **Organization-scoped web/email/document branding** | **RED:** server, pipeline and follow-up paths used global identity and static packs/banner/logo assets. **GREEN:** request context, pipeline drafts, follow-ups, manual sends, held-draft approval, banners, templates and document packs resolve `organization_id`; generic organizations use a neutral mark and no bundled banner. `test/white-label.test.ts` passed (**1/1**) and scanned Settings HTML, the rendered shell, email subject/body and attachment filenames. | **GREEN** |
+| **Empty new-organization packs and templates** | **RED:** pack builders could use shipped PDFs as generic defaults and pack UI exposed the bundled files to every tenant. **GREEN:** new organizations return empty concrete pack slots and no organization templates; pack UI and upload/send routes are tenant-scoped. The migrated bundled files are a compatibility path for Organization #1 only. GR compatibility also passed (**9/9**). | **GREEN** |
+| **No Riara runtime defaults / exact source audit** | **RED:** `src/config.ts`, `src/pack.ts`, views, logo, Gmail MIME headers and simulation source contained hardcoded identity references. **GREEN:** exact command `grep -RnwE 'Riara|riara' src` returns no output; exact command `grep -RnE 'INSTITUTION[[:space:]]*=|riara-banner|Nurturing Innovations|#4B1FA6|#7C3AED|#8B5CF6' src` returns no output. The only retained identity strings are in tracked `data/migrated/organization-1.json`, the explicitly migrated Organization #1 data. | **GREEN** |
+| **GR re-audit and regression safety** | **RED:** WLR started with the GR changes present but uncommitted and no WLR implementation. **GREEN:** `npm run typecheck` passes; `test/generalization.test.ts` is **9/9**; WLR targeted suite is **13/13**; preserved web + pack targeted suite is **57/57**. The full suite is **564 passed, 1 skipped, 2 failed**. Both failures are the pre-existing optional `canvas.node` rasterization dependency failures in `test/round19.test.ts` (the same failures reported before WLR); the one skip is the pre-existing Chromium-unavailable skip in `test/responsive.test.ts`. Neither WLR nor the GR source changes touch that optional dependency. | **GREEN (WLR); 2 unrelated native failures + 1 unrelated environment skip** |
+
+**Verification commands:**
+
+```text
+npm run typecheck                                      # passes
+npm test -- --run test/white-label.test.ts             # 1/1 passed
+npm test -- --run test/generalization.test.ts          # 9/9 passed
+npm test -- --run test/white-label.test.ts test/generalization.test.ts test/pack-management.test.ts  # 13/13 passed
+npm test                                               # 564 passed, 1 skipped, 2 failed (canvas.node only)
+npm run simulate                                       # GR safety harness currently 302/316; stale expectations still assert automatic admission/completed lifecycle in 12 scenarios, while the preserved no-AI-decision gate intentionally routes these cases to human review. This is unrelated to WLR and was present before WLR.
+grep -RnwE 'Riara|riara' src                         # no output
+grep -RnE 'INSTITUTION[[:space:]]*=|riara-banner|Nurturing Innovations|#4B1FA6|#7C3AED|#8B5CF6' src  # no output
+grep -RnwE 'Riara|riara' data | grep -v '^data/migrated/organization-1.json:'  # no output from textual migrated boundary
+```
+
+# CaseType Round — acceptance gates
+
+Statuses: **RED** = failing / not started · **GREEN** = fixed with evidence · **UNVERIFIED** = could not run, reason given.
+
+| CTR requirement | RED → GREEN evidence | Result |
+|---|---|---|
+| **CTR-1 — CaseType editor vocabulary and routes** | **RED:** the pre-round audit on `HEAD` showed `CourseLevel`, `Programme`, `Course` labels, academic rule-tree functions and `/config/course-owner`, `/config/programme/edit`, `/staff/course-docs` throughout `src/web/pages.ts` and `src/web/server.ts`. **GREEN:** the default `/config` tab is now `CaseTypes`; it renders organization-owned document slots, arbitrary fact fields, nested rule-tree JSON, and organization axes. The exact post-round capital UI-label audit (`grep -nE '>([^<]*\b(Course|Programme)\b)|<(label|th|h[1-3])[^>]*>[^<]*\b(Course|Programme)\b'`) returned **no output**. The remaining lower-case academic method names and compatibility routes are guarded to migrated Organization #1; non-Organization-1 staff receive the CaseType editor instead. | **GREEN** |
+| **CTR-2 — organization-owned CaseTypes, axes, documents, rules, and end-to-end gate** | **RED:** the generic tables/evaluator existed but the live pipeline still called the academic evaluator, and Gemini/document failures were not connected to the generic workflow. **GREEN:** admin HTTP acceptance in `test/case-type.test.ts` creates Organization 2, saves an employment-status axis, creates `HR_ONBOARDING`, saves `employee_id`, saves an `employment_type` rule tree, and reloads the rendered UI. The same suite's pipeline case carries `organizationId`/`caseTypeCode` through extraction, filename-to-configured-slot mapping, matrix check, `evaluateCaseTypeRules()`, `caseTypeGate()` audit, watcher/gate routing and an `undecided` outcome. **CTR suite: 5/5 passed.** | **GREEN** |
+| **CTR-3 — no academic defaults for a new organization** | **RED:** the old editor and academic matrix were the only effective configuration path. **GREEN:** `createOrganization()` creates only neutral identity plus empty CaseType/category/document/axis/template/pack scope; no Organization-1 academic rows are copied. New CaseTypes use only their organization-owned document definitions and arbitrary rule facts; academic `GENERAL` and programme rows remain compatibility cases. GR suite remains **9/9 passed** and CTR route coverage confirms the new organization starts empty. | **GREEN** |
+| **CTR-4 — organization-scoped reference prefixes and previews** | **RED:** `ref_prefix` was read from global settings and template preview was hardcoded to `RU-2026-000001`. **GREEN:** `organizations.ref_prefix` is migrated (legacy Organization 1 preserves its old value), editable in Settings, used by case creation/identity matching, and shown in the selected organization's template preview. CTR tests create `HR-YYYY-NNNNNN` and `RU-YYYY-NNNNNN` cases independently; route/renderer coverage passed. | **GREEN** |
+| **CTR-5 — deterministic second-tier categorization fallback** | **RED:** Gemini failure returned `other` or the first configured label without running keyword classification. **GREEN:** the Gemini error path calls `categorizeEmail()`, maps its result to the organization's allow-list, returns `source: "fallback"`, and writes the source into the audit detail. Known complaint and fee messages are pinned to non-`other` labels in `test/case-type.test.ts`; deterministic categorization suite is **9/9 passed**. Labels remain routing metadata only and cannot satisfy or write an approval/rejection decision. | **GREEN** |
+| **CTR-6 — safety, compatibility, and verification** | **RED:** no CTR functional coverage or before/after audit existed. **GREEN:** `npm run typecheck` passes; CTR **5/5**, GR **9/9**, and preserved targeted suite **116/116** pass. Full suite is **569 passed, 1 skipped, 2 failed**: both failures are the pre-existing optional `canvas.node` image-rasterization failures in `test/round19.test.ts`; the skip is the pre-existing missing Playwright Chromium binary. `npm run simulate` remains the known **302/316** stale-expectation result (12 scenarios still assert automatic admission/`completed`, contrary to the preserved no-AI-decision/human-review safety model). | **GREEN** |
+
+## CTR exact context grep evidence
+
+The exact command used before and after was:
+
+```text
+grep -nE 'Course(Level)?|Programme|/config/(course|programme)|/staff/course' src/web/pages.ts src/web/server.ts
+```
+
+**Before (HEAD, representative complete output):**
+
+```text
+pages.ts:7 ... ProgrammeLevel
+pages.ts:9 ... CourseLevel ... Programme
+pages.ts:287 ... >Course< ...
+pages.ts:767 ... >Programme< ...
+pages.ts:2021 ... CourseLevel
+pages.ts:2118 ... Programme
+pages.ts:2531 ... /config/course-owner
+pages.ts:2567 ... /config/programme/edit
+pages.ts:2617 ... /staff/course-docs
+pages.ts:2648 ... Courses & ownership
+server.ts:23 ... CourseLevel
+server.ts:1157 /config/course-owner
+server.ts:1188 /config/programme/edit
+server.ts:1906 /staff/course-docs
+```
+
+**After:**
+
+```text
+src/web/pages.ts:12  type LegacyAcademicProgramme = ReturnType<Repo["listProgrammes"]>[number]
+src/web/pages.ts:668,2137,2658  repo.listProgrammes()          # Organization-1 compatibility only
+src/web/pages.ts:2662,2698,2748,2754  legacy compatibility route/action names
+src/web/pages.ts:2779  Courses & ownership              # Organization-1 compatibility page only
+src/web/server.ts:670  repo.listProgrammes()             # legacy display compatibility
+src/web/server.ts:1273  /config/course-owner             # handler rejects non-Organization-1
+src/web/server.ts:1305  /config/programme/edit            # handler rejects non-Organization-1
+src/web/server.ts:2070,2085  /staff/course-docs                # handlers reject non-Organization-1
+```
+
+The additional exact capital UI-label audit returned no output; the listed remaining compatibility lines are intentionally inert for new organizations and preserve the existing Organization-1 academic deployment.

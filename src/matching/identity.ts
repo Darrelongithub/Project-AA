@@ -23,9 +23,9 @@ export interface IdentityResolution {
   concern?: string;
 }
 
-// ref_prefix is configurable (1–4 letters) — the pattern must accept all of
+// Organization reference prefixes are configurable (1–8 letters) — the pattern must accept all of
 // them or quoted refs stop matching the moment the prefix changes.
-const REF_RE = /\b([A-Z]{1,4}-\d{4}-\d{6})\b/i;
+const REF_RE = /\b([A-Z]{1,8}-\d{4}-\d{6})\b/i;
 
 /**
  * Round 9: side-effect-free check — does this email target an applicant we
@@ -45,7 +45,7 @@ export function emailTargetsKnownApplicant(repo: Repo, email: IncomingEmail): bo
 export function resolveIdentity(
   repo: Repo,
   email: IncomingEmail,
-  opts: { refPrefix?: string } = {}
+  opts: { refPrefix?: string; organizationId?: number; caseTypeCode?: string } = {}
 ): IdentityResolution {
   // ── Signal 1: a reference number is quoted in the message ──────────────
   // SYNTHETIC channels are exempt: a portal upload builds a message whose
@@ -83,6 +83,8 @@ export function resolveIdentity(
   const applicant = repo.getOrCreateApplicant(email.from, email.threadId, {
     fullName: email.fromName,
     refPrefix: opts.refPrefix,
+    organizationId: opts.organizationId,
+    caseTypeCode: opts.caseTypeCode,
   });
   repo.linkThread(applicant.id, email.threadId);
   return { applicant, isNew: true, matchedBy: "created" };

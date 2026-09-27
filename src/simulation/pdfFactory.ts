@@ -270,7 +270,7 @@ export function docLines(type: string, spec: DocSpec): string[] {
       ];
     case "credit_transfer_form":
       return [
-        "RIARA UNIVERSITY — OFFICE OF ADMISSIONS",
+        "INSTITUTION — OFFICE OF ADMISSIONS",
         "CREDIT TRANSFER APPLICATION FORM",
         "",
         `NAME OF APPLICANT: ${spec.name}`,

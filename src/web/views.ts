@@ -2,8 +2,8 @@
  * Server-rendered views + embedded design system. Zero external assets: the
  * whole UI is one self-contained HTML document per page (portable, preview-safe).
  *
- * v4 design: Riara University identity — white & purple, gold crest accents,
- * full dark mode, quiet top-header shell, splash entry, command palette, toasts.
+ * v4 design: organization-configurable identity and colors, full dark mode,
+ * quiet top-header shell, splash entry, command palette, toasts.
  */
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type EmailCategory, type LifecycleStage, type Priority, type StaffUser } from "../types";
 
@@ -139,7 +139,7 @@ export function avatar(name: string | null | undefined, size = 34): string {
       .map((w) => (w[0] ?? "").toUpperCase())
       .join("") || "?";
   const palette: Array<[string, string]> = [
-    ["#6D28D9", "#A78BFA"],
+    ["#475569", "#94A3B8"],
     ["#4338CA", "#818CF8"],
     ["#0F766E", "#2DD4BF"],
     ["#B45309", "#F59E0B"],
@@ -153,14 +153,11 @@ export function avatar(name: string | null | undefined, size = 34): string {
   return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px;background:linear-gradient(135deg,${c1},${c2})">${esc(initials)}</span>`;
 }
 
-/** The official full Riara University logo; the image itself is served once
- * at /assets/logo and cached, pages only reference the path. The white
- * variant renders in dark mode so the mark blends with its background. */
-export function crest(size = 40, variant: "auto" | "white" = "auto"): string {
-  if (variant === "white") {
-    return `<span class="crest" style="height:${size}px"><img src="/assets/logo-white" alt="Riara University"></span>`;
-  }
-  return `<span class="crest" style="height:${size}px"><img class="logo-c" src="/assets/logo" alt="Riara University"><img class="logo-w" src="/assets/logo-white" alt=""></span>`;
+/** Render the organization-owned logo, or a neutral text mark when none is configured. */
+export function crest(size = 40, variant: "auto" | "white" = "auto", logo?: string | null, alt = "Organization"): string {
+  if (logo) return `<span class="crest" style="height:${size}px"><img src="${esc(logo)}" alt="${esc(alt)}" style="max-height:${size}px;max-width:${size * 3}px;object-fit:contain"></span>`;
+  const mark = alt.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "O";
+  return `<span class="crest neutral-mark ${variant === "white" ? "neutral-mark-white" : ""}" style="height:${size}px" aria-label="${esc(alt)}">${esc(mark)}</span>`;
 }
 
 /** The signature motif: one thin flowing purple line — progress, connection. */
@@ -214,13 +211,13 @@ const CSS = `
 @font-face { font-family: "Instrument Serif"; font-style: normal; font-weight: 400; font-display: swap; src: url("/assets/fonts/instrument-serif.woff2") format("woff2"); }
 @font-face { font-family: "Instrument Serif"; font-style: italic; font-weight: 400; font-display: swap; src: url("/assets/fonts/instrument-serif-italic.woff2") format("woff2"); }
 :root {
-  /* Warm editorial light theme — purple leads. */
+  /* Neutral editorial theme; organization colors are injected at render time. */
   --bg: #F8F6FC; --card: #FFFFFF; --card2: #F5F2EE;
   --ink: #17151A; --muted: #6C6773; --line: #E6E0EE; --line2: #F0EBF4;
-  --purple: #4B1FA6; --purple-hover: #3E1A8A; --purple2: #7C3AED; --purple3: #A78BFA;
+  --purple: #334155; --purple-hover: #1E293B; --purple2: #475569; --purple3: #94A3B8;
   --lav: #EDE7F7; --lav-line: #DDD2F2;
   --magenta: #A02080; --magenta-bg: #F7EBF3; --magenta-line: #E8C9DF;
-  --gold: #8A6A1F; --gold-bg: #F6EFD9;
+  --gold: #7C5E10; --gold-bg: #F8F3E1;
   --green: #13795B; --green-bg: #E5F3EC; --green-line: #C4E4D3;
   --orange: #B45309; --orange-bg: #FAF0E1; --orange-line: #EBD6B4;
   --red: #B42318; --red-bg: #FAEAE7; --red-line: #EFC9C2;
@@ -234,10 +231,10 @@ const CSS = `
 [data-theme="dark"] {
   --bg: #131017; --card: #1C1824; --card2: #241F2E;
   --ink: #F3F1EA; --muted: #9C97A6; --line: #2E2839; --line2: #282233;
-  --purple: #7C4DD8; --purple-hover: #8B5CF6; --purple2: #A78BFA; --purple3: #C4B5FD;
+  --purple: #475569; --purple-hover: #334155; --purple2: #64748B; --purple3: #CBD5E1;
   --lav: #262138; --lav-line: #3A3155;
   --magenta: #E06BC0; --magenta-bg: #331430; --magenta-line: #5C2450;
-  --gold: #D9B25F; --gold-bg: #2C2413;
+  --gold: #D0A84B; --gold-bg: #2C2413;
   --green: #4ADE80; --green-bg: #13291C; --green-line: #1E4A2E;
   --orange: #FBBF24; --orange-bg: #33260F; --orange-line: #584315;
   --red: #FB7185; --red-bg: #351420; --red-line: #5B2136;
@@ -396,7 +393,7 @@ table tr { transition: background .12s; }
 .scorewrap { display: inline-flex; align-items: center; gap: 8px; }
 .scorebar { display: inline-block; width: 74px; height: 6px; border-radius: 4px; background: var(--line); overflow: hidden; vertical-align: middle; }
 .scorebar-fill { display: block; height: 100%; border-radius: 4px; }
-.scorebar-fill.good { background: linear-gradient(90deg, var(--purple), #8B5CF6); }
+.scorebar-fill.good { background: linear-gradient(90deg, var(--purple), var(--purple2)); }
 .scorebar-fill.low { background: linear-gradient(90deg, var(--orange), #F59E0B); }
 .avatar { border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 800; flex: none; letter-spacing: .02em; }
 .nameline { display: flex; align-items: center; gap: 9px; }
@@ -912,12 +909,17 @@ export function layout(opts: {
   publicPage?: boolean;
   csrf?: string;
   theme?: Theme;
-  /** Brand name — fixed to the institution; there is no settings field for it. */
+  /** Organization-owned identity and colors. */
   institution?: string;
+  brand?: { primary: string; accent: string; logo?: string | null; tagline?: string };
 }): string {
+  const brand = opts.brand;
+  const brandStyle = brand && /^#[0-9a-f]{6}$/i.test(brand.primary) && /^#[0-9a-f]{6}$/i.test(brand.accent)
+    ? `<style>:root{--purple:${brand.primary};--purple2:${brand.accent};--purple-hover:${brand.primary};--purple3:${brand.accent};}</style>`
+    : "";
   const theme: Theme = opts.theme === "dark" ? "dark" : "light";
   const otherTheme = theme === "dark" ? "light" : "dark";
-  const inst = opts.institution ?? "Riara University";
+  const inst = opts.institution ?? "Organization";
 
   const themeBtn = `<form method="post" action="/theme" style="display:inline">
       <button class="iconbtn" title="Switch to ${otherTheme} mode">${icon(theme === "dark" ? "sun" : "moon")}</button>
@@ -968,7 +970,7 @@ export function layout(opts: {
 <div class="app">
   <header class="sitehead">
     <div class="head-in">
-      <a class="head-brand" href="/">${crest(27)}<span class="sr-only">${esc(inst)} — automated admissions</span></a>
+      <a class="head-brand" href="/">${crest(27, "auto", brand?.logo, inst)}<span class="sr-only">${esc(inst)} — case intake</span></a>
       <nav class="head-nav">
         ${nav.map((n) => `<a href="${n.href}" class="${opts.active === n.active ? "active" : ""}">${n.label}</a>`).join("")}
       </nav>
@@ -990,14 +992,14 @@ ${opts.content}
 </div>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <linearGradient id="gaugeGrad" x1="0" y1="0" x2="1" y2="1">
-    <stop offset="0%" stop-color="#8B5CF6"/><stop offset="55%" stop-color="#7C3AED"/><stop offset="100%" stop-color="#4B1FA6"/>
+    <stop offset="0%" stop-color="var(--purple3)"/><stop offset="55%" stop-color="var(--purple2)"/><stop offset="100%" stop-color="var(--purple)"/>
   </linearGradient>
 </defs></svg>
 <div class="palette" id="palette">
   <div class="palette-box">
     <input id="palette-q" type="text" placeholder="Jump to a case, applicant or page…" autocomplete="off" spellcheck="false">
     <div id="palette-res"></div>
-    <div class="palette-keys"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span><span style="margin-left:auto">Riara University · Nurturing Innovations</span></div>
+    <div class="palette-keys"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span><span style="margin-left:auto">${esc(inst)} · intake workspace</span></div>
   </div>
 </div>`;
   } else {
@@ -1022,9 +1024,10 @@ ${opts.content}
 ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
 <title>${esc(opts.title)}</title>
 <style>${CSS}</style>
+${brandStyle}
 </head>
 <body>
-<div id="splash" aria-hidden="true">${crest(54)}${flowLine(160, 30)}<div class="s-sub">Nurturing Innovations</div></div>
+<div id="splash" aria-hidden="true">${crest(54, "auto", brand?.logo, inst)}${flowLine(160, 30)}<div class="s-sub">${esc(brand?.tagline || "Your workspace")}</div></div>
 <script>
   // The greeting shield plays once per tab session. Reloads, back/forward and
   // every later page load remove it instantly so navigation never feels stuck.
@@ -1032,8 +1035,8 @@ ${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
     var sp = document.getElementById("splash");
     if (!sp) return;
     try {
-      if (sessionStorage.getItem("riara.seen")) { sp.remove(); return; }
-      sessionStorage.setItem("riara.seen", "1");
+      if (sessionStorage.getItem("workspace.seen")) { sp.remove(); return; }
+      sessionStorage.setItem("workspace.seen", "1");
     } catch (e) {}
     setTimeout(function () { if (sp.parentNode) sp.remove(); }, 1600);
   })();
