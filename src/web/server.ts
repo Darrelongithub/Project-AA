@@ -37,7 +37,7 @@ import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { gmailRedirectUri } from "./oauth";
 import { LoginThrottle } from "./throttle";
-import { emailBanner, organizationName } from "../branding";
+import { emailBanner, organizationName, organizationTheme } from "../branding";
 import { organizationPack, PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
 import { EXAM_SYSTEMS } from "../config";
 import * as fs from "fs";
@@ -81,7 +81,7 @@ export function createApp(deps: WebDeps): Express {
     theme: req.theme,
     institution: instName(req),
     brand: repo.getOrganization(organizationId(req)) ? {
-      ...repo.getOrganization(organizationId(req))!.theme,
+      ...organizationTheme(repo, organizationId(req)),
       logo: repo.getOrganization(organizationId(req))!.logo,
       tagline: organizationId(req) === 1 ? repo.getSetting("splash_tagline", "") : "",
     } : undefined,
@@ -102,23 +102,23 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Auth ─────────────────────────────────────────────────────────────────
 
-  // Official logo, served once and cached; every page references these paths.
-  // Colour on transparent for light surfaces, monochrome white for the dark
-  // sidebar — both real PNGs so the mark blends with its background.
+  // Organization-neutral SVG identity assets, served once and cached.
+  // Page shells render the token-aware monogram inline; these URLs remain for
+  // integrations and legacy asset slots without a baked PNG dependency.
   app.get("/assets/logo", (_req, res) => {
-    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.send(Buffer.from(LOGO_BASE64, "base64"));
   });
   app.get("/assets/logo-white", (_req, res) => {
-    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.send(Buffer.from(LOGO_WHITE_BASE64, "base64"));
   });
 
-  // Browser-tab mark: a neutral compatibility asset; tenant logos are stored on the organization row.
+  // Browser-tab mark: the AA SVG; organization logos remain stored on their organization row.
   app.get("/assets/favicon", (_req, res) => {
-    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=604800");
     res.send(Buffer.from(FAVICON_BASE64, "base64"));
   });

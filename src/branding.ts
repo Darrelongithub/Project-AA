@@ -1,6 +1,7 @@
 /** Organization-owned identity helpers. Generic runtime code never supplies an institution identity. */
 import type { Repo } from "./db/repo";
 import type { OrganizationTheme } from "./types";
+import { EMAIL_BANNER_BASE64 } from "./web/logo";
 
 export const DEFAULT_ORGANIZATION_NAME = "Organization";
 
@@ -24,7 +25,11 @@ export function organizationName(repo: Pick<Repo, "getOrganization" | "getSettin
 export const institutionName = organizationName;
 
 export function organizationTheme(repo: Repo, organizationId = 1): OrganizationTheme {
-  return repo.getOrganization(organizationId)?.theme ?? { primary: "#334155", accent: "#0f766e" };
+  const theme = repo.getOrganization(organizationId)?.theme;
+  if (!theme || (theme.primary.toLowerCase() === "#334155" && theme.accent.toLowerCase() === "#0f766e")) {
+    return { primary: "#672b3c", accent: "#c7b69e" };
+  }
+  return theme;
 }
 
 export function organizationLogo(repo: Repo, organizationId = 1): string | null {
@@ -37,5 +42,5 @@ export function emailBanner(repo: Repo, organizationId = 1): { mime: string; bas
   if (configured) return { mime: repo.getSetting("email_banner_mime", "image/jpeg"), base64: configured };
   const logo = organizationLogo(repo, organizationId);
   const match = logo?.match(/^data:([^;]+);base64,(.+)$/);
-  return match ? { mime: match[1], base64: match[2] } : null;
+  return match ? { mime: match[1], base64: match[2] } : { mime: "image/svg+xml", base64: EMAIL_BANNER_BASE64 };
 }

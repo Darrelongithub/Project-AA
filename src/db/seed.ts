@@ -165,7 +165,7 @@ function seedGenericModel(repo: Repo): void {
   const migrated = migratedOrganizationOne();
   if (!org) {
     repo.db.prepare("INSERT INTO organizations (id, name, ref_prefix, theme) VALUES (1, ?, ?, ?)")
-      .run(migrated?.name || DEFAULT_SETTINGS.institution_name || "Organization", "RU", JSON.stringify({ primary: "#334155", accent: "#0f766e" }));
+      .run(migrated?.name || DEFAULT_SETTINGS.institution_name || "Organization", "RU", JSON.stringify({ primary: "#672b3c", accent: "#c7b69e" }));
   }
   if (migrated?.tagline && !repo.getSetting("splash_tagline", "")) repo.setSetting("splash_tagline", migrated.tagline);
   // Case types are the canonical generic equivalent of the legacy programme
