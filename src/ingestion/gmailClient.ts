@@ -246,10 +246,20 @@ export class GmailClient {
     subject: string,
     body: string,
     threadId: string,
-    extras?: { attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>; banner?: { mime: string; base64: string } | null }
+    extras?: { attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>; banner?: { mime: string; base64: string } | null; fromName?: string | null; fromAddress?: string | null; replyTo?: string | null }
   ): Promise<void> {
     const { to: cleanTo, subject: cleanSubject } = sanitizeHeaders(to, subject);
     const headers = [`To: ${cleanTo}`, `Subject: ${cleanSubject}`, "MIME-Version: 1.0"];
+    // PPR P1-5: organization sender identity actually shapes the MIME. The
+    // display name and reply-to are sanitized like any other header value.
+    const headerSafe = (v: string) => v.replace(/[\r\n]+/g, " ").replace(/[<>]/g, "").trim();
+    const fromName = (extras?.fromName ?? "").trim() ? headerSafe(String(extras?.fromName)) : "";
+    const fromAddress = (extras?.fromAddress ?? "").trim() ? headerSafe(String(extras?.fromAddress)) : "";
+    if (fromName || fromAddress) {
+      headers.push(fromName ? `From: "${fromName.replace(/"/g, "")}" <${fromAddress || this.address}>` : `From: ${fromAddress}`);
+    }
+    const replyTo = (extras?.replyTo ?? "").trim() ? headerSafe(String(extras?.replyTo)) : "";
+    if (replyTo) headers.push(`Reply-To: ${replyTo}`);
 
     const b64 = (buf: Buffer | string) => {
       const s = typeof buf === "string" ? buf : buf.toString("base64");

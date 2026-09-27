@@ -88,6 +88,29 @@ function migratedPack(kind: "application" | "admission"): PackBuild {
 export function applicationPack(): PackBuild { return migratedPack("application"); }
 export function admissionPack(): PackBuild { return migratedPack("admission"); }
 
+/**
+ * PPR P0-5: the migrated education profile's own files, grouped — used ONCE
+ * at setup to seed its attachment sets. After seeding, sends read the sets;
+ * nothing but this function ever looks at the bundled migration data.
+ */
+export function migratedAttachmentSets(): Array<{ name: string; files: PackFile[]; issues: string[] }> {
+  const data = migratedData();
+  if (!data) return [];
+  const out: Array<{ name: string; files: PackFile[]; issues: string[] }> = [];
+  for (const name of ["application", "admission", "transfer"] as const) {
+    const issues: string[] = [];
+    let slots = data.pack[name] ?? [];
+    // The credit-transfer form lives in the labeled profile's file store even
+    // though the JSON's pack groups predate it — same owner, same migration.
+    if (!slots.length && name === "transfer") {
+      slots = PACK_SLOTS.filter((s) => s.pack === "transfer").map((s) => ({ file: s.file, filename: s.pretty, mime: "application/pdf" }));
+    }
+    const files = build(issues, slots.map((slot) => read(slot.file, slot.filename, issues))).files;
+    out.push({ name, files, issues });
+  }
+  return out;
+}
+
 /** Build the pack owned by one organization. Empty slots are intentional. */
 export function organizationPack(repo: Repo, organizationId = 1, groups?: string[]): PackBuild {
   const wanted = new Set(groups ?? ["application", "admission", "transfer"]);

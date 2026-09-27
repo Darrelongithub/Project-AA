@@ -354,7 +354,7 @@ describe("OR-4: connections live in Settings, nowhere else", () => {
         }).toString(),
         redirect: "manual",
       });
-      repo.setSetting("gmail_refresh_token", "1//fake-refresh-token");
+      repo.setSecret("gmail_refresh_token", "1//fake-refresh-token");
       const res = await fetch(`${base}/settings/gmail/test`, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded", cookie },
@@ -401,7 +401,7 @@ describe("OR-4: connections live in Settings, nowhere else", () => {
     }
     // Restart: a fresh Repo over the same file still has the key + the error.
     const reborn = new Repo(openDb(dbPath));
-    expect(reborn.getSetting("gemini_api_key", "")).toBe("AIza-fake-key-not-real");
+    expect(reborn.getSecret("gemini_api_key")).toBe("AIza-fake-key-not-real");
     expect(reborn.getSetting("gemini_last_error", "")).not.toBe("");
   }, 60_000);
 });
