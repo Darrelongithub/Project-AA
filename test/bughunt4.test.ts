@@ -88,7 +88,7 @@ function rawGet(path: string, hostHeader: string): Promise<{ status: number; htm
 
 describe("N1 — removing the Gemini key must return the server to mock reading", () => {
   it("boot with a saved key activates the live adapters (pre-state)", async () => {
-    repo.setSetting("gemini_api_key", "AIzaFAKE-KEY");
+    repo.setSecret("gemini_api_key", "AIzaFAKE-KEY");
     await startServer();
     // Boot-time rebuild saw the saved key and built the live adapters —
     // exactly what a previously-verified key does in production.
@@ -96,7 +96,7 @@ describe("N1 — removing the Gemini key must return the server to mock reading"
   });
 
   it("clearing the key restores mock vision + heuristic watcher (RED: stale Gemini stayed live)", async () => {
-    repo.setSetting("gemini_api_key", "AIzaFAKE-KEY");
+    repo.setSecret("gemini_api_key", "AIzaFAKE-KEY");
     const { csrf } = await startServer();
     expect(ctx.adapters.vision.constructor.name).toBe("BudgetedVisionAdapter");
 
@@ -108,7 +108,7 @@ describe("N1 — removing the Gemini key must return the server to mock reading"
       redirect: "manual",
     });
     expect(res.status).toBe(302);
-    expect(repo.getSetting("gemini_api_key", "")).toBe("");
+    expect(repo.getSecret("gemini_api_key")).toBe("");
 
     // The live adapters must be GONE. (Before the fix: the stale Gemini
     // vision + watcher are still live, contradicting the "back to mock

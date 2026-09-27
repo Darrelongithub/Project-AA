@@ -10,7 +10,8 @@ import type { AdmissionSystem, ApplicantRow, CaseType, DocType, EmailRecord, Rul
 
 type LegacyAcademicLevel = "degree" | "diploma" | "certificate" | "masters" | "phd";
 type LegacyAcademicProgramme = ReturnType<Repo["listProgrammes"]>[number];
-import { ADMISSION_SYSTEMS, DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
+import { ADMISSION_SYSTEMS, DOC_TYPES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS } from "../types";
+import { describeRule } from "../rules/workflow";
 import { SYSTEM_LABELS } from "../admissions/systems";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../admissions/queues";
 import { describeRuleTree, interpretRuleTree } from "../admissions/engine";
@@ -39,7 +40,13 @@ interface Ctx {
 }
 
 function head(c: Ctx, title: string, active: string, content: string): string {
-  return layout({ title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme, institution: c.institution, brand: c.brand });
+  return layout({
+    title, content, user: c.user, unread: c.unread, active, csrf: c.csrf, theme: c.theme,
+    institution: c.institution, brand: c.brand,
+    // PPR P0-2: the Admissions entry appears only for organizations that
+    // actually run an education-module profile.
+    educationNav: c.repo.hasEducationModule(c.user.organization_id ?? 1),
+  });
 }
 
 /** "it" → "IT", else first-letter title: polite, readable labels. */
@@ -179,7 +186,7 @@ function adminDashboard(c: Ctx): string {
   const all = repo.allApplicants(realm, scope);
   const missingDocs = repo.commonMissingDocs(realm, scope, 5);
   const triage = repo.triageCounts(realm, scope);
-  const gmailConnected = Boolean(repo.getSetting("gmail_refresh_token", "")) || Boolean(c.gmailConfigured);
+  const gmailConnected = Boolean(repo.hasSecret("gmail_refresh_token")) || Boolean(c.gmailConfigured);
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
   const globalMode = repo.getSetting("automation_mode", "auto");
 
@@ -303,7 +310,7 @@ ${triageTile(triage)}
   <h2>System</h2>
   <div class="kv">
     <div><span>Gmail</span><b>${gmailConnected ? `connected${lastSync ? ` · synced ${esc(fmtDate(lastSync))}` : ""}` : "not connected"} <a class="small" href="/settings#connections">manage</a></b></div>
-    <div><span>Document AI (Gemini)</span><b>${repo.getSetting("gemini_api_key", "") ? "key saved · live" : "not set"} <a class="small" href="/settings#connections">manage</a></b></div>
+    <div><span>Document AI (Gemini)</span><b>${repo.hasSecret("gemini_api_key") ? "key saved · live" : "not set"} <a class="small" href="/settings#connections">manage</a></b></div>
     <div><span>Automation</span><b>${globalMode === "draft" ? "draft-first" : "auto"} · <a class="small" href="/settings#automation">change</a></b></div>
     <div><span>Team</span><b>${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">staff configuration</a></b></div>
     <div><span>Replies to date</span><b>${(() => { const ac = repo.accuracyStats(realm); return Number(ac.autoSends) + Number(ac.humanSends); })()}</b></div>
@@ -697,12 +704,16 @@ export function applicantsPage(
     place: queueOf(r, { lastDirection: directions.get(r.id) ?? null, hasDocuments: (docCounts.get(r.id) ?? 0) > 0 }),
   }));
 
+  // PPR P0-2/P1-9: a workspace without the education module never sees the
+  // academic queue tab, programme catalogue or admission-decision column.
+  const eduWorkspace = c.repo.hasEducationModule(c.user.organization_id ?? 1);
+  const visibleQueues = QUEUES.filter((qm) => eduWorkspace || qm.key !== "decision");
   const queueTotals = new Map<QueueKey, number>();
-  for (const qm of QUEUES) queueTotals.set(qm.key, 0);
+  for (const qm of visibleQueues) queueTotals.set(qm.key, 0);
   for (const p of placed) queueTotals.set(p.place.queue, (queueTotals.get(p.place.queue) ?? 0) + 1);
 
-  const activeKey: QueueKey = (QUEUES.some((qm) => qm.key === q.queue) ? q.queue : "human_review") as QueueKey;
-  const active = QUEUES.find((qm) => qm.key === activeKey)!;
+  const activeKey: QueueKey = (visibleQueues.some((qm) => qm.key === q.queue) ? q.queue : "human_review") as QueueKey;
+  const active = visibleQueues.find((qm) => qm.key === activeKey)!;
   const inActive = placed.filter((p) => p.place.queue === activeKey);
   const subCounts = new Map<string, number>();
   for (const p of inActive) subCounts.set(p.place.sub, (subCounts.get(p.place.sub) ?? 0) + 1);
@@ -714,7 +725,7 @@ export function applicantsPage(
       ? inActive.filter((p) => p.place.sub === q.sub)
       : inActive;
 
-  const tabs = QUEUES.map((qm) => `
+  const tabs = visibleQueues.map((qm) => `
     <a class="stat-mini ${qm.key === activeKey ? "sel" : ""}" href="/applicants?queue=${qm.key}">
       <span class="n">${queueTotals.get(qm.key) ?? 0}</span>
       <span class="l">${esc(qm.label)}</span>
@@ -734,15 +745,15 @@ export function applicantsPage(
     .map(({ row: r, place }) => {
       const detail = evalReasons.get(r.id);
       const why = detail ? esc(detail.length > 96 ? detail.slice(0, 96) + "…" : detail) : "";
-      const rowQueue = QUEUES.find((qm) => qm.key === place.queue)!;
+      const rowQueue = visibleQueues.find((qm) => qm.key === place.queue) ?? visibleQueues.find((qm) => qm.key === "human_review")!;
       const tone = toneClass(rowQueue.tone);
       return `<tr class="case-row ${tone}">
       <td><a class="case-ref" href="/case/${r.id}">${esc(r.ref_number)}</a></td>
       <td><div class="case-person">${avatar(r.full_name ?? r.ref_number, 34)}<span><b>${esc(r.full_name ?? "—")}</b><span class="muted small">${esc(r.email_address)}</span></span></div></td>
-      <td class="small"><b>${esc(r.programme ?? "—")}</b>${r.intake ? `<br><span class="muted">${esc(r.intake)}</span>` : ""}</td>
+      <td class="small">${eduWorkspace ? `<b>${esc(r.programme ?? "—")}</b>${r.intake ? `<br><span class="muted">${esc(r.intake)}</span>` : ""}` : `<b>${esc(r.queue || "—")}</b>`}</td>
       <td class="small"><span class="queue-state"><i class="state-dot" aria-hidden="true"></i>${esc(SUB_LABELS[place.sub] ?? place.sub)}</span><br><span class="muted">${why}</span></td>
       <td>${resultBadge(r.req_result)}</td>
-      <td>${decisionBadge(r.admission_decision)}</td>
+      ${eduWorkspace ? `<td>${decisionBadge(r.admission_decision)}</td>` : ""}
       <td class="small muted nowrap">${esc(fmtDate(r.created_at))}</td>
       <td><a class="btn small" href="/case/${r.id}">Open</a></td>
     </tr>`;
@@ -767,8 +778,8 @@ export function applicantsPage(
 <form class="inline" method="get" action="/applicants">
   <input type="hidden" name="queue" value="${esc(activeKey)}">
   <input name="q" value="${esc(q.search ?? "")}" placeholder="Search name, email, reference…">
-  <select name="programme"><option value="">All programmes</option>${programmes.map((p) => opt(p.code, p.name, q.programme)).join("")}</select>
-  <select name="intake"><option value="">All intakes</option>${intakes.map((i) => opt(i, i, q.intake)).join("")}</select>
+  ${eduWorkspace ? `<select name="programme"><option value="">All programmes</option>${programmes.map((p) => opt(p.code, p.name, q.programme)).join("")}</select>
+  <select name="intake"><option value="">All intakes</option>${intakes.map((i) => opt(i, i, q.intake)).join("")}</select>` : ""}
   <button class="btn ghost">Filter</button>
   ${c.user.role === "admin" ? `<a class="btn small ghost" href="/applicants/export.csv">Export CSV</a>` : ""}
 </form>
@@ -777,7 +788,7 @@ export function applicantsPage(
   ${searchMode ? "" : `<div class="chips">${chips}</div>`}
   ${shown.length
     ? `<table>
-        <tr><th>Ref</th><th>Applicant</th><th>CaseType</th><th>Why it's here</th><th>Requirement result</th><th>Admission decision</th><th>Opened</th><th></th></tr>
+        <tr><th>Ref</th><th>Applicant</th><th>${eduWorkspace ? "CaseType" : "Queue"}</th><th>Why it's here</th><th>Requirement result</th>${eduWorkspace ? "<th>Admission decision</th>" : ""}<th>Opened</th><th></th></tr>
         ${trs}
       </table>`
     : searchMode
@@ -862,8 +873,51 @@ const ROUTING_TEXT: Record<string, [string, string, string]> = {
   waiting_documents: ["b-blue", "Waiting for Documents", "Missing information is waiting on the applicant — absence is never interpreted as failure."],
 };
 
+/**
+ * PPR P1-1: terminology — the five surface words (case / contact / category /
+ * stage / outcome) are profile data. Defaults are the current education
+ * wording, so nobody sees a change until an admin renames something.
+ * Internal keys and DB columns never move.
+ */
+export function terminologyFor(c: Ctx, a?: ApplicantRow): { case: string; contact: string; category: string; stage: string; outcome: string } {
+  const caseType = a ? c.repo.caseTypeForCase(a.id) : undefined;
+  const t = (caseType?.terminology ?? {}) as Record<string, string>;
+  return {
+    case: t.case || "Applicant",
+    contact: t.contact || "Contact",
+    category: t.category || "Category",
+    stage: t.stage || "Current level",
+    outcome: t.outcome || "Admission decision",
+  };
+}
+
+/** PPR P1-2: a profile's stage labels override the shipped ones (ids stable). */
+export function stageLabelFor(c: Ctx, a: ApplicantRow): string {
+  const caseType = c.repo.caseTypeForCase(a.id);
+  const custom = caseType?.stages?.find((s) => s.id === a.lifecycle);
+  return custom?.label ?? LIFECYCLE_LABELS[a.lifecycle];
+}
+
 function evaluationPanel(c: Ctx, a: ApplicantRow): string {
   const { repo } = c;
+  // PPR P0-2: a non-education case never sees admission eligibility, grade
+  // routes or decision vocabulary — only its configured evidence checklist.
+  if (!repo.educationCaseFor(a)) {
+    const requirements = repo.effectiveRequirements(a).filter((r) => r.required);
+    const activeDocs = repo.listDocuments(a.id, { activeOnly: true });
+    const present = new Set(activeDocs.map((d) => d.document_type));
+    // P1-4: the profile's own document-slot labels win over built-in wording.
+    const caseType = repo.caseTypeForCase(a.id);
+    const slotLabel = (t: string): string =>
+      (caseType ? repo.listDocumentDefinitions(caseType.id).find((d) => d.key === String(t))?.label : undefined) ?? docLabel(t);
+    const rows = requirements.length
+      ? requirements.map((r) => `<div class="field"><span class="lbl">${esc(slotLabel(r.document_type))}</span><span class="val">${present.has(r.document_type) ? `<span class="badge b-green">on file</span>` : `<span class="badge b-orange">outstanding</span>`}</span></div>`).join("")
+      : `<div class="small muted">No required-information list is configured for this case type — configure one in Configuration → Case types.</div>`;
+    return `<section class="sec">
+      <div class="sec-head"><h2>Required information</h2></div>
+      <div class="meta-grid">${rows}</div>
+    </section>`;
+  }
   const ev = repo.latestEvaluation(a.id);
   const programme = a.programme ? repo.programmeByCode(a.programme) : undefined;
   const ctxLine = `${programme ? `${esc(programme.code)} ${esc(programme.name)}` : esc(a.programme ?? "No programme yet")}${a.intake ? ` · ${esc(a.intake)}` : ""}`;
@@ -954,6 +1008,10 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
 
 export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { subject: string; body: string } | null): string {
   const { repo } = c;
+  // PPR P1-1/P1-2: this profile's vocabulary and stage labels (ids stable).
+  const terms = terminologyFor(c, a);
+  const stageLabels = Object.fromEntries((repo.caseTypeForCase(a.id)?.stages ?? []).map((s) => [s.id, s.label]));
+  const stageRequires = (repo.caseTypeForCase(a.id)?.stages ?? []).find((s) => s.id === a.lifecycle)?.requires ?? [];
   const requirements = repo.effectiveRequirements(a);
   const activeDocs = repo.listDocuments(a.id, { activeOnly: true });
   const allDocs = repo.listDocuments(a.id, { activeOnly: false });
@@ -964,7 +1022,12 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
   const audit = repo.auditForApplicant(a.id);
   const decisions = repo.decisionLogs(a.id);
   const staff = repo.listStaff();
-  const templates = repo.listTemplates(c.user.organization_id ?? 1);
+  // PPR P1-9: a non-education case never sees academic reply templates or
+  // pack vocabulary — its page speaks only generic wording.
+  const educationCasePage = repo.educationCaseFor(a);
+  const ACADEMIC_TEMPLATE_KEYS = new Set(["admission_letter", "admission_docs"]);
+  const templates = repo.listTemplates(c.user.organization_id ?? 1)
+    .filter((t) => educationCasePage || !ACADEMIC_TEMPLATE_KEYS.has(t.key));
   const outbox = repo.queuedOutbox(a.id);
   // "INTERNAL — DO NOT AUTO-SEND" boilerplate never reaches the UI; staff see
   // the suggested reply (if any) and whether the draft is held for approval.
@@ -1119,7 +1182,8 @@ ${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
 </div>
 
 <!-- Lifecycle progress -->
-<div class="stepper-band">${lifecycleStepper(a.lifecycle)}</div>
+<div class="stepper-band">${lifecycleStepper(a.lifecycle, stageLabels)}</div>
+${stageRequires.length ? `<div class="changed"><b>Required for this stage:</b> ${stageRequires.map((r) => esc(r)).join(" · ")}</div>` : ""}
 
 ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${changed}</div>` : ""}
 
@@ -1128,16 +1192,20 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
 
     <!-- Applicant details -->
     <section class="sec">
-      <div class="sec-head"><h2>Applicant overview</h2></div>
+      <div class="sec-head"><h2>${esc(terms.case)} overview</h2></div>
       <div class="meta-grid">
         <div class="field"><span class="lbl">Name</span><span class="val">${esc(a.full_name ?? "—")}</span></div>
         <div class="field"><span class="lbl">Email</span><span class="val"><a href="mailto:${esc(a.email_address)}">${esc(a.email_address)}</a></span></div>
         <div class="field"><span class="lbl">Phone</span><span class="val">${esc(a.phone ?? "—")}</span></div>
-        <div class="field"><span class="lbl">Applied programme</span><span class="val">${programme ? `${esc(programme.code)} — ${esc(programme.name)}` : `<span class="muted">not identified yet — the latest email decides it</span>`}</span></div>
+        <div class="field"><span class="lbl">${esc(terms.contact)}</span><span class="val">${esc(a.full_name ?? a.email_address)}${a.phone ? ` · ${esc(a.phone)}` : ""}</span></div>
+        ${repo.educationCaseFor(a)
+          ? `<div class="field"><span class="lbl">Applied programme</span><span class="val">${programme ? `${esc(programme.code)} — ${esc(programme.name)}` : `<span class="muted">not identified yet — the latest email decides it</span>`}</span></div>
         <div class="field"><span class="lbl">School</span><span class="val">${programme?.school ? esc(programme.school) : "—"}</span></div>
-        <div class="field"><span class="lbl">Intake</span><span class="val">${esc(a.intake ?? "—")}</span></div>
+        <div class="field"><span class="lbl">Intake</span><span class="val">${esc(a.intake ?? "—")}</span></div>`
+          : `<div class="field"><span class="lbl">${esc(terms.category)}</span><span class="val">${esc(a.category ?? "—")}</span></div>`}
         <div class="field"><span class="lbl">Reference number</span><span class="val mono">${esc(a.ref_number)}</span></div>
-        <div class="field"><span class="lbl">Current level</span><span class="val">${lifecycleBadge(a.lifecycle)} <span class="muted small" style="font-weight:500">moved through ${history.length} change${history.length === 1 ? "" : "s"}</span></span></div>
+        ${a.queue ? `<div class="field"><span class="lbl">Queue</span><span class="val">${esc((repo.caseTypeForCase(a.id)?.queues ?? []).find((q) => q.id === a.queue)?.label ?? a.queue)}</span></div>` : ""}
+        <div class="field"><span class="lbl">${esc(terms.stage)}</span><span class="val">${lifecycleBadge(a.lifecycle, stageLabels)} <span class="muted small" style="font-weight:500">moved through ${history.length} change${history.length === 1 ? "" : "s"}</span></span></div>
       </div>
       <div class="op-strip">
         <div class="op"><span class="lbl">Threads</span><span class="val">${threads.length} linked conversation${threads.length === 1 ? "" : "s"}</span></div>
@@ -1227,9 +1295,9 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       <p class="small muted" style="margin:6px 0 0">Auto-response toggles per category live in <a href="/settings#automation">Settings → Automation</a>. Current modes: ${esc(autoSummary || "defaults")}</p>
     </div>
 
-    ${isMgr ? `<div class="ops-card" id="packs">
+    ${isMgr && educationCasePage ? `<div class="ops-card" id="packs">
       <h2>Official packs</h2>
-      <p class="small" style="margin:0 0 8px"><a href="/config?tab=pack">Manage the pack files (preview &amp; replace) →</a></p>
+      <p class="small" style="margin:0 0 8px"><a href="/config?tab=pack">Manage the document library (sets &amp; files) →</a></p>
       <details style="margin-bottom:12px"><summary class="small" style="cursor:pointer;font-weight:700">What's included?</summary>
         <p class="small muted" style="margin:6px 0 0">The <b>application pack</b> (application form + brochure) goes to anyone who asks about applying. The <b>admission pack</b> sends the official admission letter with its accompanying documents. The <b>credit transfer form</b> goes to transferring applicants.</p>
       </details>
@@ -1247,6 +1315,17 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
           <button class="btn ghost">Send credit transfer form</button>
         </form>
       </div>
+    </div>` : ""}
+
+    ${isMgr && !educationCasePage ? `<div class="ops-card" id="packs">
+      <h2>Document sets</h2>
+      <p class="small" style="margin:0 0 8px"><a href="/config?tab=pack">Manage the document library (sets &amp; files) →</a></p>
+      ${repo.listAttachmentSets(c.user.organization_id ?? 1).length
+        ? `<div class="ops-secondary">${repo.listAttachmentSets(c.user.organization_id ?? 1).map((s) => `<form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the “${esc(s.name)}” set to this requester?')" style="margin:0">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="kind" value="${esc(s.name)}">
+          <button class="btn">Send “${esc(s.name)}” set</button>
+        </form>`).join("")}</div>`
+        : `<p class="small muted">No document sets yet — define them in the document library.</p>`}
     </div>` : ""}
 
     ${outbox ? `<div class="ops-card draft-card">
@@ -1315,7 +1394,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       <form method="post" action="/case/${a.id}/category" class="ops-inline" style="align-items:center;margin:0">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
         <select name="category" style="flex:1">
-          ${Object.entries(EMAIL_CATEGORY_LABELS).map(([k, v]) => `<option value="${k}" ${latestIncoming?.category === k ? "selected" : ""}>${v}</option>`).join("")}
+          ${Object.entries(EMAIL_CATEGORY_LABELS).filter(([k]) => educationCasePage || k !== "admission_enquiry").map(([k, v]) => `<option value="${k}" ${latestIncoming?.category === k ? "selected" : ""}>${v}</option>`).join("")}
         </select>
         <button class="btn ghost small">Save</button>
       </form>
@@ -1397,7 +1476,7 @@ export function composePage(c: Ctx, a: ApplicantRow, tpl: { key: string; name: s
       <button class="btn">Send now</button>
       <a class="btn ghost" href="/case/${a.id}">Cancel — don't send</a>
       ${tpl.include_banner === 0 ? `<span class="muted small">sends without the branded banner</span>` : `<span class="muted small">branded banner is attached automatically</span>`}
-      ${tpl.attach_pack === "application" || tpl.attach_pack === "admission" ? `<span class="badge b-purple">${tpl.attach_pack} pack PDFs will be attached</span>` : ""}
+      ${tpl.attach_pack && tpl.attach_pack !== "none" ? `<span class="badge b-purple">${esc(tpl.attach_pack)} set PDFs will be attached</span>` : ""}
     </div>
   </form>
 </div>`
@@ -1504,7 +1583,7 @@ export function composeWindowPage(
       <button class="btn">Send now</button>
       <a class="btn ghost" href="/case/${a.id}">Cancel — don’t send</a>
       ${tpl ? (tpl.include_banner === 0 ? `<span class="muted small">sends without the branded banner</span>` : `<span class="muted small">branded banner is attached automatically</span>`) : `<span class="muted small">branded banner is attached automatically</span>`}
-      ${tpl && (tpl.attach_pack === "application" || tpl.attach_pack === "admission") ? `<span class="badge b-purple">${tpl.attach_pack} pack PDFs will be attached</span>` : ""}
+      ${tpl && tpl.attach_pack && tpl.attach_pack !== "none" ? `<span class="badge b-purple">${esc(tpl.attach_pack)} set PDFs will be attached</span>` : ""}
     </div>
   </form>
 </div>`);
@@ -1775,6 +1854,24 @@ ${connectionsSection(c, gmailRedirectUri)}
   <p class="small muted">Note: with global mode set to draft, per-category switches take effect once global returns to auto.</p>
 </div>
 
+<div class="card" id="sla">
+  <h2>Response targets &amp; SLA</h2>
+  <p class="small muted" style="margin-top:-6px">How fast the office promises to respond, when a slow case is escalated, and the reminder ladder for missing documents. These numbers drive the SLA clock on every queued case and the scheduled reminders.</p>
+  <form method="post" action="/settings/general">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      ${settingInput("sla_target_hours", "SLA target (hours to first response)")}
+      ${settingInput("escalation_hours", "Escalation (hours before a case is escalated)")}
+      ${settingInput("unanswered_target_hours", "Unanswered target (hours)")}
+    </div>
+    <div class="formrow">
+      ${settingInput("followup_ladder_days", "Follow-up ladder (days between reminders, e.g. 3,7,10)")}
+    </div>
+    <p><button class="btn">Save response targets</button></p>
+    <p class="small muted" style="margin-bottom:0">Current ladder: <b>${esc(settings["followup_ladder_days"] ?? "3,7,10")}</b> days — reminders stop as soon as the case is complete. A response rule can switch the ladder off for its own path.</p>
+  </form>
+</div>
+
 <div class="card" id="letters">
   <h2>Letters &amp; identity</h2>
   <p class="small muted" style="margin-top:-6px">Identity and theme belong to this organization. The same values are used by the console, outgoing messages and generated documents.</p>
@@ -1786,6 +1883,13 @@ ${connectionsSection(c, gmailRedirectUri)}
       ${organizationInput("accent_color", "Accent colour", organization ? organizationTheme(repo, organizationId).accent : "#c7b69e")}
       <div><label>Reference prefix</label><input name="ref_prefix" value="${esc(organization?.ref_prefix ?? repo.organizationRefPrefix(c.user.organization_id ?? 1))}" pattern="[A-Za-z]{1,8}" maxlength="8" required></div>
     </div>
+    <div class="formrow">
+      ${organizationInput("from_name", "From name on outgoing mail", organization?.from_name ?? "")}
+      ${organizationInput("reply_to", "Reply-to address", organization?.reply_to ?? "")}
+      ${organizationInput("locale", "Locale (dates & numbers)", organization?.locale ?? "en-KE")}
+      ${organizationInput("timezone", "Timezone (IANA name)", organization?.timezone ?? "")}
+    </div>
+    <p class="small muted">The From name and Reply-to are applied to every message the system sends. Empty From name keeps the sending mailbox's own name; empty Reply-to keeps replies on the sending mailbox.</p>
     <p><button class="btn">Save identity &amp; colours</button></p>
   </form>
   <div class="card" style="margin:14px 0 0;padding:14px;background:var(--card2)">
@@ -1801,9 +1905,6 @@ ${connectionsSection(c, gmailRedirectUri)}
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
       ${settingInput("institution_name", "Legacy identity setting")}
-      ${settingInput("from_name", "From name")}
-    </div>
-    <div class="formrow">
       ${settingInput("reg_date", "Registration date (admission letter)")}
       ${settingInput("orientation_dates", "Orientation dates (admission letter)")}
     </div>
@@ -1841,8 +1942,11 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   const settings = repo.allSettings();
   const gAddress = settings["gmail_address"] || c.gmailAddress || "";
   const gClientId = settings["gmail_client_id"] ?? "";
-  const gClientSecret = settings["gmail_client_secret"] ?? "";
-  const gRefresh = settings["gmail_refresh_token"] ?? "";
+  // PPR P0-1: secrets are presence-only here — a settings page can never
+  // read the stored credential value back out.
+  const gClientSecret = repo.hasSecret("gmail_client_secret") ? "saved" : "";
+  const gRefresh = repo.hasSecret("gmail_refresh_token") ? "saved" : "";
+  const geminiKeySaved = repo.hasSecret("gemini_api_key");
   const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh) || Boolean(c.gmailConfigured);
   // AUX-2: a plain-`http://` redirect URI on a NON-LOOPBACK host can never
   // be registered with a Google OAuth web client — the classic
@@ -1913,14 +2017,14 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
 </div>
 
 <div class="card" id="gemini">
-  <h2>Document AI (Gemini) ${settings["gemini_api_key"]
+  <h2>Document AI (Gemini) ${geminiKeySaved
     ? `<span class="badge b-green">key saved — AI reads what OCR can't</span>`
     : `<span class="badge b-gray">optional</span>`}</h2>
   <p class="small muted" style="margin-top:-6px">When a document beats text extraction and OCR (bad scans, photos, handwriting), Gemini reads it as a vision model. Get a free key at <b>aistudio.google.com/apikey</b> (Google account → “Get API key”). The key is tested with one real call on save and goes live <b>immediately</b>, no restart. Without a key the console still works; unreadable files simply land in the review queue.</p>
   <form method="post" action="/settings/gemini">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
-      <div style="flex:2"><label>Gemini API key ${settings["gemini_api_key"] ? "(saved — paste a new value to replace)" : ""}</label><input type="password" name="gemini_api_key" value="" placeholder="AIza…" autocomplete="new-password"></div>
+      <div style="flex:2"><label>Gemini API key ${geminiKeySaved ? "(saved — paste a new value to replace)" : ""}</label><input type="password" name="gemini_api_key" value="" placeholder="AIza…" autocomplete="new-password"></div>
       ${(() => {
     const storedModel = settings["gemini_model"] ?? "";
     const dead = DEAD_GEMINI_MODELS.has(storedModel);
@@ -1930,7 +2034,7 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
       <div style="flex:0"><label>&nbsp;</label><button class="btn">Save &amp; test key</button></div>
     </div>
   </form>
-  ${settings["gemini_api_key"] ? `<form method="post" action="/settings/gemini" style="margin-top:8px"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger small" name="clear" value="1">Remove key</button></form>` : ""}
+  ${geminiKeySaved ? `<form method="post" action="/settings/gemini" style="margin-top:8px"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger small" name="clear" value="1">Remove key</button></form>` : ""}
   ${settings["gemini_last_error"] ? `<p class="small" style="color:var(--red)">Last test failed: ${esc(settings["gemini_last_error"])}</p>` : ""}
 </div>
 </div>`;
@@ -1993,52 +2097,151 @@ ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(
 
 // ── Entry requirements editor (structured, per qualification system) ──────
 
-function documentsPackCard(c: Ctx): string {
-  const manifest = packManifest(c.repo, c.user.organization_id ?? 1);
-  const app = manifest.filter((m) => m.pack === "application");
-  const adm = manifest.filter((m) => m.pack === "admission");
+/**
+ * PPR P0-5: Attachment sets — the files this organization attaches to its
+ * replies. Sets are ordinary organization data: create one, upload PDFs,
+ * name it on a template or workflow rule. Nothing here references another
+ * organization's files; a new organization starts empty and defines its own.
+ */
+function attachmentSetsCard(c: Ctx): string {
+  const orgId = c.user.organization_id ?? 1;
+  const sets = c.repo.listAttachmentSets(orgId);
   const fmt = (b: number) => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`;
-  const rows = (list: typeof manifest) => list.map((m) => `<tr>
-      <td>${esc(m.pretty)}</td>
-      <td class="small muted">${esc(m.purpose)}</td>
-      <td>${m.exists ? fmt(m.bytes) : "<b>MISSING</b>"}</td>
-      <td>${m.exists ? `<a class="btn small ghost" href="/pack/${esc(m.key)}" target="_blank" rel="noopener">Open</a>` : ""}</td>
-      <td>
-        <input type="file" accept="application/pdf" id="pack-${esc(m.key)}" style="max-width:210px">
-        <button class="btn small ghost" data-pack-slot="${esc(m.key)}">Replace</button>
-        <span class="small muted" id="pack-msg-${esc(m.key)}"></span>
-      </td>
-    </tr>`).join("");
-  return `<div class="card" id="documents">
-  <div class="card-head"><h2>Documents &amp; application packs</h2></div>
+  const setBlocks = sets.map((s) => {
+    const files = c.repo.listAttachmentSetFiles(s.id);
+    return `<details id="aset-${s.id}" style="margin:10px 0;border:1px solid var(--line2);border-radius:8px">
+      <summary style="cursor:pointer;padding:10px 14px"><b>${esc(s.name)}</b>
+        <span class="badge b-gray" style="margin-left:8px">${files.length} file${files.length === 1 ? "" : "s"}${s.bytes ? `, ${fmt(s.bytes)}` : ""}</span>
+        ${s.description ? `<span class="small muted" style="margin-left:8px">${esc(s.description)}</span>` : ""}</summary>
+      <div style="padding:6px 16px 14px">
+        <p class="small muted">Templates and workflow rules attach this set by name (<span class="mono">${esc(s.name)}</span>). Replacing a file here swaps it in every future send.</p>
+        <table><tr><th>File</th><th>Size</th><th>Origin</th><th></th></tr>
+          ${files.length ? files.map((f) => `<tr>
+            <td>${esc(f.filename)}</td>
+            <td class="small">${fmt(f.content.length)}</td>
+            <td class="small muted">${esc(f.provenance)}</td>
+            <td><form method="post" action="/config/attachment-sets/file-delete" style="margin:0">
+              <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="file_id" value="${f.id}">
+              <button class="btn small ghost" onclick="return confirm('Remove this file from the set?')">Remove</button></form></td>
+          </tr>`).join("") : `<tr><td colspan="4" class="small muted">No files yet — upload a PDF below.</td></tr>`}
+        </table>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+          <input type="file" accept="application/pdf" id="aset-file-${s.id}" style="max-width:230px">
+          <button class="btn small" data-aset-upload="${s.id}">Upload PDF</button>
+          <span class="small muted" id="aset-msg-${s.id}" role="status"></span>
+        </div>
+        <form method="post" action="/config/attachment-sets/delete" style="margin-top:10px">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="set_id" value="${s.id}">
+          <button class="btn small ghost" onclick="return confirm('Delete this entire set?')">Delete set</button>
+        </form>
+      </div>
+    </details>`;
+  }).join("");
+
+  return `<div class="card" id="attachment-sets">
+  <div class="card-head"><h2>Attachment sets</h2></div>
   <div style="padding:14px 24px 22px">
-    <p class="small muted" style="margin-top:-4px">The PDFs this organization sends. The <b>application pack</b> is attached when staff send the pack on an enquiry; the <b>admission pack</b> goes out with the admission letter. Replacing a file here swaps it everywhere immediately.</p>
-    <h3>Application pack</h3>
-    <table><tr><th>Document</th><th>Used for</th><th>Size</th><th></th><th>Replace (PDF)</th></tr>${rows(app)}</table>
-    <h3 style="margin-top:18px">Admission pack</h3>
-    <table><tr><th>Document</th><th>Used for</th><th>Size</th><th></th><th>Replace (PDF)</th></tr>${rows(adm)}</table>
-    <h3 style="margin-top:18px">Transfer applicants</h3>
-    <p class="small muted" style="margin-top:-4px">Applicants transferring credit from another institution must return this form with their file; it is required on their checklist automatically, and staff can send it from any case.</p>
-    <table><tr><th>Document</th><th>Used for</th><th>Size</th><th></th><th>Replace (PDF)</th></tr>${rows(manifest.filter((m) => m.pack === "transfer"))}</table>
+    <p class="small muted" style="margin-top:-4px">Named groups of PDFs that ride along with replies. A template or workflow rule attaches exactly the set it names — nothing else. Each organization defines its own sets from its own files.</p>
+    ${setBlocks || `<p class="muted small">No attachment sets yet — create one below.</p>`}
+    <h3 style="margin-top:16px">Create a set</h3>
+    <form method="post" action="/config/attachment-sets/create" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <div class="field" style="min-width:200px"><span class="lbl">Set name</span><input name="name" required placeholder="e.g. Enquiry pack"></div>
+      <div class="field" style="min-width:260px"><span class="lbl">Description</span><input name="description" placeholder="What this set is for"></div>
+      <button class="btn">Create set</button>
+    </form>
   </div>
 </div>
 <script>
 (function () {
-  document.querySelectorAll("[data-pack-slot]").forEach(function (btn) {
+  document.querySelectorAll("[data-aset-upload]").forEach(function (btn) {
     btn.addEventListener("click", function () {
-      var slot = btn.getAttribute("data-pack-slot");
-      var file = document.getElementById("pack-" + slot).files[0];
-      var msg = document.getElementById("pack-msg-" + slot);
+      var setId = btn.getAttribute("data-aset-upload");
+      var file = document.getElementById("aset-file-" + setId).files[0];
+      var msg = document.getElementById("aset-msg-" + setId);
       if (!file) { msg.textContent = "Choose a PDF first."; return; }
       if (file.type !== "application/pdf") { msg.textContent = "PDF files only."; return; }
       msg.textContent = "Uploading…";
-      fetch("/config/pack/replace?slot=" + encodeURIComponent(slot), {
+      fetch("/config/attachment-sets/upload?set=" + encodeURIComponent(setId) + "&filename=" + encodeURIComponent(file.name || "document.pdf"), {
         method: "POST",
         headers: { "x-csrf-token": "${esc(c.csrf)}", "content-type": "application/pdf" },
         body: file,
       }).then(function (res) {
-        msg.textContent = res.ok ? "Saved — the new file is live." : "Upload failed (PDF under 12 MB).";
-      }).catch(function () { msg.textContent = "Upload failed — network error."; });
+        if (res.ok) { location.reload(); }
+        else { res.text().then(function (t) { msg.textContent = t || "Upload failed."; }); }
+      });
+    });
+  });
+})();
+</script>`;
+}
+
+function documentsPackCard(c: Ctx): string {
+  // PPR P1-4 — Document library. The ten fixed education pack slots are gone
+  // from the UI: an organization's sendable PDFs are LIBRARY FILES that live
+  // in its own named attachment sets (above). The education pack generator
+  // stays where it belongs — the academic matrix on the Requirements tab —
+  // and the labelled migration readers (applicationPack/admissionPack) remain
+  // readable below as a snapshot, never as editable slots.
+  const orgId = c.user.organization_id ?? 1;
+  const sets = c.repo.listAttachmentSets(orgId);
+  const fmt = (b: number) => b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`;
+  const fileRows = sets.flatMap((s) =>
+    c.repo.listAttachmentSetFiles(s.id).map((f) => `<tr>
+      <td>${esc(f.filename)}</td>
+      <td class="small">${fmt(f.content.length)}</td>
+      <td class="small"><span class="badge b-gray">${esc(s.name)}</span></td>
+      <td class="small muted">${esc(f.provenance)}</td>
+      <td><form method="post" action="/config/attachment-sets/file-delete" style="margin:0">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="file_id" value="${f.id}">
+        <button class="btn small ghost" onclick="return confirm('Remove this file from the library?')">Remove</button></form></td>
+    </tr>`));
+  const manifest = packManifest(c.repo, orgId);
+  const legacyRows = manifest.map((m) => `<tr>
+      <td>${esc(m.pretty)}</td>
+      <td class="small muted">${esc(m.pack)}</td>
+      <td class="small muted">${esc(m.purpose)}</td>
+      <td>${m.exists ? fmt(m.bytes) : "<b>MISSING</b>"}</td>
+      <td>${m.exists ? `<a class="btn small ghost" href="/pack/${esc(m.key)}" target="_blank" rel="noopener">Open</a>` : ""}</td>
+    </tr>`).join("");
+  return `<div class="card" id="documents">
+  <div class="card-head"><h2>Document library</h2></div>
+  <div style="padding:14px 24px 22px">
+    <p class="small muted" style="margin-top:-4px">Every PDF this organization can send lives here, inside named <b>attachment sets</b> (managed above). Templates and workflow rules attach a set by name — there is no fixed pack vocabulary. Upload a file into a set below, or create a set first.</p>
+    ${fileRows.length ? `<table><tr><th>File</th><th>Size</th><th>Set</th><th>Origin</th><th></th></tr>${fileRows.join("")}</table>`
+      : `<p class="muted small">The library is empty — upload a PDF below or create a set above.</p>`}
+    <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">
+      <select id="lib-set" style="max-width:190px">
+        ${sets.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}
+      </select>
+      <input type="file" accept="application/pdf" id="lib-file" style="max-width:230px">
+      <button class="btn small" id="lib-upload">Upload PDF</button>
+      <span class="small muted" id="lib-msg" role="status">${sets.length ? "" : "Create a set first."}</span>
+    </div>
+    <h3 style="margin-top:20px">Legacy education packs (labeled migration snapshot)</h3>
+    <p class="small muted" style="margin-top:-4px">Read-only. These are the migrated education files (application / admission groups) kept for the stamped legacy profile — the education document matrix on the <a href="/config?tab=requirements">Requirements</a> tab remains the profile generator for what an education file must hold. New organizations never see this as editable slots.</p>
+    <table><tr><th>Document</th><th>Group</th><th>Used for</th><th>Size</th><th></th></tr>${legacyRows}</table>
+  </div>
+</div>
+<script>
+(function () {
+  var btn = document.getElementById("lib-upload");
+  if (!btn) return;
+  btn.addEventListener("click", function () {
+    var setSel = document.getElementById("lib-set");
+    var file = document.getElementById("lib-file").files[0];
+    var msg = document.getElementById("lib-msg");
+    if (!setSel || !setSel.value) { msg.textContent = "Create a set first."; return; }
+    if (!file) { msg.textContent = "Choose a PDF first."; return; }
+    if (file.type !== "application/pdf") { msg.textContent = "PDF files only."; return; }
+    msg.textContent = "Uploading\u2026";
+    fetch("/config/attachment-sets/upload?set=" + encodeURIComponent(setSel.value) + "&filename=" + encodeURIComponent(file.name || "document.pdf"), {
+      method: "POST",
+      headers: { "x-csrf-token": "${esc(c.csrf)}", "content-type": "application/pdf" },
+      body: file,
+    }).then(function (res) {
+      if (res.ok) { location.reload(); }
+      else { res.text().then(function (t) { msg.textContent = t || "Upload failed."; }); }
     });
   });
 })();
@@ -2403,16 +2606,296 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
   </div>`;
 }
 
-export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsSystem?: string, caseTypesOrganizationId?: number): string {
+/**
+ * PPR P0-4: Workflow rules — first-email and response behaviour as DATA.
+ * The tab is the admin's control room: intake rules say which mail becomes a
+ * case (create/attach/ignore/review); response rules say how the case replies
+ * (send/draft/hold, which template, follow-up ladder, SLA, audit code).
+ * Rules are evaluated in order; the first match wins.
+ */
+function workflowRulesTab(c: Ctx, editRuleId?: number): string {
+  const { repo } = c;
+  const orgId = c.user.organization_id ?? 1;
+  const rules = repo.listWorkflowRules(orgId);
+  const caseTypes = repo.listCaseTypes(orgId);
+  const templates = repo.listTemplates(orgId);
+  const staff = repo.listStaff();
+  const editing = editRuleId ? rules.find((r) => r.id === editRuleId) : undefined;
+  const templateOpts = (sel?: string | null) =>
+    `<option value=\"\">(no template)</option>` +
+    templates.map((t) => `<option value=\"${esc(t.key)}\" ${sel === t.key ? "selected" : ""}>${esc(t.name)}</option>`).join("");
+
+  const conditionFieldOpts = (field?: string) =>
+    [
+      ["", "(choose…)"],
+      ["always", "any message"],
+      ["sender_state", "sender is (known/unknown)"],
+      ["text", "text contains"],
+      ["subject", "subject contains"],
+      ["body", "body contains"],
+      ["has_attachments", "has attachments (yes/no)"],
+      ["category", "category in (comma list)"],
+      ["body_is_ref", "body is just the case reference"],
+      ["docs_state", "documents (complete/empty/missing/any/dirty)"],
+      ["signals", "built-in education intake signals"],
+    ].map(([v, l]) => `<option value="${v}" ${field === v ? "selected" : ""}>${l}</option>`).join("");
+
+  // The edit form (used for both create and edit). Conditions are built from
+  // three simple rows — or paste raw JSON in the advanced box for anything
+  // the rows cannot express.
+  const condRows = [0, 1, 2].map((i) => {
+    const cond = editing?.conditions[i];
+    const field = cond ? (cond as { field: string }).field : "";
+    const value = cond
+      ? (cond as { value?: unknown; values?: unknown[]; op?: string }).values
+        ? ((cond as { values: unknown[] }).values ?? []).join(", ")
+        : String((cond as { value?: unknown }).value ?? (cond as { op?: string }).op ?? "")
+      : "";
+    return `<div class=\"cond-row\" style=\"display:flex;gap:8px;margin:4px 0\">
+      <select name=\"cond_field_${i}\" style=\"flex:2\">${conditionFieldOpts(field)}</select>
+      <input name=\"cond_value_${i}\" placeholder=\"value (comma list ok)\" value=\"${esc(value)}\" style=\"flex:3\">
+    </div>`;
+  }).join("");
+
+  const act = editing?.action ?? {};
+  const form = `<div class=\"card\" id=\"workflow-rule-form\">
+  <h2>${editing ? `Edit rule “${esc(editing.name)}”` : "Add a workflow rule"}</h2>
+  <p class=\"small muted\" style=\"margin-top:-6px\">Rules run in order — the first match wins. Intake rules decide whether a message becomes a case; response rules decide what the case does next. This is a draft until you enable and save it.</p>
+  <form method=\"post\" action=\"/config/workflow-rules/save\">
+    <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\">
+    ${editing ? `<input type=\"hidden\" name=\"id\" value=\"${editing.id}\">` : ""}
+    <div style=\"display:flex;gap:12px;flex-wrap:wrap\">
+      <div class=\"field\" style=\"flex:2;min-width:220px\"><span class=\"lbl\">Rule name</span>
+        <input name=\"name\" required value=\"${esc(editing?.name ?? "")}\" placeholder=\"e.g. Volunteer applications open a case\"></div>
+      <div class=\"field\" style=\"flex:1;min-width:140px\"><span class=\"lbl\">Kind</span>
+        <select name=\"kind\">
+          <option value=\"intake\" ${editing?.kind === "intake" || !editing ? "selected" : ""}>Intake (first email)</option>
+          <option value=\"response\" ${editing?.kind === "response" ? "selected" : ""}>Response (case replies)</option>
+        </select></div>
+      <div class=\"field\" style=\"flex:2;min-width:200px\"><span class=\"lbl\">Applies to profile</span>
+        <select name=\"case_type_id\">
+          <option value=\"\">Legacy / education scope (migrated profile)</option>
+          ${caseTypes.map((t) => `<option value=\"${t.id}\" ${editing?.case_type_id === t.id ? "selected" : ""}>${esc(t.name)} (${esc(t.code)})${t.education_module ? " · education" : ""}</option>`).join("")}
+        </select></div>
+      <div class=\"field\" style=\"flex:1;min-width:120px\"><span class=\"lbl\">Position (order)</span>
+        <input name=\"position\" type=\"number\" value=\"${editing?.position ?? ""}\" placeholder=\"auto\"></div>
+    </div>
+    <h3 style=\"margin:14px 0 4px\">When (conditions — all must match)</h3>
+    ${condRows}
+    <details style=\"margin:6px 0\"><summary class=\"small muted\">Advanced: raw conditions JSON (overrides the rows above when filled)</summary>
+      <textarea name=\"conditions_json\" rows=\"3\" style=\"width:100%\" placeholder='[{\"field\":\"text\",\"op\":\"contains_any\",\"values\":[\"volunteer\"]}]'>${editing && editing.conditions.length > 3 ? esc(JSON.stringify(editing.conditions)) : ""}</textarea>
+    </details>
+    <h3 style=\"margin:14px 0 4px\">Then (actions)</h3>
+    <div style=\"display:flex;gap:12px;flex-wrap:wrap\">
+      <div class=\"field\" style=\"flex:1;min-width:160px\"><span class=\"lbl\">Intake decision</span>
+        <select name=\"decision\">
+          <option value=\"\">(none)</option>
+          ${["create", "attach", "ignore", "review"].map((d) => `<option value=\"${d}\" ${act.decision === d ? "selected" : ""}>${{ create: "open a case", attach: "continue the case", ignore: "park (no case)", review: "send to human review" }[d]}</option>`).join("")}
+        </select></div>
+      <div class=\"field\" style=\"flex:1;min-width:160px\"><span class=\"lbl\">Reply action</span>
+        <select name=\"reply_action\">
+          <option value=\"\">(none)</option>
+          ${["send", "draft", "approve", "hold"].map((d) => `<option value=\"${d}\" ${act.reply_action === d ? "selected" : ""}>${{ send: "send (subject to gates)", draft: "draft for staff", approve: "draft for approval (permission-gated)", hold: "hold for staff" }[d]}</option>`).join("")}
+        </select></div>
+      <div class=\"field\" style=\"flex:2;min-width:200px\"><span class=\"lbl\">Template</span>
+        <select name=\"template_key\">${templateOpts(act.template_key)}</select></div>
+    </div>
+    <div style=\"display:flex;gap:12px;flex-wrap:wrap\">
+      <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">…when complete (green)</span>
+        <select name=\"map_green\">${templateOpts(act.template_map?.green)}</select></div>
+      <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">…when no documents</span>
+        <select name=\"map_empty\">${templateOpts(act.template_map?.empty)}</select></div>
+      <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">…when incomplete</span>
+        <select name=\"map_missing\">${templateOpts(act.template_map?.missing)}</select></div>
+    </div>
+    <div style=\"display:flex;gap:12px;flex-wrap:wrap\">
+      <div class=\"field\" style=\"flex:1;min-width:130px\"><span class=\"lbl\">Stage</span>
+        <select name=\"stage\"><option value=\"\">(keep default)</option>
+          ${Object.keys(LIFECYCLE_LABELS).map((s) => `<option value=\"${s}\" ${act.stage === s ? "selected" : ""}>${esc((LIFECYCLE_LABELS as Record<string, string>)[s])}</option>`).join("")}
+        </select></div>
+      <div class=\"field\" style=\"flex:1;min-width:130px\"><span class=\"lbl\">Queue</span>
+        <input name=\"queue\" value=\"${esc(act.queue ?? "")}\" placeholder=\"(keep default)\"></div>
+      <div class=\"field\" style=\"flex:1;min-width:120px\"><span class=\"lbl\">Priority</span>
+        <select name=\"priority\"><option value=\"\">(keep)</option>
+          <option value=\"high\" ${act.priority === "high" ? "selected" : ""}>high</option></select></div>
+      <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">Assign to</span>
+        <select name=\"assign\"><option value=\"\">(nobody)</option>
+          ${staff.map((s) => `<option value=\"${s.id}\" ${act.assign === s.id ? "selected" : ""}>${esc(s.display_name)}</option>`).join("")}
+        </select></div>
+    </div>
+    <div style=\"display:flex;gap:12px;flex-wrap:wrap\">
+      <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">SLA target (hours)</span>
+        <input name=\"sla_hours\" type=\"number\" min=\"1\" value=\"${esc(act.sla_hours ?? "")}\" placeholder=\"(profile default)\"></div>
+      <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">Follow-up policy</span>
+        <select name=\"followup\">
+          <option value=\"\">none</option>
+          <option value=\"ladder\" ${act.followup === "ladder" ? "selected" : ""}>reminder ladder (3/7/10 days)</option>
+        </select></div>
+      <div class=\"field\" style=\"flex:1;min-width:170px\"><span class=\"lbl\">Follow-up rung response</span>
+        <select name=\"followup_action\">
+          ${["hold", "send", "draft", "approve", "none"].map((d) => `<option value=\"${d}\" ${(act.followup_action ?? "hold") === d ? "selected" : ""}>${{ hold: "hold for staff (default)", send: "send (un-gated profiles)", draft: "draft for staff", approve: "draft for approval", none: "do nothing (cancel ladder)" }[d]}</option>`).join("")}
+        </select></div>
+      <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">Attachment set</span>
+        <input name=\"attachment_set\" value=\"${esc(act.attachment_set ?? "")}\" placeholder=\"(none)\"></div>
+      <div class=\"field\" style=\"flex:1;min-width:180px\"><span class=\"lbl\">Audit code</span>
+        <input name=\"audit_code\" value=\"${esc(act.audit_code ?? "")}\" placeholder=\"e.g. rule_volunteer_intake\"></div>
+    </div>
+    <div style=\"display:flex;gap:12px;align-items:center;flex-wrap:wrap\">
+      <div class=\"field\" style=\"flex:1;min-width:200px\"><span class=\"lbl\">If no template resolves</span>
+        <select name=\"fallback\">
+          <option value=\"human_draft\" ${act.fallback !== "none" ? "selected" : ""}>human draft (internal note)</option>
+          <option value=\"none\" ${act.fallback === "none" ? "selected" : ""}>do nothing</option>
+        </select></div>
+      <div class=\"field\" style=\"flex:1;min-width:120px\"><span class=\"lbl\">Requested info</span>
+        <label class=\"small\" style=\"display:flex;gap:6px;align-items:center;padding-top:22px\">
+          <input type=\"checkbox\" name=\"request_info\" value=\"1\" ${act.request_info ? "checked" : ""}> list missing documents</label></div>
+    </div>
+    <h3 style=\"margin:16px 0 4px\">Test with a sample email (before publishing)</h3>
+    <p class=\"small muted\" style=\"margin:0 0 6px\">Run a message against the rule AS DRAFTED — including unsaved changes — and see exactly what would fire. Nothing is saved or sent.</p>
+    <div style=\"display:flex;gap:12px;flex-wrap:wrap\">
+      <div class=\"field\" style=\"flex:2;min-width:200px\"><span class=\"lbl\">Sample sender</span>
+        <input name=\"sample_from\" placeholder=\"applicant@example.com\"></div>
+      <div class=\"field\" style=\"flex:1;min-width:130px\"><span class=\"lbl\">Sender state</span>
+        <select name=\"sample_sender_state\"><option value=\"unknown\">unknown</option><option value=\"known\">known contact</option></select></div>
+      <div class=\"field\" style=\"flex:1;min-width:140px\"><span class=\"lbl\">Documents on file</span>
+        <select name=\"sample_docs_state\"><option value=\"missing\">some missing</option><option value=\"empty\">none</option><option value=\"complete\">complete</option><option value=\"dirty\">flagged</option></select></div>
+      <div class=\"field\" style=\"flex:1;min-width:110px\"><span class=\"lbl\">Attachments</span>
+        <select name=\"sample_attachments\"><option value=\"0\">no</option><option value=\"1\">yes</option></select></div>
+    </div>
+    <div style=\"display:flex;gap:12px;flex-wrap:wrap\">
+      <div class=\"field\" style=\"flex:1;min-width:220px\"><span class=\"lbl\">Sample subject</span>
+        <input name=\"sample_subject\" placeholder=\"Volunteer application\"></div>
+      <div class=\"field\" style=\"flex:2;min-width:260px\"><span class=\"lbl\">Sample message</span>
+        <textarea name=\"sample_body\" rows=\"2\" style=\"width:100%\" placeholder=\"The message text\"></textarea></div>
+    </div>
+    <button type=\"button\" class=\"btn ghost\" id=\"rule-preview-btn\">Preview against this sample</button>
+    <div id=\"rule-preview-out\" style=\"margin-top:8px\" role=\"status\"></div>
+    <div style=\"margin-top:12px;display:flex;gap:8px\">
+      <button class=\"btn\" type=\"submit\">${editing ? "Save rule" : "Add rule"}</button>
+      <a class=\"btn ghost\" href=\"/config?tab=rules\">Cancel</a>
+    </div>
+  </form>
+  <script>
+  (function () {
+    var btn = document.getElementById(\"rule-preview-btn\");
+    if (!btn) return;
+    btn.addEventListener(\"click\", function () {
+      var form = btn.closest(\"form\");
+      var out = document.getElementById(\"rule-preview-out\");
+      out.textContent = "Running preview\u2026";
+      var params = new URLSearchParams(new FormData(form));
+      fetch(\"/config/workflow-rules/preview\", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", "x-csrf-token": params.get("_csrf") || "" },
+        body: params,
+      }).then(function (res) { return res.text(); }).then(function (html) {
+        out.innerHTML = html;
+      }).catch(function () { out.textContent = "Preview failed — network error."; });
+    });
+  })();
+  </script>
+</div>`;
+
+  const ruleTable = (kind: "intake" | "response") => {
+    const list = rules.filter((r) => r.kind === kind);
+    return `<table style=\"margin-top:8px\">
+      <tr><th style=\"width:36px\">On</th><th>Rule</th><th>Scope</th><th>Behaviour</th><th></th></tr>
+      ${list.length ? list.map((r) => `<tr>
+        <td><form method=\"post\" action=\"/config/workflow-rules/toggle\" style=\"margin:0\">
+          <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\"><input type=\"hidden\" name=\"id\" value=\"${r.id}\">
+          <input type=\"checkbox\" ${r.enabled ? "checked" : ""} onchange=\"this.form.submit()\" aria-label=\"enable rule\"></form></td>
+        <td><b>${esc(r.name)}</b></td>
+        <td class=\"small\">${r.case_type_id === null ? "legacy / education" : esc(caseTypes.find((t) => t.id === r.case_type_id)?.name ?? `type #${r.case_type_id}`)}</td>
+        <td class=\"small\">${esc(describeRule(r))}</td>
+        <td style=\"white-space:nowrap\">
+          <a class=\"btn small ghost\" href=\"/config?tab=rules&edit=${r.id}\">Edit</a>
+          <form method=\"post\" action=\"/config/workflow-rules/delete\" style=\"display:inline\">
+            <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\"><input type=\"hidden\" name=\"id\" value=\"${r.id}\">
+            <button class=\"btn small ghost\" onclick=\"return confirm('Delete this rule?')\">Delete</button></form>
+        </td>
+      </tr>`).join("") : `<tr><td colspan=\"5\" class=\"small muted\">No ${kind} rules yet.</td></tr>`}
+    </table>`;
+  };
+
+  const profileCard = `<div class=\"card\">
+  <h2>Workflow profile settings</h2>
+  <p class=\"small muted\" style=\"margin-top:-6px\">Each CaseType is a workflow profile. New profiles default to <b>draft</b> automation (every suggested reply waits for staff) and auto-admit off. The migrated education profile keeps its preserved settings.</p>
+  ${caseTypes.map((t) => {
+    const term = (t.terminology ?? {}) as Record<string, string>;
+    const stageText = (t.stages ?? []).map((s) => `${s.id}|${s.label}${s.requires?.length ? `|${s.requires.join(", ")}` : ""}`).join("\n");
+    const queueText = (t.queues ?? []).map((q) => `${q.id}|${q.label}`).join("\n");
+    return `<details style="margin:8px 0;border:1px solid var(--line2);border-radius:8px">
+      <summary style="cursor:pointer;padding:10px 14px"><b>${esc(t.name)}</b> — vocabulary, stages &amp; queues <span class="muted small">(PPR P1-1/P1-2)</span></summary>
+      <form method="post" action="/config/case-types/vocabulary" style="padding:10px 16px 16px">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <input type="hidden" name="id" value="${t.id}">
+        <p class="small muted">Five surface words, defaulted to the current education wording. Internal keys and database columns never move — only what staff and applicants read.</p>
+        <div class="formrow">
+          <div><label>Case</label><input name="term_case" value="${esc(term.case ?? "Applicant")}"></div>
+          <div><label>Contact</label><input name="term_contact" value="${esc(term.contact ?? "Contact")}"></div>
+          <div><label>Category</label><input name="term_category" value="${esc(term.category ?? "Category")}"></div>
+          <div><label>Stage</label><input name="term_stage" value="${esc(term.stage ?? "Current level")}"></div>
+          <div><label>Outcome</label><input name="term_outcome" value="${esc(term.outcome ?? "Admission decision")}"></div>
+        </div>
+        <div class="formrow">
+          <div style="flex:1"><label>Stages (one per line: id|label|required info items — ids stay stable)</label>
+            <textarea name="stages_text" rows="7" style="width:100%">${esc(stageText)}</textarea></div>
+          <div style="flex:1"><label>Queues (one per line: id|label)</label>
+            <textarea name="queues_text" rows="7" style="width:100%">${esc(queueText)}</textarea></div>
+        </div>
+        <button class="btn">Save vocabulary, stages &amp; queues</button>
+      </form>
+    </details>`;
+  }).join("")}
+  <table>
+    <tr><th>Profile</th><th>Education module</th><th>Automation default</th><th>Qualification gate</th><th>Auto-admit</th><th></th></tr>
+    ${caseTypes.map((t) => `<tr>
+      <td><b>${esc(t.name)}</b> <span class=\"small muted\">${esc(t.code)}</span></td>
+      <td>${t.education_module ? `<span class=\"badge b-purple\">on</span>` : `<span class=\"badge b-gray\">off</span>`}</td>
+      <td><form method=\"post\" action=\"/config/case-types/profile\" style=\"display:flex;gap:6px;margin:0\">
+        <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\"><input type=\"hidden\" name=\"id\" value=\"${t.id}\">
+        <select name=\"default_reply_action\">
+          <option value=\"draft\" ${t.default_reply_action !== "auto" ? "selected" : ""}>draft (recommended)</option>
+          <option value=\"auto\" ${t.default_reply_action === "auto" ? "selected" : ""}>auto-send when a rule says so</option>
+        </select>
+        <select name=\"qualification_gate\">
+          <option value=\"1\" ${t.qualification_gate !== 0 ? "selected" : ""}>hold non-qualified replies</option>
+          <option value=\"0\" ${t.qualification_gate === 0 ? "selected" : ""}>gate off (rules decide)</option>
+        </select>
+        <button class=\"btn small ghost\">Save</button>
+      </form></td>
+      <td>${t.qualification_gate !== 0 ? "on" : "off"}</td>
+      <td>${t.auto_admit ? `<span class=\"badge b-orange\">legacy on</span>` : `<span class=\"badge b-green\">off</span>`}</td>
+      <td></td>
+    </tr>`).join("")}
+  </table>
+</div>`;
+
+  return `<div class=\"card\">
+  <h2>Workflow rules</h2>
+  <p class=\"small muted\" style=\"margin-top:-6px\">First-email and response behaviour lives here as <b>data</b> — create/attach/ignore/review, send/draft/hold, templates, follow-up and audit codes are all configurable. The migrated education profile's rules reproduce the behaviour staff already know; edit freely.</p>
+</div>
+${profileCard}
+<div class=\"card\">
+  <h2>Intake rules — which mail becomes a case</h2>
+  ${ruleTable("intake")}
+  <h2 style=\"margin-top:22px\">Response rules — how the case replies</h2>
+  ${ruleTable("response")}
+</div>
+${form}`;
+}
+
+export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsSystem?: string, caseTypesOrganizationId?: number, editRuleId?: number): string {
 
   // Round 3: the courses tab moved to the staff area (one home for course
   // configuration); /config?tab=courses redirects there at the route level.
-  const tab = tabChoice === "replies" || tabChoice === "pack" || tabChoice === "requirements" ? tabChoice : "case-types";
+  const tab = tabChoice === "replies" || tabChoice === "pack" || tabChoice === "requirements" || tabChoice === "rules" ? tabChoice : "case-types";
   const tabBar = `<div class="tabs" style="margin:0 0 20px">
     <a href="/config?tab=case-types" class="${tab === "case-types" ? "on" : ""}">CaseTypes</a>
+    <a href="/config?tab=rules" class="${tab === "rules" ? "on" : ""}">Workflow rules</a>
     <a href="/config?tab=requirements" class="${tab === "requirements" ? "on" : ""}">Legacy requirements</a>
     <a href="/config?tab=replies" class="${tab === "replies" ? "on" : ""}">Reply configuration</a>
-    <a href="/config?tab=pack" class="${tab === "pack" ? "on" : ""}">Document pack</a>
+    <a href="/config?tab=pack" class="${tab === "pack" ? "on" : ""}">Document library</a>
   </div>`;
 
   // Round 11: the pack files have their OWN tab (they were hiding inside
@@ -2476,7 +2959,7 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
 <div class="sub">Requirements, deadlines and reply behaviour — course configuration (courses, ownership, document checklists) lives in the <a href="/staff">Staff area</a>. Changes apply to newly processed email immediately.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 ${tabBar}
-${tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : replyHtml}
+${tab === "rules" ? workflowRulesTab(c, editRuleId) : tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? attachmentSetsCard(c) + documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : replyHtml}
 `
   );
 }
@@ -2493,7 +2976,7 @@ const TEMPLATE_USAGE: Record<string, string> = {
   status_answer: "Sent automatically for status questions, including reference-number-only emails.",
   under_review: "Manual staff reply while a file is under review.",
   verification: "Manual staff reply once a file moves to verification.",
-  generic_enquiry: "Automated fallback acknowledgement for anything else.",
+  generic_enquiry: "Fallback reply SUGGESTED to staff when a rule-driven profile has a reply gap (or a rule's fallback names it) — queued for approval like every human-bound draft, never sent automatically.",
   admission_letter: "Sent automatically on auto-admission and from the case page — carries the full admission pack.",
 };
 
@@ -2516,7 +2999,7 @@ const PLACEHOLDER_DOCS: Array<[string, string]> = [
 export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): string {
   const { repo } = c;
   const templates = repo.listTemplates(c.user.organization_id ?? 1);
-  const emptyTemplate = { key: "generic", name: "Generic reply", subject: "Your enquiry", body: "Hello {name},\\n\\nThank you for contacting {institution}. We will review your enquiry and reply shortly.\\n\\nKind regards,\\n{institution}", include_banner: 0, attach_pack: "none" };
+  const emptyTemplate = { key: "generic", name: "Generic reply", subject: "Your enquiry", body: "Hello {name},\\n\\nThank you for contacting {institution}. We will review your enquiry and reply shortly.\\n\\nKind regards,\\n{institution}", include_banner: 0, attach_pack: "none", case_type_id: 0 };
   const tpl = (selectedKey ? templates.find((t) => t.key === selectedKey) : undefined) ?? templates[0] ?? emptyTemplate;
 
   const picker = `<form class="inline" method="get" action="/templates" style="margin-bottom:6px">
@@ -2553,28 +3036,49 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
     <label>Subject (the reference number is prepended automatically)</label><input type="text" name="subject" value="${esc(tpl.subject)}">
     <label>Body</label><textarea name="body" style="min-height:260px">${esc(tpl.body)}</textarea>
     <div class="formrow" style="margin-top:10px">
-      <div><label>Attach official pack PDFs</label><select name="attach_pack">
-        <option value="none" ${packFlag === "none" ? "selected" : ""}>No pack</option>
-        <option value="application" ${packFlag === "application" ? "selected" : ""}>Application pack (form + brochure)</option>
-        <option value="admission" ${packFlag === "admission" ? "selected" : ""}>Admission pack (all 8 documents)</option>
+      <div><label>Attach an attachment set</label><select name="attach_pack">
+        <option value="none" ${packFlag === "none" ? "selected" : ""}>No attachments</option>
+        ${c.repo.listAttachmentSets(c.user.organization_id ?? 1).map((s) => `<option value="${esc(s.name)}" ${packFlag === s.name ? "selected" : ""}>${esc(s.name)} (${s.file_count} file${s.file_count === 1 ? "" : "s"})</option>`).join("")}
+        ${["application", "admission"].filter((legacy) => packFlag === legacy && !c.repo.listAttachmentSets(c.user.organization_id ?? 1).some((s) => s.name === legacy)).map((legacy) => `<option value="${legacy}" selected>${legacy} (missing set — create it in the Document library)</option>`).join("")}
       </select></div>
-      <div style="flex:2"><label>&nbsp;</label><span class="small muted">Applies to automated and manual sends alike. Missing pack files are audited, never skipped silently.</span></div>
+      <div style="flex:2"><label>&nbsp;</label><span class="small muted">Applies to automated and manual sends alike. Sets are managed in Configuration → Document library. Missing set files are audited, never skipped silently.</span></div>
     </div>
     <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="checkbox" name="include_banner" style="width:auto" ${tpl.include_banner === 0 ? "" : "checked"}> Attach the email banner to this template</label>
     <div style="display:flex;gap:10px;margin-top:14px;align-items:center">
       <button class="btn">Save template</button>
     </div>
+    <div class="formrow" style="margin-top:10px">
+      <div><label>Belongs to profile</label>
+        <select name="case_type_id">
+          <option value="0" ${!tpl.case_type_id ? "selected" : ""}>Organization-wide (all profiles)</option>
+          ${c.repo.listCaseTypes(c.user.organization_id ?? 1).map((t) => `<option value="${t.id}" ${tpl.case_type_id === t.id ? "selected" : ""}>${esc(t.name)} (${esc(t.code)})</option>`).join("")}
+        </select></div>
+      <div style="flex:2"><label>&nbsp;</label><span class="small muted">A profile-bound template is used only for that profile's cases. Keys are not a fixed list — create whatever a profile needs below.</span></div>
+    </div>
   </form>
-  <form method="post" action="/templates/reset" style="margin-top:10px" onsubmit="return confirm('Reset this template to the official default? Your edits will be lost.')">
+  <form method="post" action="/templates/reset" style="margin-top:10px" onsubmit="return confirm('Reset this template to its own saved default? Your edits will be lost.')">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <input type="hidden" name="key" value="${esc(tpl.key)}">
-    <button class="btn ghost">Reset to the official default</button>
-  </form>`;
+    <button class="btn ghost">Reset to this template's own default</button>
+  </form>
+  <details style="margin-top:14px"><summary class="small" style="cursor:pointer">Create a new template key</summary>
+    <form method="post" action="/templates/create" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <div class="field" style="min-width:180px"><span class="lbl">Machine key</span><input name="key" required placeholder="e.g. scholarship_reply"></div>
+      <div class="field" style="min-width:180px"><span class="lbl">Display name</span><input name="name" required placeholder="e.g. Scholarship reply"></div>
+      <div class="field" style="min-width:180px"><span class="lbl">Belongs to profile</span>
+        <select name="case_type_id">
+          <option value="0">Organization-wide (all profiles)</option>
+          ${c.repo.listCaseTypes(c.user.organization_id ?? 1).map((t) => `<option value="${t.id}">${esc(t.name)} (${esc(t.code)})</option>`).join("")}
+        </select></div>
+      <button class="btn">Create template</button>
+    </form>
+  </details>`;
 
   const list = templates.map((t) => `<tr>
       <td><a href="/templates?template=${encodeURIComponent(t.key)}#tpl-${esc(t.key)}"><b>${esc(t.name)}</b></a><br><span class="mono small muted">${esc(t.key)}</span></td>
       <td class="small muted">${esc(TEMPLATE_USAGE[t.key] ?? "Manual staff reply.")}</td>
-      <td>${t.attach_pack === "none" ? `<span class="muted small">—</span>` : `<span class="badge b-purple">${esc(t.attach_pack)} pack</span>`}</td>
+      <td>${!t.attach_pack || t.attach_pack === "none" ? `<span class="muted small">—</span>` : `<span class="badge b-purple">${esc(t.attach_pack)} set</span>`}</td>
     </tr>`).join("");
 
   return head(
@@ -2849,6 +3353,26 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
 
   const accountsSection = isAdmin
     ? `
+<section class="card">
+  <h2>Automation permissions</h2>
+  <p class="small muted" style="margin-top:-6px">The four automation actions are distinct permissions (PPR P1-8) — not a role split. Admins hold all four automatically; regular staff hold what is ticked here (with no ticks, they may send replies and approve automation, as staff always could).</p>
+  <form method="post" action="/staff/permissions">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <table>
+      <tr><th>Staff</th>${PERMISSIONS.map((p) => `<th style="text-align:left">${esc(PERMISSION_LABELS[p])}</th>`).join("")}</tr>
+      ${repo.listStaff().map((st) => {
+        const grants = st.role === "admin" ? PERMISSIONS.slice() : (repo.permissionsFor(st.id).length ? repo.permissionsFor(st.id) : ["send_automated", "approve_automation"]);
+        return `<tr>
+        <td><b>${esc(st.display_name)}</b><br><span class="muted small">@${esc(st.username)} · ${esc(st.role)}</span></td>
+        ${PERMISSIONS.map((p) => `<td>${st.role === "admin"
+          ? `<span class="badge b-green">always</span><input type="hidden" name="perm_${st.id}_${p}" value="1">`
+          : `<input type="checkbox" name="perm_${st.id}_${p}" value="1" ${grants.includes(p) ? "checked" : ""} style="width:auto">`}</td>`).join("")}
+      </tr>`;
+      }).join("")}
+    </table>
+    <div style="margin-top:10px"><button class="btn">Save permissions</button></div>
+  </form>
+</section>
 <section class="card nopad">
   <div class="card-head"><h2>Accounts</h2></div>
   <table>

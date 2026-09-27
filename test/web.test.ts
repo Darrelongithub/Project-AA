@@ -750,10 +750,16 @@ describe("QA audit regressions", () => {
       expect(replies).not.toContain('id="courses"');
     });
 
-    it("settings no longer exposes response targets or retention (automation is instant)", async () => {
+    it("settings keeps SLA response targets visible and unrelated retention wording out", async () => {
+      // RECONCILED (PPR P1-6): an older QA round removed response targets
+      // ("automation is instant"); the production round requires SLA target
+      // hours, escalation hours and the follow-up ladder back in real
+      // Settings UI. The retention ban stands — P1-6 never asked for it.
       const { cookie } = await login();
       const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
-      expect(settings).not.toContain("Response targets");
+      expect(settings).toContain("Response targets");
+      expect(settings).toContain("sla_target_hours");
+      expect(settings).toContain("followup_ladder_days");
       expect(settings).not.toContain("Retention of completed cases");
       expect(settings).toContain("Letters &amp; identity");
     });

@@ -271,6 +271,7 @@ CREATE TABLE IF NOT EXISTS templates (
   name       TEXT NOT NULL,
   subject    TEXT NOT NULL,
   body       TEXT NOT NULL,
+  default_snapshot TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -309,6 +310,9 @@ CREATE TABLE IF NOT EXISTS outbox (
   body         TEXT NOT NULL,
   mode         TEXT NOT NULL,          -- 'auto' | 'queued'
   template_key TEXT NOT NULL DEFAULT '',  -- which template rendered this draft
+  -- PPR P1-3: a draft awaiting APPROVAL may only be released by a holder of
+  -- the "Approve automation" permission; an ordinary draft is officer work.
+  needs_approval INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -398,6 +402,18 @@ CREATE TABLE IF NOT EXISTS case_types (
   category TEXT NOT NULL DEFAULT 'general',
   config TEXT NOT NULL DEFAULT '{}',
   active INTEGER NOT NULL DEFAULT 1,
+  -- PPR P0-2: workflow-profile flags. education_module switches every
+  -- academic code path (grade engine, document matrix, admissions UI) off
+  -- for the profile's cases. New profiles are draft-first with no
+  -- auto-decision; the migrated academic profile keeps its legacy posture.
+  education_module INTEGER NOT NULL DEFAULT 0,
+  terminology TEXT NOT NULL DEFAULT '{}',
+  stages TEXT NOT NULL DEFAULT '[]',
+  queues TEXT NOT NULL DEFAULT '[]',
+  config_version INTEGER NOT NULL DEFAULT 1,
+  default_reply_action TEXT NOT NULL DEFAULT 'draft',
+  qualification_gate INTEGER NOT NULL DEFAULT 0,
+  auto_admit INTEGER NOT NULL DEFAULT 0,
   UNIQUE (organization_id, code)
 );
 CREATE TABLE IF NOT EXISTS organization_categories (
@@ -433,6 +449,12 @@ CREATE TABLE IF NOT EXISTS organization_templates (
   body TEXT NOT NULL,
   include_banner INTEGER NOT NULL DEFAULT 1,
   attach_pack TEXT NOT NULL DEFAULT 'none',
+  -- PPR P0-6: profile binding (0 = organization-wide; a template key belongs
+  -- to at most one profile) + the profile's OWN default, captured at
+  -- creation, that "Reset to default" restores. Templates are no longer a
+  -- closed enum — any key a profile needs can exist.
+  case_type_id INTEGER NOT NULL DEFAULT 0,
+  default_snapshot TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (organization_id, key)
 );
@@ -449,6 +471,73 @@ CREATE TABLE IF NOT EXISTS staff_case_type_scopes (
   staff_id INTEGER NOT NULL REFERENCES staff_users(id) ON DELETE CASCADE,
   case_type_code TEXT NOT NULL,
   PRIMARY KEY (staff_id, case_type_code)
+);
+-- PPR P0-1: credentials live in their own store. A generic settings read or
+-- settings export can never return these values; only explicit getSecret
+-- callers (the Gmail/Gemini connectors) can.
+CREATE TABLE IF NOT EXISTS secrets (
+  organization_id INTEGER NOT NULL DEFAULT 1,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (organization_id, key)
+);
+-- PPR P0-4: intake and response behaviour as stored rules. A rule row is
+-- trigger (conditions) + actions (create/attach/ignore/review, stage, queue,
+-- priority, assignment, reply mode, template, attachment set, SLA, follow-up,
+-- audit code, fallback). case_type_id NULL = org-wide scope for the migrated
+-- legacy/education profiles; a rule with a case type applies only to it.
+CREATE TABLE IF NOT EXISTS workflow_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  case_type_id INTEGER REFERENCES case_types(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'intake',
+  name TEXT NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  conditions TEXT NOT NULL DEFAULT '[]',
+  action TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_rules_scope ON workflow_rules(organization_id, case_type_id, kind, position);
+
+-- PPR P0-5: attachment sets — named groups of files an organization sends
+-- with replies. Sets replace the hardcoded application/admission packs; the
+-- migrated education profile's sets are seeded from its own migration data.
+-- There is no privileged "pack channel": a template or rule attaches exactly
+-- the set it names, and only sets owned by the sending organization resolve.
+CREATE TABLE IF NOT EXISTS attachment_sets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  position INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (organization_id, name)
+);
+CREATE TABLE IF NOT EXISTS attachment_set_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  set_id INTEGER NOT NULL REFERENCES attachment_sets(id) ON DELETE CASCADE,
+  filename TEXT NOT NULL,
+  mime TEXT NOT NULL DEFAULT 'application/pdf',
+  content BLOB NOT NULL,
+  provenance TEXT NOT NULL DEFAULT 'uploaded',
+  position INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_attachment_set_files ON attachment_set_files(set_id, position);
+
+-- PPR P1-8: fine-grained automation permissions. The four actions that used
+-- to hide behind the admin/user role split are now distinct permissions:
+-- publish workflow rules, send automated reply, approve automation, record
+-- outcome. Admins implicitly hold all four; other staff hold exactly what
+-- is granted (defaults give regular staff the two sending-related ones).
+CREATE TABLE IF NOT EXISTS staff_permissions (
+  staff_id INTEGER NOT NULL REFERENCES staff_users(id) ON DELETE CASCADE,
+  permission TEXT NOT NULL,
+  granted_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (staff_id, permission)
 );
 `;
 
@@ -489,6 +578,10 @@ function migrate(db: Database.Database): void {
   // Base date the follow-up ladder was armed on; rungs are scheduled as
   // base + ladder[n] days so "3,7,10" means Day 3, Day 7, Day 10.
   addColumn("applicants", "followup_base_at", "TEXT");
+  // PPR P1-3: per-case follow-up ladder response action (send/draft/approve/
+  // hold/none) resolved from the rule that armed the ladder — default "hold"
+  // keeps migrated education behaviour. Extension column; names untouched.
+  addColumn("applicants", "followup_action", "TEXT NOT NULL DEFAULT 'hold'");
   addColumn("emails", "channel", "TEXT NOT NULL DEFAULT 'email'");
   // Review fix: outgoing mail records WHICH FILES were attached, so the
   // case history can show them (a pack that went out invisible is as good
@@ -497,6 +590,7 @@ function migrate(db: Database.Database): void {
   // Review fix: held drafts remember WHICH template rendered them, so the
   // staff approval send can honour that template's pack attachment.
   addColumn("outbox", "template_key", "TEXT NOT NULL DEFAULT ''");
+  addColumn("outbox", "needs_approval", "INTEGER NOT NULL DEFAULT 0");
   // Courses get an owner: the staff member responsible for handling them.
   addColumn("programmes", "owner_id", "INTEGER REFERENCES staff_users(id)");
   // Catalogue grouping (school) + official entry-requirement reference text.
@@ -514,6 +608,74 @@ function migrate(db: Database.Database): void {
   // last school made the empty-list SQL branch unreachable.
   addColumn("staff_users", "scope_mode", "TEXT NOT NULL DEFAULT 'unscoped'");
   addColumn("organizations", "ref_prefix", "TEXT NOT NULL DEFAULT 'ORG'");
+  // PPR P0-1/P1-5: organization-owned sender identity and locale. The old
+  // `from_name` settings key implied it shaped outgoing mail; it never did.
+  // It becomes real data on the organization row and is wired into MIME.
+  addColumn("organizations", "from_name", "TEXT");
+  addColumn("organizations", "reply_to", "TEXT");
+  addColumn("organizations", "locale", "TEXT");
+  addColumn("organizations", "timezone", "TEXT");
+  // PPR P0-2/P0-3: workflow-profile flags on case types and the frozen
+  // per-case configuration snapshot (the exact rule/document-set version a
+  // case was opened under — later edits never rewrite its meaning).
+  addColumn("case_types", "education_module", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("case_types", "terminology", "TEXT NOT NULL DEFAULT '{}'");
+  addColumn("case_types", "stages", "TEXT NOT NULL DEFAULT '[]'");
+  addColumn("case_types", "queues", "TEXT NOT NULL DEFAULT '[]'");
+  addColumn("case_types", "config_version", "INTEGER NOT NULL DEFAULT 1");
+  addColumn("case_types", "default_reply_action", "TEXT NOT NULL DEFAULT 'draft'");
+  addColumn("case_types", "qualification_gate", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("case_types", "auto_admit", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("applicants", "case_config_frozen", "TEXT");
+  addColumn("applicants", "config_version_frozen", "INTEGER");
+  addColumn("applicants", "config_version_frozen_at", "TEXT");
+  // PPR P0-4/P1-2: rule-assigned queue (generic workflows). Education queue
+  // placement keeps deriving through queueOf; this column is the rule's
+  // explicit assignment when one is configured.
+  addColumn("applicants", "queue", "TEXT");
+  // Stamp the migrated academic profiles (Organization #1's programme-derived
+  // case types + GENERAL) as education-module profiles with today's exact
+  // automation posture: qualification-gated sends, never an auto decision.
+  // Marker-guarded ONCE EVER: after the stamp the flags belong to staff —
+  // an admin may deliberately switch the module off and it must stay off.
+  const eduStamped = db.prepare("SELECT value FROM settings WHERE key = 'education_profiles_stamped'").get();
+  if (!eduStamped) {
+    db.exec(`UPDATE case_types SET education_module = 1, qualification_gate = 1, default_reply_action = 'send'
+      WHERE organization_id = 1 AND (code = 'GENERAL' OR code IN (SELECT code FROM programmes))`);
+    db.exec(`INSERT OR REPLACE INTO settings (key, value) VALUES ('education_profiles_stamped', '1')`);
+  }
+  // PPR P0-7: legacy rows are stamped with their migrated education profile —
+  // programme-derived type where the row names a programme, otherwise the
+  // GENERAL education profile. Idempotent (only NULL rows are touched), so a
+  // later admin re-assignment is never overwritten and nothing re-runs.
+  db.exec(`UPDATE applicants SET case_type_id = (SELECT id FROM case_types WHERE organization_id = 1 AND code = applicants.programme)
+    WHERE case_type_id IS NULL AND programme IS NOT NULL`);
+  db.exec(`UPDATE applicants SET case_type_id = (SELECT id FROM case_types WHERE organization_id = 1 AND code = 'GENERAL')
+    WHERE case_type_id IS NULL AND organization_id = 1`);
+  // Existing cases are stamped as "opened under the configuration that
+  // shipped with this database" — version 1, frozen now, never re-scored.
+  db.exec(`UPDATE applicants SET config_version_frozen = 1, config_version_frozen_at = COALESCE(config_version_frozen_at, created_at)
+    WHERE config_version_frozen IS NULL`);
+  // PPR P0-1: move credentials out of the settings bag exactly once. Values
+  // are copied to the secrets store and then removed from settings, so no
+  // generic settings read/export can leak them again.
+  for (const key of ["gemini_api_key", "gmail_client_secret", "gmail_refresh_token"]) {
+    const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+    if (row) {
+      const exists = db.prepare("SELECT 1 FROM secrets WHERE organization_id = 1 AND key = ?").get(key);
+      if (!exists) db.prepare("INSERT INTO secrets (organization_id, key, value) VALUES (1, ?, ?)").run(key, row.value);
+      db.prepare("DELETE FROM settings WHERE key = ?").run(key);
+    }
+  }
+  {
+    const fromName = db.prepare("SELECT value FROM settings WHERE key = 'from_name'").get() as { value: string } | undefined;
+    if (fromName?.value?.trim()) {
+      const res = db.prepare("UPDATE organizations SET from_name = ? WHERE id = 1 AND (from_name IS NULL OR from_name = '')").run(fromName.value.trim());
+      // Only drop the legacy key once the value is safely on the org row
+      // (org row may not exist yet on a fresh boot — seed migrates it then).
+      if (res.changes > 0) db.prepare("DELETE FROM settings WHERE key = 'from_name'").run();
+    }
+  }
   // Organization #1 is the migrated academic tenant. Preserve a valid legacy
   // prefix once, then keep all future reference reads on the organization row;
   // every new tenant starts with the neutral ORG prefix.
@@ -598,6 +760,10 @@ function migrate(db: Database.Database): void {
   )`);
   // OR-7 — every template may optionally carry an official pack PDF set.
   addColumn("templates", "attach_pack", "TEXT NOT NULL DEFAULT 'none'");
+  // PPR P0-6: profile binding + per-template default snapshot (Reset target).
+  addColumn("templates", "default_snapshot", "TEXT");
+  addColumn("organization_templates", "case_type_id", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("organization_templates", "default_snapshot", "TEXT");
   // The two historical pack sends become explicit flags. This defaulting
   // runs ONCE EVER (marker-guarded): re-running it on every open would
   // silently resurrect a pack a staff member deliberately switched off —

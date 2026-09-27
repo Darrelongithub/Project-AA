@@ -162,7 +162,6 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   institution_name: "Organization",
   sla_target_hours: "4",
   escalation_hours: "8",
-  from_name: "Admissions",
   // v3
   unanswered_target_hours: "4", // unanswered-email panel threshold
   followup_ladder_days: "3,7,10", // Day 3 reminder, Day 7 final, Day 10 → human
@@ -170,6 +169,10 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   automation_mode: "auto", // 'draft' holds EVERY automated reply for approval
   intake_hotwords: DEFAULT_INTAKE_HOTWORDS, // round 9: which emails become cases
 };
+// NOTE: the sender display name is NOT a setting — it lives on the
+// organization row (`organizations.from_name`) and is applied to the MIME
+// of every outgoing message (PPR P1-5). The old dead `from_name` setting
+// is migrated there and then removed.
 
 // ── Structured entry requirements ───────────────────────────────────────────
 // Every qualification system the university accepts, with the fields each

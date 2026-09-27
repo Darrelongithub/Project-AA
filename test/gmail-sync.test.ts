@@ -52,13 +52,13 @@ describe("missingGmailCredentials names the missing pieces", () => {
   it("all four present → nothing missing", () => {
     repo.setSetting("gmail_address", "a@b.c");
     repo.setSetting("gmail_client_id", "x");
-    repo.setSetting("gmail_client_secret", "y");
-    repo.setSetting("gmail_refresh_token", "z");
+    repo.setSecret("gmail_client_secret", "y");
+    repo.setSecret("gmail_refresh_token", "z");
     expect(missingGmailCredentials(repo)).toEqual([]);
   });
   it("a token-only connect names the two missing credentials", () => {
     repo.setSetting("gmail_address", "a@b.c");
-    repo.setSetting("gmail_refresh_token", "z");
+    repo.setSecret("gmail_refresh_token", "z");
     expect(missingGmailCredentials(repo).sort()).toEqual(["client id", "client secret"]);
   });
 });
@@ -121,8 +121,8 @@ describe("backfill route + settings card", () => {
     admin = await webLogin(base, "admin", "admin123");
     repo.setSetting("gmail_address", "office@riara.ac.ke");
     repo.setSetting("gmail_client_id", "x");
-    repo.setSetting("gmail_client_secret", "y");
-    repo.setSetting("gmail_refresh_token", "z");
+    repo.setSecret("gmail_client_secret", "y");
+    repo.setSecret("gmail_refresh_token", "z");
     const html = await (await fetch(`${base}/settings`, { headers: { cookie: admin.cookie } })).text();
     expect(html).toMatch(/last 14 days/i);
     expect(html).toMatch(/Pull older mail/i);
@@ -132,7 +132,7 @@ describe("backfill route + settings card", () => {
   it("a token-only connect warns about the exact missing credentials", async () => {
     admin = await webLogin(base, "admin", "admin123");
     repo.setSetting("gmail_address", "office@riara.ac.ke");
-    repo.setSetting("gmail_refresh_token", "z");
+    repo.setSecret("gmail_refresh_token", "z");
     const html = await (await fetch(`${base}/settings`, { headers: { cookie: admin.cookie } })).text();
     expect(html).toMatch(/missing/i);
     expect(html).toMatch(/client id/i);

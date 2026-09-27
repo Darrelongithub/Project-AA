@@ -32,8 +32,8 @@ type GmailConnectionConfig = { address: string; clientId: string; clientSecret: 
 export function gmailFromSettings(repo: Repo): GmailConnectionConfig | null {
   const address = repo.getSetting("gmail_address", "").trim();
   const clientId = repo.getSetting("gmail_client_id", "").trim();
-  const clientSecret = repo.getSetting("gmail_client_secret", "").trim();
-  const refreshToken = repo.getSetting("gmail_refresh_token", "").trim();
+  const clientSecret = repo.getSecret("gmail_client_secret").trim();
+  const refreshToken = repo.getSecret("gmail_refresh_token").trim();
   return address && clientId && clientSecret && refreshToken
     ? { address, clientId, clientSecret, refreshToken }
     : null;
