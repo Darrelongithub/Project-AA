@@ -1163,6 +1163,9 @@ export function layout(opts: {
   brand?: { primary: string; accent: string; logo?: string | null; tagline?: string };
   /** PPR P0-2: the Admissions entry appears only when the education module is on. */
   educationNav?: boolean;
+  /** DEMO: organizations the signed-in admin can switch between. */
+  organizations?: Array<{ id: number; name: string }>;
+  activeOrganizationId?: number;
 }): string {
   const brand = opts.brand;
   const brandStyle = brand && /^#[0-9a-f]{6}$/i.test(brand.primary) && /^#[0-9a-f]{6}$/i.test(brand.accent)
@@ -1223,6 +1226,22 @@ export function layout(opts: {
       "Compose": "send", "Staff Configuration": "users", "Configuration": "gear",
       "Templates": "clip", "Settings": "gear", "Account": "users",
     };
+    // DEMO: a visible organization switcher next to the account chip, so an
+    // admin can move between tenants without knowing any URL.
+    const orgs = opts.organizations ?? [];
+    const activeOrg = opts.activeOrganizationId ?? 1;
+    const orgSwitcher = orgs.length > 1 && role === "admin"
+      ? `<form method="post" action="/org/switch" class="org-switcher" id="org-switcher" style="margin:0 0 10px">
+          <input type="hidden" name="_csrf" value="${esc(opts.csrf)}">
+          <label for="org-switch-select" class="small muted" style="display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px">Organization</label>
+          <div style="display:flex;gap:6px">
+            <select id="org-switch-select" name="organization_id" aria-label="Switch organization" onchange="this.form.submit()" style="flex:1;min-width:0">
+              ${orgs.map((o) => `<option value="${o.id}"${o.id === activeOrg ? " selected" : ""}>${esc(o.name)}</option>`).join("")}
+            </select>
+            <noscript><button class="btn small">Go</button></noscript>
+          </div>
+        </form>`
+      : `<div class="small muted org-current" style="margin:0 0 10px">${esc(inst)}</div>`;
     shell = `
 <div class="app">
   <aside class="sitehead sidebar">
@@ -1233,6 +1252,7 @@ export function layout(opts: {
         ${nav.map((n) => `<a href="${n.href}" class="${opts.active === n.active ? "active" : ""}" ${opts.active === n.active ? 'aria-current="page"' : ""}>${icon(navIcons[n.label] ?? "grid", 18)}<span class="nav-label">${n.label}</span></a>`).join("")}
       </nav>
       <div class="sidebar-footer">
+        ${orgSwitcher}
         <div class="userchip">
           ${avatar(opts.user.display_name, 34)}
           <div><b>${esc(opts.user.display_name)}</b><small>${esc(opts.user.role)}</small></div>

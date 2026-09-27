@@ -336,10 +336,20 @@ async function processEmailInner(
     // fields and the human gate still decide whether the evidence is usable.
     if (genericCaseType && !educationCase) {
       const haystack = `${att.filename} ${res.text}`.toLowerCase();
-      const configured = repo.listDocumentDefinitions(genericCaseType.id).find((d) => {
-        const words = `${d.key} ${d.label}`.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2);
-        return words.some((word) => haystack.includes(word));
-      });
+      // Exact key/label wins; otherwise the slot sharing the MOST words (not
+      // merely the first slot sharing any word — "agreement" must not route
+      // an NDA into the services-agreement slot).
+      const definitions = repo.listDocumentDefinitions(genericCaseType.id);
+      const exact = definitions.find((d) => haystack.includes(d.key.toLowerCase()) || haystack.includes(d.label.toLowerCase()));
+      let configured = exact;
+      if (!configured) {
+        let best = 0;
+        for (const d of definitions) {
+          const words = [...new Set(`${d.key} ${d.label}`.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2))];
+          const hits = words.filter((word) => haystack.includes(word)).length;
+          if (hits > best) { best = hits; configured = d; }
+        }
+      }
       if (configured) res.document_type = configured.key as typeof res.document_type;
     }
     const dup = repo.findDuplicate(applicant.id, res.sha256);
@@ -513,6 +523,16 @@ async function processEmailInner(
       has_attachments: email.attachments.length > 0,
     };
     for (const doc of activeDocs) Object.assign(facts, doc.extracted_fields ?? {});
+    // Organization-defined facts: "Label: value" lines in the documents and
+    // the message body become snake_case facts (lower-cased values) for the
+    // CaseType rule tree. Extracted fields win; nothing academic is read.
+    for (const text of [...activeDocs.map((d) => d.extracted_text ?? ""), email.body]) {
+      for (const m of text.matchAll(/^[ \t]*([A-Za-z][A-Za-z0-9 _/-]{1,40}?)[ \t]*:[ \t]*(.+?)[ \t]*$/gm)) {
+        const key = m[1].trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+        const value = m[2].trim().toLowerCase().replace(/[,](?=\d{3}\b)/g, "");
+        if (key && !(key in facts)) facts[key] = value;
+      }
+    }
     genericRuleResult = evaluateCaseTypeRules(repo, genericCaseType, repo.caseTypeRules(genericCaseType), facts);
     const matrix = fillSlots(requirements, activeDocs.map((d) => d.document_type));
     const matrixComplete = matrix.missing.length === 0;

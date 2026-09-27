@@ -18,6 +18,7 @@
     "restore": "tsx src/cli/restore.ts",
     "start": "node dist/src/cli/serve.js",
     "purge-mock": "tsx src/cli/purgeMock.ts",
+    "seed:demo-org": "tsx src/cli/seedDemoOrg.ts",
     "stress": "tsx src/cli/stress.ts",
     "setup:linux": "bash scripts/setup-linux.sh"
   },

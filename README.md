@@ -58,6 +58,7 @@ flow). For headless/live ingestion via environment variables, copy `.env.example
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Full vitest suite (311 tests) |
 | `npm run simulate` | Fixture corpus through the pipeline — **in-memory DB only**; it refuses to touch the server database |
+| `npm run seed:demo-org` | One-off, idempotent seed of the **demo second organization** (Aperture People Ops, `APO`) alongside Organization #1 — see [docs/DEMO_ORG.md](docs/DEMO_ORG.md). `SEED_DEMO_ORG=1 npm run serve` does the same on boot |
 | `npm run purge-mock` | One-time safe cleanup of old demo/simulation rows (backup first, idempotent) |
 | `npm run ingest / queue / escalate / followups / retain / backup / restore` | Operational CLIs |
 

@@ -603,6 +603,9 @@ function migrate(db: Database.Database): void {
   // and production accounts are never confused with sample ones.
   addColumn("staff_users", "demo", "INTEGER NOT NULL DEFAULT 0");
   addColumn("staff_users", "organization_id", "INTEGER");
+  // DEMO: the organization an installation-owner admin is currently viewing
+  // (sidebar switcher). NULL = their home organization.
+  addColumn("staff_users", "active_organization_id", "INTEGER");
   // OR-8: distinguish an intentionally empty/no-access scope from an
   // unscoped officer (full visibility). Without this marker, deleting the
   // last school made the empty-list SQL branch unreachable.

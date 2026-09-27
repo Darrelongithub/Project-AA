@@ -194,6 +194,9 @@ describe("PPR P0-3: configuration versions are frozen per case", () => {
       // Profile through real routes.
       await post("/config/organizations/create", { name: "Freeze Org", ref_prefix: "FZ" });
       const org = repo.listOrganizations().find((o) => o.name === "Freeze Org")!;
+      // DEMO round: cases are only reachable inside their own organization —
+      // switch to it through the sidebar switcher route, as an admin would.
+      expect((await post("/org/switch", { organization_id: String(org.id) })).status).toBe(302);
       await post("/config/case-types/create", { organization_id: String(org.id), code: "CLAIM", name: "Claims intake", category: "ops" });
       const claim = repo.getCaseType("CLAIM", org.id)!;
       await post("/config/case-types/document", {

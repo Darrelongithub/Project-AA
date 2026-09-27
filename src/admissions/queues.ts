@@ -26,7 +26,7 @@ export interface QueueInfo {
 export const QUEUES: QueueInfo[] = [
   {
     key: "completed", label: "Completed / Verification", tone: "green",
-    caption: "Applicants who have reached the completion stage",
+    caption: "Cases that have reached the completion stage",
     subs: [
       { key: "completed", label: "Completed" },
       { key: "awaiting_verification", label: "Awaiting verification" },

@@ -110,6 +110,12 @@ export interface StaffStatsRow {
   admissionsCompleted: number;
 }
 
+type ScopeTag = string[] & { organizationId?: number; allSchools?: boolean };
+/** A tagged scope meaning "every school, but only in this organization". */
+function isAllSchools(s: string[] | null | undefined): boolean { return Boolean(s && (s as ScopeTag).allSchools); }
+/** An explicit empty scope = deliberately no access. */
+function isNoAccess(s: string[] | null | undefined): boolean { return Boolean(s && s.length === 0 && !isAllSchools(s)); }
+
 export class Repo {
   constructor(public db: Database) {}
 
@@ -1395,7 +1401,7 @@ export class Repo {
   }): Array<EmailRecord & { tkey: string; thread_n: number; unread_n: number; star_n: number; imp_n: number; a_name: string | null; a_email: string | null; ref_number: string | null; programme: string | null; lifecycle: string | null }> {
     // Parked applicant-less mail has no school to match. It must not bypass
     // an explicitly empty staff scope and become a data leak in All Mail.
-    if (opts.schools?.length === 0) return [];
+    if (isNoAccess(opts.schools)) return [];
     const where: string[] = [];
     const params: unknown[] = [];
     // Round 9: applicant rows are realm- and school-scoped through the join;
@@ -1407,7 +1413,10 @@ export class Repo {
     const scope = this.scopePred("a", opts.schools);
     if (scope.sql) { appConds.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
     const appCondSql = appConds.length ? appConds.join(" AND ") : "1=1";
-    where.push(`((e.applicant_id IS NOT NULL AND ${appCondSql}) OR (e.applicant_id IS NULL AND ${demo} = 0))`);
+    // DEMO: parked (caseless) mail arrives on Organization #1's mailbox —
+    // it is never shown inside another organization's workspace.
+    const parkedOrgOk = ((opts.schools as ScopeTag | null | undefined)?.organizationId ?? 1) === 1 ? 1 : 0;
+    where.push(`((e.applicant_id IS NOT NULL AND ${appCondSql}) OR (e.applicant_id IS NULL AND ${demo} = 0 AND ${parkedOrgOk} = 1))`);
     if (opts.q) {
       const escaped = opts.q.replace(/[\\%_]/g, (ch) => `\\${ch}`);
       const like = `%${escaped}%`;
@@ -1467,7 +1476,7 @@ export class Repo {
 
   /** Sidebar counts per folder (conversations), one aggregate query. */
   mailFolderCounts(opts: { schools?: string[] | null; demo?: number }): Record<string, number> {
-    if (opts.schools?.length === 0) {
+    if (isNoAccess(opts.schools)) {
       return Object.fromEntries(Object.keys(Repo.MAIL_FOLDER_WHERE).map((folder) => [folder, 0]));
     }
     const where: string[] = [];
@@ -1480,7 +1489,10 @@ export class Repo {
     const scope = this.scopePred("a", opts.schools);
     if (scope.sql) { appConds.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
     const appCondSql = appConds.length ? appConds.join(" AND ") : "1=1";
-    where.push(`((e.applicant_id IS NOT NULL AND ${appCondSql}) OR (e.applicant_id IS NULL AND ${demo} = 0))`);
+    // DEMO: parked (caseless) mail arrives on Organization #1's mailbox —
+    // it is never shown inside another organization's workspace.
+    const parkedOrgOk = ((opts.schools as ScopeTag | null | undefined)?.organizationId ?? 1) === 1 ? 1 : 0;
+    where.push(`((e.applicant_id IS NOT NULL AND ${appCondSql}) OR (e.applicant_id IS NULL AND ${demo} = 0 AND ${parkedOrgOk} = 1))`);
     const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
     const row = this.db.prepare(`
       WITH keyed AS (
@@ -1639,7 +1651,7 @@ export class Repo {
       .prepare(
         `SELECT s.csrf AS csrf, s.expires_at AS expires_at, u.id AS id, u.username AS username,
                 u.display_name AS display_name, u.role AS role, u.active AS active, u.demo AS demo,
-                u.organization_id AS organization_id
+                u.organization_id AS organization_id, u.active_organization_id AS active_organization_id
          FROM sessions s JOIN staff_users u ON u.id = s.staff_id
          WHERE s.token = ?`
       )
@@ -1648,7 +1660,12 @@ export class Repo {
     if (new Date(row.expires_at).getTime() < Date.now() || row.active !== 1) return undefined;
     return {
       csrf: row.csrf,
-      staff: { id: row.id, username: row.username, display_name: row.display_name, role: row.role, active: row.active, demo: row.demo, organization_id: row.organization_id ?? null },
+      staff: (() => {
+        const home = row.organization_id ?? null;
+        const canSwitch = row.role === "admin" && (home === null || home === 1);
+        const active = canSwitch && row.active_organization_id && this.getOrganization(row.active_organization_id) ? row.active_organization_id : home;
+        return { id: row.id, username: row.username, display_name: row.display_name, role: row.role, active: row.active, demo: row.demo, organization_id: active, can_switch_org: canSwitch };
+      })(),
     };
   }
 
@@ -1885,7 +1902,7 @@ export class Repo {
   }
 
   unreadCount(staffId: number, demo?: number, schools?: string[] | null): number {
-    if (schools?.length === 0) return 0;
+    if (isNoAccess(schools)) return 0;
     const realmSql = demo === undefined ? "" : " AND (n.applicant_id IS NULL OR a.demo = ?)";
     const scope = this.scopePred("a", schools);
     const scopeSql = scope.sql ? ` AND (n.applicant_id IS NULL OR 1=1${scope.sql})` : "";
@@ -2388,7 +2405,13 @@ export class Repo {
   //    threads (phones, forwards, new subjects). The applicant record is the
   //    source of truth; threads are linked to it. ──────────────────────────
 
-  findByEmailAny(emailAddress: string): ApplicantRow | undefined {
+  findByEmailAny(emailAddress: string, organizationId?: number): ApplicantRow | undefined {
+    // DEMO: an explicit organization never matches another tenant's contact.
+    if (organizationId !== undefined) {
+      return this.db
+        .prepare("SELECT * FROM applicants WHERE email_address = ? AND COALESCE(organization_id, 1) = ? ORDER BY id LIMIT 1")
+        .get(emailAddress.trim().toLowerCase(), organizationId) as ApplicantRow | undefined;
+    }
     return this.db
       .prepare("SELECT * FROM applicants WHERE email_address = ? ORDER BY id LIMIT 1")
       .get(emailAddress.trim().toLowerCase()) as ApplicantRow | undefined;
@@ -2709,10 +2732,27 @@ export class Repo {
     return mode === "none" ? [] : null;
   }
 
+  /** DEMO: the case-list scope for a staff member — their school scope
+   *  (visibleSchoolsFor) PLUS their ACTIVE organization, so queues,
+   *  dashboards, mail and search never mix tenants. Pass it anywhere a
+   *  `schools` scope is accepted. */
+  caseScopeFor(staff: { id: number; role: string; organization_id?: number | null }): string[] {
+    const schools = this.visibleSchoolsFor(staff);
+    return Object.assign(schools ? [...schools] : [], { organizationId: staff.organization_id ?? 1, allSchools: schools === null });
+  }
+
+  /** Switch an admin's active organization (the sidebar switcher). */
+  setActiveOrganization(staffId: number, organizationId: number): void {
+    if (!this.getOrganization(organizationId)) throw new Error("Unknown organization");
+    this.db.prepare("UPDATE staff_users SET active_organization_id = ? WHERE id = ?").run(organizationId, staffId);
+  }
+
   /** Would this staff member see this applicant anywhere in the console?
    * Scoped staff only see cases whose programme belongs to one of their
    * schools; a case with no programme is never shared with scoped staff. */
-  applicantVisibleTo(staff: { id: number; role: string }, a: ApplicantRow): boolean {
+  applicantVisibleTo(staff: { id: number; role: string; organization_id?: number | null }, a: ApplicantRow): boolean {
+    // DEMO: a case is only visible inside its own organization.
+    if ((a.organization_id ?? 1) !== (staff.organization_id ?? 1)) return false;
     const scope = this.visibleSchoolsFor(staff);
     if (!scope) return true;
     if (!a.programme) return false;
@@ -2725,10 +2765,13 @@ export class Repo {
    * matches nothing (never accidentally everything). */
   private scopePred(alias: string, schools?: string[] | null): { sql: string; params: string[] } {
     if (schools === undefined || schools === null) return { sql: "", params: [] };
+    const org = (schools as ScopeTag).organizationId;
+    const orgSql = org !== undefined ? ` AND COALESCE(${alias}.organization_id, 1) = ${Number(org)}` : "";
+    if (isAllSchools(schools)) return { sql: orgSql, params: [] };
     if (schools.length === 0) return { sql: " AND 0 = 1", params: [] };
     const marks = schools.map(() => "?").join(",");
     return {
-      sql: ` AND EXISTS (SELECT 1 FROM programmes p WHERE p.code = ${alias}.programme AND p.school IN (${marks}))`,
+      sql: `${orgSql} AND EXISTS (SELECT 1 FROM programmes p WHERE p.code = ${alias}.programme AND p.school IN (${marks}))`,
       params: [...schools],
     };
   }

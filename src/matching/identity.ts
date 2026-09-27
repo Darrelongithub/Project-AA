@@ -34,12 +34,20 @@ const REF_RE = /\b([A-Z]{1,8}-\d{4}-\d{6})\b/i;
  * so the intake hotword gate can admit replies to existing cases without
  * ever creating an applicant for a stranger.
  */
+/** DEMO: mail explicitly addressed to an organization (connector/portal/
+ *  test intake) only continues cases in THAT organization. Mail without an
+ *  explicit organization keeps the legacy any-tenant continuity. */
+function inOrg(a: { organization_id?: number | null }, email: IncomingEmail): boolean {
+  return email.organizationId === undefined || (a.organization_id ?? 1) === email.organizationId;
+}
+
 export function emailTargetsKnownApplicant(repo: Repo, email: IncomingEmail): boolean {
   if (!email.channel || email.channel === "email") {
     const refMatch = `${email.subject}\n${email.body}`.match(REF_RE);
-    if (refMatch && repo.findByRef(refMatch[1].toUpperCase())) return true;
+    const byRef = refMatch ? repo.findByRef(refMatch[1].toUpperCase()) : undefined;
+    if (byRef && inOrg(byRef, email)) return true;
   }
-  return Boolean(repo.findByEmailAny(email.from));
+  return Boolean(repo.findByEmailAny(email.from, email.organizationId));
 }
 
 export function resolveIdentity(
@@ -58,7 +66,7 @@ export function resolveIdentity(
       : `${email.subject}\n${email.body}`.match(REF_RE);
   if (refMatch) {
     const byRef = repo.findByRef(refMatch[1].toUpperCase());
-    if (byRef) {
+    if (byRef && inOrg(byRef, email)) {
       repo.linkThread(byRef.id, email.threadId);
       const senderMatches = byRef.email_address === email.from.trim().toLowerCase();
       return {
@@ -73,7 +81,7 @@ export function resolveIdentity(
   }
 
   // ── Signal 2: known sender, any thread (conversation reconstruction) ───
-  const bySender = repo.findByEmailAny(email.from);
+  const bySender = repo.findByEmailAny(email.from, email.organizationId);
   if (bySender) {
     repo.linkThread(bySender.id, email.threadId);
     return { applicant: bySender, isNew: false, matchedBy: "sender" };

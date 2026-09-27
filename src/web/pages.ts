@@ -19,7 +19,7 @@ import { docLabel } from "../rules";
 import { renderTemplate } from "../drafting";
 import { EXAM_SYSTEMS } from "../config";
 import { packManifest } from "../pack";
-import { organizationTheme } from "../branding";
+import { organizationName, organizationTheme } from "../branding";
 import {
   avatar, categoryBadge, crest, esc, flagLabel, flowLine, fmtDate, gaugeRow,
   heroClock, icon, layout, lifecycleBadge, lifecycleStepper, priorityBadge, readabilityScore, slaText, triageBadge, type Theme,
@@ -46,6 +46,8 @@ function head(c: Ctx, title: string, active: string, content: string): string {
     // PPR P0-2: the Admissions entry appears only for organizations that
     // actually run an education-module profile.
     educationNav: c.repo.hasEducationModule(c.user.organization_id ?? 1),
+    organizations: c.user.role === "admin" && c.user.can_switch_org ? c.repo.listOrganizations().map((o) => ({ id: o.id, name: organizationName(c.repo, o.id) })) : undefined,
+    activeOrganizationId: c.user.organization_id ?? 1,
   });
 }
 
@@ -178,7 +180,7 @@ function adminDashboard(c: Ctx): string {
   const realm = c.user.demo; // live admins see only live data; demo accounts only mock data.
   // OR-8: admins are never scoped, but the same code path serves scoped
   // accounts — visibility is decided in ONE place (repo.visibleSchoolsFor).
-  const scope = repo.visibleSchoolsFor(c.user);
+  const scope = repo.caseScopeFor(c.user);
   const s = repo.dashboardStats(realm, scope);
   const stage = repo.stageCounts(realm, scope);
   const team = repo.staffStats(realm).filter((t) => t.demo === realm);
@@ -324,8 +326,28 @@ ${triageTile(triage)}
   );
 }
 export function dashboardPage(c: Ctx): string {
-  if (c.user.role === "admin") return adminDashboard(c);
-  return officerDashboard(c);
+  const html = c.user.role === "admin" ? adminDashboard(c) : officerDashboard(c);
+  return c.repo.hasEducationModule(c.user.organization_id ?? 1) ? html : genericDashboardTerms(html);
+}
+
+/** DEMO: the overview's fixed copy was written for the education module.
+ *  An organization without it gets neutral case vocabulary and links into
+ *  its own queues (the education-only register page is not available). */
+function genericDashboardTerms(html: string): string {
+  const swaps: Array<[RegExp, string]> = [
+    [/ applications in the register/g, " cases in the register"],
+    [/Admissions in motion/g, "Cases in motion"],
+    [/ applications · choose/g, " cases · choose"],
+    [/ <span>·<\/span> all times East Africa/g, ""],
+    [/href="\/admissions[^"]*"/g, 'href="/applicants"'],
+    [/>Application received</g, ">Received<"],
+    [/auto-admissions/g, "automated steps"],
+    [/<th>Applicant<\/th>/g, "<th>Contact</th>"],
+    [/active applicant(s?)/g, "active case$1"],
+    [/applicant emails unanswered/g, "emails unanswered"],
+    [/fee · admission · follow-ups/g, "questions · follow-ups"],
+  ];
+  return swaps.reduce((acc, [re, to]) => acc.replace(re, to), html);
 }
 
 // ── Admissions command center (managers & officers), alerts merged in ──────
@@ -353,7 +375,7 @@ function officerDashboard(c: Ctx): string {
   const { repo } = c;
   const realm = c.user.demo;
   // OR-8: every number on this page counts ONLY the officer's schools.
-  const scope = repo.visibleSchoolsFor(c.user);
+  const scope = repo.caseScopeFor(c.user);
   const s = repo.dashboardStats(realm, scope);
   const stage = repo.stageCounts(realm, scope);
   const missingDocs = repo.commonMissingDocs(realm, scope, 5);
@@ -565,7 +587,7 @@ export function admissionsPage(c: Ctx, stage: string): string {
   const { repo } = c;
   const realm = c.user.demo;
   // OR-8: levels count only this staff member's schools.
-  const scope = repo.visibleSchoolsFor(c.user);
+  const scope = repo.caseScopeFor(c.user);
   const counts = repo.stageCounts(realm, scope);
   const start = new Date(); start.setHours(0, 0, 0, 0);
   // ONE query for today's enquiry applicants — never one per applicant.
@@ -685,7 +707,7 @@ export function applicantsPage(
     programme: q.programme || undefined,
     intake: q.intake || undefined,
     demo: c.user.demo,
-    schools: repo.visibleSchoolsFor(c.user), // OR-8
+    schools: repo.caseScopeFor(c.user), // OR-8
   });
   const programmes = repo.listProgrammes();
   const intakes = repo.listIntakes();
@@ -698,8 +720,12 @@ export function applicantsPage(
       "Queues",
       "applicants",
       `<div class="empty" style="padding:56px 24px;text-align:center">
-        <p style="font-size:17px;font-weight:700;margin-bottom:6px">No applications yet.</p>
-        <p class="small muted">Connect Gmail in <a href="/settings">Settings</a> and applicant emails will land here as cases.</p>
+        ${repo.hasEducationModule(c.user.organization_id ?? 1)
+          ? `<p style="font-size:17px;font-weight:700;margin-bottom:6px">No applications yet.</p>
+        <p class="small muted">Connect Gmail in <a href="/settings">Settings</a> and applicant emails will land here as cases.</p>`
+          : `<p style="font-size:17px;font-weight:700;margin-bottom:6px">No cases yet.</p>
+        <p class="small muted">Cases for ${esc(c.institution)} appear here once a message arrives for one of its CaseTypes.</p>`}
+        ${c.user.role === "admin" && repo.listCaseTypes(c.user.organization_id ?? 1).length ? `<p style="margin-top:14px"><a class="btn" href="/intake/test">Submit a test message</a></p>` : ""}
       </div>`
     );
   }
@@ -792,13 +818,14 @@ export function applicantsPage(
   <select name="intake"><option value="">All intakes</option>${intakes.map((i) => opt(i, i, q.intake)).join("")}</select>` : ""}
   <button class="btn ghost">Filter</button>
   ${c.user.role === "admin" ? `<a class="btn small ghost" href="/applicants/export.csv">Export CSV</a>` : ""}
+  ${c.user.role === "admin" && repo.listCaseTypes(c.user.organization_id ?? 1).length ? `<a class="btn small ghost" href="/intake/test">Test intake</a>` : ""}
 </form>
 
 <section class="card">
   ${searchMode ? "" : `<div class="chips">${chips}</div>`}
   ${shown.length
     ? `<table>
-        <tr><th>Ref</th><th>Applicant</th><th>${eduWorkspace ? "CaseType" : "Queue"}</th><th>Why it's here</th><th>Requirement result</th>${eduWorkspace ? "<th>Admission decision</th>" : ""}<th>Opened</th><th></th></tr>
+        <tr><th>Ref</th><th>${eduWorkspace ? "Applicant" : "Contact"}</th><th>${eduWorkspace ? "CaseType" : "Queue"}</th><th>Why it's here</th><th>Requirement result</th>${eduWorkspace ? "<th>Admission decision</th>" : ""}<th>Opened</th><th></th></tr>
         ${trs}
       </table>`
     : searchMode
@@ -1118,7 +1145,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
         : "";
       return `<details class="mail-item ${e.direction === "out" ? "out" : ""}">
       <summary>
-        <span class="badge ${e.direction === "in" ? "b-blue" : "b-purple"}">${e.direction === "in" ? "← From applicant" : "→ To applicant"}</span>
+        <span class="badge ${e.direction === "in" ? "b-blue" : "b-purple"}">${e.direction === "in" ? `← From ${esc(terms.contact.toLowerCase())}` : `→ To ${esc(terms.contact.toLowerCase())}`}</span>
         ${categoryBadge(e.category)}
         ${e.auto ? `<span class="badge b-gray">automated</span>` : ""}
         ${attached.length ? `<span class="badge b-purple">${attached.length} file(s) attached</span>` : ""}
@@ -1239,7 +1266,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
 
     <!-- Communication history -->
     <section class="sec">
-      <div class="sec-head"><h2>Email history</h2><span class="small muted">everything exchanged with ${esc(a.full_name ?? "this applicant")}</span></div>
+      <div class="sec-head"><h2>Email history</h2><span class="small muted">everything exchanged with ${esc(a.full_name ?? `this ${terms.contact.toLowerCase()}`)}</span></div>
       ${emailItems || `<p class="muted">No emails recorded.</p>`}
     </section>
 
@@ -1289,7 +1316,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
     <!-- Response composer -->
     <div class="ops-card">
       <h2>Responses</h2>
-      <p class="ops-sub">Pick a reply template — it is rendered with this applicant's details. Preview first; nothing is sent without your click.</p>
+      <p class="ops-sub">Pick a reply template — it is rendered with this ${esc(terms.contact.toLowerCase())}'s details. Preview first; nothing is sent without your click.</p>
       ${preview ? `<div class="resp-preview"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>` : ""}
       <form method="post" action="/case/${a.id}/send">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -1301,7 +1328,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
         </div>
       </form>
       <p class="small muted" style="margin-top:12px">Or open any template in the full composer: ${templates.slice(0, 3).map((t) => `<a href="/case/${a.id}/compose?template=${esc(t.key)}">${esc(t.name)}</a>`).join(" · ")}</p>
-      <p class="small muted" style="margin:6px 0 0"><a href="/case/${a.id}/compose">Open the composer for this applicant</a> — same tab; after sending you land back on this case file.</p>
+      <p class="small muted" style="margin:6px 0 0"><a href="/case/${a.id}/compose">Open the composer for this ${esc(terms.contact.toLowerCase())}</a> — same tab; after sending you land back on this case file.</p>
       <p class="small muted" style="margin:6px 0 0">Auto-response toggles per category live in <a href="/settings#automation">Settings → Automation</a>. Current modes: ${esc(autoSummary || "defaults")}</p>
     </div>
 
@@ -1388,7 +1415,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
 
     <div class="ops-card">
       <h2>Internal notes</h2>
-      <span class="note-banner">Internal · not visible to applicant</span>
+      <span class="note-banner">Internal · not visible to ${esc(terms.contact.toLowerCase())}</span>
       ${noteCards || `<p class="muted small">No notes yet.</p>`}
       <form method="post" action="/case/${a.id}/note">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -1540,7 +1567,7 @@ export function composeWindowPage(
 </div>
 <div class="card" style="max-width:880px">
   <form method="get" action="/compose" class="formrow" style="align-items:end">
-    <div style="flex:1"><label>Search applicants</label>
+    <div style="flex:1"><label>Search contacts</label>
       <input type="text" name="q" value="${esc(opts.q ?? "")}" placeholder="Name, email or reference number…" autofocus>
     </div>
     <div style="flex:0"><button class="btn">Search</button></div>
@@ -1683,7 +1710,7 @@ export function mailPage(
     <div style="min-width:0;flex:1">
       <div class="kicker">New window · mail · ${esc(folderLabel.toLowerCase())}</div>
       <h1 style="margin:0">Mail</h1>
-      <div class="sub" style="margin:2px 0 0">Every conversation with every applicant — received and sent, newest first.</div>
+      <div class="sub" style="margin:2px 0 0">Every conversation with every contact — received and sent, newest first.</div>
     </div>
   </div>
 </div>
@@ -1888,7 +1915,7 @@ ${connectionsSection(c, gmailRedirectUri)}
   <form method="post" action="/settings/organization">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
-      ${organizationInput("organization_name", "Organisation / school name", organization?.name ?? c.institution)}
+      ${organizationInput("organization_name", (c.user.organization_id ?? 1) === 1 ? "Organisation / school name" : "Organisation name", organization?.name ?? c.institution)}
       ${organizationInput("primary_color", "Primary colour", organization ? organizationTheme(repo, organizationId).primary : "#650019")}
       ${organizationInput("accent_color", "Accent colour", organization ? organizationTheme(repo, organizationId).accent : "#e18b9a")}
       <div><label>Reference prefix</label><input name="ref_prefix" value="${esc(organization?.ref_prefix ?? repo.organizationRefPrefix(c.user.organization_id ?? 1))}" pattern="[A-Za-z]{1,8}" maxlength="8" required></div>
@@ -2530,6 +2557,19 @@ ${shown ? `<section class="card" id="reqpreview">${preview}</section>` : ""}
 ${opsCard}`;
 }
 
+/** Plain-English one-line reading of a CaseType rule tree. */
+export function ruleTreeText(nodes: RuleNode[]): string {
+  const one = (n: RuleNode): string => {
+    if (n.kind === "condition") return `${n.subject ?? n.field ?? "?"} ${n.comparator ?? ">="} ${n.value ?? "?"}`;
+    const kids = (n.children ?? []).map(one);
+    if (n.logic === "NOT") return `NOT (${kids.join(" AND ")})`;
+    const joined = kids.join(` ${n.logic ?? "AND"} `);
+    return kids.length > 1 ? `(${joined})` : joined;
+  };
+  const text = nodes.map(one).join(" AND ");
+  return text.startsWith("(") && text.endsWith(")") && nodes.length === 1 ? text.slice(1, -1) : text;
+}
+
 function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
   const organizations = c.repo.listOrganizations();
   const organizationId = selectedOrganizationId && organizations.some((o) => o.id === selectedOrganizationId)
@@ -2560,12 +2600,13 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
       <form method="post" action="/config/case-types/document" class="formrow" style="margin-top:10px">
         ${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}">
         <div><label>Document key</label><input name="key" placeholder="employee_id" required></div>
-        <div style="flex:2"><label>Applicant-facing label</label><input name="label" placeholder="Signed employee ID" required></div>
+        <div style="flex:2"><label>Contact-facing label</label><input name="label" placeholder="Signed employee ID" required></div>
         <div><label>Required</label><select name="required"><option value="1">Yes</option><option value="0">No</option></select></div>
         <div><label>Blocking</label><select name="blocking"><option value="1">Yes</option><option value="0">No</option></select></div>
         <div style="flex:0"><label>&nbsp;</label><button class="btn small">Save document slot</button></div>
       </form>
       <h3 style="margin-top:20px">Rule tree</h3>
+      ${rules.length ? `<p class="rule-summary" style="font-family:monospace;background:var(--line2, rgba(127,127,127,.12));padding:8px 10px;border-radius:8px">${esc(ruleTreeText(rules))}</p>` : `<p class="small muted">Empty rule tree — every case is undecided and goes to a human.</p>`}
       <p class="small muted">Use organization-defined fact keys. The evaluator supports nested AND, OR and NOT groups; a failed or incomplete tree routes to human review, never an automatic rejection.</p>
       <form method="post" action="/config/case-types/rules" style="margin:0">
         ${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}">
@@ -3006,6 +3047,15 @@ const PLACEHOLDER_DOCS: Array<[string, string]> = [
   ["{document_issues}", "per-document quality issues (unreadable pages etc.)"],
 ];
 
+/** DEMO: organizations without the education module see neutral token help
+ *  and no academic-only tokens. */
+function placeholderDocsFor(c: Ctx): Array<[string, string]> {
+  if (c.repo.hasEducationModule(c.user.organization_id ?? 1)) return PLACEHOLDER_DOCS;
+  const academicOnly = new Set(["{programme}", "{reg_date}", "{orientation_dates}", "{read_back}"]);
+  return PLACEHOLDER_DOCS.filter(([k]) => !academicOnly.has(k)).map(([k, v]): [string, string] =>
+    k === "{institution}" ? [k, "the organization name"] : k === "{ref}" ? [k, "the case reference number"] : k === "{name}" ? [k, "full name of the contact"] : [k, v]);
+}
+
 export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): string {
   const { repo } = c;
   const templates = repo.listTemplates(c.user.organization_id ?? 1);
@@ -3116,11 +3166,11 @@ ${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
     <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:22px">
       <div>${editor}</div>
       <div>
-        <h3 style="margin:0 0 6px;font-size:13px">Preview (sample applicant)</h3>
+        <h3 style="margin:0 0 6px;font-size:13px">Preview (sample contact)</h3>
         <div id="tpl-preview" class="small" style="border:1px solid var(--line2);border-radius:8px;padding:12px;background:var(--card2);white-space:pre-wrap;line-height:1.6"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>
         <h3 style="margin:16px 0 6px;font-size:13px">Placeholders</h3>
         <table><tr><th>Token</th><th>Filled with</th></tr>
-          ${PLACEHOLDER_DOCS.map(([k, v]) => `<tr><td class="mono small">${esc(k)}</td><td class="small muted">${esc(v)}</td></tr>`).join("")}
+          ${placeholderDocsFor(c).map(([k, v]) => `<tr><td class="mono small">${esc(k)}</td><td class="small muted">${esc(v)}</td></tr>`).join("")}
         </table>
       </div>
     </div>
@@ -3136,6 +3186,9 @@ ${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
 // tick nothing and save to restore full visibility.
 function scopeMatrix(c: Ctx): string {
   const { repo } = c;
+  // DEMO: school scopes belong to the education module's catalogue; an
+  // organization without it scopes staff by CaseType instead.
+  if (!repo.hasEducationModule(c.user.organization_id ?? 1)) return "";
   const schools = repo.listSchools();
   const members = repo.listStaff().filter((m) => m.active);
   const rows = members.map((m) => {
@@ -3441,8 +3494,8 @@ ${resetCode ? `
     <div class="metric-ribbon">
       <div class="stat"><div class="n">${stats.reduce((n, r) => n + r.assignedCases, 0)}</div><div class="l">Assigned cases</div><div class="context">Across ${stats.length} team member${stats.length === 1 ? "" : "s"}</div></div>
       <div class="stat"><div class="n">${totals.received}</div><div class="l">Emails received</div><div class="context">On currently assigned cases</div></div>
-      <div class="stat"><div class="n">${totals.sent}</div><div class="l">Replies sent</div><div class="context">Human responses to applicants</div></div>
-      <div class="stat"><div class="n">${totals.completed}</div><div class="l">Completed</div><div class="context">Admissions closed by the team</div></div>
+      <div class="stat"><div class="n">${totals.sent}</div><div class="l">Replies sent</div><div class="context">Human responses to contacts</div></div>
+      <div class="stat"><div class="n">${totals.completed}</div><div class="l">Completed</div><div class="context">${c.repo.hasEducationModule(c.user.organization_id ?? 1) ? "Admissions closed by the team" : "Cases closed by the team"}</div></div>
       <div class="stat"><div class="n">${(() => { const values = stats.map((r) => r.avgResponseMinutes).filter((n): n is number => n !== null); return values.length ? esc(formatDuration(values.reduce((sum, n) => sum + n, 0) / values.length)) : "—"; })()}</div><div class="l">Avg response</div><div class="context">Average for measured staff</div></div>
     </div>
     <h2>Performance by staff member</h2>
@@ -3545,4 +3598,72 @@ ${flagList}
 </div>
 ${last ? `<div class="card"><h2>Final reasoning (${esc(last.computed_status)})</h2><pre style="white-space:pre-wrap;font-size:12.5px">${esc(last.reasoning)}</pre></div>` : ""}`
   );
+}
+
+// ── DEMO: test intake — submit a simulated inbound message to a CaseType ──
+
+/** Prefill "field: value" lines from a CaseType rule tree so a walkthrough
+ *  starts from values that satisfy it (editable before submitting). */
+export function sampleFactsFromRules(nodes: RuleNode[]): string {
+  const out = new Map<string, string>();
+  const visit = (n: RuleNode, negated: boolean, firstOnly: boolean): void => {
+    if (n.kind === "condition") {
+      if (!n.field || out.has(n.field)) return;
+      out.set(n.field, negated ? (n.comparator === "=" ? "no" : "0") : String(n.value ?? ""));
+      return;
+    }
+    const kids = n.children ?? [];
+    const neg = n.logic === "NOT" ? !negated : negated;
+    for (const k of n.logic === "OR" && !firstOnly ? kids.slice(0, 1) : kids) visit(k, neg, false);
+  };
+  for (const n of nodes) visit(n, false, false);
+  return [...out.entries()].map(([k, v]) => `${capFirst(k.replace(/_/g, " "))}: ${v}`).join("\n");
+}
+
+export function intakeTestPage(c: Ctx, opts: { caseTypeCode?: string; msg?: string }): string {
+  const orgId = c.user.organization_id ?? 1;
+  const types = c.repo.listCaseTypes(orgId);
+  const selected = types.find((t) => t.code === opts.caseTypeCode) ?? types[0];
+  if (!selected) {
+    return head(c, "Test intake", "applicants", `<h1>Test intake</h1><div class="card empty"><p>This organization has no CaseTypes yet. Create one under Configuration → CaseTypes.</p></div>`);
+  }
+  const docs = c.repo.listDocumentDefinitions(selected.id);
+  const rules = c.repo.caseTypeRules(selected);
+  const facts = sampleFactsFromRules(rules);
+  return head(c, "Test intake", "applicants", `
+<h1>Test intake — ${esc(c.institution)}</h1>
+<div class="sub">Submit a simulated inbound message to one of this organization's CaseTypes. It runs through the real intake pipeline (document matrix, rule tree, human gate) exactly like a mailbox message would, and opens a case in this organization's queues. Nothing is sent to the contact.</div>
+${opts.msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(opts.msg)}</div>` : ""}
+<div class="card">
+  <form method="get" action="/intake/test" class="formrow" style="align-items:end">
+    <div><label>CaseType</label><select name="case_type" onchange="this.form.submit()">${types.map((t) => `<option value="${esc(t.code)}"${t.code === selected.code ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div>
+    <noscript><div style="flex:0"><button class="btn ghost">Load</button></div></noscript>
+  </form>
+</div>
+<form method="post" action="/intake/test" class="card">
+  <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+  <input type="hidden" name="case_type" value="${esc(selected.code)}">
+  <h2>${esc(selected.name)}</h2>
+  <div class="formrow">
+    <div><label>Contact name</label><input name="from_name" value="Jordan Rivera" required maxlength="80"></div>
+    <div><label>Contact email</label><input name="from" type="email" value="jordan.rivera@example.test" required maxlength="120"></div>
+  </div>
+  <div class="formrow"><div><label>Subject</label><input name="subject" value="${esc(selected.name)} — Jordan Rivera" required maxlength="200"></div></div>
+  <div class="formrow"><div><label>Message body — "Field: value" lines become facts for the rule tree</label>
+    <textarea name="body" rows="8" style="width:100%">Hello,
+
+Please find my paperwork attached.
+
+${esc(facts)}
+
+Thanks,
+Jordan</textarea></div></div>
+  <h3 style="margin-top:14px">Attach documents</h3>
+  <p class="small muted">Each ticked slot attaches a generated PDF labelled with that document. Untick one to see the matrix report it missing.</p>
+  <table><tr><th></th><th>Document</th><th>Required</th><th>Blocking</th></tr>
+  ${docs.map((d) => `<tr><td><input type="checkbox" name="doc" value="${esc(d.key)}"${d.required ? " checked" : ""}></td><td>${esc(d.label)} <span class="mono small muted">${esc(d.key)}</span></td><td>${d.required ? "yes" : "no"}</td><td>${d.blocking ? "yes" : "no"}</td></tr>`).join("")}
+  </table>
+  <div style="margin-top:14px"><button class="btn">Submit test message</button></div>
+</form>
+<div class="card"><h2>Rule tree</h2><pre class="mono small" style="white-space:pre-wrap">${esc(JSON.stringify(rules, null, 2))}</pre></div>`);
 }
