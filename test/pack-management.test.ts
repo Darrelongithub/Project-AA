@@ -35,19 +35,25 @@ function boot() {
 afterEach(() => server?.close());
 
 describe("the Document pack tab (its own home on /config)", () => {
-  it("an admin sees every pack slot with purpose, preview link and replace control", async () => {
+  it("an admin sees the document library — the ten fixed slots are gone, the snapshot stays viewable", async () => {
     boot();
     const { cookie } = await webLogin(base, "admin", "admin123");
     const html = await (await fetch(`${base}/config?tab=pack`, { headers: { cookie } })).text();
-    expect(html).toMatch(/Document pack/);
-    expect(html).toMatch(/Documents &amp; application packs/i);
+    // RECONCILED (PPR P1-4): the fixed ten-slot pack UI is replaced by the
+    // document library (organization files in named attachment sets). The
+    // migrated education files remain a labelled, read-only snapshot with
+    // preview links — purpose documented, never editable slots.
+    expect(html).toMatch(/Document library/);
+    expect(html).toMatch(/Legacy education packs/);
     for (const slot of PACK_SLOTS) {
       expect(html).toContain(slot.pretty);
       expect(html).toContain(slot.purpose);
       expect(html).toContain(`/pack/${slot.key}`); // open/preview
-      expect(html).toContain(`data-pack-slot="${slot.key}"`); // replace control
     }
-    // The tab bar offers the pack home…
+    expect(html).not.toContain("data-pack-slot"); // no fixed replace controls
+    // The library's own upload control is there:
+    expect(html).toContain("lib-upload");
+    // The tab bar offers the library home…
     expect(html).toContain('/config?tab=pack');
   });
 

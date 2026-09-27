@@ -38,11 +38,11 @@ import { fillSlots } from "../documents/matrix";
 import { categorizeEmail, classifyWithConfiguredCategories, priorityForCategory } from "../categorize";
 import { emailTargetsKnownApplicant } from "../matching";
 import { classifyIntakeEmail, DEFAULT_INTAKE_HOTWORDS, intakeHotwordList } from "../intake";
+import { firstMatchingRule, rulesForCaseScope, replyStateOf, describeRule, type RuleAction, type RuleMatchInput, type WorkflowRule } from "../rules/workflow";
 import { extractPhone, inferIntake, inferProgramme, inferTransfer } from "../enrich";
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
-import { emailBanner, organizationName } from "../branding";
-import { organizationPack } from "../pack";
+import { emailBanner, organizationName, organizationSender } from "../branding";
 import type { SendExtras } from "./adapters";
 import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
@@ -96,16 +96,13 @@ async function processEmailInner(
   const { repo, adapters } = ctx;
   const intakeOrganizationId = email.organizationId ?? 1;
 
-  // ── Intake gate (round 9) ────────────────────────────────────────────────
-  // Only admissions intake becomes a case: the mail carries an intake
-  // hotword, or it targets an applicant we already know (quoted reference
-  // number or known sender — conversation continuity). Everything else is
-  // parked in the Mail window WITHOUT an applicant: kept, visible,
-  // labelable — but no case number, no queue entry, no auto-reply.
-  // The smart engine (round 11) decides: configured hotwords (settings),
-  // weighted keywords/phrases (subject counts double), course names, an
-  // attachment-name boost, enquiry signals — and negative vocabulary that
-  // keeps job ads and staff mail from opening cases.
+  // ── Intake gate (round 9; PPR P0-4: stored rules decide, with the legacy
+  //    scorer as the education preset's signal source and as the fallback
+  //    for profiles without intake rules) ──────────────────────────────────
+  // Only intake mail becomes a case: the mail carries an intake signal, or
+  // it targets a contact we already know (conversation continuity).
+  // Everything else is parked in the Mail window WITHOUT a case: kept,
+  // visible, labelable — but no case number, no queue entry, no reply.
   const hotwords = repo.getSetting("intake_hotwords", DEFAULT_INTAKE_HOTWORDS);
   const verdict = classifyIntakeEmail({
     subject: email.subject,
@@ -121,7 +118,43 @@ async function processEmailInner(
     customHotwords: intakeHotwordList(hotwords),
     knownApplicant: emailTargetsKnownApplicant(repo, email),
   });
-  if (verdict.category === "parked") {
+  const senderState: "known" | "unknown" = emailTargetsKnownApplicant(repo, email) ? "known" : "unknown";
+  const fallbackCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
+  // Which profile this mail targets (declared on the connector/portal, or
+  // the migrated legacy scope). Rule scope follows it exactly.
+  const scopeType = email.caseTypeCode ? repo.getCaseType(email.caseTypeCode, intakeOrganizationId) : undefined;
+  const scopeEducation = scopeType ? scopeType.education_module === 1 : intakeOrganizationId === 1;
+  const scopedIntakeRules = rulesForCaseScope(
+    repo.listWorkflowRules(intakeOrganizationId, { kind: "intake" }), scopeType?.id ?? null, scopeEducation
+  );
+  const scopedResponseRules = rulesForCaseScope(
+    repo.listWorkflowRules(intakeOrganizationId, { kind: "response" }), scopeType?.id ?? null, scopeEducation
+  );
+  const bodyIsRefShape = /^[A-Z]{1,6}-\d{4}-\d{1,8}$/i.test(email.body.trim());
+  const intakeInput: RuleMatchInput = {
+    senderState,
+    subject: email.subject,
+    body: email.body,
+    hasAttachments: email.attachments.length > 0,
+    category: fallbackCategory,
+    bodyIsRef: bodyIsRefShape,
+    educationSignals: verdict.category === "parked" ? "parked" : "open",
+    docsState: "dirty", // document posture is a reply-time fact; intake rules match on message facts
+    docsOnFile: 0,
+  };
+  let intakeRule: WorkflowRule | null = null;
+  let intakeDecision: "create" | "attach" | "ignore" | "review" | null = null;
+  if (scopedIntakeRules.length > 0) {
+    intakeRule = firstMatchingRule(scopedIntakeRules, intakeInput);
+    // Rules are present: an unmatched message still reaches the case flow
+    // (human review) — mail is never silently dropped because a rule set
+    // has a gap. The education preset always matches (catch-all parks).
+    intakeDecision = intakeRule?.action.decision ?? "create";
+  } else {
+    // Legacy fallback (profiles without intake rules): the built-in scorer.
+    intakeDecision = verdict.category === "parked" ? "ignore" : "create";
+  }
+  if (intakeDecision === "ignore") {
     repo.insertEmail({
       applicant_id: null,
       message_id: email.id,
@@ -140,11 +173,12 @@ async function processEmailInner(
       `score ${verdict.score}` +
       (verdict.negatives.length ? ` (negatives: ${verdict.negatives.join(", ")})` : "") +
       (verdict.positives.length ? `; signals seen: ${verdict.positives.join(", ")}` : "; no intake signals");
+    const parkEvent = intakeRule?.action.audit_code || "email_parked_non_intake";
     repo.audit(
       null,
       "system",
-      "email_parked_non_intake",
-      `"${email.subject}" from ${email.from} — ${why}; kept in Mail, no case created`
+      parkEvent,
+      `"${email.subject}" from ${email.from} — ${why}; kept in Mail, no case created${intakeRule ? ` (rule “${intakeRule.name}”)` : ""}`
     );
     log(`pipeline: "${email.subject}" parked — ${why}`);
     return {
@@ -164,8 +198,9 @@ async function processEmailInner(
   // ── Categorize (feature 26) ──────────────────────────────────────────────
   // Gemini may provide only an organization-owned routing label. Code maps
   // that label to the legacy workflow enum; it never produces an outcome.
+  // (The deterministic fallback category was already computed for the intake
+  // rule match above — same input, same result.)
   const configuredKeys = repo.listEmailCategories(intakeOrganizationId).map((x) => x.key);
-  const fallbackCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
   let category: EmailCategory = fallbackCategory;
   if (process.env.GEMINI_API_KEY && configuredKeys.length > 0) {
     const label = await classifyWithConfiguredCategories(
@@ -185,9 +220,21 @@ async function processEmailInner(
   // An eligibility/requirements question may carry a screenshot as evidence.
   // Keep it in the enquiry workflow: OCR can still preserve the evidence, but
   // the attachment must not turn a question into a documents-received or
-  // awaiting-documents case.
+  // awaiting-documents case. PPR P0-4: which mail needs a human is a stored
+  // response rule (`decision: review`); profiles without rules keep the
+  // original category policy.
   const enquiryOnly = category === "admission_enquiry";
-  let humanTriageOnly = enquiryOnly || category === "complaint" || category === "fee_enquiry";
+  let humanTriageOnly = false;
+  if (scopedResponseRules.length > 0) {
+    const reviewRule = firstMatchingRule(scopedResponseRules, {
+      ...intakeInput,
+      category,
+      bodyIsRef: bodyIsRefShape,
+    });
+    if (reviewRule?.action.decision === "review") humanTriageOnly = true;
+  } else {
+    humanTriageOnly = enquiryOnly || category === "complaint" || category === "fee_enquiry";
+  }
 
   // ── Resolve/create applicant with reference number (features 1, 2) ──────
   // v3 identity matching: quoted reference number → known sender (any thread)
@@ -201,12 +248,22 @@ async function processEmailInner(
     caseTypeCode: email.caseTypeCode,
   });
   const applicant = identity.applicant;
+  // The intake rule's audit code records which rule opened/continued the case.
+  if (intakeRule?.action.audit_code) {
+    repo.audit(applicant.id, "system", intakeRule.action.audit_code, `rule “${intakeRule.name}” matched — ${describeRule(intakeRule)}`);
+  }
   const genericCaseType = repo.caseTypeForCase(applicant.id);
-  // Generic CaseTypes are evidence/routing workflows, never admission
-  // workflows. They stay in human triage even when their configured matrix
-  // and rule tree are complete.
-  const legacyAcademicCaseType = genericCaseType && (applicant.organization_id ?? 1) === 1 && (genericCaseType.code === "GENERAL" || Boolean(repo.programmeByCode(genericCaseType.code)));
-  if (genericCaseType && !legacyAcademicCaseType) humanTriageOnly = true;
+  // PPR P0-2: the education_module flag on the workflow profile decides
+  // whether ANY academic code path may run for this case. Without it there
+  // is no grade engine, no academic document matrix, no admissions routing —
+  // just the generic evidence/triage flow (audit F1).
+  const educationCase = repo.educationCaseFor(applicant);
+  // The generic/no-eval folder has no rules of its own — automation stays
+  // held there (audit B1). A profile that OWNS reply behaviour is driven by
+  // it instead: response rules, OR an intake rule that carries its own reply
+  // action (create + reply in one rule — P0-4).
+  const intakeCarriesReply = Boolean(intakeRule?.action.reply_action && intakeRule.action.reply_action !== "none");
+  if (!educationCase && scopedResponseRules.length === 0 && !intakeCarriesReply) humanTriageOnly = true;
   const preFlags: DerivedFlag[] = [];
   if (identity.concern) {
     preFlags.push({ type: "identity_check", detail: identity.concern });
@@ -277,7 +334,7 @@ async function processEmailInner(
     // Generic document slots are organization-owned. A configured key or
     // label in the supplied filename/text is a routing hint only; extraction
     // fields and the human gate still decide whether the evidence is usable.
-    if (genericCaseType && !legacyAcademicCaseType) {
+    if (genericCaseType && !educationCase) {
       const haystack = `${att.filename} ${res.text}`.toLowerCase();
       const configured = repo.listDocumentDefinitions(genericCaseType.id).find((d) => {
         const words = `${d.key} ${d.label}`.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2);
@@ -425,10 +482,12 @@ async function processEmailInner(
 
   // ── Requirements for THIS applicant (features 8, 36, 37, v3-19) ──────────
   // First triage freezes a snapshot of the requirement set; later rule
-  // changes never retroactively move an applicant's goalposts.
+  // changes never retroactively move an applicant's goalposts. PPR P0-3
+  // adds the exact profile configuration version to that freeze.
   const applicantNow = repo.getApplicant(applicant.id)!;
   repo.freezeRequirementsSnapshot(applicantNow);
-  repo.freezeStructuredSnapshot(applicantNow);
+  repo.freezeCaseConfig(applicantNow);
+  if (educationCase) repo.freezeStructuredSnapshot(applicantNow);
   const requirements = repo.effectiveRequirements(repo.getApplicant(applicant.id)!);
 
   // ── Intake deadline (v3 features 20, 21): late arrival → flag, never an
@@ -447,7 +506,7 @@ async function processEmailInner(
   // tree. The generic evaluator returns evidence and human_review; it never
   // writes an approval/rejection decision and never inherits academic fields.
   let genericRuleResult: ReturnType<typeof evaluateCaseTypeRules> | null = null;
-  if (genericCaseType && !legacyAcademicCaseType) {
+  if (genericCaseType && !educationCase) {
     const facts: Record<string, unknown> = {
       subject: email.subject,
       body: email.body,
@@ -468,17 +527,22 @@ async function processEmailInner(
       preFlags.push({ type: "low_confidence", detail: `Configured ${genericCaseType.name} rule tree is ${genericRuleResult.result}; human review required` });
     }
   }
-  const admission = genericRuleResult ? { derivedFlags: [] as DerivedFlag[] } : evaluateAdmission(repo, applicant.id, preFlags);
+  // PPR P0-2 (audit F1): the academic engine runs ONLY for education-module
+  // cases. A non-academic profile never loads grades, routing or auto-admit.
+  const admission = genericRuleResult || !educationCase
+    ? { derivedFlags: [] as DerivedFlag[] }
+    : evaluateAdmission(repo, applicant.id, preFlags);
   preFlags.push(...admission.derivedFlags);
 
   // ── Rules: pure deterministic decision (feature 10) ─────────────────────
-  const rulesOut = genericRuleResult
+  const rulesOut = genericRuleResult || !educationCase
     ? (() => {
       const missing = fillSlots(requirements, activeDocs.map((d) => d.document_type)).missing.map((x) => x.document_type);
-      const status: Classification = missing.length > 0 || genericRuleResult.result !== "passed" ? "Orange" : "Green";
+      const treeResult = genericRuleResult?.result ?? "undetermined";
+      const status: Classification = missing.length > 0 || treeResult !== "passed" ? "Orange" : "Green";
       return {
         status,
-        reasoning: `CaseType matrix ${missing.length ? `missing ${missing.join(", ")}` : "complete"}; rule tree ${genericRuleResult.result}; routing human review; outcome undecided`,
+        reasoning: `CaseType matrix ${missing.length ? `missing ${missing.join(", ")}` : "complete"}; rule tree ${treeResult}; routing human review; outcome undecided`,
         derivedFlags: [] as DerivedFlag[],
         missing,
       };
@@ -551,6 +615,10 @@ async function processEmailInner(
   let autoKind: ProcessResult["autoKind"] = null;
   let draft: Draft | null = null;
   let queueForHuman = false;
+  /** PPR P0-4: the template a response rule resolved (may be any profile key). */
+  let ruleTemplateKey: string | null = null;
+  /** PPR P1-3: the queued draft needs "Approve automation" to release. */
+  let draftNeedsApproval = false;
 
   const gateDecision = gate(finalStatus, { ran: rulesOut.status === "Green", flagged: watcherFlagged });
 
@@ -560,10 +628,114 @@ async function processEmailInner(
     email.body.trim().toUpperCase() === applicantNow.ref_number.toUpperCase() &&
     email.from.trim().toLowerCase() === applicantNow.email_address;
 
-  // The applicant emailed just their reference number ("RU-2026-000003") —
-  // answer with the factual status of their own case. Only when the sender IS
-  // the case owner; a stranger quoting someone's ref goes to a human.
-  if (humanTriageOnly) {
+  // ── Reply selection (PPR P0-4): stored response rules decide what the
+  //    case replies and how it routes. Profiles without response rules keep
+  //    the original chain below, unchanged. Templates, send/draft/hold,
+  //    follow-up ladder and audit codes are all rule data — the qualification
+  //    gate still holds every non-fully-qualified reply for staff when the
+  //    profile has one (the migrated education profile keeps it). ──────────
+  const fullyQualified =
+    finalStatus === "Green" && activeBlockingFlags.length === 0 && !watcherFlagged;
+  const ruleDocsState = replyStateOf({
+    fullyQualified,
+    blockingFlags: activeBlockingFlags.length > 0,
+    cleanMissing: cleanMissingCase,
+    docsOnFile: activeDocs.length,
+  });
+  const replyRule = (scopedResponseRules.length > 0
+    ? firstMatchingRule(scopedResponseRules, {
+        senderState,
+        subject: email.subject,
+        body: email.body,
+        hasAttachments: email.attachments.length > 0,
+        category,
+        bodyIsRef: refOnlyOwnCase,
+        educationSignals: verdict.category === "parked" ? "parked" : "open",
+        docsState: ruleDocsState,
+        docsOnFile: activeDocs.length,
+      })
+    : null) ?? (intakeRule && intakeRule.action.reply_action ? intakeRule : null);
+  // A first-email rule may carry the reply too (create + reply in one rule).
+  const replyAction: RuleAction | null = replyRule?.action ?? null;
+
+  const resolveRuleTemplateKey = (ra: RuleAction): string | null => {
+    if (ra.template_map) {
+      if (ruleDocsState === "complete" && ra.template_map.green) return ra.template_map.green;
+      if (ruleDocsState === "empty" && ra.template_map.empty) return ra.template_map.empty;
+      if (ruleDocsState === "missing" && ra.template_map.missing) return ra.template_map.missing;
+    }
+    return ra.template_key ?? null;
+  };
+  const autoKindFor = (key: string | null): ProcessResult["autoKind"] =>
+    key === "ack_received" ? "ack" : key === "docs_request" ? "docs_request"
+    : key === "missing_documents" ? "missing_docs" : key === "status_answer" ? "status_answer" : null;
+
+  if (replyRule && replyAction) {
+    const key = resolveRuleTemplateKey(replyAction)
+      ?? (replyAction.fallback && replyAction.fallback.startsWith("template:") ? replyAction.fallback.slice("template:".length) : null);
+    // Record which rule drove the reply (the intake audit may have already
+    // recorded this very rule — one clean event per rule per message).
+    if (!(replyRule.id === intakeRule?.id && intakeRule?.action.audit_code)) {
+      repo.audit(
+        applicant.id,
+        "system",
+        replyAction.audit_code || "workflow_rule_fired",
+        `rule “${replyRule.name}” matched — ${describeRule(replyRule)}`
+      );
+    }
+    // A review decision or a hold always defers to a person; any template the
+    // rule names becomes their SUGGESTION, never a send. So does a forced
+    // human-triage case (no-eval folder, generic category policy).
+    if (humanTriageOnly || replyAction.decision === "review" || replyAction.reply_action === "hold") {
+      queueForHuman = true;
+      if (key && !humanTriageOnly) {
+        ruleTemplateKey = key;
+        autoKind = autoKindFor(key);
+      }
+    } else if ((replyAction.reply_action === "draft" || replyAction.reply_action === "approve") && key) {
+      // Rendered and queued — never sent from here. "approve" additionally
+      // requires the "Approve automation" permission to release (P1-3).
+      ruleTemplateKey = key;
+      autoKind = autoKindFor(key);
+      queueForHuman = true;
+      if (replyAction.reply_action === "approve") draftNeedsApproval = true;
+    } else if (replyAction.reply_action === "send" && key) {
+      // Intended to go out; the draft-first and qualification gates below
+      // decide send vs hold exactly as they always have.
+      ruleTemplateKey = key;
+      autoKind = autoKindFor(key);
+    }
+    // reply_action "none": the case sits with staff — deliberately silent.
+    if (replyAction.decision === "review" && key && !ruleTemplateKey) {
+      ruleTemplateKey = key;
+      autoKind = autoKindFor(key);
+    }    if (ruleDocsState === "dirty" && autoKind === "status_answer" && key === "status_answer") {
+      // The factual status answer is drafted alongside the human queue —
+      // make that deliberate double-track visible in the audit trail.
+      repo.audit(
+        applicant.id,
+        "system",
+        "status_answer_and_queued",
+        "factual status answer drafted while the underlying case also needs human review"
+      );
+    }
+    // Rule-declared case handling: priority, queue and assignment.
+    if (replyAction.priority === "high" && repo.getApplicant(applicant.id)?.priority === "normal") {
+      repo.updateApplicant(applicant.id, { priority: "high" });
+      repo.audit(applicant.id, "system", "priority_raised", `rule “${replyRule.name}”`);
+    }
+    if (replyAction.queue) {
+      repo.updateApplicant(applicant.id, { queue: replyAction.queue });
+    }
+    if (typeof replyAction.assign === "number" && !applicantNow.assigned_to) {
+      repo.updateApplicant(applicant.id, { assigned_to: replyAction.assign });
+    }
+  } else if (scopedResponseRules.length > 0 || intakeRule !== null) {
+    // Rule-driven profile with a gap in its reply rules: never guess, never
+    // drop — a human reviews (invariant: failed/incomplete rule tree always
+    // routes to human review).
+    queueForHuman = true;
+  } else if (humanTriageOnly) {
     // A screenshot attached to an eligibility question, complaint or fee
     // enquiry is evidence for the human reply, not a submission of the
     // admissions document pack.
@@ -599,8 +771,14 @@ async function processEmailInner(
 
   // ── Draft-first mode (v3 feature 17): a global or per-category setting can
   //    hold ANY automated reply for human approval. The reply is still
-  //    drafted normally — it just gets queued instead of sent. ─────────────
-  const heldForApproval = autoKind !== null && repo.automationMode(category) === "draft";
+  //    drafted normally — it just gets queued instead of sent. A workflow
+  //    profile can declare its own default (new profiles default to draft —
+  //    automation is opt-in per profile; the migrated education profile keeps
+  //    its preserved "auto" setting). ──────────────────────────────────────
+  const profileReplyMode = genericCaseType?.default_reply_action;
+  const replyMode: "auto" | "draft" = profileReplyMode === "draft" || profileReplyMode === "hold" ? "draft" : repo.automationMode(category);
+  const replyAttempted = autoKind !== null || ruleTemplateKey !== null;
+  const heldForApproval = replyAttempted && replyMode === "draft";
   if (heldForApproval) {
     repo.audit(
       applicant.id,
@@ -617,9 +795,11 @@ async function processEmailInner(
   // HELD as a staff suggestion instead: an applicant who is short of a
   // document or below a grade line today may still be admitted tomorrow on
   // special acceptance, so the machine never speaks for the office on them.
-  const fullyQualified =
-    finalStatus === "Green" && activeBlockingFlags.length === 0 && !watcherFlagged;
-  const heldForQualification = autoKind !== null && !fullyQualified;
+  // A profile may switch this gate off (its rules then own the send decision);
+  // the migrated education profile keeps it on, as it always was.
+  const typeGate = genericCaseType?.qualification_gate ?? 1;
+  const qualificationGateOn = typeGate !== 0;
+  const heldForQualification = replyAttempted && !fullyQualified && qualificationGateOn;
   if (heldForQualification) {
     repo.audit(
       applicant.id,
@@ -644,7 +824,7 @@ async function processEmailInner(
     activeDocs
       .map((d) => normalizeName(d.extracted_fields?.name as string | undefined))
       .find((n) => n.length >= 3) || freshApplicant.full_name || email.fromName;
-  const lifecycleAfter: LifecycleStage = humanTriageOnly
+  let lifecycleAfter: LifecycleStage = humanTriageOnly
     ? "application_received"
     : heldForApproval || heldForQualification
       ? activeDocs.length > 0
@@ -657,6 +837,13 @@ async function processEmailInner(
           : activeDocs.length > 0
             ? "documents_received"
             : "application_received";
+  // PPR P0-4/P1-2: a response rule may declare the stage explicitly — either
+  // a built-in lifecycle id or one of this profile's configured stage ids.
+  if (replyAction?.stage) {
+    const stageId = replyAction.stage as LifecycleStage;
+    const configured = genericCaseType?.stages?.some((s) => s.id === replyAction.stage) ?? false;
+    if ((stageId in LIFECYCLE_LABELS) || configured) lifecycleAfter = stageId;
+  }
 
   const draftCtx: DraftContext = {
     ref: applicantNow.ref_number,
@@ -675,8 +862,9 @@ async function processEmailInner(
   };
 
   // Admission letters are only available through a human decision; the intake
-  // pipeline drafts factual acknowledgements and review notes only.
-  const templateKey = autoKind === "ack"
+  // pipeline drafts factual acknowledgements and review notes only. (A
+  // response rule may name any profile template key — that wins here.)
+  const templateKey = ruleTemplateKey ?? (autoKind === "ack"
     ? "ack_received"
     : autoKind === "docs_request"
         ? "docs_request"
@@ -684,18 +872,37 @@ async function processEmailInner(
           ? "missing_documents"
           : autoKind === "status_answer"
             ? "status_answer"
-            : null;
+            : null);
 
   const organizationId = applicantNow.organization_id ?? applicant.organization_id ?? 1;
+  const caseTypeId = genericCaseType?.id;
   if (templateKey) {
-    const tpl = repo.getTemplate(templateKey, organizationId);
+    const tpl = repo.getTemplate(templateKey, organizationId, caseTypeId);
     if (tpl) {
       const rendered = renderTemplate(tpl.subject, tpl.body, draftCtx);
       draft = { subject: rendered.subject, body: rendered.body, audience: "auto", templateKey };
+    } else if (ruleTemplateKey) {
+      // A rule named a template this organization does not have. Never let
+      // that become silence: the case goes to a human with the standard
+      // internal note (failed/incomplete rule tree → human review).
+      queueForHuman = true;
     }
   }
   // Held replies keep their rendered content but are queued for a person.
   if ((heldForApproval || heldForQualification) && draft) draft.audience = "human";
+
+  if (!draft && queueForHuman) {
+    // PPR P0-6/D4: a rule-driven profile with a reply gap gets the org's
+    // generic_enquiry template as the staff SUGGESTION — a real fallback,
+    // queued for approval like every other human-bound draft, never sent
+    // automatically.
+    const ruleGap = !replyRule && (scopedResponseRules.length > 0 || intakeRule !== null);
+    const gapTpl = ruleGap ? repo.getTemplate("generic_enquiry", organizationId, caseTypeId) : undefined;
+    if (gapTpl) {
+      const rendered = renderTemplate(gapTpl.subject, gapTpl.body, draftCtx);
+      draft = { subject: rendered.subject, body: rendered.body, audience: "human", templateKey: "generic_enquiry" };
+    }
+  }
 
   if (!draft && queueForHuman) {
     draft = pickQueuedDraft({
@@ -711,23 +918,29 @@ async function processEmailInner(
   // Send failures are never fatal: the reply becomes a queued draft and a
   // human handles it (v3 reliability requirement).
   let autoSent = false;
-  const wantsAutoSend = autoKind !== null && draft?.audience === "auto";
+  // A rule that answers with "draft", "approve" or "hold" means exactly that:
+  // the pipeline never escalates it to a send, whatever the gates say. Only
+  // "send" (or legacy non-rule automation) may reach the wire.
+  const ruleHoldsReply = replyAction != null
+    && (replyAction.reply_action === "draft" || replyAction.reply_action === "approve" || replyAction.reply_action === "hold");
+  const wantsAutoSend = replyAttempted && draft?.audience === "auto" && !ruleHoldsReply;
   if (wantsAutoSend && draft) {
     try {
-      // OR-7: which pack (if any) rides along is a property of the TEMPLATE,
-      // edited in the Templates section — the pipeline no longer hardcodes
-      // it, so what staff configure is exactly what applicants receive.
+      // PPR P0-5: which attachment set (if any) rides along is a property of
+      // the response rule first and the template second. Sets are the
+      // organization's own files — there is no privileged pack vocabulary.
       // Defaults keep the historical behaviour for factual requests: a
-      // document request may carry the configured application pack.
-      const tplRow = templateKey ? repo.getTemplate(templateKey, organizationId) : undefined;
-      const packFlag = tplRow?.attach_pack
+      // document request may carry the application set.
+      const tplRow = templateKey ? repo.getTemplate(templateKey, organizationId, caseTypeId) : undefined;
+      const setRef = replyAction?.attachment_set
+        ?? tplRow?.attach_pack
         ?? (autoKind === "docs_request" ? "application" : "none");
-      const pack = packFlag === "admission" || packFlag === "application"
-        ? organizationPack(repo, organizationId, [packFlag])
-        : null;
+      const resolved = repo.attachmentSetFiles(organizationId, setRef);
+      const pack = resolved.files.length || resolved.issues.length ? resolved : null;
       const extras: SendExtras = {
         banner: tplRow?.include_banner === 0 ? null : emailBanner(repo, organizationId),
         attachments: pack ? pack.files : [],
+        ...organizationSender(repo, organizationId),
       };
       // A pack that went out missing files is a silent failure no more:
       // audit it and tell staff which file is gone.
@@ -758,11 +971,11 @@ async function processEmailInner(
         mode: "auto",
         template_key: draft.templateKey ?? "",
       });
-      repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind}: "${draft.subject}"`);
-      log(`pipeline: auto-sent [${autoKind}] to ${applicantNow.email_address}`);
+      repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind ?? templateKey}: "${draft.subject}"`);
+      log(`pipeline: auto-sent [${autoKind ?? templateKey}] to ${applicantNow.email_address}`);
       autoSent = true;
     } catch (e) {
-      repo.audit(applicant.id, "system", "send_failed", `auto-send [${autoKind}] failed: ${(e as Error).message}`);
+      repo.audit(applicant.id, "system", "send_failed", `auto-send [${autoKind ?? templateKey}] failed: ${(e as Error).message}`);
       repo.addOutbox({
         applicant_id: applicant.id,
         to_address: applicantNow.email_address,
@@ -770,6 +983,7 @@ async function processEmailInner(
         body: draft.body,
         mode: "queued",
         template_key: draft.templateKey ?? "",
+        needs_approval: draftNeedsApproval ? 1 : 0,
       });
       repo.notify("review_needed", `${applicantNow.ref_number}: automated send failed — reply needs manual attention`, applicant.id);
       log(`pipeline: auto-send failed for ${applicantNow.ref_number} → queued for human`, "warn");
@@ -784,6 +998,7 @@ async function processEmailInner(
       body: draft.body,
       mode: "queued",
       template_key: draft.templateKey ?? "",
+      needs_approval: draftNeedsApproval ? 1 : 0,
     });
   }
 
@@ -798,20 +1013,24 @@ async function processEmailInner(
   if (finalStatus === "Green") {
     repo.setFollowup(applicant.id, 0, null, null);
   } else if (
-    (autoSent || heldForQualification || heldForApproval) &&
+    (autoSent || heldForQualification || heldForApproval || (replyRule !== null && autoKind !== null)) &&
     (autoKind === "missing_docs" || autoKind === "docs_request") &&
+    (replyRule === null || replyAction?.followup === "ladder") &&
+    replyAction?.followup_action !== "none" && // P1-3: explicit do-nothing cancels the ladder
     ladder.length > 0
   ) {
     // Base date anchors the ladder: rung N fires at base + ladder[N] days.
+    // P1-3: the rung response action comes from the rule (default "hold").
     const baseAt = new Date().toISOString();
     const nextAt = new Date(Date.now() + ladder[0] * 24 * 3600_000).toISOString();
-    repo.setFollowup(applicant.id, 0, nextAt, baseAt);
-    repo.audit(applicant.id, "system", "followup_scheduled", `reminder ladder armed (${ladderDaysStr})`);
+    repo.setFollowup(applicant.id, 0, nextAt, baseAt, replyAction?.followup_action ?? "hold");
+    repo.audit(applicant.id, "system", "followup_scheduled", `reminder ladder armed (${ladderDaysStr}, response=${replyAction?.followup_action ?? "hold"})`);
   }
 
   if (queueForHuman) {
-    // SLA clock starts (feature 28); staff action stops it.
-    const slaHours = Number(repo.getSetting("sla_target_hours", "4"));
+    // SLA clock starts (feature 28); staff action stops it. A response rule
+    // may declare its own target hours.
+    const slaHours = replyAction?.sla_hours ?? Number(repo.getSetting("sla_target_hours", "4"));
     const due = new Date(Date.now() + slaHours * 3600_000).toISOString();
     const cur = repo.getApplicant(applicant.id)!;
     if (!cur.sla_handled_at) repo.updateApplicant(applicant.id, { sla_due_at: due });

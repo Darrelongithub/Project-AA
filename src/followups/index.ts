@@ -15,13 +15,13 @@
  * (special acceptance may apply). Returns the number of rungs processed.
  */
 import type { Repo } from "../db/repo";
-import type { PipelineContext } from "../pipeline/adapters";
+import type { PipelineContext, SendExtras } from "../pipeline/adapters";
 import { checklistText, renderTemplate } from "../drafting";
 import { fillSlots } from "../documents/matrix";
 import { docLabel } from "../rules";
 import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
-import { organizationName } from "../branding";
+import { organizationName, organizationSender, emailBanner } from "../branding";
 
 const nowIso = () => new Date().toISOString();
 
@@ -33,7 +33,7 @@ export function ladderDays(repo: Repo): number[] {
     .filter((n) => Number.isFinite(n) && n > 0);
 }
 
-export async function runFollowUpSweep(repo: Repo, _ctx: PipelineContext): Promise<number> {
+export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promise<number> {
   const ladder = ladderDays(repo);
   if (ladder.length === 0) return 0;
   const due = repo.dueFollowUps(nowIso());
@@ -68,7 +68,21 @@ export async function runFollowUpSweep(repo: Repo, _ctx: PipelineContext): Promi
         continue;
       }
       const organizationId = a.organization_id ?? 1;
-      const tpl = repo.getTemplate("missing_documents", organizationId);
+      // PPR P1-3: the RULE that armed the ladder decided how each rung responds
+      // (send / draft / approve / hold / none). Default "hold" preserves the
+      // migrated education behaviour; "send" is additionally subject to the
+      // profile's qualification gate — gate-on profiles keep holding.
+      const rungAction = (a as { followup_action?: string }).followup_action ?? "hold";
+      const caseType = repo.caseTypeForCase(a.id);
+      const gateOn = (caseType?.qualification_gate ?? 1) !== 0;
+      // P1-9: the rung wording comes from the case's own profile templates —
+      // a generic profile never inherits the education template vocabulary.
+      const tpl = repo.getTemplate("missing_documents", organizationId, caseType?.id);
+      if (rungAction === "none") {
+        repo.audit(a.id, "system", "followup_action_none", `rung ${rung}/${ladder.length - 1} skipped (rule follow-up action = do nothing)`);
+        processed++;
+        continue;
+      }
       if (tpl) {
         const rendered = renderTemplate(tpl.subject, tpl.body, {
           ref: a.ref_number,
@@ -79,15 +93,38 @@ export async function runFollowUpSweep(repo: Repo, _ctx: PipelineContext): Promi
           statusLabel: LIFECYCLE_LABELS[a.lifecycle],
         });
         const subject = rung === ladder.length - 1 ? `[FINAL REMINDER] ${rendered.subject}` : `[REMINDER] ${rendered.subject}`;
-        // Qualification gate: anyone on the reminder ladder still has
-        // documents outstanding — by definition NOT fully qualified. The
-        // reminder is held as a staff suggestion, never auto-sent: the file
-        // may still be headed for special acceptance, so the office decides
-        // what (if anything) goes out.
-        repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
-        repo.notify("review_needed", `${a.ref_number}: follow-up reminder (rung ${rung}/${ladder.length - 1}) drafted — review and send`, a.id);
-        repo.audit(a.id, "system", "followup_held_qualification", `rung ${rung}/${ladder.length - 1} held as a suggested reply (${subject})`);
-        log(`followups: ${a.ref_number} rung ${rung} reminder held for staff`);
+        if (rungAction === "send" && !gateOn) {
+          // Explicit rule action + un-gated profile: the reminder goes out.
+          const extras: SendExtras = { banner: emailBanner(repo, organizationId), attachments: [], ...organizationSender(repo, organizationId) };
+          try {
+            await ctx.adapters.sender.send(a.email_address, subject, rendered.body, "", extras);
+            repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "auto", template_key: "missing_documents" });
+            repo.audit(a.id, "system", "followup_sent", `rung ${rung}/${ladder.length - 1} reminder sent (${subject})`);
+            log(`followups: ${a.ref_number} rung ${rung} reminder sent`);
+          } catch (e) {
+            repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
+            repo.audit(a.id, "system", "followup_send_failed", `rung ${rung} send failed, held as draft (${e instanceof Error ? e.message : String(e)})`);
+            log(`followups: ${a.ref_number} rung ${rung} send failed — held`, "warn");
+          }
+        } else if (rungAction === "draft") {
+          repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
+          repo.notify("review_needed", `${a.ref_number}: follow-up reminder (rung ${rung}/${ladder.length - 1}) drafted — review and send`, a.id);
+          repo.audit(a.id, "system", "followup_drafted", `rung ${rung}/${ladder.length - 1} drafted for staff (${subject})`);
+          log(`followups: ${a.ref_number} rung ${rung} reminder drafted`);
+        } else if (rungAction === "approve") {
+          repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents", needs_approval: 1 });
+          repo.notify("review_needed", `${a.ref_number}: follow-up reminder (rung ${rung}/${ladder.length - 1}) awaiting automation approval`, a.id);
+          repo.audit(a.id, "system", "followup_awaiting_approval", `rung ${rung}/${ladder.length - 1} queued for approval (${subject})`);
+          log(`followups: ${a.ref_number} rung ${rung} reminder awaiting approval`);
+        } else {
+          // "hold" (education default) or "send" on a gate-on profile: anyone
+          // on the reminder ladder still has documents outstanding — by
+          // definition NOT fully qualified. Held as a staff suggestion.
+          repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
+          repo.notify("review_needed", `${a.ref_number}: follow-up reminder (rung ${rung}/${ladder.length - 1}) drafted — review and send`, a.id);
+          repo.audit(a.id, "system", "followup_held_qualification", `rung ${rung}/${ladder.length - 1} held as a suggested reply (${subject})`);
+          log(`followups: ${a.ref_number} rung ${rung} reminder held for staff`);
+        }
       }
       processed++;
     } else {

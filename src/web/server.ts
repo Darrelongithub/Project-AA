@@ -9,18 +9,21 @@
 import * as crypto from "crypto";
 import { FAVICON_BASE64, LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
 import { FONT_INSTRUMENT_SERIF_ITALIC_WOFF2, FONT_INSTRUMENT_SERIF_WOFF2, FONT_MANROPE_WOFF2 } from "./fonts";
-import express, { type Express, type Request, type Response } from "express";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { Repo } from "../db/repo";
 import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 import type { PipelineContext } from "../pipeline/adapters";
 import type { Adapters } from "../pipeline/adapters";
-import type { ApplicantRow, LifecycleStage } from "../types";
-import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type EmailCategory } from "../types";
+import type { ApplicantRow, LifecycleStage, Permission } from "../types";
+import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS, type EmailCategory } from "../types";
 import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import { fillSlots } from "../documents/matrix";
-import { evaluateAdmission } from "../admissions/evaluate";
+import { evaluateAdmission, evaluateCaseTypeRules } from "../admissions/evaluate";
 import { ADMISSION_SYSTEMS, DOC_TYPES, type AdmissionSystem, type DocType, type RuleField } from "../types";
+import type { RuleAction, RuleCondition, WorkflowRule } from "../rules/workflow";
+import { describeRule, firstMatchingRule, rulesForCaseScope, ruleMatches } from "../rules/workflow";
+import { categorizeEmail } from "../categorize";
 
 type LegacyAcademicLevel = "degree" | "diploma" | "certificate" | "masters" | "phd";
 import {
@@ -37,8 +40,8 @@ import { log } from "../util/log";
 import { hashPassword, verifyPassword } from "../util/password";
 import { gmailRedirectUri } from "./oauth";
 import { LoginThrottle } from "./throttle";
-import { emailBanner, organizationName } from "../branding";
-import { organizationPack, PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
+import { emailBanner, organizationName, organizationSender } from "../branding";
+import { PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
 import { EXAM_SYSTEMS } from "../config";
 import * as fs from "fs";
 import * as path from "path";
@@ -62,6 +65,18 @@ export function createApp(deps: WebDeps): Express {
   const app = express();
   const organizationId = (req?: Request): number => req?.staff?.organization_id ?? 1;
   const instName = (req?: Request): string => organizationName(repo, organizationId(req));
+  // PPR P1-5: every outgoing send carries the organization's sender identity
+  // (From display name / Reply-To) — one wrapper so no send path can forget it.
+  const sendOrgMail = (
+    a: { email_address: string; thread_id: string; organization_id?: number | null },
+    subject: string,
+    body: string,
+    extras: { banner?: { mime: string; base64: string } | null; attachments?: Array<{ filename: string; mimeType: string; content: Buffer }> }
+  ): Promise<void> =>
+    ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
+      ...organizationSender(repo, a.organization_id ?? 1),
+      ...extras,
+    });
   const authName = (): string => repo.getOrganization(1)?.name?.trim() || organizationName(repo, 1);
 
   app.disable("x-powered-by");
@@ -408,7 +423,12 @@ export function createApp(deps: WebDeps): Express {
   // ── Admissions: the whole pipeline, split into its levels ─────────────────
   // Every gauge on the dashboard opens this page at its own stage; the stage
   // tabs show live counts. Staff act on cases right here.
+  // PPR P0-2: the whole section exists only when an education-module profile
+  // is enabled for this organization. Old bookmarks redirect, never break.
   app.get("/admissions", requireLogin, (req, res) => {
+    if (!repo.hasEducationModule(organizationId(req))) {
+      return res.redirect("/applicants?msg=" + encodeURIComponent("Admissions is off — this organization has no education-module profile."));
+    }
     res.send(admissionsPage(c(req), String(req.query.stage ?? "all")));
   });
 
@@ -416,6 +436,18 @@ export function createApp(deps: WebDeps): Express {
   // live admins never open mock cases, demo accounts never open live ones.
   const sameRealm = (req: Request, a: { demo?: number } | null): boolean =>
     Boolean(a) && (a!.demo ?? 0) === (req.staff!.demo ?? 0);
+
+  // PPR P1-8: the four automation actions are distinct permissions, replacing
+  // the admin/user role split for them. Admins hold all four; other staff hold
+  // what they were granted (see repo.hasPermission for the default grants).
+  const requirePermission = (permission: Permission) =>
+    (req: Request, res: Response, next: NextFunction): void => {
+      if (req.staff && repo.hasPermission(req.staff.id, permission)) {
+        next();
+        return;
+      }
+      res.status(403).send(`403 — you do not hold the “${PERMISSION_LABELS[permission]}” permission.`);
+    };
 
   // OR-8: visibility scoping covers EVERY case surface — the case page,
   // compose, replay and every POST action. Unknown ids and out-of-scope ids
@@ -491,6 +523,12 @@ export function createApp(deps: WebDeps): Express {
     if (!a) return res.status(404).send("Case not found.");
     const draft = repo.queuedOutbox(id);
     if (!draft) return res.redirect(backToCase(id, "No draft on file."));
+    // PPR P1-3/P1-8: an ordinary draft is officer work (staff send paths stay
+    // allowed); a draft awaiting APPROVAL may only be released by a holder of
+    // the "Approve automation" permission.
+    if (draft.needs_approval && !repo.hasPermission(req.staff!.id, "approve_automation")) {
+      return res.status(403).send(`403 — you do not hold the “${PERMISSION_LABELS.approve_automation}” permission.`);
+    }
     const decision = String(req.body.decision ?? "");
     const subject = String(req.body.subject ?? draft.subject);
     const body = String(req.body.body ?? draft.body);
@@ -525,7 +563,7 @@ export function createApp(deps: WebDeps): Express {
     const draftTpl = draft.template_key ? repo.getTemplate(draft.template_key, organizationId(req)) : undefined;
     const pack = packForTemplate(draftTpl?.attach_pack, id, req.staff!.username);
     try {
-      await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
+      await sendOrgMail(a, subject, body, {
         banner: draftTpl && draftTpl.include_banner === 0 ? null : emailBanner(repo, organizationId(req)),
         attachments: pack ? pack.files : [],
       });
@@ -557,6 +595,28 @@ export function createApp(deps: WebDeps): Express {
           ? "completed"
           : LIFECYCLE_ORDER[LIFECYCLE_ORDER.indexOf(a.lifecycle) + 1];
       if (to) {
+        // P1-4: a profile may declare required information per stage. Moving
+        // INTO a stage whose list is not yet satisfied is refused with the
+        // missing items named — staff decide what to collect; the console
+        // refuses to pretend the stage is ready. Empty list (the default) =
+        // no enforcement; the education profile keeps its generated matrix
+        // as the richer requirements source.
+        const stageCfg = repo.caseTypeForCase(id)?.stages?.find((s) => s.id === to);
+        const requires = stageCfg?.requires ?? [];
+        if (requires.length) {
+          const docs = repo.listDocuments(id, { activeOnly: true });
+          const satisfied = (item: string): boolean => {
+            const k = item.trim().toLowerCase();
+            return docs.some((d) =>
+              String(d.document_type).toLowerCase() === k
+              || Object.keys(d.extracted_fields ?? {}).some((f) => f.toLowerCase() === k)
+              || String(d.extracted_text ?? "").toLowerCase().includes(k));
+          };
+          const missing = requires.filter((r) => !satisfied(r));
+          if (missing.length) {
+            return res.redirect(backToCase(id, `Cannot move to “${stageCfg?.label ?? to}” yet — still needed: ${missing.join(", ")}.`));
+          }
+        }
         repo.setLifecycle(id, to, req.staff!.username, `advanced by ${req.staff!.display_name}`);
         if (to === "verification" || to === "completed") staffAction(req, id, "case_action", `moved to ${to}`);
         else staffAction(req, id, "case_action", `advanced to ${to}`);
@@ -592,15 +652,16 @@ export function createApp(deps: WebDeps): Express {
     return true;
   };
 
-  /** OR-7: which official pack (if any) rides along with a template. Missing
-   * pack files are audited — a send that silently drops a promised PDF is the
-   * worst kind of failure. */
-  const packForTemplate = (flag: string | undefined, applicantId: number, actor: string): { files: PackFile[]; label: string } | null => {
-    if (flag !== "application" && flag !== "admission") return null;
+  /** PPR P0-5: which organization-owned attachment set (if any) rides along
+   *  with a template. Missing/empty sets are audited — a send that silently
+   *  drops a promised PDF is the worst kind of failure. Only sets owned by
+   *  the SENDING organization resolve (E3: no privileged pack channel). */
+  const packForTemplate = (ref: string | undefined, applicantId: number, actor: string): { files: PackFile[]; label: string } | null => {
+    if (!ref || ref === "none") return null;
     const applicant = repo.getApplicant(applicantId);
-    const pack = organizationPack(repo, applicant?.organization_id ?? 1, [flag]);
-    if (pack.issues.length) repo.audit(applicantId, actor, "pack_incomplete", pack.issues.join("; "));
-    return { files: pack.files, label: flag };
+    const resolved = repo.attachmentSetFiles(applicant?.organization_id ?? 1, ref);
+    if (resolved.issues.length) repo.audit(applicantId, actor, "pack_incomplete", resolved.issues.join("; "));
+    return { files: resolved.files, label: resolved.label };
   };
 
   app.post("/case/:id/send", requireLogin, csrfCheck, async (req, res) => {
@@ -630,7 +691,7 @@ export function createApp(deps: WebDeps): Express {
     }
     const pack = packForTemplate(tpl.attach_pack, id, req.staff!.username);
     try {
-      await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
+      await sendOrgMail(a, rendered.subject, rendered.body, {
         banner: tpl.include_banner === 0 ? null : emailBanner(repo, organizationId(req)),
         attachments: pack ? pack.files : [],
       });
@@ -648,16 +709,19 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(backToCase(id, `Sent "${tpl.name}"${pack ? ` with the ${pack.label} pack attached` : ""}.`));
   });
 
-  /** Official document packs: the application pack, or the full admission pack. */
+  /** PPR P0-5: send an attachment set with its wrapper template. The set is
+   *  named explicitly — legacy names map to the migrated profile's seeded
+   *  sets; anything else must be one of the organization's own sets. */
   app.post("/case/:id/send-pack", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
     const id = Number(req.params.id);
     const a = repo.getApplicant(id);
     if (!a) return res.status(404).send("Case not found.");
     const kind = String(req.body.kind ?? "");
-    const isAdmission = kind === "admission";
-    if (!isAdmission && kind !== "application") {
-      return res.redirect(backToCase(id, "Unknown pack — nothing sent."));
+    const resolved = repo.attachmentSetFiles(a.organization_id ?? organizationId(req), kind);
+    if (!kind || kind === "none" || resolved.issues.some((i) => i.includes("does not exist"))) {
+      return res.redirect(backToCase(id, "Unknown attachment set — nothing sent."));
     }
+    const isAdmission = kind === "admission";
     const tpl = repo.getTemplate(isAdmission ? "admission_letter" : "docs_request", organizationId(req));
     if (!tpl) return res.redirect(backToCase(id, "Template missing — nothing sent."));
     const rendered = renderTemplate(tpl.subject, tpl.body, {
@@ -671,13 +735,13 @@ export function createApp(deps: WebDeps): Express {
       regDate: repo.getSetting("reg_date", ""),
       orientationDates: repo.getSetting("orientation_dates", ""),
     });
-    const pack = organizationPack(repo, a.organization_id ?? organizationId(req), [isAdmission ? "admission" : "application"]);
+    const pack = resolved;
     // Missing pack files must never be a silent gap in a real send.
     if (pack.issues.length) {
       repo.audit(id, req.staff!.username, "pack_incomplete", pack.issues.join("; "));
     }
     try {
-      await ctx.adapters.sender.send(a.email_address, rendered.subject, rendered.body, a.thread_id, {
+      await sendOrgMail(a, rendered.subject, rendered.body, {
         banner: tpl.include_banner === 0 ? null : emailBanner(repo, organizationId(req)),
         attachments: pack.files,
       });
@@ -696,9 +760,7 @@ export function createApp(deps: WebDeps): Express {
     const packWarn = pack.issues.length
       ? ` ⚠ ${pack.issues.length} pack file(s) missing — see audit.`
       : "";
-    res.redirect(backToCase(id, (isAdmission
-      ? `Admission pack sent — letter plus ${pack.files.length} documents.`
-      : "Application pack sent — form and brochure attached.") + packWarn));
+    res.redirect(backToCase(id, `${isAdmission ? "Admission" : "Attachment"} set “${pack.label}” sent — ${pack.files.length} document(s) attached.${packWarn}`));
   });
 
   // Compose: an action (e.g. "Request missing documents") or any template
@@ -885,7 +947,7 @@ export function createApp(deps: WebDeps): Express {
     }
     const pack = packForTemplate(tpl?.attach_pack, a.id, req.staff!.username);
     try {
-      await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
+      await sendOrgMail(a, subject, body, {
         banner: tpl && tpl.include_banner === 0 ? null : emailBanner(repo, organizationId(req)),
         attachments: pack ? pack.files : [],
       });
@@ -929,7 +991,7 @@ export function createApp(deps: WebDeps): Express {
     }
     const pack = packForTemplate(tpl.attach_pack, a.id, req.staff!.username);
     try {
-      await ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
+      await sendOrgMail(a, subject, body, {
         banner: tpl.include_banner === 0 ? null : emailBanner(repo, organizationId(req)),
         attachments: pack ? pack.files : [],
       });
@@ -1009,10 +1071,15 @@ export function createApp(deps: WebDeps): Express {
    * alternative qualification, or a decline. Recorded as a HUMAN decision,
    * always separately from anything automated.
    */
-  app.post("/case/:id/admission-decision", requireLogin, csrfCheck, (req, res) => {
+  app.post("/case/:id/admission-decision", requireLogin, requirePermission("record_outcome"), csrfCheck, (req, res) => {
     const id = Number(req.params.id);
     const a = repo.getApplicant(id);
     if (!a || !sameRealm(req, a)) return res.status(404).send("Case not found.");
+    // PPR P0-2: outcome vocabulary and the decision form exist only for
+    // education-module cases. Non-academic cases have no admission decision.
+    if (!repo.educationCaseFor(a)) {
+      return res.redirect(backToCase(id, "This case type has no admission decision — outcomes are recorded through its own workflow."));
+    }
     const decision = String(req.body.decision ?? "");
     const reason = String(req.body.reason ?? "").trim();
     if (decision !== "admit" && decision !== "decline") {
@@ -1048,16 +1115,39 @@ export function createApp(deps: WebDeps): Express {
       : "Recorded: Not Admitted after Human Review."));
   });
 
-  /** Re-run the admissions evaluation on demand (new documents arrived etc.). */
+  /** Re-run the admissions evaluation on demand (new documents arrived etc.).
+   *  PPR P0-3: every re-evaluation states WHICH configuration version it
+   *  re-applied (the case's frozen version). Upgrading an open case to the
+   *  profile's CURRENT version is only possible by explicit request
+   *  (`reapply=current`) and is audited as a human decision. */
   app.post("/case/:id/reevaluate", requireLogin, csrfCheck, (req, res) => {
     const id = Number(req.params.id);
     const a = repo.getApplicant(id);
     if (!a || !sameRealm(req, a)) return res.status(404).send("Case not found.");
+    let versionNote = "";
+    if (String(req.body.reapply ?? "") === "current") {
+      const upgraded = repo.reFreezeCaseConfig(a);
+      repo.audit(id, req.staff!.username, "config_version_upgraded", `case explicitly re-applied on CURRENT profile configuration version ${upgraded.config_version} by staff request`);
+      versionNote = ` — explicitly re-applied on CURRENT configuration version ${upgraded.config_version}`;
+    }
+    const frozen = repo.caseConfigFrozen(repo.getApplicant(id)!);
+    const version = frozen?.config_version ?? repo.getApplicant(id)!.config_version_frozen ?? 1;
+    if (!repo.educationCaseFor(a)) {
+      // Generic profile: re-run the configured rule tree from the FROZEN
+      // rules — outcome stays undecided, human review always.
+      const caseType = repo.caseTypeForCase(id);
+      const facts: Record<string, unknown> = {};
+      for (const doc of repo.listDocuments(id, { activeOnly: true })) Object.assign(facts, doc.extracted_fields ?? {});
+      const rules = frozen?.rules ?? (caseType ? repo.caseTypeRules(caseType) : []);
+      const result = caseType ? evaluateCaseTypeRules(repo, caseType, rules, facts) : { result: "undetermined" as const, routing: "human_review" as const };
+      repo.audit(id, req.staff!.username, "evaluation_rerun", `re-applied frozen configuration version ${version} → rules ${result.result}; outcome remains undecided`);
+      return res.redirect(backToCase(id, `Evaluation re-run under configuration version ${version} (the version this case was opened under): rules ${String(result.result).replace(/_/g, " ")} — outcome remains undecided${versionNote}`));
+    }
     const flags = repo.activeFlags(id).filter((f) => f.type !== "duplicate_submission");
     const result = evaluateAdmission(repo, id, flags);
     repo.syncFlags(id, [...flags, ...result.derivedFlags]);
-    repo.audit(id, req.staff!.username, "evaluation_rerun", `re-evaluated on request → ${result.report.result}/${result.report.routing}`);
-    res.redirect(backToCase(id, `Evaluation re-run: ${result.report.result.replace(/_/g, " ")} → ${result.report.routing.replace(/_/g, " ")}.`));
+    repo.audit(id, req.staff!.username, "evaluation_rerun", `re-applied frozen configuration version ${version} → ${result.report.result}/${result.report.routing}`);
+    res.redirect(backToCase(id, `Evaluation re-run under configuration version ${version} (the version this case was opened under): ${result.report.result.replace(/_/g, " ")} → ${result.report.routing.replace(/_/g, " ")}.${versionNote}`));
   });
 
   /**
@@ -1187,7 +1277,8 @@ export function createApp(deps: WebDeps): Express {
         req.query.reqs ? String(req.query.reqs) : undefined,
         req.query.tab ? String(req.query.tab) : undefined,
         req.query.system ? String(req.query.system) : undefined,
-        req.query.organization ? Number(req.query.organization) : undefined
+        req.query.organization ? Number(req.query.organization) : undefined,
+        req.query.edit ? Number(req.query.edit) : undefined
       ));
   });
 
@@ -1204,6 +1295,222 @@ export function createApp(deps: WebDeps): Express {
     } catch (e) {
       return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent(`Organization was not created: ${(e as Error).message}`)}`);
     }
+  });
+
+  // PPR P0-4: workflow rules — first-email and response behaviour as data.
+  const parseRuleConditions = (body: Record<string, unknown>): RuleCondition[] => {
+    const raw = String(body.conditions_json ?? "").trim();
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error("conditions JSON must be an array");
+      return parsed as RuleCondition[];
+    }
+    const out: RuleCondition[] = [];
+    for (let i = 0; i < 3; i++) {
+      const field = String((body as Record<string, string>)[`cond_field_${i}`] ?? "").trim();
+      const value = String((body as Record<string, string>)[`cond_value_${i}`] ?? "").trim();
+      if (!field) continue;
+      if (field === "always") out.push({ field: "always", value: true });
+      else if (field === "sender_state") out.push({ field: "sender_state", value: value.toLowerCase() === "known" ? "known" : "unknown" });
+      else if (field === "has_attachments") out.push({ field: "has_attachments", value: ["yes", "true", "1"].includes(value.toLowerCase()) });
+      else if (field === "body_is_ref") out.push({ field: "body_is_ref", value: true });
+      else if (field === "signals") out.push({ field: "signals", value: "education_intake" });
+      else if (field === "category") out.push({ field: "category", op: "in", values: value.split(",").map((s) => s.trim()).filter(Boolean) });
+      else if (field === "docs_state") {
+        const values = value.split(",").map((s) => s.trim()).filter(Boolean);
+        out.push({ field: "docs_state", values: (values.length ? values : ["any"]) as never });
+      } else if (field === "text" || field === "subject" || field === "body") {
+        out.push({ field, op: "contains_any", values: value.split(",").map((s) => s.trim()).filter(Boolean) });
+      } else throw new Error(`unknown condition field '${field}'`);
+    }
+    return out;
+  };
+  const parseRuleAction = (body: Record<string, unknown>): RuleAction => {
+    const b = body as Record<string, string>;
+    const map = {
+      green: b.map_green?.trim() || undefined,
+      empty: b.map_empty?.trim() || undefined,
+      missing: b.map_missing?.trim() || undefined,
+    };
+    const hasMap = Boolean(map.green || map.empty || map.missing);
+    return {
+      decision: (b.decision as RuleAction["decision"]) || undefined,
+      stage: b.stage?.trim() || undefined,
+      queue: b.queue?.trim() || undefined,
+      priority: b.priority === "high" ? "high" : undefined,
+      assign: b.assign ? Number(b.assign) : undefined,
+      reply_action: (b.reply_action as RuleAction["reply_action"]) || undefined,
+      template_key: b.template_key?.trim() || null,
+      template_map: hasMap ? map : null,
+      attachment_set: b.attachment_set?.trim() || null,
+      request_info: Boolean(b.request_info),
+      sla_hours: b.sla_hours ? Number(b.sla_hours) : null,
+      followup: b.followup === "ladder" ? "ladder" : "none",
+      followup_action: (b.followup_action as RuleAction["followup_action"]) || undefined,
+      audit_code: b.audit_code?.trim() || undefined,
+      fallback: b.fallback === "none" ? "none" : "human_draft",
+    };
+  };
+
+  app.post("/config/workflow-rules/save", requireLogin, requirePermission("publish_rules"), csrfCheck, (req, res) => {
+    try {
+      const name = String(req.body.name ?? "").trim();
+      const kind = String(req.body.kind) === "response" ? "response" : "intake";
+      const caseTypeId = req.body.case_type_id ? Number(req.body.case_type_id) : null;
+      // A rule lives in its profile's organization; legacy-scope rules live in
+      // the staff member's organization.
+      const orgId = (caseTypeId ? repo.caseTypeById(caseTypeId)?.organization_id : undefined) ?? req.staff!.organization_id ?? 1;
+      const conditions = parseRuleConditions(req.body);
+      const action = parseRuleAction(req.body);
+      const saved = repo.saveWorkflowRule({
+        id: req.body.id ? Number(req.body.id) : undefined,
+        organizationId: orgId,
+        caseTypeId,
+        kind,
+        name,
+        position: req.body.position !== "" && req.body.position !== undefined ? Number(req.body.position) : undefined,
+        enabled: true,
+        conditions,
+        action,
+      });
+      repo.audit(null, req.staff!.username, "workflow_rule_saved", `${saved.name} (#${saved.id}, ${kind})`);
+      return res.redirect(`/config?tab=rules&msg=${encodeURIComponent(`Rule “${saved.name}” saved and enabled.`)}`);
+    } catch (e) {
+      return res.redirect(`/config?tab=rules&msg=${encodeURIComponent(`Rule was not saved: ${(e as Error).message}`)}`);
+    }
+  });
+
+  // PPR P1-7: preview a sample email against the rule AS DRAFTED (form fields,
+  // published or not) before anyone presses save. Nothing is written — the
+  // response describes what would fire and who would win the order.
+  app.post("/config/workflow-rules/preview", requireLogin, requirePermission("publish_rules"), csrfCheck, (req, res) => {
+    try {
+      const body = req.body as Record<string, string>;
+      const name = String(body.name ?? "").trim() || "(unsaved rule)";
+      const kind = String(body.kind) === "response" ? "response" : "intake";
+      const caseTypeId = body.case_type_id ? Number(body.case_type_id) : null;
+      const orgId = (caseTypeId ? repo.caseTypeById(caseTypeId)?.organization_id : undefined) ?? req.staff!.organization_id ?? 1;
+      const proposed: WorkflowRule = {
+        id: 0,
+        organization_id: orgId,
+        case_type_id: caseTypeId,
+        kind,
+        name,
+        position: body.position !== "" && body.position !== undefined ? Number(body.position) : 9999,
+        enabled: 1,
+        conditions: parseRuleConditions(body),
+        action: parseRuleAction(body),
+      };
+      // The sample message, as an applicant would send it.
+      const sampleSubject = String(body.sample_subject ?? "").slice(0, 500);
+      const sampleBody = String(body.sample_body ?? "").slice(0, 4000);
+      const sampleFrom = String(body.sample_from ?? "").slice(0, 200);
+      const docsState = (["complete", "empty", "missing", "dirty"] as const).includes(body.sample_docs_state as never)
+        ? body.sample_docs_state as "complete" | "empty" | "missing" | "dirty"
+        : "missing";
+      const input = {
+        senderState: body.sample_sender_state === "known" ? "known" as const : "unknown" as const,
+        subject: sampleSubject,
+        body: sampleBody,
+        hasAttachments: body.sample_attachments === "1",
+        category: categorizeEmail(sampleSubject, sampleBody, body.sample_attachments === "1"),
+        bodyIsRef: /^[A-Z]{1,6}-\d{4}-\d{1,8}$/i.test(sampleBody.trim()),
+        educationSignals: "open" as const,
+        docsState,
+        docsOnFile: docsState === "empty" ? 0 : 3,
+      };
+      // Who else is in the running: the scope's published rules plus this one.
+      const scopeRules = rulesForCaseScope(
+        repo.listWorkflowRules(orgId, { kind }), caseTypeId, caseTypeId === null,
+      );
+      const ordered = [...scopeRules, proposed].sort((a, b) => a.position - b.position || a.id - b.id);
+      const winner = firstMatchingRule(ordered, input);
+      const proposedMatches = ruleMatches(proposed, input);
+      const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]!));
+      let verdict: string;
+      if (winner && winner.id === 0 && proposedMatches) {
+        verdict = `<b>MATCH</b> — this rule would fire for that message: ${esc(describeRule(proposed))}`;
+      } else if (winner && proposedMatches) {
+        verdict = `<b>MATCH, but an earlier rule wins</b> — “${esc(winner.name)}” fires first (${esc(describeRule(winner))}). Raise this rule's position to take over.`;
+      } else if (winner) {
+        verdict = `<b>NO MATCH</b> — this rule would not fire; “${esc(winner.name)}” would handle the message instead (${esc(describeRule(winner))}).`;
+      } else {
+        verdict = `<b>NO MATCH</b> — no rule in this scope would fire; the message routes to human review (nothing is ever dropped).`;
+      }
+      const details = `<div class="small muted" style="margin-top:6px">Sample from ${esc(sampleFrom || "(no sender)")}: category <span class="mono">${esc(input.category)}</span> · docs ${docsState} · sender ${input.senderState} · ${scopeRules.length} published rule(s) in scope.</div>`;
+      res.type("html").send(`<div class="small">${verdict}</div>${details}`);
+    } catch (e) {
+      res.status(400).type("html").send(`<div class="small">Preview failed: ${String((e as Error).message).replace(/[&<>"]/g, "")}</div>`);
+    }
+  });
+
+  app.post("/config/workflow-rules/delete", requireLogin, requirePermission("publish_rules"), csrfCheck, (req, res) => {
+    repo.deleteWorkflowRule(Number(req.body.id), req.staff!.organization_id ?? 1);
+    repo.audit(null, req.staff!.username, "workflow_rule_deleted", `rule #${Number(req.body.id)}`);
+    res.redirect("/config?tab=rules");
+  });
+
+  app.post("/config/workflow-rules/toggle", requireLogin, requirePermission("publish_rules"), csrfCheck, (req, res) => {
+    const id = Number(req.body.id);
+    const rule = repo.getWorkflowRule(id);
+    if (rule) {
+      repo.saveWorkflowRule({
+        id,
+        organizationId: rule.organization_id,
+        caseTypeId: rule.case_type_id,
+        kind: rule.kind,
+        name: rule.name,
+        position: rule.position,
+        enabled: rule.enabled !== 1,
+        conditions: rule.conditions,
+        action: rule.action,
+      });
+      repo.audit(null, req.staff!.username, "workflow_rule_toggled", `${rule.name} (#${id}) → ${rule.enabled !== 1 ? "on" : "off"}`);
+    }
+    res.redirect("/config?tab=rules");
+  });
+
+  app.post("/config/case-types/vocabulary", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const id = Number(req.body.id);
+    const ct = repo.listCaseTypes(req.staff!.organization_id ?? 1).find((x) => x.id === id)
+      ?? repo.caseTypeById(id);
+    if (!ct) return res.redirect(`/config?tab=rules&msg=${encodeURIComponent("Unknown profile.")}`);
+    const parseIdLabels = (text: string): Array<{ id: string; label: string; requires?: string[] }> =>
+      String(text ?? "").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+        const [rawId, rawLabel, rawRequires] = line.split("|");
+        const id = rawId.trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
+        const label = (rawLabel ?? rawId).trim();
+        // P1-4: a stage line may declare required information — "stage|label|
+        // item1, item2" (document keys or free-text info the file must hold).
+        const requires = rawRequires ? rawRequires.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+        return requires && requires.length ? { id, label, requires } : { id, label };
+      }).filter((x) => x.id);
+    const b = req.body as Record<string, string>;
+    repo.updateCaseTypeVocabulary(id, {
+      terminology: {
+        case: b.term_case?.trim() || "Applicant",
+        contact: b.term_contact?.trim() || "Contact",
+        category: b.term_category?.trim() || "Category",
+        stage: b.term_stage?.trim() || "Current level",
+        outcome: b.term_outcome?.trim() || "Admission decision",
+      },
+      stages: parseIdLabels(b.stages_text ?? ""),
+      queues: parseIdLabels(b.queues_text ?? ""),
+    });
+    repo.audit(null, req.staff!.username, "workflow_vocabulary_saved", `${ct.code}: terminology + stages + queues`);
+    res.redirect(`/config?tab=rules&msg=${encodeURIComponent(`Vocabulary, stages and queues saved for “${ct.name}”.`)}`);
+  });
+
+  app.post("/config/case-types/profile", requireLogin, requirePermission("send_automated"), csrfCheck, (req, res) => {
+    const id = Number(req.body.id);
+    const ct = repo.listCaseTypes(req.staff!.organization_id ?? 1).find((x) => x.id === id);
+    if (!ct) return res.redirect("/config?tab=rules&msg=Unknown+profile");
+    repo.updateCaseTypeProfile(id, {
+      default_reply_action: String(req.body.default_reply_action) === "auto" ? "auto" : "draft",
+      qualification_gate: String(req.body.qualification_gate) === "0" ? 0 : 1,
+    });
+    repo.audit(null, req.staff!.username, "workflow_profile_saved", `${ct.code}: default_reply_action=${String(req.body.default_reply_action)}, qualification_gate=${String(req.body.qualification_gate)}`);
+    res.redirect(`/config?tab=rules&msg=${encodeURIComponent(`Profile “${ct.name}” updated.`)}`);
   });
 
   app.post("/config/case-types/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
@@ -1528,6 +1835,60 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(`/config?tab=requirements#catalogue`);
   });
 
+  // PPR P0-5: attachment sets — organization-owned groups of sendable files.
+  app.post("/config/attachment-sets/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const name = String(req.body.name ?? "").trim();
+    const orgId = req.body.organization_id ? Number(req.body.organization_id) : organizationId(req);
+    if (!name || !repo.getOrganization(orgId)) return res.redirect(`/config?tab=pack&msg=${encodeURIComponent("A set needs a name and a valid organization.")}`);
+    try {
+      const set = repo.createAttachmentSet(orgId, name, String(req.body.description ?? ""));
+      repo.audit(null, req.staff!.username, "attachment_set_created", `${set.name} (#${set.id}, org ${orgId})`);
+      res.redirect(`/config?tab=pack&msg=${encodeURIComponent(`Set “${set.name}” created — upload its PDFs below.`)}#aset-${set.id}`);
+    } catch (e) {
+      res.redirect(`/config?tab=pack&msg=${encodeURIComponent(`Set was not created: ${(e as Error).message}`)}`);
+    }
+  });
+
+  app.post("/config/attachment-sets/upload",
+    requireLogin, requireRole("admin"), csrfCheck,
+    express.raw({ type: "application/pdf", limit: "12mb" }),
+    (req, res) => {
+      const set = repo.getAttachmentSet(Number(req.query.set));
+      if (!set) return res.status(400).send("Unknown attachment set.");
+      const body = req.body as Buffer;
+      if (!Buffer.isBuffer(body) || body.length < 512 || body.subarray(0, 5).toString() !== "%PDF-") {
+        return res.status(400).send("Not a PDF.");
+      }
+      // The filename arrives as a query parameter (raw-body upload).
+      const rawName = String(req.query.filename ?? "").trim();
+      const filename = rawName.replace(/[/\\]/g, "_").slice(0, 120) || `document-${Date.now()}.pdf`;
+      repo.addAttachmentSetFile(set.id, { filename, mime: "application/pdf", content: body, provenance: "uploaded" });
+      repo.audit(null, req.staff!.username, "attachment_set_file_added", `${set.name}: ${filename} (${body.length} bytes)`);
+      res.send("Uploaded.");
+    });
+
+  app.post("/config/attachment-sets/file-delete", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const fileId = Number(req.body.file_id);
+    const rows = repo.listAttachmentSets(organizationId(req));
+    for (const s of rows) {
+      if (repo.listAttachmentSetFiles(s.id).some((f) => f.id === fileId)) {
+        repo.deleteAttachmentSetFile(fileId);
+        repo.audit(null, req.staff!.username, "attachment_set_file_removed", `${s.name}: file #${fileId}`);
+        return res.redirect(`/config?tab=pack#aset-${s.id}`);
+      }
+    }
+    res.redirect(`/config?tab=pack&msg=${encodeURIComponent("Unknown file.")}`);
+  });
+
+  app.post("/config/attachment-sets/delete", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const set = repo.getAttachmentSet(Number(req.body.set_id));
+    if (set && set.organization_id === organizationId(req)) {
+      repo.deleteAttachmentSet(set.id, organizationId(req));
+      repo.audit(null, req.staff!.username, "attachment_set_deleted", `${set.name} (#${set.id})`);
+    }
+    res.redirect(`/config?tab=pack&msg=${encodeURIComponent(`Set “${set?.name ?? "?"}” deleted. Templates referencing it will attach nothing (and say so in the audit).`)}`);
+  });
+
   // Official pack files: download (staff) + replace (raw PDF upload).
   app.get("/pack/:key", requireLogin, (req, res) => {
     const slot = PACK_SLOTS.find((x) => x.key === req.params.key);
@@ -1579,12 +1940,13 @@ export function createApp(deps: WebDeps): Express {
     // Pin the OAuth origin only for reverse-proxy / HTTPS deployments — advanced field.
     repo.setSetting("gmail_public_base_url", String(req.body.gmail_public_base_url ?? "").trim());
     // Secret is write-only in the UI: kept if the field is left blank.
+    // PPR P0-1: credentials live in the secrets store, never in settings.
     const secret = String(req.body.gmail_client_secret ?? "").trim();
-    if (secret) repo.setSetting("gmail_client_secret", secret);
+    if (secret) repo.setSecret("gmail_client_secret", secret);
     // Manual / OAuth-Playground refresh token path (advanced field).
     const manualToken = String(req.body.gmail_refresh_token_manual ?? "").trim();
-    if (manualToken) repo.setSetting("gmail_refresh_token", manualToken);
-    repo.audit(null, req.staff!.username, "gmail_credentials_saved", "stored OAuth credentials in settings");
+    if (manualToken) repo.setSecret("gmail_refresh_token", manualToken);
+    repo.audit(null, req.staff!.username, "gmail_credentials_saved", "stored OAuth credentials in the secret store");
     res.redirect(settingsBack("Gmail credentials saved — now press “Connect with Google”."));
   });
 
@@ -1626,7 +1988,7 @@ export function createApp(deps: WebDeps): Express {
     }
     const code = String(req.query.code ?? "");
     const clientId = repo.getSetting("gmail_client_id", "");
-    const clientSecret = repo.getSetting("gmail_client_secret", "");
+    const clientSecret = repo.getSecret("gmail_client_secret");
     const redirectUri = gmailRedirectUri(repo, req.protocol, req.get("host") ?? "localhost");
     try {
       const resp = await fetch("https://oauth2.googleapis.com/token", {
@@ -1643,7 +2005,7 @@ export function createApp(deps: WebDeps): Express {
           `Google did not return a refresh token${json.error_description ? ` (${json.error_description})` : ""}. Press “Connect with Google” again and approve access.`
         ));
       }
-      repo.setSetting("gmail_refresh_token", json.refresh_token);
+      repo.setSecret("gmail_refresh_token", json.refresh_token);
       repo.setSetting("gmail_disabled", "");
       repo.audit(null, req.staff!.username, "gmail_connected", repo.getSetting("gmail_address", ""));
       res.redirect(settingsBack("Gmail connected — live sorting starts within a minute."));
@@ -1659,8 +2021,8 @@ export function createApp(deps: WebDeps): Express {
     const cfg = {
       address: repo.getSetting("gmail_address", ""),
       clientId: repo.getSetting("gmail_client_id", ""),
-      clientSecret: repo.getSetting("gmail_client_secret", ""),
-      refreshToken: repo.getSetting("gmail_refresh_token", ""),
+      clientSecret: repo.getSecret("gmail_client_secret"),
+      refreshToken: repo.getSecret("gmail_refresh_token"),
     };
     if (!cfg.address || !cfg.clientId || !cfg.clientSecret || !cfg.refreshToken) {
       if (deps.gmailTest && gmailConfigured && repo.getSetting("gmail_disabled", "") !== "1") {
@@ -1697,7 +2059,7 @@ export function createApp(deps: WebDeps): Express {
   app.post("/settings/gmail/disconnect", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     // Pause an environment-managed client without deleting its env secret.
     repo.setSetting("gmail_disabled", "1");
-    repo.setSetting("gmail_refresh_token", "");
+    repo.deleteSecret("gmail_refresh_token");
     repo.audit(null, req.staff!.username, "gmail_disconnected", "");
     res.redirect(settingsBack("Gmail disconnected — live fetching stopped."));
   });
@@ -1740,11 +2102,11 @@ export function createApp(deps: WebDeps): Express {
 
 
   // ── Gemini (document-reading AI) — a first-class settings field ───────────
-  // The key is stored in Settings, used by the extraction pipeline AT ONCE
-  // (no restart, no env file). "Test key" performs a real round-trip and
-  // reports exactly what happened.
+  // The key is stored in the secret store (PPR P0-1), used by the extraction
+  // pipeline AT ONCE (no restart, no env file). "Test key" performs a real
+  // round-trip and reports exactly what happened.
   const rebuildAdapters = () => {
-    const key = repo.getSetting("gemini_api_key", "").trim();
+    const key = repo.getSecret("gemini_api_key").trim();
     if (!key) {
       // N1: no key means MOCK reading — say so by actually rebuilding. The
       // old early-return left stale live Gemini adapters in place after a
@@ -1781,7 +2143,7 @@ export function createApp(deps: WebDeps): Express {
     const key = String(req.body.gemini_api_key ?? "").trim();
     const model = String(req.body.gemini_model ?? DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
     if (req.body.clear !== undefined) {
-      repo.setSetting("gemini_api_key", "");
+      repo.deleteSecret("gemini_api_key");
       repo.setSetting("gemini_last_error", "");
       // N1: the message below is only true if the adapters actually go
       // back to mock — rebuild before claiming it.
@@ -1789,14 +2151,14 @@ export function createApp(deps: WebDeps): Express {
       repo.audit(null, req.staff!.username, "gemini_disabled", "API key removed — back to mock reading");
       return res.redirect(back("Gemini key removed. Document reading falls back to text/OCR only."));
     }
-    if (!key && !repo.getSetting("gemini_api_key", "")) {
+    if (!key && !repo.hasSecret("gemini_api_key")) {
       return res.redirect(back("Paste a Gemini API key first (get one free at aistudio.google.com/apikey)."));
     }
-    if (key) repo.setSetting("gemini_api_key", key);
+    if (key) repo.setSecret("gemini_api_key", key);
     repo.setSetting("gemini_model", model);
     // Prove the key with ONE real API call before claiming it works.
     try {
-      const probe = new GeminiVisionAdapter(repo.getSetting("gemini_api_key", ""), model);
+      const probe = new GeminiVisionAdapter(repo.getSecret("gemini_api_key"), model);
       await probe.probeKey();
       rebuildAdapters();
       repo.audit(null, req.staff!.username, "gemini_enabled", `live document reading on (${model})`);
@@ -1822,7 +2184,15 @@ export function createApp(deps: WebDeps): Express {
     if (!/^[A-Z]{1,8}$/.test(refPrefix)) {
       return res.redirect(`/settings?msg=${encodeURIComponent("Reference prefix must be 1–8 letters.")}#letters`);
     }
-    repo.updateOrganization(organizationId(req), { name, refPrefix, theme: { primary, accent } });
+    // PPR P1-5: sender identity + locale are organization-owned and now
+    // actually applied to outgoing mail (From display name / Reply-To).
+    repo.updateOrganization(organizationId(req), {
+      name, refPrefix, theme: { primary, accent },
+      fromName: String(req.body.from_name ?? ""),
+      replyTo: String(req.body.reply_to ?? ""),
+      locale: String(req.body.locale ?? ""),
+      timezone: String(req.body.timezone ?? ""),
+    });
     repo.audit(null, req.staff!.username, "organization_identity_changed", `${name} (${primary}, ${accent})`);
     res.redirect(`/settings?msg=${encodeURIComponent("Organization identity saved.")}#letters`);
   });
@@ -1834,7 +2204,7 @@ export function createApp(deps: WebDeps): Express {
     const numOk = (v: string) => /^\d+(\.\d+)?$/.test(v) && Number(v) > 0;
     const ladderOk = (v: string) => v.split(",").every((p) => /^\d+$/.test(p.trim()) && Number(p.trim()) > 0);
     for (const key of [
-      "institution_name", "sla_target_hours", "escalation_hours", "from_name",
+      "institution_name", "sla_target_hours", "escalation_hours",
       "unanswered_target_hours", "followup_ladder_days", "retention_days",
       "reg_date", "orientation_dates", "intake_hotwords",
     ]) {
@@ -1955,16 +2325,22 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/templates/save", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const key = String(req.body.key ?? "");
-    const existing = repo.getTemplate(key, organizationId(req));
+    const existing = repo.getTemplate(key, organizationId(req), req.body.case_type_id ? Number(req.body.case_type_id) : undefined);
     if (!existing) return res.redirect(`/templates?msg=${encodeURIComponent("Unknown template — nothing saved.")}`);
     const name = String(req.body.name ?? "").trim();
     const subject = String(req.body.subject ?? "").trim();
     const body = String(req.body.body ?? "").trim();
     if (!name || !subject || !body) return res.redirect(tplBack(key, "Template needs a name, a subject and a body — nothing saved."));
-    const packRaw = String(req.body.attach_pack ?? "");
-    const attachPack = ["none", "application", "admission"].includes(packRaw) ? packRaw : "none";
-    repo.upsertTemplate(key, name, subject, body, req.body.include_banner !== undefined, attachPack);
-    repo.audit(null, req.staff!.username, "template_changed", `${key}${attachPack !== "none" ? ` (+${attachPack} pack)` : ""}`);
+    const packRaw = String(req.body.attach_pack ?? "none").trim() || "none";
+    const caseTypeId = req.body.case_type_id !== undefined ? Number(req.body.case_type_id) || 0 : existing.case_type_id;
+    try {
+      // PPR P0-5 (E3 close): upsertTemplate validates the reference against
+      // this organization's OWN attachment sets — unknown refs are refused.
+      repo.upsertTemplate(key, name, subject, body, req.body.include_banner !== undefined, packRaw, organizationId(req), caseTypeId);
+    } catch (e) {
+      return res.redirect(tplBack(key, `Template not saved: ${(e as Error).message}`));
+    }
+    repo.audit(null, req.staff!.username, "template_changed", `${key}${packRaw !== "none" ? ` (+${packRaw} set)` : ""}${caseTypeId ? ` [profile #${caseTypeId}]` : ""}`);
     const unknown = unknownPlaceholders(subject + " " + body);
     const warn = unknown.length
       ? ` ⚠ Unknown placeholder${unknown.length === 1 ? "" : "s"} left in the text: ${unknown.join(", ")} — it will reach applicants as literal text.`
@@ -1972,13 +2348,36 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(tplBack(key, `Template “${name}” saved.${warn}`));
   });
 
+  // PPR P0-6: templates are not a closed enum — a profile can create the
+  // keys it needs. The key is a stable machine name (like a variable name).
+  app.post("/templates/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const key = String(req.body.key ?? "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
+    const name = String(req.body.name ?? "").trim();
+    const caseTypeId = Number(req.body.case_type_id ?? 0) || 0;
+    if (!/^[a-z][a-z0-9_]{1,48}$/.test(key) || !name) {
+      return res.redirect(`/templates?msg=${encodeURIComponent("A template needs a machine key (letters, digits, underscores) and a display name.")}`);
+    }
+    if (repo.getTemplate(key, organizationId(req), caseTypeId || undefined)) {
+      return res.redirect(`/templates?template=${encodeURIComponent(key)}&msg=${encodeURIComponent("That key already exists for this organization — opening it instead.")}`);
+    }
+    repo.upsertTemplate(key, name, `Subject for ${name}`, `Hello {name},\n\n\n\nKind regards,\n{institution}`, true, "none", organizationId(req), caseTypeId);
+    repo.audit(null, req.staff!.username, "template_created", `${key}${caseTypeId ? ` [profile #${caseTypeId}]` : ""}`);
+    res.redirect(`/templates?template=${encodeURIComponent(key)}&msg=${encodeURIComponent(`Template “${name}” created — its first version is its saved default.`)}`);
+  });
+
   app.post("/templates/reset", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const key = String(req.body.key ?? "");
-    const def = TEMPLATE_DEFAULTS[key];
+    // PPR P0-6: "Reset to default" restores the profile's OWN default —
+    // the snapshot captured when the template was created — not a shared
+    // global wording. Legacy rows without a snapshot fall back to the
+    // migrated education profile's official defaults.
+    const snap = repo.templateDefaultSnapshot(key, organizationId(req));
+    const def = snap ?? TEMPLATE_DEFAULTS[key];
     if (!def) return res.redirect(`/templates?msg=${encodeURIComponent("No default exists for that template — nothing to reset.")}`);
-    repo.upsertTemplate(key, def.name, def.subject, def.body, def.include_banner, def.attach_pack);
-    repo.audit(null, req.staff!.username, "template_reset", key);
-    res.redirect(tplBack(key, `“${def.name}” reset to the official default.`));
+    const existingRow = repo.getTemplate(key, organizationId(req));
+    repo.upsertTemplate(key, def.name, def.subject, def.body, Boolean(def.include_banner), def.attach_pack, organizationId(req), existingRow?.case_type_id ?? 0);
+    repo.audit(null, req.staff!.username, "template_reset", `${key} → ${snap ? "profile default" : "shipped default"}`);
+    res.redirect(tplBack(key, `“${def.name}” reset to ${snap ? "its own default" : "the official default"}.`));
   });
 
   // ── Staff management (admin) ─────────────────────────────────────────────
@@ -2012,6 +2411,20 @@ export function createApp(deps: WebDeps): Express {
   app.get("/staff", requireLogin, requireRole("admin"), (req, res) =>
     res.send(staffPage(c(req), req.query.msg ? String(req.query.msg) : undefined))
   );
+
+  // PPR P1-8: grant/revoke the four automation permissions per staff member.
+  app.post("/staff/permissions", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    for (const st of repo.listStaff()) {
+      if (st.role === "admin") continue; // admins implicitly hold all four
+      const grants: Permission[] = [];
+      for (const p of PERMISSIONS) {
+        if (String((req.body as Record<string, string>)[`perm_${st.id}_${p}`] ?? "") === "1") grants.push(p);
+      }
+      repo.setPermissions(st.id, grants);
+    }
+    repo.audit(null, req.staff!.username, "staff_permissions_saved", "automation permissions updated");
+    res.redirect("/staff?msg=" + encodeURIComponent("Automation permissions saved."));
+  });
 
   app.post("/staff/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const username = String(req.body.username ?? "").trim();

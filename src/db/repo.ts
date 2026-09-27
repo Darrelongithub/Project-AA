@@ -32,15 +32,54 @@ import type {
   Organization,
   OrganizationTheme,
   CaseType,
+  CaseConfigFrozen,
   DocumentDefinition,
   CaseOutcome,
+  AttachmentSet,
+  Permission,
 } from "../types";
+import { PERMISSIONS } from "../types";
+import type { WorkflowRule } from "../rules/workflow";
 import { documentRequirementsFor, fillSlots, type ApplicantNationality, type ProgrammeLevel } from "../documents/matrix";
 import type { VisionCacheStore } from "../extraction/gemini";
 import { isValidCachedVision } from "../extraction/gemini";
 import type { VisionExtraction } from "../types";
 
 const nowIso = () => new Date().toISOString();
+
+/** PPR P0-1: the only keys that may live in the secrets store. */
+export const SECRET_KEYS: readonly string[] = ["gemini_api_key", "gmail_client_secret", "gmail_refresh_token"];
+
+/** PPR P1-2: the current six lifecycle stages / five queues are the EDUCATION
+ * preset — data now, not a core assumption. Stage ids stay stable (they are
+ * the values the lifecycle column has always stored). */
+export const EDUCATION_STAGE_PRESET: Array<{ id: string; label: string }> = [
+  { id: "application_received", label: "Application Received" },
+  { id: "documents_received", label: "Documents Received" },
+  { id: "documents_checked", label: "Documents Checked" },
+  { id: "awaiting_review", label: "Awaiting Review" },
+  { id: "verification", label: "Verification" },
+  { id: "completed", label: "Completed" },
+];
+export const GENERIC_STAGE_PRESET: Array<{ id: string; label: string }> = [
+  { id: "application_received", label: "Received" },
+  { id: "documents_received", label: "Information received" },
+  { id: "awaiting_review", label: "In review" },
+  { id: "completed", label: "Completed" },
+];
+export const EDUCATION_QUEUE_PRESET: Array<{ id: string; label: string }> = [
+  { id: "completed", label: "Completed / Verification" },
+  { id: "waiting_documents", label: "Waiting for Documents" },
+  { id: "human_review", label: "Human Review Required" },
+  { id: "decision", label: "Admissions / Decision" },
+  { id: "enquiries", label: "Enquiries & Communication" },
+];
+export const GENERIC_QUEUE_PRESET: Array<{ id: string; label: string }> = [
+  { id: "new", label: "New" },
+  { id: "in_progress", label: "In progress" },
+  { id: "waiting", label: "Waiting" },
+  { id: "done", label: "Done" },
+];
 
 /** Query shape for {@link Repo.searchApplicants} — shared with the web layer. */
 export interface ApplicantSearchQuery {
@@ -77,13 +116,16 @@ export class Repo {
   // ── Organizations and generic case configuration ───────────────────────
 
   getOrganization(id: number): Organization | undefined {
-    const row = this.db.prepare("SELECT id, name, logo, ref_prefix, theme FROM organizations WHERE id = ?").get(id) as
-      | { id: number; name: string; logo: string | null; ref_prefix: string; theme: string }
+    const row = this.db.prepare("SELECT id, name, logo, ref_prefix, theme, from_name, reply_to, locale, timezone FROM organizations WHERE id = ?").get(id) as
+      | { id: number; name: string; logo: string | null; ref_prefix: string; theme: string; from_name: string | null; reply_to: string | null; locale: string | null; timezone: string | null }
       | undefined;
     if (!row) return undefined;
     let theme: OrganizationTheme = { primary: "#334155", accent: "#0f766e" };
     try { theme = { ...theme, ...(JSON.parse(row.theme || "{}") as Partial<OrganizationTheme>) }; } catch { /* use safe defaults */ }
-    return { id: row.id, name: row.name, logo: row.logo, ref_prefix: row.ref_prefix || (id === 1 ? "RU" : "ORG"), theme };
+    return {
+      id: row.id, name: row.name, logo: row.logo, ref_prefix: row.ref_prefix || (id === 1 ? "RU" : "ORG"), theme,
+      from_name: row.from_name, reply_to: row.reply_to, locale: row.locale, timezone: row.timezone,
+    };
   }
 
   /** Create a tenant with no inherited admissions content. */
@@ -110,7 +152,7 @@ export class Repo {
     return this.getOrganization(organizationId)?.ref_prefix || (organizationId === 1 ? "RU" : "ORG");
   }
 
-  updateOrganization(id: number, patch: { name?: string; logo?: string | Buffer | null; refPrefix?: string; theme?: Partial<OrganizationTheme> }): void {
+  updateOrganization(id: number, patch: { name?: string; logo?: string | Buffer | null; refPrefix?: string; theme?: Partial<OrganizationTheme>; fromName?: string | null; replyTo?: string | null; locale?: string | null; timezone?: string | null }): void {
     const current = this.getOrganization(id);
     if (!current) return;
     const theme = { ...current.theme, ...(patch.theme ?? {}) };
@@ -118,33 +160,66 @@ export class Repo {
     const name = patch.name?.trim() || current.name;
     const refPrefix = patch.refPrefix === undefined ? current.ref_prefix : patch.refPrefix.trim().toUpperCase();
     if (!/^[A-Z]{1,8}$/.test(refPrefix)) throw new Error("Reference prefix must be 1–8 letters");
-    this.db.prepare("UPDATE organizations SET name = ?, logo = ?, ref_prefix = ?, theme = ? WHERE id = ?")
-      .run(name, logo, refPrefix, JSON.stringify(theme), id);
+    const text = (v: string | null | undefined, prev: string | null | undefined): string | null =>
+      v === undefined ? (prev ?? null) : v === null || v.trim() === "" ? null : v.trim().replace(/[\r\n]+/g, " ");
+    this.db.prepare("UPDATE organizations SET name = ?, logo = ?, ref_prefix = ?, theme = ?, from_name = ?, reply_to = ?, locale = ?, timezone = ? WHERE id = ?")
+      .run(name, logo, refPrefix, JSON.stringify(theme),
+        text(patch.fromName, current.from_name), text(patch.replyTo, current.reply_to),
+        text(patch.locale, current.locale), text(patch.timezone, current.timezone), id);
     if (id === 1 && patch.name !== undefined) {
       this.db.prepare("INSERT INTO settings (key, value) VALUES ('institution_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(name);
     }
   }
 
-  createCaseType(organizationId: number, input: { code: string; name: string; category?: string; config?: Record<string, unknown> }): CaseType {
+  createCaseType(organizationId: number, input: {
+    code: string; name: string; category?: string; config?: Record<string, unknown>;
+    /** PPR P0-2/P0-4: profile flags. New profiles are draft-first, no auto-decision. */
+    educationModule?: boolean; defaultReplyAction?: string; qualificationGate?: boolean; autoAdmit?: boolean;
+  }): CaseType {
     this.db.prepare(
-      "INSERT INTO case_types (organization_id, code, name, category, config) VALUES (?,?,?,?,?) " +
+      "INSERT INTO case_types (organization_id, code, name, category, config, education_module, default_reply_action, qualification_gate, auto_admit, stages, queues) " +
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?) " +
       "ON CONFLICT(organization_id, code) DO UPDATE SET name=excluded.name, category=excluded.category, config=excluded.config"
-    ).run(organizationId, input.code.trim().toUpperCase(), input.name.trim(), input.category?.trim() || "general", JSON.stringify(input.config ?? {}));
+    ).run(
+      organizationId, input.code.trim().toUpperCase(), input.name.trim(), input.category?.trim() || "general",
+      JSON.stringify(input.config ?? {}),
+      input.educationModule ? 1 : 0,
+      input.defaultReplyAction ?? "draft",
+      input.qualificationGate ? 1 : 0,
+      input.autoAdmit ? 1 : 0,
+      JSON.stringify(input.educationModule ? EDUCATION_STAGE_PRESET : GENERIC_STAGE_PRESET),
+      JSON.stringify(input.educationModule ? EDUCATION_QUEUE_PRESET : GENERIC_QUEUE_PRESET),
+    );
     return this.getCaseType(input.code, organizationId)!;
   }
 
   getCaseType(code: string, organizationId = 1): CaseType | undefined {
-    const row = this.db.prepare("SELECT id, organization_id, code, name, category, config, active FROM case_types WHERE organization_id = ? AND code = ? COLLATE NOCASE")
-      .get(organizationId, code.trim()) as (Omit<CaseType, "config"> & { config: string }) | undefined;
-    if (!row) return undefined;
+    const row = this.db.prepare("SELECT id, organization_id, code, name, category, config, active, education_module, terminology, stages, queues, config_version, default_reply_action, qualification_gate, auto_admit FROM case_types WHERE organization_id = ? AND code = ? COLLATE NOCASE")
+      .get(organizationId, code.trim()) as (Omit<CaseType, "config" | "terminology" | "stages" | "queues"> & { config: string; terminology: string; stages: string; queues: string }) | undefined;
+    return row ? this.rowToCaseType(row) : undefined;
+  }
+
+  private rowToCaseType(row: Omit<CaseType, "config" | "terminology" | "stages" | "queues"> & { config: string; terminology: string; stages: string; queues: string }): CaseType {
     let config: Record<string, unknown> = {};
     try { config = JSON.parse(row.config || "{}"); } catch { /* safe empty config */ }
-    return { ...row, config };
+    let terminology: Record<string, string> = {};
+    try { terminology = JSON.parse(row.terminology || "{}"); } catch { /* safe empty */ }
+    let stages: Array<{ id: string; label: string }> = [];
+    try { stages = JSON.parse(row.stages || "[]"); } catch { /* safe empty */ }
+    let queues: Array<{ id: string; label: string }> = [];
+    try { queues = JSON.parse(row.queues || "[]"); } catch { /* safe empty */ }
+    return { ...row, config, terminology, stages, queues };
   }
 
   listCaseTypes(organizationId = 1): CaseType[] {
     const rows = this.db.prepare("SELECT code FROM case_types WHERE organization_id = ? AND active = 1 ORDER BY code").all(organizationId) as Array<{ code: string }>;
     return rows.map((r) => this.getCaseType(r.code, organizationId)!).filter(Boolean);
+  }
+
+  /** Look a workflow profile up by its row id (any organization). */
+  caseTypeById(id: number): CaseType | undefined {
+    const row = this.db.prepare("SELECT organization_id, code FROM case_types WHERE id = ?").get(id) as { organization_id: number; code: string } | undefined;
+    return row ? this.getCaseType(row.code, row.organization_id) : undefined;
   }
 
   listCases(organizationId?: number): ApplicantRow[] {
@@ -186,10 +261,12 @@ export class Repo {
       "INSERT INTO document_definitions (case_type_id, key, label, required, blocking, position) VALUES (?,?,?,?,?,?) " +
       "ON CONFLICT(case_type_id,key) DO UPDATE SET label=excluded.label, required=excluded.required, blocking=excluded.blocking, position=excluded.position"
     ).run(caseTypeId, key, input.label.trim(), input.required === false ? 0 : 1, input.blocking === false ? 0 : 1, input.position ?? 0);
+    this.bumpCaseTypeConfigVersion(caseTypeId);
   }
 
   deleteDocumentDefinition(caseTypeId: number, key: string): void {
     this.db.prepare("DELETE FROM document_definitions WHERE case_type_id = ? AND key = ?").run(caseTypeId, key.trim().toLowerCase());
+    this.bumpCaseTypeConfigVersion(caseTypeId);
   }
 
   updateCaseTypeRules(caseTypeId: number, nodes: RuleNode[]): void {
@@ -198,11 +275,238 @@ export class Repo {
     try { config = JSON.parse(row?.config || "{}"); } catch { /* replace corrupt config safely */ }
     config.rules = nodes;
     this.db.prepare("UPDATE case_types SET config = ? WHERE id = ?").run(JSON.stringify(config), caseTypeId);
+    this.bumpCaseTypeConfigVersion(caseTypeId);
   }
 
   caseTypeRules(caseType: CaseType): RuleNode[] {
     const raw = caseType.config?.rules;
     return Array.isArray(raw) ? raw as RuleNode[] : [];
+  }
+
+  // ── PPR P0-3: configuration versioning + per-case freeze ─────────────────
+  /** Publishing rules/documents for a profile bumps its configuration version. */
+  bumpCaseTypeConfigVersion(caseTypeId: number): number {
+    this.db.prepare("UPDATE case_types SET config_version = config_version + 1 WHERE id = ?").run(caseTypeId);
+    return this.caseTypeConfigVersion(caseTypeId);
+  }
+
+  caseTypeConfigVersion(caseTypeId: number): number {
+    const row = this.db.prepare("SELECT config_version FROM case_types WHERE id = ?").get(caseTypeId) as { config_version?: number } | undefined;
+    return row?.config_version ?? 1;
+  }
+
+  /**
+   * Freeze the exact profile configuration a case is opened under. Existing
+   * snapshots are immutable — later edits never rewrite them (audit F6).
+   */
+  freezeCaseConfig(a: ApplicantRow): void {
+    if (a.case_config_frozen) return;
+    const caseType = this.caseTypeForCase(a.id);
+    const frozen: CaseConfigFrozen = {
+      config_version: caseType?.config_version ?? 1,
+      rules: caseType ? this.caseTypeRules(caseType) : null,
+      documents: caseType ? this.listDocumentDefinitions(caseType.id).map((d) => ({ key: d.key, label: d.label, required: d.required, blocking: d.blocking })) : null,
+      frozen_at: nowIso(),
+    };
+    this.db.prepare("UPDATE applicants SET case_config_frozen = ?, config_version_frozen = ?, config_version_frozen_at = ? WHERE id = ?")
+      .run(JSON.stringify(frozen), frozen.config_version, frozen.frozen_at, a.id);
+  }
+
+  /** The frozen configuration snapshot of a case (null for legacy rows). */
+  caseConfigFrozen(a: ApplicantRow): CaseConfigFrozen | null {
+    if (!a.case_config_frozen) return null;
+    try { return JSON.parse(a.case_config_frozen) as CaseConfigFrozen; } catch { return null; }
+  }
+
+  /** Explicit, human-approved upgrade of a case to the profile's CURRENT
+   * configuration version. Never happens implicitly (PPR P0-3). */
+  reFreezeCaseConfig(a: ApplicantRow): CaseConfigFrozen {
+    this.db.prepare("UPDATE applicants SET case_config_frozen = NULL WHERE id = ?").run(a.id);
+    this.freezeCaseConfig({ ...a, case_config_frozen: null } as ApplicantRow);
+    return this.caseConfigFrozen(this.getApplicant(a.id)!)!;
+  }
+
+  /** PPR P0-2: is this case an education-module case? */
+  educationCaseFor(a: ApplicantRow): boolean {
+    if (a.case_type_id) {
+      const t = this.getCaseTypeById(a.case_type_id);
+      return t ? t.education_module === 1 : false;
+    }
+    return (a.organization_id ?? 1) === 1;
+  }
+
+  /** PPR P0-2: does this organization run any education-module profile? */
+  hasEducationModule(organizationId = 1): boolean {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM case_types WHERE organization_id = ? AND education_module = 1").get(organizationId) as { n: number };
+    return row.n > 0;
+  }
+
+  // ── PPR P0-4: workflow rules (intake + response behaviour as data) ───────
+
+  listWorkflowRules(organizationId = 1, opts: { caseTypeId?: number | null; kind?: "intake" | "response" } = {}): WorkflowRule[] {
+    let sql = "SELECT * FROM workflow_rules WHERE organization_id = ?";
+    const params: unknown[] = [organizationId];
+    if (opts.caseTypeId !== undefined) {
+      if (opts.caseTypeId === null) {
+        sql += " AND case_type_id IS NULL";
+      } else {
+        sql += " AND (case_type_id = ? OR case_type_id IS NULL)";
+        params.push(opts.caseTypeId);
+      }
+    }
+    if (opts.kind) {
+      sql += " AND kind = ?";
+      params.push(opts.kind);
+    }
+    sql += " ORDER BY position, id";
+    const rows = this.db.prepare(sql).all(...params) as Array<Omit<WorkflowRule, "conditions" | "action"> & { conditions: string; action: string }>;
+    return rows.map((r) => {
+      let conditions: WorkflowRule["conditions"] = [];
+      let action: WorkflowRule["action"] = {};
+      try { conditions = JSON.parse(r.conditions || "[]"); } catch { /* safe empty */ }
+      try { action = JSON.parse(r.action || "{}"); } catch { /* safe empty */ }
+      return { ...r, conditions, action };
+    });
+  }
+
+  getWorkflowRule(id: number): WorkflowRule | undefined {
+    const row = this.db.prepare("SELECT * FROM workflow_rules WHERE id = ?").get(id) as (Omit<WorkflowRule, "conditions" | "action"> & { conditions: string; action: string }) | undefined;
+    if (!row) return undefined;
+    let conditions: WorkflowRule["conditions"] = [];
+    let action: WorkflowRule["action"] = {};
+    try { conditions = JSON.parse(row.conditions || "[]"); } catch { /* safe empty */ }
+    try { action = JSON.parse(row.action || "{}"); } catch { /* safe empty */ }
+    return { ...row, conditions, action };
+  }
+
+  saveWorkflowRule(input: {
+    id?: number; organizationId: number; caseTypeId?: number | null; kind?: "intake" | "response";
+    name: string; position?: number; enabled?: boolean; conditions: WorkflowRule["conditions"]; action: WorkflowRule["action"];
+  }): WorkflowRule {
+    const name = input.name.trim();
+    if (!name) throw new Error("Rule name is required");
+    const kind = input.kind ?? "intake";
+    if (input.id) {
+      this.db.prepare(
+        "UPDATE workflow_rules SET name = ?, kind = ?, case_type_id = ?, position = ?, enabled = ?, conditions = ?, action = ?, updated_at = datetime('now') WHERE id = ? AND organization_id = ?"
+      ).run(name, kind, input.caseTypeId ?? null, input.position ?? 0, input.enabled === false ? 0 : 1,
+        JSON.stringify(input.conditions ?? []), JSON.stringify(input.action ?? {}), input.id, input.organizationId);
+    } else {
+      const nextPos = input.position ?? ((this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM workflow_rules WHERE organization_id = ?").get(input.organizationId) as { p: number }).p);
+      this.db.prepare(
+        "INSERT INTO workflow_rules (organization_id, case_type_id, kind, name, position, enabled, conditions, action) VALUES (?,?,?,?,?,?,?,?)"
+      ).run(input.organizationId, input.caseTypeId ?? null, kind, name, nextPos, input.enabled === false ? 0 : 1,
+        JSON.stringify(input.conditions ?? []), JSON.stringify(input.action ?? {}));
+    }
+    const saved = this.db.prepare("SELECT id FROM workflow_rules WHERE organization_id = ? AND name = ? ORDER BY id DESC").get(input.organizationId, name) as { id: number };
+    // Rule edits are configuration publishes (PPR P0-3).
+    if (input.caseTypeId) this.bumpCaseTypeConfigVersion(input.caseTypeId);
+    return this.listWorkflowRules(input.organizationId, {}).find((r) => r.id === saved.id)!;
+  }
+
+  deleteWorkflowRule(id: number, organizationId = 1): void {
+    const row = this.db.prepare("SELECT case_type_id FROM workflow_rules WHERE id = ? AND organization_id = ?").get(id, organizationId) as { case_type_id: number | null } | undefined;
+    this.db.prepare("DELETE FROM workflow_rules WHERE id = ? AND organization_id = ?").run(id, organizationId);
+    if (row?.case_type_id) this.bumpCaseTypeConfigVersion(row.case_type_id);
+  }
+
+  /** PPR P0-4/P1: profile-level automation defaults (workflow profile card). */
+  updateCaseTypeProfile(id: number, patch: { default_reply_action?: "auto" | "draft"; qualification_gate?: 0 | 1; auto_admit?: 0 | 1 }): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (patch.default_reply_action !== undefined) { sets.push("default_reply_action = ?"); params.push(patch.default_reply_action); }
+    if (patch.qualification_gate !== undefined) { sets.push("qualification_gate = ?"); params.push(patch.qualification_gate); }
+    if (patch.auto_admit !== undefined) { sets.push("auto_admit = ?"); params.push(patch.auto_admit); }
+    if (!sets.length) return;
+    this.db.prepare(`UPDATE case_types SET ${sets.join(", ")} WHERE id = ?`).run(...params, id);
+  }
+
+  /** PPR P1-1/P1-2: profile vocabulary (five surface words) + stage/queue sets.
+   *  Internal ids never move — only labels and membership are edited. */
+  updateCaseTypeVocabulary(id: number, patch: {
+    terminology?: Record<string, string>;
+    stages?: Array<{ id: string; label: string; requires?: string[] }>;
+    queues?: Array<{ id: string; label: string }>;
+  }): void {
+    const current = this.caseTypeById(id);
+    if (!current) throw new Error("Unknown workflow profile");
+    const terminology = patch.terminology ?? current.terminology;
+    const stages = patch.stages ?? current.stages;
+    const queues = patch.queues ?? current.queues;
+    this.db.prepare("UPDATE case_types SET terminology = ?, stages = ?, queues = ? WHERE id = ?")
+      .run(JSON.stringify(terminology), JSON.stringify(stages), JSON.stringify(queues), id);
+    this.bumpCaseTypeConfigVersion(id);
+  }
+
+  // ── PPR P0-5: attachment sets (organization-owned groups of sendable files) ──
+
+  listAttachmentSets(organizationId = 1): Array<AttachmentSet & { file_count: number; bytes: number }> {
+    const rows = this.db.prepare(
+      `SELECT s.*, (SELECT COUNT(*) FROM attachment_set_files f WHERE f.set_id = s.id) AS file_count,
+              (SELECT COALESCE(SUM(LENGTH(f.content)), 0) FROM attachment_set_files f WHERE f.set_id = s.id) AS bytes
+       FROM attachment_sets s WHERE s.organization_id = ? ORDER BY s.position, s.id`
+    ).all(organizationId) as never[];
+    return rows as never[];
+  }
+
+  getAttachmentSet(id: number): AttachmentSet | undefined {
+    return this.db.prepare("SELECT * FROM attachment_sets WHERE id = ?").get(id) as never;
+  }
+
+  attachmentSetByName(organizationId: number, name: string): AttachmentSet | undefined {
+    return this.db.prepare("SELECT * FROM attachment_sets WHERE organization_id = ? AND name = ?").get(organizationId, name) as never;
+  }
+
+  createAttachmentSet(organizationId: number, name: string, description = ""): AttachmentSet {
+    const clean = name.trim();
+    if (!clean) throw new Error("Set name is required");
+    const nextPos = (this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM attachment_sets WHERE organization_id = ?").get(organizationId) as { p: number }).p;
+    this.db.prepare("INSERT INTO attachment_sets (organization_id, name, description, position) VALUES (?,?,?,?)").run(organizationId, clean, description.trim(), nextPos);
+    return this.attachmentSetByName(organizationId, clean)!;
+  }
+
+  deleteAttachmentSet(id: number, organizationId = 1): void {
+    this.db.prepare("DELETE FROM attachment_sets WHERE id = ? AND organization_id = ?").run(id, organizationId);
+  }
+
+  addAttachmentSetFile(setId: number, file: { filename: string; mime?: string; content: Buffer; provenance?: string }): number {
+    const nextPos = (this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM attachment_set_files WHERE set_id = ?").get(setId) as { p: number }).p;
+    this.db.prepare("INSERT INTO attachment_set_files (set_id, filename, mime, content, provenance, position) VALUES (?,?,?,?,?,?)")
+      .run(setId, file.filename, file.mime ?? "application/pdf", file.content, file.provenance ?? "uploaded", nextPos);
+    this.db.prepare("UPDATE attachment_sets SET updated_at = datetime('now') WHERE id = ?").run(setId);
+    return (this.db.prepare("SELECT id FROM attachment_set_files WHERE set_id = ? ORDER BY id DESC LIMIT 1").get(setId) as { id: number }).id;
+  }
+
+  listAttachmentSetFiles(setId: number): Array<{ id: number; filename: string; mime: string; content: Buffer; provenance: string }> {
+    return this.db.prepare("SELECT id, filename, mime, content, provenance FROM attachment_set_files WHERE set_id = ? ORDER BY position, id").all(setId) as never;
+  }
+
+  deleteAttachmentSetFile(id: number): void {
+    this.db.prepare("DELETE FROM attachment_set_files WHERE id = ?").run(id);
+  }
+
+  /**
+   * PPR P0-5: resolve an attachment reference to the exact files that ride
+   * along. A reference is a set name owned by the organization (or `set:<id>`).
+   * Only the sending organization's own sets resolve — there is no global or
+   * bundled fallback (the migrated education profile's sets were seeded from
+   * its own migration data at setup time).
+   */
+  attachmentSetFiles(organizationId: number, ref: string | null | undefined): { label: string; files: Array<{ filename: string; mimeType: string; content: Buffer }>; issues: string[] } {
+    const issues: string[] = [];
+    const label = (ref ?? "").trim();
+    if (!label || label === "none") return { label: "none", files: [], issues };
+    let set: AttachmentSet | undefined;
+    if (label.startsWith("set:")) set = this.getAttachmentSet(Number(label.slice(4)));
+    else set = this.attachmentSetByName(organizationId, label);
+    if (!set || set.organization_id !== organizationId) {
+      return { label, files: [], issues: [`Attachment set '${label}' does not exist for this organization`] };
+    }
+    const files = this.listAttachmentSetFiles(set.id)
+      .filter((f) => f.content && f.filename)
+      .map((f) => ({ filename: f.filename, mimeType: f.mime || "application/pdf", content: f.content }));
+    if (!files.length) issues.push(`Attachment set '${set.name}' is empty`);
+    return { label: set.name, files, issues };
   }
 
   listOrganizationDocumentAxes(organizationId = 1): Array<{ key: string; label: string; values: string[] }> {
@@ -228,6 +532,7 @@ export class Repo {
       const insert = this.db.prepare("INSERT INTO document_definitions (case_type_id, key, label, required, blocking, position) VALUES (?,?,?,?,?,?)");
       definitions.forEach((d, position) => insert.run(caseTypeId, d.key.trim(), d.label.trim(), d.required ? 1 : 0, d.blocking ? 1 : 0, position));
     })();
+    this.bumpCaseTypeConfigVersion(caseTypeId);
   }
 
   listEmailCategories(organizationId = 1): Array<{ id: number; organization_id: number; key: string; label: string; active: number }> {
@@ -355,6 +660,7 @@ export class Repo {
         | "assigned_to"
         | "lifecycle"
         | "triage"
+        | "queue"
         | "sla_due_at"
         | "sla_handled_at"
         | "escalated"
@@ -375,7 +681,7 @@ export class Repo {
     // never from caller-provided strings.
     const ALLOWED = new Set([
       "full_name", "phone", "programme", "intake", "priority", "assigned_to",
-      "lifecycle", "triage", "sla_due_at", "sla_handled_at", "escalated",
+      "lifecycle", "triage", "queue", "sla_due_at", "sla_handled_at", "escalated",
       "transfer", "nationality", "req_result", "routing", "routing_reason",
       "admission_decision", "admission_route", "decision_by", "decision_reason",
       "decision_at",
@@ -723,14 +1029,17 @@ export class Repo {
       }
     }
     const caseType = this.caseTypeForCase(a.id);
-    // Non-academic CaseTypes use only organization-owned document slots. The
-    // migrated Organization #1 continues through the academic compatibility
-    // path, so new tenants never inherit programme/qualification defaults.
-    const legacyAcademicCaseType = caseType && (a.organization_id ?? 1) === 1 && (caseType.code === "GENERAL" || Boolean(this.programmeByCode(caseType.code)));
-    if (caseType && !legacyAcademicCaseType) {
-      return this.listDocumentDefinitions(caseType.id).map((d) => ({
-        document_type: d.key as DocType, required: d.required, blocking: d.blocking,
-      }));
+    // PPR P0-2: the education_module flag is the switch. A profile without
+    // the module NEVER sees the academic document matrix (audit F1/E4); it
+    // uses only organization-owned document slots. Untyped legacy cases of
+    // the migrated Organization #1 keep the academic compatibility path.
+    const education = caseType ? caseType.education_module === 1 : (a.organization_id ?? 1) === 1;
+    if (!education) {
+      return caseType
+        ? this.listDocumentDefinitions(caseType.id).map((d) => ({
+            document_type: d.key as DocType, required: d.required, blocking: d.blocking,
+          }))
+        : [];
     }
     return this.resolveRequirements(a.programme, a.intake, {
       transfer: a.transfer === 1,
@@ -1245,6 +1554,38 @@ export class Repo {
     return this.getStaffByUsername(username)!;
   }
 
+  // ── PPR P1-8: fine-grained automation permissions ───────────────────────
+  // The four actions that used to hide behind the admin/user role split are
+  // distinct permissions now. Admins implicitly hold all four; other staff
+  // hold exactly what is granted, defaulting to the two sending-related ones
+  // (sending replies and approving automation were always staff work).
+
+  permissionsFor(staffId: number): string[] {
+    return (this.db.prepare("SELECT permission FROM staff_permissions WHERE staff_id = ?").all(staffId) as Array<{ permission: string }>).map((r) => r.permission);
+  }
+
+  setPermissions(staffId: number, permissions: string[]): void {
+    this.db.prepare("DELETE FROM staff_permissions WHERE staff_id = ?").run(staffId);
+    const insert = this.db.prepare("INSERT OR IGNORE INTO staff_permissions (staff_id, permission) VALUES (?, ?)");
+    for (const p of permissions) {
+      if (PERMISSIONS.includes(p as Permission)) insert.run(staffId, p);
+    }
+  }
+
+  hasPermission(staffId: number, permission: Permission): boolean {
+    const staff = this.getStaff(staffId);
+    if (!staff) return false;
+    if (staff.role === "admin") return true;
+    const rows = this.db.prepare("SELECT COUNT(*) AS n FROM staff_permissions WHERE staff_id = ?").get(staffId) as { n: number };
+    if (rows.n > 0) {
+      return (this.db.prepare("SELECT 1 FROM staff_permissions WHERE staff_id = ? AND permission = ?").get(staffId, permission)) !== undefined;
+    }
+    // No explicit grants yet: the historical default — regular staff may
+    // send replies and approve automation; publishing rules and recording
+    // outcomes need an explicit grant.
+    return permission === "send_automated" || permission === "approve_automation";
+  }
+
   /** Rename an account (e.g. giving the demo admin a human name). */
   setStaffDisplayName(id: number, displayName: string): void {
     this.db.prepare("UPDATE staff_users SET display_name = ? WHERE id = ?").run(displayName, id);
@@ -1297,7 +1638,8 @@ export class Repo {
     const row = this.db
       .prepare(
         `SELECT s.csrf AS csrf, s.expires_at AS expires_at, u.id AS id, u.username AS username,
-                u.display_name AS display_name, u.role AS role, u.active AS active, u.demo AS demo
+                u.display_name AS display_name, u.role AS role, u.active AS active, u.demo AS demo,
+                u.organization_id AS organization_id
          FROM sessions s JOIN staff_users u ON u.id = s.staff_id
          WHERE s.token = ?`
       )
@@ -1306,7 +1648,7 @@ export class Repo {
     if (new Date(row.expires_at).getTime() < Date.now() || row.active !== 1) return undefined;
     return {
       csrf: row.csrf,
-      staff: { id: row.id, username: row.username, display_name: row.display_name, role: row.role, active: row.active, demo: row.demo },
+      staff: { id: row.id, username: row.username, display_name: row.display_name, role: row.role, active: row.active, demo: row.demo, organization_id: row.organization_id ?? null },
     };
   }
 
@@ -1388,38 +1730,83 @@ export class Repo {
 
   // ── Templates (feature 35) ───────────────────────────────────────────────
 
-  getTemplate(key: string, organizationId = 1): { key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string } | undefined {
-    const owned = this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM organization_templates WHERE organization_id = ? AND key = ?").get(organizationId, key) as never;
-    return owned ?? this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM templates WHERE key = ? AND COALESCE(organization_id, 1) = ?").get(key, organizationId) as never;
+  getTemplate(key: string, organizationId = 1, caseTypeId?: number): { key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string; case_type_id: number } | undefined {
+    // PPR P0-6 precedence: the profile's own row → organization-wide row →
+    // the migrated education profile's legacy store. A template key is not a
+    // closed enum — any key a profile needs can exist and shadow freely.
+    const rows = this.db.prepare(
+      "SELECT key, name, subject, body, include_banner, attach_pack, case_type_id FROM organization_templates WHERE organization_id = ? AND key = ?"
+    ).all(organizationId, key) as never[];
+    const typed = rows as Array<{ case_type_id: number }>;
+    // case_type_id = 0 → organization-wide; > 0 → ONLY that profile's cases.
+    // An explicit caseTypeId never picks up another profile's template.
+    const scoped = caseTypeId !== undefined
+      ? typed.find((r) => r.case_type_id === caseTypeId) ?? typed.find((r) => r.case_type_id === 0)
+      : typed[0];
+    if (scoped) return scoped as never;
+    const legacy = this.db.prepare(
+      "SELECT key, name, subject, body, include_banner, attach_pack, 0 AS case_type_id FROM templates WHERE key = ? AND COALESCE(organization_id, 1) = ?"
+    ).get(key, organizationId) as never;
+    return legacy ?? undefined;
   }
 
-  listTemplates(organizationId = 1): Array<{ key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string }> {
-    const owned = this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM organization_templates WHERE organization_id = ? ORDER BY key").all(organizationId) as never[];
-    const legacy = this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack FROM templates WHERE COALESCE(organization_id, 1) = ? ORDER BY key").all(organizationId) as never[];
+  listTemplates(organizationId = 1): Array<{ key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string; case_type_id: number }> {
+    const owned = this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack, case_type_id FROM organization_templates WHERE organization_id = ? ORDER BY key").all(organizationId) as any[];
+    const legacy = this.db.prepare("SELECT key, name, subject, body, include_banner, attach_pack, 0 AS case_type_id FROM templates WHERE COALESCE(organization_id, 1) = ? ORDER BY key").all(organizationId) as any[];
     const byKey = new Map([...legacy, ...owned].map((row: any) => [row.key, row]));
     return [...byKey.values()] as never[];
   }
 
-  /** OR-7: attachPack ("none" | "application" | "admission") controls which
-   * organization-owned pack slot is associated with this template. */
-  upsertTemplate(key: string, name: string, subject: string, body: string, includeBanner?: boolean, attachPack?: string, organizationId = 1): void {
-    const pack = attachPack === undefined ? null : ["none", "application", "admission"].includes(attachPack) ? attachPack : "none";
-    if (organizationId !== 1) {
-      const current = this.getTemplate(key, organizationId);
+  /** PPR P0-6: the profile's own default, captured when the template was
+   *  created — "Reset to default" restores exactly this, never someone
+   *  else's wording. */
+  templateDefaultSnapshot(key: string, organizationId = 1): { name: string; subject: string; body: string; include_banner: number; attach_pack: string } | null {
+    const row = (this.db.prepare("SELECT default_snapshot FROM organization_templates WHERE organization_id = ? AND key = ?").get(organizationId, key)
+      ?? this.db.prepare("SELECT default_snapshot FROM templates WHERE key = ? AND COALESCE(organization_id, 1) = ?").get(key, organizationId)) as { default_snapshot: string | null } | undefined;
+    if (!row?.default_snapshot) return null;
+    try { return JSON.parse(row.default_snapshot); } catch { return null; }
+  }
+
+  /** OR-7: attachPack names one of the organization's attachment sets ("none"
+   *  for no attachments). PPR P0-6: caseTypeId binds the template to one
+   *  workflow profile (0 = organization-wide); the default snapshot is
+   *  captured at creation and never rewritten by later edits. */
+  upsertTemplate(key: string, name: string, subject: string, body: string, includeBanner?: boolean, attachPack?: string, organizationId = 1, caseTypeId = 0): void {
+    // PPR P0-5 (E3 close): a template may attach NOTHING or one of the
+    // organization's OWN attachment sets — validated here at the repo level,
+    // not just in one route. Unknown refs fail loudly; nothing is silently
+    // coerced, and no privileged pack vocabulary exists to abuse.
+    let pack: string | null = null;
+    if (attachPack !== undefined) {
+      pack = attachPack.trim() || "none";
+      if (pack !== "none") {
+        const set = pack.startsWith("set:") ? this.getAttachmentSet(Number(pack.slice(4))) : this.attachmentSetByName(organizationId, pack);
+        if (!set || set.organization_id !== organizationId) {
+          throw new Error(`Unknown attachment set '${attachPack}' for organization ${organizationId}`);
+        }
+        pack = set.name;
+      }
+    }
+    const bannerVal = includeBanner === undefined ? 1 : includeBanner ? 1 : 0;
+    const snapshot = JSON.stringify({ name, subject, body, include_banner: bannerVal, attach_pack: pack ?? "none" });
+    if (organizationId !== 1 || caseTypeId > 0) {
+      const current = this.getTemplate(key, organizationId, caseTypeId);
       this.db.prepare(
-        `INSERT INTO organization_templates (organization_id, key, name, subject, body, include_banner, attach_pack) VALUES (?,?,?,?,?,?,?)
+        `INSERT INTO organization_templates (organization_id, key, name, subject, body, include_banner, attach_pack, case_type_id, default_snapshot) VALUES (?,?,?,?,?,?,?,?,?)
          ON CONFLICT(organization_id, key) DO UPDATE SET name=excluded.name, subject=excluded.subject, body=excluded.body,
-           include_banner=COALESCE(?, organization_templates.include_banner), attach_pack=COALESCE(?, organization_templates.attach_pack), updated_at=datetime('now')`
-      ).run(organizationId, key, name, subject, body, includeBanner === undefined ? current?.include_banner ?? 1 : includeBanner ? 1 : 0,
-        pack ?? current?.attach_pack ?? "none", includeBanner === undefined ? null : includeBanner ? 1 : 0, pack);
+           include_banner=COALESCE(?, organization_templates.include_banner), attach_pack=COALESCE(?, organization_templates.attach_pack),
+           case_type_id=excluded.case_type_id, updated_at=datetime('now')`
+      ).run(organizationId, key, name, subject, body, includeBanner === undefined ? current?.include_banner ?? 1 : bannerVal,
+        pack ?? current?.attach_pack ?? "none", caseTypeId, snapshot,
+        includeBanner === undefined ? null : bannerVal, pack);
       return;
     }
     this.db.prepare(
-      `INSERT INTO templates (key, organization_id, name, subject, body, include_banner, attach_pack) VALUES (?,?,?,?,?,?,?)
+      `INSERT INTO templates (key, organization_id, name, subject, body, include_banner, attach_pack, default_snapshot) VALUES (?,?,?,?,?,?,?,?)
        ON CONFLICT(key) DO UPDATE SET organization_id = excluded.organization_id, name = excluded.name, subject = excluded.subject, body = excluded.body,
          include_banner = COALESCE(?, templates.include_banner), attach_pack = COALESCE(?, templates.attach_pack), updated_at = datetime('now')`
-    ).run(key, organizationId, name, subject, body, includeBanner === undefined ? 1 : includeBanner ? 1 : 0, pack ?? "none",
-      includeBanner === undefined ? null : includeBanner ? 1 : 0, pack);
+    ).run(key, organizationId, name, subject, body, bannerVal, pack ?? "none", snapshot,
+      includeBanner === undefined ? null : bannerVal, pack);
   }
 
   setTemplateBanner(key: string, include: boolean): void {
@@ -1439,9 +1826,32 @@ export class Repo {
       .run(key, value);
   }
 
+  /** PPR P0-1: credentials never flow through ordinary settings. */
+  getSecret(key: string, organizationId = 1): string {
+    const row = this.db.prepare("SELECT value FROM secrets WHERE organization_id = ? AND key = ?").get(organizationId, key) as { value: string } | undefined;
+    return row?.value ?? "";
+  }
+
+  setSecret(key: string, value: string, organizationId = 1): void {
+    if (!SECRET_KEYS.includes(key)) throw new Error(`Unknown secret key: ${key}`);
+    this.db
+      .prepare("INSERT INTO secrets (organization_id, key, value, updated_at) VALUES (?,?,?,datetime('now')) ON CONFLICT(organization_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')")
+      .run(organizationId, key, value);
+  }
+
+  deleteSecret(key: string, organizationId = 1): void {
+    this.db.prepare("DELETE FROM secrets WHERE organization_id = ? AND key = ?").run(organizationId, key);
+  }
+
+  hasSecret(key: string, organizationId = 1): boolean {
+    return this.db.prepare("SELECT 1 FROM secrets WHERE organization_id = ? AND key = ? AND value <> ''").get(organizationId, key) !== undefined;
+  }
+
   allSettings(): Record<string, string> {
     const rows = this.db.prepare("SELECT key, value FROM settings").all() as Array<{ key: string; value: string }>;
-    return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    // Defense in depth: even if a secret key somehow reappears in settings,
+    // a generic settings read must never return it (PPR P0-1).
+    return Object.fromEntries(rows.filter((r) => !SECRET_KEYS.includes(r.key)).map((r) => [r.key, r.value]));
   }
 
   // ── Notifications (feature 39) ───────────────────────────────────────────
@@ -1579,10 +1989,10 @@ export class Repo {
 
   // ── Outbox / human queue ─────────────────────────────────────────────────
 
-  addOutbox(o: { applicant_id: number; to_address: string; subject: string; body: string; mode: "auto" | "queued"; template_key?: string }): void {
+  addOutbox(o: { applicant_id: number; to_address: string; subject: string; body: string; mode: "auto" | "queued"; template_key?: string; needs_approval?: number }): void {
     this.db
-      .prepare("INSERT INTO outbox (applicant_id, to_address, subject, body, mode, template_key) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(o.applicant_id, o.to_address, o.subject, o.body, o.mode, o.template_key ?? "");
+      .prepare("INSERT INTO outbox (applicant_id, to_address, subject, body, mode, template_key, needs_approval) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(o.applicant_id, o.to_address, o.subject, o.body, o.mode, o.template_key ?? "", o.needs_approval ? 1 : 0);
   }
 
   latestOutbox(applicantId: number): { subject: string; body: string; mode: string } | undefined {
@@ -1635,9 +2045,9 @@ export class Repo {
   }
 
   /** Latest QUEUED draft awaiting a human [Send]/[Edit]/[Discard] decision. */
-  queuedOutbox(applicantId: number): { id: number; subject: string; body: string; template_key?: string } | undefined {
+  queuedOutbox(applicantId: number): { id: number; subject: string; body: string; template_key?: string; needs_approval?: number } | undefined {
     return this.db
-      .prepare("SELECT id, subject, body, template_key FROM outbox WHERE applicant_id = ? AND mode = 'queued' ORDER BY id DESC LIMIT 1")
+      .prepare("SELECT id, subject, body, template_key, needs_approval FROM outbox WHERE applicant_id = ? AND mode = 'queued' ORDER BY id DESC LIMIT 1")
       .get(applicantId) as never;
   }
 
@@ -2143,8 +2553,12 @@ export class Repo {
    * base + ladder[N] days, so "3,7,10" means Day 3 / Day 7 / Day 10 from the
    * first notice, not stacked intervals.
    */
-  setFollowup(applicantId: number, rung: number, nextAt: string | null, baseAt?: string | null): void {
-    if (baseAt !== undefined) {
+  setFollowup(applicantId: number, rung: number, nextAt: string | null, baseAt?: string | null, action?: string): void {
+    if (action !== undefined) {
+      this.db
+        .prepare("UPDATE applicants SET followup_rung = ?, followup_next_at = ?, followup_base_at = ?, followup_action = ?, updated_at = ? WHERE id = ?")
+        .run(rung, nextAt, baseAt ?? null, action, nowIso(), applicantId);
+    } else if (baseAt !== undefined) {
       this.db
         .prepare("UPDATE applicants SET followup_rung = ?, followup_next_at = ?, followup_base_at = ?, updated_at = ? WHERE id = ?")
         .run(rung, nextAt, baseAt, nowIso(), applicantId);

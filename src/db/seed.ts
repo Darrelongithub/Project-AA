@@ -6,7 +6,7 @@
  */
 import type { Repo } from "./repo";
 import { DEFAULT_INTAKES, DEFAULT_PROGRAMMES, DEFAULT_SETTINGS, DEFAULT_STRUCTURED_BASE, DEFAULT_STRUCTURED_COURSES } from "../config";
-import { migratedOrganizationOne } from "../pack";
+import { migratedOrganizationOne, migratedAttachmentSets } from "../pack";
 import { blockToNodes, CATALOGUE_SEED } from "../admissions/convert";
 import type { CourseLevel, RuleNode } from "../types";
 
@@ -160,6 +160,92 @@ export const TEMPLATE_DEFAULTS: Record<string, { name: string; subject: string; 
     ["admission_letter", ADMISSION_LETTER_DEFAULT],
   ]);
 
+/**
+ * PPR P0-4: the migrated education profile's workflow rules — a faithful
+ * data-form of the behaviour the hardcoded pipeline chain always had, so
+ * migrating to rules changes nothing for existing staff:
+ *
+ *   INTAKE — a known contact always continues; mail with built-in education
+ *   intake signals opens a case; everything else stays parked in Mail.
+ *
+ *   RESPONSE — complaints and eligibility/fee questions go to a human; a
+ *   reference-only message gets the factual status; a fully qualified file
+ *   gets the receipt; a status question gets the factual status; an
+ *   incomplete clean file is chased with the document request (ladder armed);
+ *   anything else becomes an internal human draft. Sends stay behind the
+ *   qualification gate (the profile keeps `qualification_gate = 1`).
+ */
+export function seedEducationWorkflowRules(repo: Repo): void {
+  if (repo.getSetting("education_rules_seeded_v1", "")) return;
+  const insert = repo.db.prepare(
+    "INSERT INTO workflow_rules (organization_id, case_type_id, kind, name, position, enabled, conditions, action) VALUES (1, NULL, ?, ?, ?, 1, ?, ?)"
+  );
+  const intake: Array<[string, number, unknown, unknown]> = [
+    ["Known contact continues the conversation", 0,
+      [{ field: "sender_state", value: "known" }],
+      { decision: "attach", audit_code: "rule_known_contact" }],
+    ["Education intake signals open a case", 1,
+      [{ field: "signals", value: "education_intake" }],
+      { decision: "create", audit_code: "rule_first_contact" }],
+    ["Everything else stays in Mail", 2,
+      [{ field: "always", value: true }],
+      { decision: "ignore", audit_code: "email_parked_non_intake" }],
+  ];
+  for (const [name, pos, conditions, action] of intake) {
+    insert.run("intake", name, pos, JSON.stringify(conditions), JSON.stringify(action));
+  }
+  const response: Array<[string, number, unknown, unknown]> = [
+    ["Complaints go to a human (high priority)", 0,
+      [{ field: "category", op: "in", values: ["complaint"] }],
+      { decision: "review", priority: "high", reply_action: "hold", fallback: "human_draft", audit_code: "rule_complaint" }],
+    ["Eligibility and fee questions go to a human", 1,
+      [{ field: "category", op: "in", values: ["admission_enquiry", "fee_enquiry"] }],
+      { decision: "review", reply_action: "hold", fallback: "human_draft", audit_code: "rule_enquiry_triage" }],
+    ["Reference-only message gets the factual status", 2,
+      [{ field: "body_is_ref", value: true }, { field: "sender_state", value: "known" }],
+      { reply_action: "send", template_key: "status_answer", audit_code: "rule_status_ref" }],
+    ["Complete file gets the receipt", 3,
+      [{ field: "docs_state", values: ["complete"] }],
+      { reply_action: "send", template_key: "ack_received", audit_code: "rule_ack" }],
+    ["Status question gets the factual status", 4,
+      [{ field: "has_attachments", value: false }, { field: "category", op: "in", values: ["missing_document", "follow_up"] }, { field: "docs_state", values: ["any"] }],
+      { reply_action: "send", template_key: "status_answer", audit_code: "rule_status_question" }],
+    ["Incomplete clean file is chased for documents", 5,
+      [{ field: "docs_state", values: ["empty", "missing"] }],
+      {
+        reply_action: "send",
+        template_map: { empty: "docs_request", missing: "missing_documents" },
+        followup: "ladder", request_info: true, audit_code: "rule_docs_chase",
+      }],
+    ["Anything else goes to a human", 6,
+      [{ field: "always", value: true }],
+      { reply_action: "hold", fallback: "human_draft", audit_code: "rule_human_review" }],
+  ];
+  for (const [name, pos, conditions, action] of response) {
+    insert.run("response", name, pos, JSON.stringify(conditions), JSON.stringify(action));
+  }
+  repo.setSetting("education_rules_seeded_v1", "1");
+}
+
+/**
+ * PPR P0-5: attachment sets. The migrated education profile's sets are
+ * seeded ONCE from its own labeled migration data — after this, sends read
+ * organization-owned sets and nothing else. New organizations start with
+ * ZERO sets and upload their own files; they never see the migrated names.
+ */
+export function seedAttachmentSets(repo: Repo): void {
+  if (repo.getSetting("attachment_sets_seeded_v1", "")) return;
+  for (const group of migratedAttachmentSets()) {
+    const set = repo.createAttachmentSet(1, group.name, group.name === "transfer"
+      ? "For applicants transferring credit from another institution"
+      : `Migrated ${group.name} pack (legacy education profile)`);
+    for (const f of group.files) {
+      repo.addAttachmentSetFile(set.id, { filename: f.filename, mime: f.mimeType, content: f.content, provenance: "migrated" });
+    }
+  }
+  repo.setSetting("attachment_sets_seeded_v1", "1");
+}
+
 function seedGenericModel(repo: Repo): void {
   const org = repo.db.prepare("SELECT id FROM organizations WHERE id = 1").get();
   const migrated = migratedOrganizationOne();
@@ -168,12 +254,21 @@ function seedGenericModel(repo: Repo): void {
       .run(migrated?.name || DEFAULT_SETTINGS.institution_name || "Organization", "RU", JSON.stringify({ primary: "#334155", accent: "#0f766e" }));
   }
   if (migrated?.tagline && !repo.getSetting("splash_tagline", "")) repo.setSetting("splash_tagline", migrated.tagline);
-  // Case types are the canonical generic equivalent of the legacy programme
-  // catalogue. Codes are stable, so this is safe on every boot.
-  for (const p of DEFAULT_PROGRAMMES) {
-    repo.createCaseType(1, { code: p.code, name: p.name, category: p.school || "general" });
+  // PPR P1-5: the migrated identity's sender display name becomes real org
+  // data applied to outgoing mail (it used to sit dead in settings).
+  if (migrated?.fromName) {
+    const org = repo.getOrganization(1);
+    if (org && !org.from_name) repo.updateOrganization(1, { fromName: migrated.fromName });
+    repo.db.prepare("DELETE FROM settings WHERE key = 'from_name'").run();
   }
-  repo.createCaseType(1, { code: "GENERAL", name: "General enquiry", category: "general" });
+  // Case types are the canonical generic equivalent of the legacy programme
+  // catalogue. Codes are stable, so this is safe on every boot. PPR P0-2:
+  // the migrated academic profiles carry the education module with today's
+  // exact automation posture (qualification-gated sends, never auto-decide).
+  for (const p of DEFAULT_PROGRAMMES) {
+    repo.createCaseType(1, { code: p.code, name: p.name, category: p.school || "general", educationModule: true, qualificationGate: true, defaultReplyAction: "send" });
+  }
+  repo.createCaseType(1, { code: "GENERAL", name: "General enquiry", category: "general", educationModule: true, qualificationGate: true, defaultReplyAction: "send" });
   const categories = [
     ["admission", "Admission enquiry"], ["normal", "Normal enquiry"],
     ["document_submission", "Document submission"], ["support", "Support"],
@@ -197,6 +292,12 @@ function seedGenericModel(repo: Repo): void {
 
 export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
   seedGenericModel(repo);
+  // PPR P0-5: the migrated profile's attachment sets — before templates,
+  // which reference them by name and must resolve.
+  seedAttachmentSets(repo);
+  // PPR P0-4: the migrated education profile's first-email/response rules —
+  // seeded once, then they belong to the staff like every other rule.
+  seedEducationWorkflowRules(repo);
   // Older versions had a NULL-broken rule upsert that duplicated every base
   // requirement row on each re-seed. Clean that up idempotently.
   repo.dedupeRules();

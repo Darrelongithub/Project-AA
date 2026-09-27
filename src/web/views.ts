@@ -70,10 +70,10 @@ export function priorityBadge(p: Priority): string {
   return `<span class="badge ${cls}">${esc(p)}</span>`;
 }
 
-export function lifecycleBadge(l: LifecycleStage): string {
+export function lifecycleBadge(l: LifecycleStage, labels?: Record<string, string>): string {
   const cls =
     l === "completed" ? "b-green" : l === "awaiting_review" ? "b-orange" : l === "verification" ? "b-blue" : "b-purple";
-  return `<span class="badge ${cls}">${esc(LIFECYCLE_LABELS[l])}</span>`;
+  return `<span class="badge ${cls}">${esc(labels?.[l] ?? LIFECYCLE_LABELS[l])}</span>`;
 }
 
 export function categoryBadge(c: EmailCategory | null): string {
@@ -81,11 +81,11 @@ export function categoryBadge(c: EmailCategory | null): string {
   return `<span class="badge b-gray">${esc(EMAIL_CATEGORY_LABELS[c])}</span>`;
 }
 
-export function lifecycleStepper(current: LifecycleStage): string {
+export function lifecycleStepper(current: LifecycleStage, labels?: Record<string, string>): string {
   const idx = LIFECYCLE_ORDER.indexOf(current);
   const steps = LIFECYCLE_ORDER.map((s, i) => {
     const cls = i < idx ? "step done" : i === idx ? "step current" : "step";
-    return `<div class="${cls}"><span class="dot">${i < idx ? "✓" : i === idx ? "●" : ""}</span>${esc(LIFECYCLE_LABELS[s])}</div>`;
+    return `<div class="${cls}"><span class="dot">${i < idx ? "✓" : i === idx ? "●" : ""}</span>${esc(labels?.[s] ?? LIFECYCLE_LABELS[s])}</div>`;
   });
   return `<div class="stepper">${steps.join('<div class="step-line"></div>')}</div>`;
 }
@@ -912,6 +912,8 @@ export function layout(opts: {
   /** Organization-owned identity and colors. */
   institution?: string;
   brand?: { primary: string; accent: string; logo?: string | null; tagline?: string };
+  /** PPR P0-2: the Admissions entry appears only when the education module is on. */
+  educationNav?: boolean;
 }): string {
   const brand = opts.brand;
   const brandStyle = brand && /^#[0-9a-f]{6}$/i.test(brand.primary) && /^#[0-9a-f]{6}$/i.test(brand.accent)
@@ -927,9 +929,10 @@ export function layout(opts: {
 
   // Ctrl+K palette links follow the same role separation as the navigation.
   const paletteLinks: Array<{ label: string; hint: string; href: string; keys: string }> = [];
+  const educationNav = opts.educationNav !== false;
   if (opts.user) {
     paletteLinks.push({ label: "Overview", hint: "home", href: "/", keys: "dashboard home overview" });
-    paletteLinks.push({ label: "Admissions", hint: "pipeline stages", href: "/admissions", keys: "admissions applications pipeline levels received checked review completed" });
+    if (educationNav) paletteLinks.push({ label: "Admissions", hint: "pipeline stages", href: "/admissions", keys: "admissions applications pipeline levels received checked review completed" });
     paletteLinks.push({ label: "Queues", hint: "queues", href: "/applicants", keys: "queues cases review waiting documents human decision enquiries applicants" });
     if (opts.user.role === "admin") {
       paletteLinks.push(
@@ -952,7 +955,7 @@ export function layout(opts: {
     // a new browser window (owner requirement).
     const nav: Array<{ href: string; label: string; active: string }> = [
       { href: "/", label: "Overview", active: "dashboard" },
-      { href: "/admissions", label: "Admissions", active: "admissions" },
+      ...(educationNav ? [{ href: "/admissions", label: "Admissions", active: "admissions" }] : []),
       { href: "/applicants", label: "Queues", active: "applicants" },
       { href: "/mail", label: "Mail", active: "mail" },
       { href: "/compose", label: "Compose", active: "compose" },

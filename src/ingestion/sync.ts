@@ -15,7 +15,7 @@ export const MAX_LOOKBACK_DAYS = 365;
 /** The one-off backfill offers these windows (deeper history, paid for in API calls). */
 export const BACKFILL_WINDOWS = [30, 90, 365];
 
-export type SettingsReader = { getSetting(key: string, dflt: string): string };
+export type SettingsReader = { getSetting(key: string, dflt: string): string; getSecret?(key: string, organizationId?: number): string };
 
 /** Settings value > env value > default — clamped to 1..365. */
 export function resolveLookbackDays(repo: SettingsReader, envDays?: number): number {
@@ -25,14 +25,17 @@ export function resolveLookbackDays(repo: SettingsReader, envDays?: number): num
   return Math.min(MAX_LOOKBACK_DAYS, Math.max(1, Math.round(v)));
 }
 
-export const GMAIL_CREDENTIALS: ReadonlyArray<[key: string, label: string]> = [
+export const GMAIL_CREDENTIALS: ReadonlyArray<[key: string, label: string, secret?: boolean]> = [
   ["gmail_address", "mailbox address"],
   ["gmail_client_id", "client id"],
-  ["gmail_client_secret", "client secret"],
-  ["gmail_refresh_token", "refresh token"],
+  ["gmail_client_secret", "client secret", true],
+  ["gmail_refresh_token", "refresh token", true],
 ];
 
 /** Which pieces of the connection are missing (plain names for the UI). */
 export function missingGmailCredentials(repo: SettingsReader): string[] {
-  return GMAIL_CREDENTIALS.filter(([key]) => !repo.getSetting(key, "").trim()).map(([, label]) => label);
+  return GMAIL_CREDENTIALS.filter(([key, , secret]) => {
+    const value = secret ? (repo.getSecret?.(key) ?? repo.getSetting(key, "")) : repo.getSetting(key, "");
+    return !value.trim();
+  }).map(([, label]) => label);
 }

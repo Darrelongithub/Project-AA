@@ -7,6 +7,16 @@
 
 export type Classification = "Green" | "Orange" | "Red";
 
+/** PPR P1-8: the four automation actions, gated as distinct permissions. */
+export type Permission = "publish_rules" | "send_automated" | "approve_automation" | "record_outcome";
+export const PERMISSIONS: Permission[] = ["publish_rules", "send_automated", "approve_automation", "record_outcome"];
+export const PERMISSION_LABELS: Record<Permission, string> = {
+  publish_rules: "Publish workflow rules",
+  send_automated: "Send automated reply",
+  approve_automation: "Approve automation",
+  record_outcome: "Record outcome",
+};
+
 /**
  * OR-5: concrete document catalogue. Vague umbrella types like "academic
  * certificate" are BANNED as requirement slots — every slot names the exact
@@ -338,7 +348,29 @@ export type CaseType = {
   category: string;
   config?: Record<string, unknown> | null;
   active?: number;
+  /** PPR P0-2: academic engine/matrix/admissions UI on or off for this profile. */
+  education_module?: number;
+  /** PPR P1-1: display labels for case/contact/category/stage/outcome. */
+  terminology?: Record<string, string> | null;
+  /** PPR P1-2: configurable stage and queue sets (education preset by default). */
+  stages?: Array<{ id: string; label: string; requires?: string[] }> | null;
+  queues?: Array<{ id: string; label: string }> | null;
+  /** PPR P0-3: bumped on every publish of rules/documents for the profile. */
+  config_version?: number;
+  /** Automation posture for the profile's rules (PPR P0-4/P1-3). */
+  default_reply_action?: "none" | "draft" | "approve" | "send" | string;
+  /** Education safety default: never auto-send unless the file is fully qualified. */
+  qualification_gate?: number;
+  /** Deterministic auto-decision switch — OFF everywhere except explicit opt-in. */
+  auto_admit?: number;
 };
+/** Frozen per-case configuration (PPR P0-3): the exact profile version a case was opened under. */
+export interface CaseConfigFrozen {
+  config_version: number;
+  rules: RuleNode[] | null;
+  documents: Array<{ key: string; label: string; required: boolean; blocking: boolean }> | null;
+  frozen_at: string;
+}
 export interface OrganizationTheme { primary: string; accent: string; }
 export interface Organization {
   id: number;
@@ -346,6 +378,11 @@ export interface Organization {
   logo?: string | null;
   ref_prefix: string;
   theme: OrganizationTheme;
+  /** Sender identity actually applied to outgoing mail (PPR P1-5). */
+  from_name?: string | null;
+  reply_to?: string | null;
+  locale?: string | null;
+  timezone?: string | null;
 }
 export interface DocumentDefinition {
   id?: number;
@@ -577,6 +614,12 @@ export interface ApplicantRow {
   followup_next_at: string | null;
   /** When the ladder was armed; rungs fire at base + ladder[n] days. */
   followup_base_at: string | null;
+  /** PPR P0-3: frozen profile configuration (JSON CaseConfigFrozen). */
+  case_config_frozen?: string | null;
+  config_version_frozen?: number | null;
+  config_version_frozen_at?: string | null;
+  /** PPR P0-4/P1-2: rule-assigned queue id (generic workflows). */
+  queue?: string | null;
   // ── Admissions engine (round 18): eligibility, routing and decision are
   //    SEPARATE concepts — never one giant status field. ──────────────────
   /** Latest evaluation result: passed|failed|missing_data|needs_verification. */
@@ -597,6 +640,17 @@ export interface ApplicantRow {
   decision_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** PPR P0-5: an organization-owned group of files that can ride along with replies. */
+export interface AttachmentSet {
+  id: number;
+  organization_id: number;
+  name: string;
+  description: string;
+  position: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface TaskRow {

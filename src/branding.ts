@@ -31,6 +31,19 @@ export function organizationLogo(repo: Repo, organizationId = 1): string | null 
   return repo.getOrganization(organizationId)?.logo ?? null;
 }
 
+/** PPR P1-5: sender identity applied to every outgoing message. */
+export function organizationSender(
+  repo: Pick<Repo, "getOrganization" | "getSetting">,
+  organizationId = 1
+): { fromName: string | null; fromAddress: string | null; replyTo: string | null } {
+  const org = repo.getOrganization(organizationId);
+  return {
+    fromName: org?.from_name?.trim() || null,
+    fromAddress: repo.getSetting("gmail_address", "").trim() || null,
+    replyTo: org?.reply_to?.trim() || null,
+  };
+}
+
 /** Resolve an organization logo into the email-banner shape when possible. */
 export function emailBanner(repo: Repo, organizationId = 1): { mime: string; base64: string } | null {
   const configured = organizationId === 1 ? repo.getSetting("email_banner", "") : "";

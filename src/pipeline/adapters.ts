@@ -16,6 +16,10 @@ import { ocrImage } from "../extraction/ocr";
 export interface SendExtras {
   attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>;
   banner?: { mime: string; base64: string } | null;
+  /** Organization sender identity (PPR P1-5) — applied to the MIME headers. */
+  fromName?: string | null;
+  fromAddress?: string | null;
+  replyTo?: string | null;
 }
 
 export interface EmailSender {
@@ -24,12 +28,14 @@ export interface EmailSender {
 
 /** Records sends in memory (simulation/tests) — plus an audit printout. */
 export class MockSender implements EmailSender {
-  sent: Array<{ to: string; subject: string; body: string; threadId: string; attachments: string[]; banner: boolean }> = [];
+  sent: Array<{ to: string; subject: string; body: string; threadId: string; attachments: string[]; banner: boolean; fromName: string | null; replyTo: string | null }> = [];
   async send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void> {
     this.sent.push({
       to, subject, body, threadId,
       attachments: (extras?.attachments ?? []).map((a) => a.filename),
       banner: Boolean(extras?.banner),
+      fromName: extras?.fromName ?? null,
+      replyTo: extras?.replyTo ?? null,
     });
   }
 }
