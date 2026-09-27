@@ -26,9 +26,13 @@ export const institutionName = organizationName;
 
 export function organizationTheme(repo: Repo, organizationId = 1): OrganizationTheme {
   const theme = repo.getOrganization(organizationId)?.theme;
-  if (!theme || (theme.primary.toLowerCase() === "#334155" && theme.accent.toLowerCase() === "#0f766e")) {
-    return { primary: "#672b3c", accent: "#c7b69e" };
-  }
+  const previousDefault = theme && (
+    (theme.primary.toLowerCase() === "#334155" && theme.accent.toLowerCase() === "#0f766e") ||
+    (theme.primary.toLowerCase() === "#672b3c" && theme.accent.toLowerCase() === "#c7b69e") ||
+    (theme.primary.toLowerCase() === "#660033" && theme.accent.toLowerCase() === "#d5a0b1") ||
+    (theme.primary.toLowerCase() === "#650019" && theme.accent.toLowerCase() === "#e18b9a")
+  );
+  if (!theme || previousDefault) return { primary: "#650019", accent: "#e18b9a" };
   return theme;
 }
 

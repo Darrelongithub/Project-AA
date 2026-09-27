@@ -76,7 +76,7 @@ export function loginPage(error?: string, theme?: Theme, institution = "Organiza
     content: `
 <div class="loginbox card">
   ${crest(58)}
-  <div class="brand-lockup"><span>PROJECT</span><b>AA</b></div>
+  <div class="brand-lockup"><span>PROJECT</span><b>a<sup>2</sup></b></div>
   <h1 class="center">Sign in</h1>
   <p class="sub center">${esc(institution)} · Automated admissions</p>
   ${okMsg ? `<div class="flash ok" style="position:static;margin-bottom:14px">${esc(okMsg)}</div>` : ""}
@@ -105,7 +105,7 @@ export function resetPasswordPage(error?: string, theme?: Theme, institution = "
     content: `
 <div class="loginbox card">
   ${crest(58)}
-  <div class="brand-lockup"><span>PROJECT</span><b>AA</b></div>
+  <div class="brand-lockup"><span>PROJECT</span><b>a<sup>2</sup></b></div>
   <h1 class="center">Reset password</h1>
   <p class="sub center">Enter your username and the one-time reset code your administrator issued for you. It works once and expires after 30 minutes.</p>
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
@@ -137,7 +137,7 @@ export function setupPage(token: string, error?: string, theme?: Theme, institut
     content: `
 <div class="loginbox card">
   ${crest(58)}
-  <div class="brand-lockup"><span>PROJECT</span><b>AA</b></div>
+  <div class="brand-lockup"><span>PROJECT</span><b>a<sup>2</sup></b></div>
   <h1 class="center">Welcome to ${esc(institution)}</h1>
   <p class="sub center">This is a fresh installation. Create the administrator account — you will not see this screen again.</p>
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
@@ -243,24 +243,29 @@ function adminDashboard(c: Ctx): string {
     `Overview — ${c.institution}`,
     "dashboard",
     `
-<div class="hero hero-center">
-  <div>
-    <div class="kicker">Administration</div>
-    <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}.</h1>
-    <p class="lede">Everything worth knowing is right here.</p>
+<header class="overview-mast">
+  <div class="mast-main">
+    <div class="mast-index"><span>a²</span><i> / </i>OPERATIONS REGISTER</div>
+    <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}<b>.</b></h1>
+    <p class="mast-sub">${applications} applications in the register <span>·</span> all times East Africa</p>
   </div>
-  ${heroClock()}
-</div>
+  <div class="mast-time">${heroClock()}<span class="mast-live"><i></i> SYSTEM LIVE</span></div>
+  <span class="mast-watermark" aria-hidden="true">a²</span>
+  <span class="mast-folio">PRIVATE
+CASEWORK
+NO. 01</span>
+</header>
 
-<section class="card">
-  <h2>Totals <span class="small muted" style="text-transform:none;letter-spacing:0">— ${applications} applications, every dial opens its level in Admissions</span></h2>
+<section class="overview-flow">
+  <div class="flow-heading"><span class="flow-index">01</span><div><div class="kicker">THE REGISTER</div><h2>Admissions in motion</h2><p>${applications} applications · choose a dial to open its queue</p></div><a class="flow-link" href="/admissions">OPEN REGISTER <b>↗</b></a></div>
+  <div class="gauge-band"><div class="band-label"><b>At a glance</b><span>WORKLOAD</span></div>
   ${gaugeRow([
     { n: stage.finished, label: "Finished", tone: "green", href: "/admissions?stage=completed", caption: `${completion ?? 0}% of all files` },
     { n: stage.unfinished, label: "Unfinished", tone: "orange", href: "/admissions?stage=unfinished", caption: "gathering documents" },
     { n: stage.pending, label: "Pending review", tone: "purple", href: "/admissions?stage=awaiting_review", caption: "waiting on staff" },
     { n: stage.enquiries, label: "Enquiries today", tone: "blue", href: "/admissions?stage=enquiries", caption: "across the team" },
-  ])}
-  <h2 style="margin-top:26px">Pipeline levels</h2>
+  ])}</div>
+  <div class="gauge-band levels-band"><div class="band-label"><b>By stage</b><span>PIPELINE</span></div>
   ${gaugeRow([
     { n: stage.application_received, label: "Application received", href: "/admissions?stage=application_received" },
     { n: stage.documents_received, label: "Documents received", href: "/admissions?stage=documents_received" },
@@ -268,7 +273,7 @@ function adminDashboard(c: Ctx): string {
     { n: stage.awaiting_review, label: "Awaiting review", href: "/admissions?stage=awaiting_review" },
     { n: stage.verification, label: "Verification", href: "/admissions?stage=verification" },
     { n: stage.completed, label: "Completed", tone: "green", href: "/admissions?stage=completed" },
-  ])}
+  ])}</div>
 </section>
 
 <section class="card nopad" id="alerts">
@@ -442,24 +447,29 @@ function officerDashboard(c: Ctx): string {
     `Overview — ${c.institution}`,
     "dashboard",
     `
-<div class="hero">
-  <div>
-    <div class="kicker">${esc(c.institution)} · ${activeCount} active applicant${activeCount === 1 ? "" : "s"}</div>
-    <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}.</h1>
-    <p class="lede">Here is what needs you today.</p>
+<header class="overview-mast">
+  <div class="mast-main">
+    <div class="mast-index"><span>a²</span><i> / </i>${esc(c.institution).toUpperCase()} · LIVE CASEWORK</div>
+    <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}<b>.</b></h1>
+    <p class="mast-sub">${activeCount} active applicant${activeCount === 1 ? "" : "s"} <span>·</span> all times East Africa</p>
   </div>
-  ${heroClock()}
-</div>
+  <div class="mast-time">${heroClock()}<span class="mast-live"><i></i> SYSTEM LIVE</span></div>
+  <span class="mast-watermark" aria-hidden="true">a²</span>
+  <span class="mast-folio">PRIVATE
+CASEWORK
+NO. 01</span>
+</header>
 
-<section class="card">
-  <h2>The pipeline, at a glance <span class="small muted" style="text-transform:none;letter-spacing:0">— every dial opens its level in Admissions</span></h2>
+<section class="overview-flow">
+  <div class="flow-heading"><span class="flow-index">01</span><div><div class="kicker">THE REGISTER</div><h2>Admissions in motion</h2><p>Every dial opens its live queue.</p></div><a class="flow-link" href="/admissions">OPEN REGISTER <b>↗</b></a></div>
+  <div class="gauge-band"><div class="band-label"><b>At a glance</b><span>WORKLOAD</span></div>
   ${gaugeRow([
     { n: stage.finished, label: "Finished", tone: "green", href: "/admissions?stage=completed", caption: "completed files" },
     { n: stage.unfinished, label: "Unfinished", tone: "orange", href: "/admissions?stage=unfinished", caption: "still gathering documents" },
     { n: stage.pending, label: "Pending review", tone: "purple", href: "/admissions?stage=pending", caption: "waiting on a human" },
     { n: stage.enquiries, label: "Enquiries today", tone: "blue", href: "/admissions?stage=enquiries", caption: "fee · admission · follow-ups" },
-  ])}
-  <h2 style="margin-top:26px">By level</h2>
+  ])}</div>
+  <div class="gauge-band levels-band"><div class="band-label"><b>By stage</b><span>PIPELINE</span></div>
   ${gaugeRow([
     { n: stage.application_received, label: "Application received", href: "/admissions?stage=application_received" },
     { n: stage.documents_received, label: "Documents received", href: "/admissions?stage=documents_received" },
@@ -467,7 +477,7 @@ function officerDashboard(c: Ctx): string {
     { n: stage.awaiting_review, label: "Awaiting review", href: "/admissions?stage=awaiting_review" },
     { n: stage.verification, label: "Verification", href: "/admissions?stage=verification" },
     { n: stage.completed, label: "Completed", tone: "green", href: "/admissions?stage=completed" },
-  ])}
+  ])}</div>
 </section>
 
 ${alertsCard}
@@ -1879,8 +1889,8 @@ ${connectionsSection(c, gmailRedirectUri)}
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
       ${organizationInput("organization_name", "Organisation / school name", organization?.name ?? c.institution)}
-      ${organizationInput("primary_color", "Primary colour", organization ? organizationTheme(repo, organizationId).primary : "#672b3c")}
-      ${organizationInput("accent_color", "Accent colour", organization ? organizationTheme(repo, organizationId).accent : "#c7b69e")}
+      ${organizationInput("primary_color", "Primary colour", organization ? organizationTheme(repo, organizationId).primary : "#650019")}
+      ${organizationInput("accent_color", "Accent colour", organization ? organizationTheme(repo, organizationId).accent : "#e18b9a")}
       <div><label>Reference prefix</label><input name="ref_prefix" value="${esc(organization?.ref_prefix ?? repo.organizationRefPrefix(c.user.organization_id ?? 1))}" pattern="[A-Za-z]{1,8}" maxlength="8" required></div>
     </div>
     <div class="formrow">
@@ -2042,7 +2052,7 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
 
 export function accountPage(c: Ctx, msg?: string): string {
   const u = c.user;
-  const theme: Theme = c.theme === "dark" ? "dark" : "light";
+  const theme: Theme = c.theme === "light" ? "light" : "dark";
   return head(
     c,
     "Account",

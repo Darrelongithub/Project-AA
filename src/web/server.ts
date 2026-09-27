@@ -131,14 +131,14 @@ export function createApp(deps: WebDeps): Express {
     res.send(Buffer.from(LOGO_WHITE_BASE64, "base64"));
   });
 
-  // Browser-tab mark: the AA SVG; organization logos remain stored on their organization row.
+  // Browser-tab mark: the a² SVG; organization logos remain stored on their organization row.
   app.get("/assets/favicon", (_req, res) => {
     res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=604800");
     res.send(Buffer.from(FAVICON_BASE64, "base64"));
   });
 
-  // Self-hosted typefaces (no CDN): Manrope for UI, Instrument Serif display.
+  // Self-hosted typefaces (no CDN): Manrope variable font for the full interface.
   const fontRoutes: Array<[string, string]> = [
     ["/assets/fonts/manrope.woff2", FONT_MANROPE_WOFF2],
     ["/assets/fonts/instrument-serif.woff2", FONT_INSTRUMENT_SERIF_WOFF2],

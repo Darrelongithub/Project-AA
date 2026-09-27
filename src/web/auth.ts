@@ -55,7 +55,7 @@ export function clearSessionCookie(): string {
 export function authMiddleware(repo: Repo) {
   return (req: Request, _res: Response, next: NextFunction) => {
     const cookies = parseCookies(req.headers.cookie);
-    req.theme = cookies["theme"] === "dark" ? "dark" : "light";
+    req.theme = cookies["theme"] === "light" ? "light" : "dark";
     const sid = cookies["sid"];
     if (sid) {
       const session = repo.getSession(sid);
