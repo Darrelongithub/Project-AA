@@ -251,7 +251,7 @@ function seedGenericModel(repo: Repo): void {
   const migrated = migratedOrganizationOne();
   if (!org) {
     repo.db.prepare("INSERT INTO organizations (id, name, ref_prefix, theme) VALUES (1, ?, ?, ?)")
-      .run(migrated?.name || DEFAULT_SETTINGS.institution_name || "Organization", "RU", JSON.stringify({ primary: "#672b3c", accent: "#c7b69e" }));
+      .run(migrated?.name || DEFAULT_SETTINGS.institution_name || "Organization", "RU", JSON.stringify({ primary: "#650019", accent: "#e18b9a" }));
   }
   if (migrated?.tagline && !repo.getSetting("splash_tagline", "")) repo.setSetting("splash_tagline", migrated.tagline);
   // PPR P1-5: the migrated identity's sender display name becomes real org

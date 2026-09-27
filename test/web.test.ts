@@ -207,18 +207,20 @@ describe("web console", () => {
   });
 
   it("v4 UI: splash, header shell, command palette and dark-mode toggle", async () => {
-    const { cookie, csrf } = await login();
+    const { cookie: sessionCookie, csrf } = await login();
+    const cookie = `${sessionCookie}; theme=light`;
     const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     expect(home).toContain('id="splash"');
-    expect(home).toContain('class="sitehead"');
-    expect(home).not.toContain('class="sidebar"');
+    expect(home).toContain('class="sitehead sidebar"');
     expect(home).toContain('id="palette"');
     expect(home).toContain("Riara University");
     expect(home).toContain("Nurturing Innovations");
     expect(home).toContain('data-theme="light"');
-    // Bundled typefaces are self-hosted, not a CDN.
+    // The bundled Manrope variable font now handles both display and interface text.
     expect(home).toContain("/assets/fonts/manrope.woff2");
-    expect(home).toContain("/assets/fonts/instrument-serif.woff2");
+    expect(home).toContain('--display: "Manrope"');
+    expect(home).toContain("a²");
+    expect(home).not.toContain("Instrument Serif");
     const font = await fetch(`${base}/assets/fonts/manrope.woff2`);
     expect(font.status).toBe(200);
     expect(font.headers.get("content-type")).toBe("font/woff2");
@@ -683,7 +685,8 @@ describe("QA audit regressions", () => {
 
   it("admin Overview carries an alerts panel that can clear unread alerts", async () => {
     repo.notify("escalation", "Case RU-ALERT escalation for admins", null);
-    const { cookie, csrf } = await login();
+    const { cookie: sessionCookie, csrf } = await login();
+    const cookie = `${sessionCookie}; theme=light`;
     const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
     expect(home).toContain('id="alerts"');
     expect(home).toContain("Case RU-ALERT escalation for admins");
