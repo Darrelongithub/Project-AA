@@ -9,6 +9,7 @@ import { loadConfig } from "../config";
 import { openDb } from "../db/db";
 import { Repo } from "../db/repo";
 import { seedDefaults } from "../db/seed";
+import { seedDemoOrganization } from "../db/demoOrg";
 import { buildAdapters, MockSender, type EmailSender, type PipelineContext, type SendExtras } from "../pipeline/adapters";
 import { GmailClient } from "../ingestion/gmailClient";
 import { GmailSender } from "../ingestion/sender";
@@ -43,6 +44,11 @@ async function main(): Promise<void> {
   const cfg = loadConfig();
   const repo = new Repo(openDb(cfg.dbPath));
   seedDefaults(repo, { live: cfg.mode === "live" });
+  // DEMO: opt-in second organization, seeded alongside Organization #1.
+  if (process.env.SEED_DEMO_ORG === "1") {
+    const demo = seedDemoOrganization(repo);
+    log(`serve: demo organization #${demo.organizationId} ${demo.created ? "seeded" : "present"}`);
+  }
 
   // Keep track of where the active client came from. An environment-only
   // deployment deliberately has no Gmail rows in SQLite; that must not look

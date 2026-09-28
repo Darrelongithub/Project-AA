@@ -161,7 +161,11 @@ export interface StaffUser {
   active: number;
   /** 1 when the account belongs to the seeded demo dataset. */
   demo?: number;
+  /** ACTIVE organization for this session's pages (DEMO: switchable). */
   organization_id?: number | null;
+  /** DEMO: installation-owner admins (home = Organization #1) may switch the
+   *  active organization from the sidebar; tenant admins never see it. */
+  can_switch_org?: boolean;
 }
 
 // ── Requirements ───────────────────────────────────────────────────────────

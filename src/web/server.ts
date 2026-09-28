@@ -28,9 +28,11 @@ import { categorizeEmail } from "../categorize";
 type LegacyAcademicLevel = "degree" | "diploma" | "certificate" | "masters" | "phd";
 import {
   accountPage, admissionsPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, mailPage, mailThreadPage, resetPasswordPage, setupPage,
-  replayPage, settingsPage, staffPage, templatesPage,
+  replayPage, settingsPage, staffPage, templatesPage, intakeTestPage,
 } from "./pages";
 import { TEMPLATE_DEFAULTS } from "../db/seed";
+import { processEmail } from "../pipeline";
+import { makeTextPdf } from "../simulation/pdfFactory";
 import { avatar, layout } from "./views";
 import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
 import { GmailClient } from "../ingestion/gmailClient";
@@ -91,7 +93,7 @@ export function createApp(deps: WebDeps): Express {
   const c = (req: Request) => ({
     repo,
     user: req.staff!,
-    unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
+    unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.caseScopeFor(req.staff!)),
     csrf: req.csrfToken ?? "",
     theme: req.theme,
     institution: instName(req),
@@ -406,6 +408,55 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(`/applicants?queue=human_review${req.query.filter === "urgent" ? "&priority=urgent" : ""}`);
   });
 
+  // DEMO: visible organization switcher (sidebar). Admin-only; the active
+  // organization scopes queues, dashboards, mail, search, CaseTypes,
+  // templates and branding for this admin.
+  app.post("/org/switch", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    if (!req.staff!.can_switch_org) return res.status(403).send("403 — this account belongs to a single organization.");
+    const id = Number(req.body.organization_id);
+    const org = Number.isInteger(id) ? repo.getOrganization(id) : undefined;
+    if (!org) return res.redirect("/?msg=" + encodeURIComponent("Unknown organization."));
+    repo.setActiveOrganization(req.staff!.id, org.id);
+    repo.audit(null, req.staff!.username, "organization_switched", `${org.id}:${org.name}`);
+    res.redirect("/applicants?msg=" + encodeURIComponent(`Switched to ${organizationName(repo, org.id)}.`));
+  });
+
+  // DEMO: test intake — a simulated inbound message for one of the ACTIVE
+  // organization's CaseTypes, processed by the real pipeline.
+  app.get("/intake/test", requireLogin, requireRole("admin"), (req, res) => {
+    res.send(intakeTestPage(c(req), { caseTypeCode: req.query.case_type ? String(req.query.case_type) : undefined, msg: req.query.msg ? String(req.query.msg) : undefined }));
+  });
+  app.post("/intake/test", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
+    const orgId = organizationId(req);
+    const ct = repo.getCaseType(String(req.body.case_type ?? ""), orgId);
+    if (!ct) return res.redirect("/intake/test?msg=" + encodeURIComponent("Unknown CaseType for this organization."));
+    const from = String(req.body.from ?? "").trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(from)) return res.redirect(`/intake/test?case_type=${encodeURIComponent(ct.code)}&msg=` + encodeURIComponent("A valid contact email is required."));
+    const fromName = String(req.body.from_name ?? "").trim().slice(0, 80);
+    const wanted = new Set(([] as string[]).concat(req.body.doc ?? []).map(String));
+    const slots = repo.listDocumentDefinitions(ct.id).filter((d) => wanted.has(d.key));
+    const body = String(req.body.body ?? "").slice(0, 8000);
+    const factLines = body.split(/\r?\n/).filter((l) => /^[A-Za-z][A-Za-z0-9 _/-]{1,40}:\s*\S/.test(l.trim()));
+    const attachments = await Promise.all(slots.map(async (d) => ({
+      filename: `${d.key}.pdf`,
+      mimeType: "application/pdf",
+      content: await makeTextPdf([d.label, `Name: ${fromName || from}`, ...factLines]),
+    })));
+    const stamp = Date.now().toString(36);
+    try {
+      const result = await processEmail({
+        id: `test-intake-${stamp}`, threadId: `test-intake-${stamp}`, from, fromName: fromName || undefined,
+        subject: String(req.body.subject ?? ct.name).slice(0, 200) || ct.name, body,
+        receivedAt: new Date().toISOString(), attachments, organizationId: orgId, caseTypeCode: ct.code,
+      }, ctx);
+      if (!result.applicantId) return res.redirect(`/intake/test?case_type=${encodeURIComponent(ct.code)}&msg=` + encodeURIComponent("The message was parked by the intake gate (no case opened). Mention the CaseType in the subject."));
+      repo.audit(result.applicantId, req.staff!.username, "test_intake_submitted", `${ct.code}: ${slots.length} document(s)`);
+      return res.redirect(backToCase(result.applicantId, `Test message processed for ${ct.name}.`));
+    } catch (e) {
+      return res.redirect(`/intake/test?case_type=${encodeURIComponent(ct.code)}&msg=` + encodeURIComponent(`Processing failed: ${(e as Error).message}`));
+    }
+  });
+
   app.get("/applicants", requireLogin, (req, res) => {
     res.send(
       applicantsPage(c(req), {
@@ -466,7 +517,7 @@ export function createApp(deps: WebDeps): Express {
         title: "Outside your schools",
         institution: instName(req),
         user: req.staff,
-        unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
+        unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.caseScopeFor(req.staff!)),
         csrf: req.csrfToken,
         content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
           <h1>This case is outside your assigned schools</h1>
@@ -803,7 +854,7 @@ export function createApp(deps: WebDeps): Express {
     // not just the new. Invalid/missing page numbers clamp to page one.
     const pageRaw = Number(req.query.page ?? 1);
     const page = Number.isInteger(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
-    const baseOpts = { schools: repo.visibleSchoolsFor(req.staff!), demo: req.staff!.demo };
+    const baseOpts = { schools: repo.caseScopeFor(req.staff!), demo: req.staff!.demo };
     const threads = repo.mailThreads({ ...baseOpts, q: q || undefined, unreadOnly, folder, page });
     const counts = repo.mailFolderCounts(baseOpts);
     const backUrl = `/mail?f=${unreadOnly ? "unread" : folder}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
@@ -818,7 +869,7 @@ export function createApp(deps: WebDeps): Express {
         title: "Conversation not found",
         institution: instName(req),
         user: req.staff,
-        unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
+        unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.caseScopeFor(req.staff!)),
         csrf: req.csrfToken,
         content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
           <h1>Conversation not found</h1>
@@ -887,7 +938,7 @@ export function createApp(deps: WebDeps): Express {
       title: "Outside your schools",
       institution: instName(req),
       user: req.staff,
-      unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.visibleSchoolsFor(req.staff!)),
+      unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.caseScopeFor(req.staff!)),
       csrf: req.csrfToken,
       content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
         <h1>This case is outside your assigned schools</h1>
@@ -920,7 +971,7 @@ export function createApp(deps: WebDeps): Express {
         }));
       }
     }
-    const scope = repo.visibleSchoolsFor(req.staff!);
+    const scope = repo.caseScopeFor(req.staff!);
     const q = req.query.q !== undefined ? String(req.query.q).trim() : undefined;
     const matches = repo.searchApplicants({
       q: q || undefined, demo: req.staff!.demo, schools: scope, limit: 8,
@@ -2526,7 +2577,7 @@ export function createApp(deps: WebDeps): Express {
     // Realm + school scope, like every other admin list — an admin in one
     // realm must not be able to pull the whole other realm's PII to CSV.
     const demo = req.staff!.demo ?? 0;
-    const schools = repo.visibleSchoolsFor(req.staff!);
+    const schools = repo.caseScopeFor(req.staff!);
     const rows = repo.allApplicants(demo, schools);
     // Two aggregate queries for the whole export — never 2N per-applicant
     // lookups on a synchronous connection.
@@ -2548,7 +2599,7 @@ export function createApp(deps: WebDeps): Express {
 
   app.get("/export/queue.csv", requireLogin, requireRole("admin"), (req, res) => {
     const demo = req.staff!.demo ?? 0;
-    const schools = repo.visibleSchoolsFor(req.staff!);
+    const schools = repo.caseScopeFor(req.staff!);
     const rows = repo.queueView(demo, schools);
     csv(
       res,
@@ -2563,7 +2614,7 @@ export function createApp(deps: WebDeps): Express {
     // are institution-level and always included; applicant rows must belong
     // to an applicant visible to this realm.
     const demo = req.staff!.demo ?? 0;
-    const schools = repo.visibleSchoolsFor(req.staff!);
+    const schools = repo.caseScopeFor(req.staff!);
     const visible = new Set(repo.allApplicants(demo, schools).map((a) => a.id));
     const rows = repo
       .recentAudit(10000)
@@ -2579,7 +2630,7 @@ export function createApp(deps: WebDeps): Express {
     const q = String(req.query.q ?? "").trim();
     if (!q) return res.json({ applicants: [] });
     res.json({
-      applicants: repo.searchApplicants({ q, limit: 8, demo: req.staff!.demo, schools: repo.visibleSchoolsFor(req.staff!) }).map((a) => ({
+      applicants: repo.searchApplicants({ q, limit: 8, demo: req.staff!.demo, schools: repo.caseScopeFor(req.staff!) }).map((a) => ({
         id: a.id,
         ref_number: a.ref_number,
         name: a.full_name ?? "",
@@ -2600,7 +2651,7 @@ export function createApp(deps: WebDeps): Express {
       institution: instName(req),
       publicPage: !req.staff,
       user: req.staff,
-      unread: req.staff ? repo.unreadCount(req.staff.id, req.staff.demo, repo.visibleSchoolsFor(req.staff)) : undefined,
+      unread: req.staff ? repo.unreadCount(req.staff.id, req.staff.demo, repo.caseScopeFor(req.staff)) : undefined,
       csrf: req.staff ? req.csrfToken : undefined,
       content: `<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
         <h1>Page not found</h1>
