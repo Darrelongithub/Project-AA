@@ -1,4 +1,5 @@
 > **Historical document — superseded by [STATUS.md](./STATUS.md).** Kept for the audit trail; figures and statements may be stale. Do not update.
+> **Bug index:** every defect in this document is consolidated and verified in [BUGS.md](./BUGS.md) (Phase 7, 2026-09-28).
 
 # OWNER_ISSUES.md — acceptance gates
 

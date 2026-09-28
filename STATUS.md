@@ -4,14 +4,15 @@
 (`AUDIT.md`, `BUGLOG.md`, `BUGS.md`, `CODE_REVIEW.md`, `MIGRATION.md`,
 `OWNER_ISSUES.md`, `PPR-REPORT.md`, `REPORT.md`) is historical: kept for the
 audit trail, figures may be stale. When the state of the project changes,
-update THIS file — not the historical ones.
+update THIS file — not the historical ones. The consolidated, verified
+defect index lives in [BUGS.md](./BUGS.md) (Phase 7, 2026-09-28).
 
 ## State of the build (as of 2026-09-28)
 
 | Gate | Command | Status |
 | --- | --- | --- |
 | Types (strict) | `npm run typecheck` | clean |
-| Test suite | `npm test` (vitest) | **635 passed + 3 environment-gated skips** (74 files), 0 failed |
+| Test suite | `npm test` (vitest) | **667 passed + 3 environment-gated skips** (80 files), 0 failed |
 | Simulation scorecard | `npm run simulate` | **316/316 checks, 26/26 scenarios — ALL GREEN, exits 0**; exits non-zero on any failure (CI gate) |
 | Boot outside `./data` | `DB_PATH=/tmp/x.sqlite npm run serve` | clean boot (bundled data resolved from the install, not the CWD) |
 

@@ -1,4 +1,5 @@
 # STAB Round — RED → GREEN Evidence Report
+> **Bug index:** every defect in this document is consolidated and verified in [BUGS.md](./BUGS.md) (Phase 7, 2026-09-28).
 
 Round: stabilization of the independent audit findings (PPR-AUDIT-2), executed
 in strict priority order (CRITICAL → HIGH → MEDIUM → LOW), plus the owner's
