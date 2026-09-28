@@ -1,3 +1,5 @@
+> **Historical document — superseded by [STATUS.md](./STATUS.md).** Kept for the audit trail; figures and statements may be stale. Do not update.
+
 # Hostile Code Audit — Round Report
 
 **Date:** 2026-09-21 · **Scope:** full `src/` tree (66 files, 18,251 LOC) + CLIs + web routing + pipeline + adapters, audited against the mission-brief vectors A–E.

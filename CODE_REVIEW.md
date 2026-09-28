@@ -1,3 +1,5 @@
+> **Historical document — superseded by [STATUS.md](./STATUS.md).** Kept for the audit trail; figures and statements may be stale. Do not update.
+
 # Code Review — email-sorter (hostile pass)
 
 > **UPDATE:** a subsequent bug hunt confirmed 42 defects and fixed all of them —

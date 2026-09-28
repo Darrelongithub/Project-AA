@@ -1,3 +1,5 @@
+> **Historical document — superseded by [STATUS.md](./STATUS.md).** Kept for the audit trail; figures and statements may be stale. Do not update.
+
 # MIGRATION.md — Production migration plan (PPR P0-7)
 
 **Scope:** take a live, pre-PPR Riara University database (education-only,

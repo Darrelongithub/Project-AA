@@ -1,3 +1,5 @@
+> **Historical document — superseded by [STATUS.md](./STATUS.md).** Kept for the audit trail; figures and statements may be stale. Do not update.
+
 # BUGLOG — every bug found, in one place
 
 **Project:** email-sorter (Riara admissions intake) · **Last updated:** 2026-09-25 (round 11: smart intake engine + Gmail history, §22)

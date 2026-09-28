@@ -32,7 +32,10 @@ export function organizationTheme(repo: Repo, organizationId = 1): OrganizationT
     (theme.primary.toLowerCase() === "#660033" && theme.accent.toLowerCase() === "#d5a0b1") ||
     (theme.primary.toLowerCase() === "#650019" && theme.accent.toLowerCase() === "#e18b9a")
   );
-  if (!theme || previousDefault) return { primary: "#650019", accent: "#e18b9a" };
+  // Accent moved off the pink default to antique gold (garnet & gold);
+  // organizations still carrying ANY previous default pair — including the
+  // pink one — resolve to the current default automatically.
+  if (!theme || previousDefault) return { primary: "#650019", accent: "#c89a4a" };
   return theme;
 }
 

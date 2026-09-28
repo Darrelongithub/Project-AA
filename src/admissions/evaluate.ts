@@ -4,13 +4,20 @@
  *
  * The automated evaluation outcomes are evidence and routing guidance only:
  *
- *   QUALIFIED              → HUMAN REVIEW        (never a final admission)
+ *   QUALIFIED              → HUMAN REVIEW / PROVISIONAL AUTO-ADMIT
  *   NOT CLEARLY QUALIFIED  → HUMAN REVIEW        (never an automatic rejection)
  *   INCOMPLETE             → WAITING FOR DOCUMENTS (missing ≠ failed)
  *
  * Eligibility (requirement result), routing and the admission DECISION are
  * separate concepts — see applicants.req_result / routing / admission_decision.
- * A human must confirm every final admission outcome.
+ * A human confirms or reverses every admission outcome; the one automated
+ * route is the PROVISIONAL auto-admit (M-3): a complete, reliable, clean file
+ * that satisfies every configured rule, on a profile that explicitly opts in
+ * to deterministic admission (the migrated education profile — `auto_admit`),
+ * is routed `auto_admit` provisionally. The watcher may still downgrade it,
+ * the pipeline records the decision and sends the letter only after every
+ * gate has passed, and a registrar can reverse it through the ordinary
+ * `not_admitted` decision path.
  */
 import type { Repo } from "../db/repo";
 import type {
@@ -131,16 +138,43 @@ function flattenNodes(set: AdmissionRuleSet): { nodes: AdmissionRuleSet["nodes"]
 }
 
 /**
+ * M-3: does this case's workflow profile carry the legacy deterministic
+ * auto-admit posture?
+ *
+ * `case_types.auto_admit` is an explicit opt-in: the migrated education
+ * profile has it ON (its original, preserved behaviour), every profile a new
+ * organization creates starts with it OFF, and draft automation withholds it
+ * entirely. The pipeline and the case-page re-evaluation both pass this
+ * through, so neither path silently downgrades — or invents — a provisional
+ * admission.
+ */
+export function autoAdmitPolicy(repo: Repo, applicantId: number, category?: string): boolean {
+  const a = repo.getApplicant(applicantId);
+  if (!a) return false;
+  const profile = repo.caseTypeForCase(applicantId);
+  if (!profile || profile.education_module !== 1 || profile.auto_admit !== 1) return false;
+  const reply = profile.default_reply_action ?? "draft";
+  if (reply === "draft" || reply === "hold") return false;
+  return repo.automationMode(category ?? a.category ?? "normal") === "auto";
+}
+
+/**
  * Evaluate one applicant against their frozen requirement sets.
  *
  * @param extraFlags flags already raised on this pass (late submission,
  *        identity concerns, watcher…) — they block auto-admission even when
  *        every academic rule passes.
+ * @param options.autoAdmit when true, a complete + reliable + clean pass on a
+ *        profile that opts in may route `auto_admit` (PROVISIONAL — the
+ *        watcher, the draft gate and the qualification gate are re-applied by
+ *        the caller before any decision is recorded). Default false: a bare
+ *        evaluation is evidence for a reviewer, never an admission.
  */
 export function evaluateAdmission(
   repo: Repo,
   applicantId: number,
-  extraFlags: Array<{ type: string; detail: string }> = []
+  extraFlags: Array<{ type: string; detail: string }> = [],
+  options: { autoAdmit?: boolean } = {}
 ): AdmissionEvaluation {
   const a = repo.getApplicant(applicantId)!;
   const docs = repo.listDocuments(applicantId, { activeOnly: true });
@@ -190,6 +224,14 @@ export function evaluateAdmission(
     repo.audit(applicantId, "system", event, `result=${result} routing=${routing}${reasonCode ? ` (${reasonCode})` : ""} — ${reason.slice(0, 200)}`);
     if (routing === "human_review") {
       repo.audit(applicantId, "system", "human_review_triggered", reason.slice(0, 200));
+    }
+    if (routing === "auto_admit") {
+      repo.audit(
+        applicantId,
+        "system",
+        "admission_auto_qualified",
+        `provisional auto-admission qualified: result=${result}${reasonCode ? ` (${reasonCode})` : ""} — ${reason.slice(0, 200)}`
+      );
     }
     return { report, derivedFlags };
   };
@@ -377,6 +419,20 @@ export function evaluateAdmission(
         `Applicant satisfies all academic requirements (${tree.rulesSatisfied}/${tree.rulesTotal} rules) but has a blocking flag requiring human decision: ${label}.`,
         blockingTypes.includes("late_submission") ? "late_submission" : "manual_decision_required",
         set
+      );
+    }
+    if (options.autoAdmit) {
+      // M-3: the legacy deterministic route. Every disqualifying condition has
+      // already been checked above (empty rule set, unreadable/ambiguous
+      // certificates, unreliable extraction, blocking flags), the file is
+      // complete, and the profile explicitly opts in — so the route is
+      // PROVISIONAL auto-admit. The watcher can still downgrade it
+      // (downgradeRoutingForWatcher); the caller records the decision and
+      // sends the letter; a registrar can reverse it on the case page.
+      return persist(
+        "passed", "auto_admit",
+        `All configured admission requirements satisfied (${tree.rulesSatisfied}/${tree.rulesTotal} rules). Provisional admission — the admission letter is sent automatically and a registrar may reverse the decision.`,
+        "qualified_auto_admit", set
       );
     }
     return persist(

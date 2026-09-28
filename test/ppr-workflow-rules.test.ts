@@ -211,13 +211,21 @@ describe("PPR P0-4: workflow rules — first-email behaviour as data", () => {
     expect(result.skipped).not.toBe(true);
     expect(result.autoKind).toBe("ack");
     expect(result.autoSent).toBe(true);
-    expect(sender.sent.length).toBe(1); // fully qualified → the receipt goes out
+    expect(sender.sent.length).toBe(1); // fully qualified → the admission letter goes out (M-3)
+    expect(sender.sent[0].subject).toMatch(/Welcome to .* — Your Admission to /);
     const audit = repo.auditForApplicant(result.applicantId!);
     expect(audit.some((a) => a.event === "rule_first_contact")).toBe(true); // rule data fired
     expect(audit.some((a) => a.event === "rule_ack")).toBe(true);
     expect(audit.some((a) => a.event === "email_sent_auto")).toBe(true);
-    // The admission decision still belongs to a human:
-    expect(repo.getApplicant(result.applicantId!)!.admission_decision).toBe("undecided");
+    // M-3: the migrated education profile auto-admits a fully qualified,
+    // watcher-clean file — the decision is PROVISIONAL and a registrar can
+    // reverse it at any time (test/m3-auto-admit.test.ts). The human path is
+    // never removed; it is simply no longer the only path.
+    const admitted = repo.getApplicant(result.applicantId!)!;
+    expect(admitted.admission_decision).toBe("auto_admitted");
+    expect(admitted.admission_route).toBe("auto");
+    expect(audit.some((a) => a.event === "admission_auto_qualified")).toBe(true);
+    expect(audit.some((a) => a.event === "auto_admission_triggered")).toBe(true);
   });
 
   it("the seeded education rules reproduce the known chain: complaint → high-priority human review, reply held", async () => {

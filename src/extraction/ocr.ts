@@ -7,13 +7,14 @@
  * to Gemini. The chain order itself never changes.
  */
 import * as fs from "fs";
+import { envInt } from "../util/envnum";
 import * as os from "os";
 import * as path from "path";
 import { createWorker } from "tesseract.js";
 import { log } from "../util/log";
 
 let workerPromise: Promise<any> | null = null;
-const OCR_TIMEOUT_MS = Number(process.env.OCR_TIMEOUT_MS || 90_000);
+const OCR_TIMEOUT_MS = envInt(process.env.OCR_TIMEOUT_MS, 90_000);
 
 async function getWorker(): Promise<any> {
   if (!workerPromise) {

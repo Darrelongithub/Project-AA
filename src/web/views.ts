@@ -205,6 +205,21 @@ export function icon(name: keyof typeof ICONS, size = 17): string {
   return `<span class="icn" style="width:${size}px;height:${size}px">${ICONS[name]}</span>`;
 }
 
+/**
+ * Accents are tuned against the dark shell; a light accent (antique gold)
+ * would wash out on paper. Halve the channel values for the light theme —
+ * deep accents stay as they are, they already read on paper.
+ */
+function accentOnPaper(hex: string): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  if (lum <= 0.32) return hex;
+  return "#" + [r, g, b].map((v) => Math.round(v * 0.5).toString(16).padStart(2, "0")).join("");
+}
+
 const CSS = `
 @font-face { font-family: "Manrope"; font-style: normal; font-weight: 200 800; font-display: swap; src: url("/assets/fonts/manrope.woff2") format("woff2"); }
 :root {
@@ -226,6 +241,15 @@ const CSS = `
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   --sans: "Manrope", system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --display: "Manrope", system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Beveled-slab shadows (cards, stats, gauges). Dark values here; light mode
+     overrides below so cards never keep hard near-black inner lines on paper. */
+  --slab-lip: rgba(255,225,230,.13);
+  --slab-lip-hover: rgba(255,230,235,.18);
+  --slab-inner: rgba(0,0,0,.52);
+  --slab-inner-hover: rgba(0,0,0,.45);
+  --slab-cast: rgba(0,0,0,.58);
+  --slab-cast-hover: rgba(0,0,0,.68);
+  --slab-foot: rgba(0,0,0,.38);
 }
 [data-theme="dark"] {
   --bg: #020203; --card: #080608; --card2: #12080c; --card-raised:#10070b;
@@ -245,11 +269,11 @@ const CSS = `
 }
 [data-theme="light"] {
   --bg: #f3eee8; --card: #fcfaf7; --card2: #eee7e1; --card-raised: #fffdfb;
-  --card-edge: #b87883; --card-side: #e5cbd0;
+  --card-edge: #7d3542; --card-side: #e6d9c9;
   --ink: #261d1f; --muted: #76696a; --line: #ded3ce; --line2: #e9dfdb;
   --wine: #610012; --wine-hover: #790018; --wine-mid: #94142a; --wine-soft: #b53d53;
-  --wine-light: #d98b9a; --wine-outline: #a64459; --wine-red: #850017; --wine-blush: #f0dfe3;
-  --wine-wash: #f0dfe3; --wine-line: #d9b7bf;
+  --wine-light: #b25a62; --wine-outline: #a64459; --wine-red: #850017; --wine-blush: #f4eee2;
+  --wine-wash: #f4eee2; --wine-line: #d9c8ba;
   --magenta: var(--bone); --magenta-bg: var(--wine-wash); --magenta-line: var(--wine-line);
   --bone: #75634c; --bone-wash: #f1ece3;
   --green: #23694e; --green-bg: #e4eee8; --green-line: #c4d9cb;
@@ -258,6 +282,14 @@ const CSS = `
   --blue: #416b7c; --blue-bg: #e8eff1; --blue-line: #cadbdf;
   --shadow: 0 2px 8px rgba(49,31,31,.045), 0 12px 32px -20px rgba(49,31,31,.2);
   --shadow-lg: 0 3px 10px rgba(49,31,31,.08), 0 26px 60px -24px rgba(49,31,31,.25);
+  /* Slabs on paper: white lip, soft ink shade, light cast — never near-black. */
+  --slab-lip: rgba(255,255,255,.85);
+  --slab-lip-hover: rgba(255,255,255,.95);
+  --slab-inner: rgba(49,31,31,.14);
+  --slab-inner-hover: rgba(49,31,31,.2);
+  --slab-cast: rgba(49,31,31,.18);
+  --slab-cast-hover: rgba(49,31,31,.24);
+  --slab-foot: rgba(49,31,31,.12);
 }
 * { box-sizing: border-box; }
 button:disabled, .btn[disabled] { opacity: .55; cursor: not-allowed; transform: none; }
@@ -837,7 +869,7 @@ td { padding-top: 16px; padding-bottom: 16px; }
 .aa-mark { display: inline-flex; align-items: center; line-height: 0; flex: none; }
 .aa-mark svg { display: block; overflow: visible; }
 .gauge { padding: 18px 10px 14px; }
-.stat { border-radius:13px; padding:20px 22px; border-color:color-mix(in srgb,var(--wine-outline) 58%,var(--line)); background:var(--card-raised); box-shadow:inset 0 1px 0 rgba(255,215,225,.04),0 2px 0 rgba(91,0,18,.45),0 13px 26px rgba(0,0,0,.52); }
+.stat { border-radius:13px; padding:20px 22px; border-color:color-mix(in srgb,var(--wine-outline) 58%,var(--line)); background:var(--card-raised); box-shadow:inset 0 1px 0 rgba(255,215,225,.04),0 2px 0 rgba(91,0,18,.45),0 13px 26px var(--slab-inner); }
 .grid.stats { gap: 16px; margin-bottom: 24px; }
 .triage-dot { display:inline-block; width:12px; height:12px; border-radius:50%; flex:none; background:var(--green); }
 .triage-dot.tone-orange { background:var(--orange); } .triage-dot.tone-red { background:var(--red); }
@@ -874,6 +906,18 @@ td { padding-top: 16px; padding-bottom: 16px; }
 .band-label { display:flex; flex-direction:column; gap:6px; padding-left:12px; border-left:2px solid #99132b; }
 .band-label b { color:#eadfe2; font:400 17px/1.05 var(--display); }
 .band-label span { color:#8f7981; font-size:8px; font-weight:850; letter-spacing:.17em; }
+/* Light mode: the register-flow band sits on the page background, NOT on the
+   dark masthead — near-black rules and bone-white text stay dark-mode-only. */
+[data-theme="light"] .flow-heading { border-bottom-color: var(--line); }
+[data-theme="light"] .flow-index { border-right-color: var(--line); color: var(--wine-mid); }
+[data-theme="light"] .flow-heading .kicker { color: var(--wine-mid); }
+[data-theme="light"] .flow-link { border-color: var(--wine-line); color: var(--wine-mid); }
+[data-theme="light"] .flow-link b { color: var(--wine-red); }
+[data-theme="light"] .flow-link:hover { border-color: var(--wine-soft); color: var(--ink); text-decoration:none; }
+[data-theme="light"] .gauge-band { border-bottom-color: var(--line); }
+[data-theme="light"] .band-label { border-left-color: var(--wine-mid); }
+[data-theme="light"] .band-label b { color: var(--ink); }
+[data-theme="light"] .band-label span { color: var(--muted); }
 .gauge-band .gauges { gap:12px; }
 .gauge-band .gauge { min-width:0; }
 @media (max-width:950px) { .gauge-band { grid-template-columns:1fr; gap:13px; } .band-label { padding:0 0 0 10px; } }
@@ -898,19 +942,19 @@ td { padding-top: 16px; padding-bottom: 16px; }
   position:relative; z-index:0; isolation:isolate;
   border-color:color-mix(in srgb,var(--wine-outline) 56%,var(--line));
   border-bottom:3px solid var(--card-edge);
-  box-shadow:inset 0 1px 0 rgba(255,225,230,.13),inset 0 -2px 0 rgba(0,0,0,.52),0 2px 0 var(--card-edge),0 6px 0 var(--card-side),0 9px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 18px 28px rgba(0,0,0,.58);
+  box-shadow:inset 0 1px 0 var(--slab-lip),inset 0 -2px 0 var(--slab-inner),0 2px 0 var(--card-edge),0 6px 0 var(--card-side),0 9px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 18px 28px var(--slab-cast);
   transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;
 }
 .card:not(.nopad)::after, .stat::after, .gauge::after, .sec::after, .ops-card::after {
   content:"";position:absolute;z-index:-1;left:7px;right:7px;top:100%;height:7px;
   background:var(--card-side);border:1px solid var(--card-edge);border-top:0;border-radius:0 0 10px 10px;
-  box-shadow:0 7px 12px rgba(0,0,0,.38);pointer-events:none;
+  box-shadow:0 7px 12px var(--slab-foot);pointer-events:none;
 }
-.card:hover, .sec:hover, .ops-card:hover { z-index:2; transform:translateY(-3px); border-bottom-color:var(--wine-mid); box-shadow:inset 0 1px 0 rgba(255,230,235,.18),inset 0 -2px 0 rgba(0,0,0,.45),0 3px 0 var(--wine-mid),0 8px 0 var(--card-side),0 12px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 24px 38px rgba(0,0,0,.68); }
-.stat { position:relative;z-index:0;isolation:isolate;border-bottom:3px solid var(--card-edge);box-shadow:inset 0 1px 0 rgba(255,225,230,.13),inset 0 -2px 0 rgba(0,0,0,.52),0 2px 0 var(--card-edge),0 6px 0 var(--card-side),0 9px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 18px 28px rgba(0,0,0,.58); }
-.stat:hover { z-index:2;transform:translateY(-3px);box-shadow:inset 0 1px 0 rgba(255,230,235,.18),inset 0 -2px 0 rgba(0,0,0,.45),0 3px 0 var(--wine-mid),0 8px 0 var(--card-side),0 12px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 24px 38px rgba(0,0,0,.68); }
-.gauge { position:relative;z-index:0;isolation:isolate;background:var(--card);border-color:color-mix(in srgb,var(--wine-outline) 68%,var(--line));border-bottom:3px solid var(--card-edge);box-shadow:inset 0 1px 0 rgba(255,225,230,.13),inset 0 -2px 0 rgba(0,0,0,.52),0 2px 0 var(--card-edge),0 6px 0 var(--card-side),0 9px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 18px 28px rgba(0,0,0,.58); }
-.gauge:hover { z-index:2;transform:translateY(-4px);border-color:var(--wine-soft);border-bottom-color:var(--wine-mid);box-shadow:inset 0 1px 0 rgba(255,230,235,.18),inset 0 -2px 0 rgba(0,0,0,.45),0 3px 0 var(--wine-mid),0 8px 0 var(--card-side),0 12px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 26px 40px rgba(0,0,0,.7); }
+.card:hover, .sec:hover, .ops-card:hover { z-index:2; transform:translateY(-3px); border-bottom-color:var(--wine-mid); box-shadow:inset 0 1px 0 var(--slab-lip-hover),inset 0 -2px 0 var(--slab-inner-hover),0 3px 0 var(--wine-mid),0 8px 0 var(--card-side),0 12px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 24px 38px var(--slab-cast-hover); }
+.stat { position:relative;z-index:0;isolation:isolate;border-bottom:3px solid var(--card-edge);box-shadow:inset 0 1px 0 var(--slab-lip),inset 0 -2px 0 var(--slab-inner),0 2px 0 var(--card-edge),0 6px 0 var(--card-side),0 9px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 18px 28px var(--slab-cast); }
+.stat:hover { z-index:2;transform:translateY(-3px);box-shadow:inset 0 1px 0 var(--slab-lip-hover),inset 0 -2px 0 var(--slab-inner-hover),0 3px 0 var(--wine-mid),0 8px 0 var(--card-side),0 12px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 24px 38px var(--slab-cast-hover); }
+.gauge { position:relative;z-index:0;isolation:isolate;background:var(--card);border-color:color-mix(in srgb,var(--wine-outline) 68%,var(--line));border-bottom:3px solid var(--card-edge);box-shadow:inset 0 1px 0 var(--slab-lip),inset 0 -2px 0 var(--slab-inner),0 2px 0 var(--card-edge),0 6px 0 var(--card-side),0 9px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 18px 28px var(--slab-cast); }
+.gauge:hover { z-index:2;transform:translateY(-4px);border-color:var(--wine-soft);border-bottom-color:var(--wine-mid);box-shadow:inset 0 1px 0 var(--slab-lip-hover),inset 0 -2px 0 var(--slab-inner-hover),0 3px 0 var(--wine-mid),0 8px 0 var(--card-side),0 12px 0 color-mix(in srgb,var(--card-side) 70%,#000),0 26px 40px var(--slab-cast-hover); }
 .hero { border-color: color-mix(in srgb, var(--wine-light) 60%, var(--wine-outline)); background: var(--card); }
 .card.nopad { border-color: color-mix(in srgb, var(--wine-outline) 38%, var(--line)); }
 .btn { background: var(--wine-red); }
@@ -1169,7 +1213,7 @@ export function layout(opts: {
 }): string {
   const brand = opts.brand;
   const brandStyle = brand && /^#[0-9a-f]{6}$/i.test(brand.primary) && /^#[0-9a-f]{6}$/i.test(brand.accent)
-    ? `<style>:root{--wine:${brand.primary};--wine-mid:${brand.accent};--wine-hover:${brand.primary};--wine-soft:${brand.accent};}</style>`
+    ? `<style>:root{--wine:${brand.primary};--wine-mid:${brand.accent};--wine-hover:${brand.primary};--wine-soft:${brand.accent};}[data-theme="light"]{--wine-mid:${accentOnPaper(brand.accent)};--wine-soft:${accentOnPaper(brand.accent)};}</style>`
     : "";
   const theme: Theme = opts.theme === "light" ? "light" : "dark";
   const otherTheme = theme === "dark" ? "light" : "dark";

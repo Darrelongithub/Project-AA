@@ -58,34 +58,39 @@ const fullSet = async (name: string) => [
 ];
 
 describe("pipeline v2 end-to-end", () => {
-  it("clean complete set → Green factual acknowledgement, admission remains for human review", async () => {
+  it("clean complete set → Green auto-admission with the admission letter (migrated profile)", async () => {
     const email = mkEmail("e2e-alice", "alice@example.org", await fullSet("ALICE WANJIKU KAMAU"));
     const res = mustProcessed(await processEmail(email, ctx));
 
     expect(res.finalStatus).toBe("Green");
     expect(res.autoSent).toBe(true);
     expect(res.autoKind).toBe("ack");
-    // A clean qualification still receives only a factual acknowledgement;
-    // the final admission decision remains a human action.
-    expect(res.lifecycle).toBe("documents_checked");
+    // M-3: on the migrated Riara profile a clean, watcher-free qualification
+    // IS the admission — the provisional decision is recorded automatically
+    // and the admission letter goes out. A registrar can still reverse it
+    // (see test/m3-auto-admit.test.ts); reversing never erases this record.
+    expect(res.lifecycle).toBe("completed");
     expect(res.refNumber).toMatch(/^[A-Z]{2}-\d{4}-\d{6}$/);
     expect(sender.sent.length).toBe(1);
     expect(sender.sent[0].subject.startsWith(`[${res.refNumber}]`)).toBe(true);
+    expect(sender.sent[0].subject).toMatch(/Welcome to .* — Your Admission to /);
 
     const a = repo.getApplicant(res.applicantId)!;
-    expect(a.admission_decision).toBe("undecided");
-    expect(a.admission_route).toBeNull();
-    expect(a.decision_by).toBeNull();
+    expect(a.admission_decision).toBe("auto_admitted");
+    expect(a.admission_route).toBe("auto");
+    expect(a.decision_by).toBeNull(); // nobody human decided this
     expect(a.req_result).toBe("passed");
-    expect(a.routing).toBe("human_review");
+    expect(a.routing).toBe("auto_admit");
+    expect(a.routing_reason).toBe("qualified_auto_admit");
 
     const history = repo.statusHistory(res.applicantId);
     expect(history.some((h) => h.to_status === "documents_checked" && h.actor === "system")).toBe(true);
+    expect(history.some((h) => h.to_status === "completed" && h.actor === "system")).toBe(true);
     const audit = repo.auditForApplicant(res.applicantId);
     expect(audit.some((a2) => a2.event === "email_received")).toBe(true);
     expect(audit.some((a2) => a2.event === "requirements_checked")).toBe(true);
-    expect(audit.some((a2) => a2.event === "auto_admission_triggered")).toBe(false);
-    expect(audit.some((a2) => a2.event === "admission_auto_qualified")).toBe(false);
+    expect(audit.some((a2) => a2.event === "admission_auto_qualified")).toBe(true);
+    expect(audit.some((a2) => a2.event === "auto_admission_triggered")).toBe(true);
     // The evaluation itself is stored, never overwritten by the admission.
     expect(repo.latestEvaluation(res.applicantId)?.result).toBe("passed");
   });

@@ -3,6 +3,7 @@
  * Single source of truth: nothing is rendered that isn't in the DB.
  */
 import { DEAD_GEMINI_MODELS, DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
+import { envInt } from "../util/envnum";
 import { missingGmailCredentials, resolveLookbackDays } from "../ingestion/sync";
 import { documentRequirementsFor } from "../documents/matrix";
 import type { Repo } from "../db/repo";
@@ -183,7 +184,8 @@ function adminDashboard(c: Ctx): string {
   const scope = repo.caseScopeFor(c.user);
   const s = repo.dashboardStats(realm, scope);
   const stage = repo.stageCounts(realm, scope);
-  const team = repo.staffStats(realm).filter((t) => t.demo === realm);
+  const orgId = c.user.organization_id ?? 1;
+  const team = repo.staffStats(realm, orgId).filter((t) => t.demo === realm);
   const alerts = repo.notificationsFor(c.user.id, 6, realm, scope);
   const all = repo.allApplicants(realm, scope);
   const missingDocs = repo.commonMissingDocs(realm, scope, 5);
@@ -383,7 +385,7 @@ function officerDashboard(c: Ctx): string {
   const accuracy = repo.accuracyStats(realm, scope);
   const queue = repo.queueView(realm, scope);
   const unanswered = repo.unansweredCases(scope);
-  const target = Number(repo.getSetting("unanswered_target_hours", "4"));
+  const target = envInt(repo.getSetting("unanswered_target_hours", "4"), 4); // corrupt setting must not NaN the alert math
   const categories = repo.categoryCounts(scope);
   const triage = repo.triageCounts(realm, scope);
   const alerts = repo.notificationsFor(c.user.id, 6, realm, scope);
@@ -595,7 +597,8 @@ export function admissionsPage(c: Ctx, stage: string): string {
   const all = repo.allApplicants(realm, scope);
   const enquiriesToday = all.filter((a) => enquiryIds.has(a.id));
 
-  const staffById = new Map(repo.listStaff().map((m) => [m.id, m.display_name]));
+  // H-2: names/assignees resolve inside the acting user's organization.
+  const staffById = new Map(repo.listStaff(c.user.organization_id ?? 1).map((m) => [m.id, m.display_name]));
   const validStages = new Set(STAGE_TABS.map((t) => t.key));
   const active = validStages.has(stage) ? stage : "all";
 
@@ -993,14 +996,28 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
   const reasonLine = ev.routing !== "auto_admit" && ev.reason ? `<div style="margin-top:6px"><b>Why:</b> ${esc(ev.reason)}</div>` : "";
 
   const decided = a.admission_decision !== "undecided";
+  // M-3: an AUTOMATED decision (the provisional auto-admit) is reversible —
+  // the registrar records not_admitted through the same decision path a human
+  // review uses, and the reversal carries their name on the audit trail.
+  const autoDecided = decided && a.admission_route !== "human";
+  const reversalForm = autoDecided
+    ? `<form class="decision-form" method="post" action="/case/${a.id}/admission-decision" style="margin-top:10px">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <h3 style="margin:0 0 8px">Reverse this decision</h3>
+        <p class="small muted" style="margin:0 0 10px">Provisional admissions are provisional. If the applicant should not be admitted — the file was misread, a document does not hold up, a requirement is disputed — record it below: it is stored as a HUMAN decision with your name on the audit trail.</p>
+        <div class="row">
+          <input name="reason" required placeholder="Reason — recorded on the audit trail" style="flex:1">
+          <button class="btn danger" name="decision" value="decline">Reverse — Not Admitted</button>
+        </div>
+      </form>`
+    : "";
   const decisionBlock = decided
     ? `<div class="routing-block ${a.admission_decision === "not_admitted" ? "b-red" : a.admission_decision === "auto_admitted" ? "b-green" : "b-purple"}">
         <b>${esc((DECISION_BADGES[a.admission_decision] ?? [a.admission_decision])[0])}</b>
         · ${a.admission_route === "human" ? "decided by a person" : "decided automatically"}${a.decision_by ? ` — ${esc(a.decision_by)}` : ""}
         ${a.decision_reason ? `<div class="small" style="margin-top:4px">${esc(a.decision_reason)}</div>` : ""}
-       </div>`
-    : ev.routing !== "auto_admit"
-      ? `<form class="decision-form" method="post" action="/case/${a.id}/admission-decision">
+       </div>${reversalForm}`
+    : `<form class="decision-form" method="post" action="/case/${a.id}/admission-decision">
           <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
           <h3 style="margin:0 0 8px">Human decision</h3>
           <p class="small muted" style="margin:0 0 10px">The automated path stopped here. If the applicant should still be admitted — alternative qualification, approved exception, special consideration, documented pathway — record it below. It is stored as a HUMAN decision, separately from anything automated, with your name on the audit trail.</p>
@@ -1018,8 +1035,7 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
             <button class="btn" name="decision" value="admit">Admit after Human Review</button>
             <button class="btn danger" name="decision" value="decline">Not Admitted</button>
           </div>
-        </form>`
-      : "";
+        </form>`;
 
   return `<section class="sec">
     <div class="sec-head"><h2>Admission eligibility</h2>
@@ -1058,7 +1074,8 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
   const history = repo.statusHistory(a.id);
   const audit = repo.auditForApplicant(a.id);
   const decisions = repo.decisionLogs(a.id);
-  const staff = repo.listStaff();
+  // H-2: the assignee picker offers the acting user's organization only.
+  const staff = repo.listStaff(c.user.organization_id ?? 1);
   // PPR P1-9: a non-education case never sees academic reply templates or
   // pack vocabulary — its page speaks only generic wording.
   const educationCasePage = repo.educationCaseFor(a);
@@ -1917,7 +1934,7 @@ ${connectionsSection(c, gmailRedirectUri)}
     <div class="formrow">
       ${organizationInput("organization_name", (c.user.organization_id ?? 1) === 1 ? "Organisation / school name" : "Organisation name", organization?.name ?? c.institution)}
       ${organizationInput("primary_color", "Primary colour", organization ? organizationTheme(repo, organizationId).primary : "#650019")}
-      ${organizationInput("accent_color", "Accent colour", organization ? organizationTheme(repo, organizationId).accent : "#e18b9a")}
+      ${organizationInput("accent_color", "Accent colour", organization ? organizationTheme(repo, organizationId).accent : "#c89a4a")}
       <div><label>Reference prefix</label><input name="ref_prefix" value="${esc(organization?.ref_prefix ?? repo.organizationRefPrefix(c.user.organization_id ?? 1))}" pattern="[A-Za-z]{1,8}" maxlength="8" required></div>
     </div>
     <div class="formrow">
@@ -2670,7 +2687,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
   const rules = repo.listWorkflowRules(orgId);
   const caseTypes = repo.listCaseTypes(orgId);
   const templates = repo.listTemplates(orgId);
-  const staff = repo.listStaff();
+  const staff = repo.listStaff(orgId); // H-2: own-tenant members only
   const editing = editRuleId ? rules.find((r) => r.id === editRuleId) : undefined;
   const templateOpts = (sel?: string | null) =>
     `<option value=\"\">(no template)</option>` +
@@ -3190,7 +3207,8 @@ function scopeMatrix(c: Ctx): string {
   // organization without it scopes staff by CaseType instead.
   if (!repo.hasEducationModule(c.user.organization_id ?? 1)) return "";
   const schools = repo.listSchools();
-  const members = repo.listStaff().filter((m) => m.active);
+  // H-2: the matrix lists the acting organization's members only.
+  const members = repo.listStaff(c.user.organization_id ?? 1).filter((m) => m.active);
   const rows = members.map((m) => {
     if (m.role === "admin") {
       return `<tr>
@@ -3237,7 +3255,9 @@ function coursesConfigHtml(c: Ctx): string {
   }
   const { repo } = c;
   const programmes = repo.listProgrammes();
-  const staffList = repo.listStaff().filter((m) => m.active);
+  // H-2: this academic surface is org-1 only (guarded above) — keep the
+  // picker pinned to organization 1 rather than global.
+  const staffList = repo.listStaff(1).filter((m) => m.active);
 
   const assignForm = (p: { code: string; owner_id: number | null }) =>
     `<form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
@@ -3398,7 +3418,9 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
   const { repo } = c;
   const isAdmin = c.user.role === "admin";
 
-  const stats = repo.staffStats(c.user.demo);
+  // H-2: the staff surface resolves against the ACTING admin's organization.
+  const orgId = c.user.organization_id ?? 1;
+  const stats = repo.staffStats(c.user.demo, orgId);
   const totals = stats.reduce(
     (acc, r) => ({ received: acc.received + r.emailsReceived, sent: acc.sent + r.emailsSent, completed: acc.completed + r.admissionsCompleted }),
     { received: 0, sent: 0, completed: 0 }
@@ -3423,7 +3445,7 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <table>
       <tr><th>Staff</th>${PERMISSIONS.map((p) => `<th style="text-align:left">${esc(PERMISSION_LABELS[p])}</th>`).join("")}</tr>
-      ${repo.listStaff().map((st) => {
+      ${repo.listStaff(orgId).map((st) => {
         const grants = st.role === "admin" ? PERMISSIONS.slice() : (repo.permissionsFor(st.id).length ? repo.permissionsFor(st.id) : ["send_automated", "approve_automation"]);
         return `<tr>
         <td><b>${esc(st.display_name)}</b><br><span class="muted small">@${esc(st.username)} · ${esc(st.role)}</span></td>
@@ -3440,7 +3462,7 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
   <div class="card-head"><h2>Accounts</h2></div>
   <table>
     <tr><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Actions</th></tr>
-    ${repo.listStaff()
+    ${repo.listStaff(orgId)
       .map((st) => `<tr>
         <td class="mono">${esc(st.username)}</td>
         <td>${esc(st.display_name)}</td>
