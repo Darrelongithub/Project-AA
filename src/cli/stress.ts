@@ -14,6 +14,7 @@
  * reproducible (`stress: case 0421 degree ... FAILED: ...`).
  */
 import { openDb } from "../db/db";
+import { envInt } from "../util/envnum";
 import { Repo } from "../db/repo";
 import { seedDefaults } from "../db/seed";
 import { DEFAULT_PROGRAMMES } from "../config";
@@ -40,7 +41,7 @@ const pick = <T,>(xs: T[]): T => xs[Math.floor(rnd() * xs.length)];
 const chance = (p: number): boolean => rnd() < p;
 const someOf = <T,>(xs: T[], n: number): T[] => [...xs].sort(() => rnd() - 0.5).slice(0, n);
 
-const TOTAL = Number(process.env.STRESS_N ?? 1000);
+const TOTAL = envInt(process.env.STRESS_N, 1000);
 const BATCH = 100;
 if (!Number.isInteger(TOTAL) || TOTAL < 1) {
   console.error(`stress: STRESS_N must be a positive integer, got "${process.env.STRESS_N ?? ""}" — refusing to report a fake green`);

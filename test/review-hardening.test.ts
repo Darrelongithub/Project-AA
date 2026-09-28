@@ -85,7 +85,10 @@ describe("the inbox poll never overlaps itself", () => {
     });
     const results = await Promise.all([guarded(), guarded(), guarded()]);
     expect(maxConcurrent).toBe(1);
-    expect(results.filter((r) => r === null).length).toBe(2); // overlapped ticks skipped
+    // The wrapper must DISTINGUISH a completed pass from a skipped one —
+    // callers report to humans off this shape.
+    expect(results[0]).toEqual({ ran: true, result: 1 });
+    expect(results.filter((r) => !r.ran && r.result === null).length).toBe(2); // overlapped ticks skipped
   });
 });
 

@@ -81,6 +81,10 @@ describe("PPR P0-5: attachment sets replace hardcoded packs (E3 closed)", () => 
     const enq = repo.getCaseType("ENQ", org.id)!;
 
     // ── the set is defined from THIS organization's uploads ───────────
+    // H-3 (pack channel): uploads resolve against the ACTING admin's org, so
+    // act as the Greenfield admin for this block (restored to org 1 below) —
+    // the same convention the pack-tab and second-org blocks already use.
+    repo.db.prepare("UPDATE staff_users SET organization_id = ? WHERE username = 'admin'").run(org.id);
     expect((await post("/config/attachment-sets/create", {
       organization_id: String(org.id), name: "Enquiry pack", description: "Handbook + map for enquirers",
     })).status).toBe(302);
@@ -95,7 +99,6 @@ describe("PPR P0-5: attachment sets replace hardcoded packs (E3 closed)", () => 
       expect(res.status).toBe(200);
     }
     // The management UI shows the organization's own set and its files:
-    repo.db.prepare("UPDATE staff_users SET organization_id = ? WHERE username = 'admin'").run(org.id);
     const packTab = await (await fetch(`${base}/config?tab=pack`, { headers: { cookie: auth.cookie } })).text();
     expect(packTab).toMatch(/Enquiry pack/);
     expect(packTab).toMatch(/greenfield-handbook\.pdf/);

@@ -19,7 +19,7 @@ import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, 
 import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import { fillSlots } from "../documents/matrix";
-import { evaluateAdmission, evaluateCaseTypeRules } from "../admissions/evaluate";
+import { autoAdmitPolicy, evaluateAdmission, evaluateCaseTypeRules } from "../admissions/evaluate";
 import { ADMISSION_SYSTEMS, DOC_TYPES, type AdmissionSystem, type DocType, type RuleField } from "../types";
 import type { RuleAction, RuleCondition, WorkflowRule } from "../rules/workflow";
 import { describeRule, firstMatchingRule, rulesForCaseScope, ruleMatches } from "../rules/workflow";
@@ -39,7 +39,9 @@ import { GmailClient } from "../ingestion/gmailClient";
 import { BudgetedVisionAdapter, GeminiVisionAdapter, MockVisionAdapter } from "../extraction/gemini";
 import { GeminiWatcher, makeHeuristicWatcher } from "../watcher";
 import { log } from "../util/log";
+import type { OnceResult } from "../util/once";
 import { hashPassword, verifyPassword } from "../util/password";
+import { normalizeUsername, USERNAME_RE } from "../util/username";
 import { gmailRedirectUri } from "./oauth";
 import { LoginThrottle } from "./throttle";
 import { emailBanner, organizationName, organizationSender, organizationTheme } from "../branding";
@@ -51,10 +53,10 @@ import * as path from "path";
 export interface WebDeps {
   repo: Repo;
   ctx: PipelineContext; // reuse the pipeline's sender/vision adapters
-  /** Manual "Sync now" hook — one live ingest pass; returns the failure, if any. */
-  gmailSync?: () => Promise<Error | null>;
+  /** Manual "Sync now" hook — one live ingest pass; `ran:false` = a pass was already in flight. */
+  gmailSync?: () => Promise<OnceResult<Error | null>>;
   /** One-off backfill hook — one pass over a deeper window (30/90/365 days). */
-  gmailBackfill?: (days: number) => Promise<Error | null>;
+  gmailBackfill?: (days: number) => Promise<OnceResult<Error | null>>;
   /** True when the running process has live environment Gmail credentials. */
   gmailConfigured?: boolean;
   gmailAddress?: string;
@@ -244,12 +246,14 @@ export function createApp(deps: WebDeps): Express {
     const exp = setupTokens.get(token);
     setupTokens.delete(token);
     if (!exp || exp < Date.now()) return fail("That setup link expired — reload the page and try again.");
-    const username = String(req.body.username ?? "").trim().toLowerCase();
+    // M-2: one shared rule — normalizeUsername() + USERNAME_RE — used by
+    // /setup, /staff/add and /account/username alike.
+    const username = normalizeUsername(req.body.username);
     const displayName = String(req.body.display_name ?? "").trim();
     const password = String(req.body.password ?? "");
     const confirm = String(req.body.confirm ?? "");
     if (!displayName) return fail("Please enter your name.");
-    if (!/^[a-z0-9_.-]{2,32}$/.test(username)) return fail("Username: 2-32 characters — letters, digits, dots, dashes.");
+    if (!USERNAME_RE.test(username)) return fail("Username: 2-32 characters — letters, digits, dots, dashes.");
     if (password.length < 8) return fail("Password must be at least 8 characters.");
     if (password !== confirm) return fail("The passwords do not match.");
     if (repo.getStaffByUsername(username)) return fail("That username is already taken.");
@@ -1195,7 +1199,10 @@ export function createApp(deps: WebDeps): Express {
       return res.redirect(backToCase(id, `Evaluation re-run under configuration version ${version} (the version this case was opened under): rules ${String(result.result).replace(/_/g, " ")} — outcome remains undecided${versionNote}`));
     }
     const flags = repo.activeFlags(id).filter((f) => f.type !== "duplicate_submission");
-    const result = evaluateAdmission(repo, id, flags);
+    // M-3: a re-run keeps the profile's auto-admit posture, so a manual
+    // re-evaluation can neither invent nor silently downgrade a provisional
+    // admission (the watcher + gates still apply on the next intake pass).
+    const result = evaluateAdmission(repo, id, flags, { autoAdmit: autoAdmitPolicy(repo, id) });
     repo.syncFlags(id, [...flags, ...result.derivedFlags]);
     repo.audit(id, req.staff!.username, "evaluation_rerun", `re-applied frozen configuration version ${version} → ${result.report.result}/${result.report.routing}`);
     res.redirect(backToCase(id, `Evaluation re-run under configuration version ${version} (the version this case was opened under): ${result.report.result.replace(/_/g, " ")} → ${result.report.routing.replace(/_/g, " ")}.${versionNote}`));
@@ -1215,7 +1222,7 @@ export function createApp(deps: WebDeps): Express {
       if (!a || !sameRealm(req, a)) continue;
       try {
         const flags = repo.activeFlags(id).filter((f) => f.type !== "duplicate_submission");
-        const result = evaluateAdmission(repo, id, flags);
+        const result = evaluateAdmission(repo, id, flags, { autoAdmit: autoAdmitPolicy(repo, id) });
         repo.syncFlags(id, [...flags, ...result.derivedFlags]);
         repo.audit(id, req.staff!.username, "evaluation_rerun", `bulk re-evaluation → ${result.report.result}/${result.report.routing}`);
         done++;
@@ -1277,9 +1284,15 @@ export function createApp(deps: WebDeps): Express {
 
   const accountMsg = (m: string) => `/account?msg=${encodeURIComponent(m)}`;
 
+  // M-2: the same normalization + pattern as /setup and /staff/add. (This
+  // route previously accepted ANY string of 3+ characters — spaces, upper
+  // case, symbols — so the account it produced could not be re-typed
+  // consistently anywhere else.)
   app.post("/account/username", requireLogin, csrfCheck, (req, res) => {
-    const next = String(req.body.username ?? "").trim();
-    if (next.length < 3) return res.redirect(accountMsg("Usernames need at least 3 characters."));
+    const next = normalizeUsername(req.body.username);
+    if (!USERNAME_RE.test(next)) {
+      return res.redirect(accountMsg("Usernames: 2-32 characters — letters, digits, dots, dashes."));
+    }
     const clash = repo.getStaffByUsername(next);
     if (clash && clash.id !== req.staff!.id) return res.redirect(accountMsg(`“${next}” is already taken by another account.`));
     repo.setStaffUsername(req.staff!.id, next);
@@ -1411,6 +1424,11 @@ export function createApp(deps: WebDeps): Express {
       // A rule lives in its profile's organization; legacy-scope rules live in
       // the staff member's organization.
       const orgId = (caseTypeId ? repo.caseTypeById(caseTypeId)?.organization_id : undefined) ?? req.staff!.organization_id ?? 1;
+      // H-3 (rules): a hand-crafted POST cannot hang rules on another
+      // tenant's profile — the acting admin only rules their own org.
+      if (orgId !== (req.staff!.organization_id ?? 1)) {
+        return res.redirect(`/config?tab=rules&msg=${encodeURIComponent("That CaseType belongs to another organization — rule not saved.")}`);
+      }
       const conditions = parseRuleConditions(req.body);
       const action = parseRuleAction(req.body);
       const saved = repo.saveWorkflowRule({
@@ -1504,6 +1522,9 @@ export function createApp(deps: WebDeps): Express {
   app.post("/config/workflow-rules/toggle", requireLogin, requirePermission("publish_rules"), csrfCheck, (req, res) => {
     const id = Number(req.body.id);
     const rule = repo.getWorkflowRule(id);
+    // H-3 (rules): toggle only the acting organization's rules — the delete
+    // route is already scoped; this route must agree with it.
+    if (rule && rule.organization_id !== (req.staff!.organization_id ?? 1)) return res.redirect("/config?tab=rules");
     if (rule) {
       repo.saveWorkflowRule({
         id,
@@ -1889,8 +1910,11 @@ export function createApp(deps: WebDeps): Express {
   // PPR P0-5: attachment sets — organization-owned groups of sendable files.
   app.post("/config/attachment-sets/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const name = String(req.body.name ?? "").trim();
-    const orgId = req.body.organization_id ? Number(req.body.organization_id) : organizationId(req);
-    if (!name || !repo.getOrganization(orgId)) return res.redirect(`/config?tab=pack&msg=${encodeURIComponent("A set needs a name and a valid organization.")}`);
+    // H-3 consistency: the Document-library tab is own-org only (no picker,
+    // uploads are org-checked) — sets are always created in the ACTING
+    // admin's organization, whatever a hand-crafted form claims.
+    const orgId = organizationId(req);
+    if (!name) return res.redirect(`/config?tab=pack&msg=${encodeURIComponent("A set needs a name.")}`);
     try {
       const set = repo.createAttachmentSet(orgId, name, String(req.body.description ?? ""));
       repo.audit(null, req.staff!.username, "attachment_set_created", `${set.name} (#${set.id}, org ${orgId})`);
@@ -1905,7 +1929,10 @@ export function createApp(deps: WebDeps): Express {
     express.raw({ type: "application/pdf", limit: "12mb" }),
     (req, res) => {
       const set = repo.getAttachmentSet(Number(req.query.set));
-      if (!set) return res.status(400).send("Unknown attachment set.");
+      // H-3 (pack channel): the set must belong to the ACTING admin's
+      // organization — a foreign set id is indistinguishable from an unknown
+      // one, so nobody can drop files into another tenant's outgoing mail.
+      if (!set || set.organization_id !== organizationId(req)) return res.status(400).send("Unknown attachment set.");
       const body = req.body as Buffer;
       if (!Buffer.isBuffer(body) || body.length < 512 || body.subarray(0, 5).toString() !== "%PDF-") {
         return res.status(400).send("Not a PDF.");
@@ -2122,7 +2149,11 @@ export function createApp(deps: WebDeps): Express {
     if (!gmailSync) {
       return res.redirect(settingsBack("No live mailbox — connect Gmail first."));
     }
-    const err = await gmailSync();
+    const pass = await gmailSync();
+    if (!pass.ran) {
+      return res.redirect(settingsBack("A sync is already running — give it a few seconds, then try again."));
+    }
+    const err = pass.result;
     if (err) {
       repo.setSetting("gmail_last_error", err.message.slice(0, 300));
       repo.audit(null, req.staff!.username, "gmail_sync_failed", err.message.slice(0, 200));
@@ -2143,9 +2174,12 @@ export function createApp(deps: WebDeps): Express {
     if (!gmailBackfill) {
       return res.redirect(`/settings?msg=${encodeURIComponent("Backfill is unavailable — the server was started without live Gmail sync.")}#connections`);
     }
-    const err = await gmailBackfill(days);
-    if (err) {
-      return res.redirect(`/settings?msg=${encodeURIComponent(`Backfill failed: ${err.message}`)}#connections`);
+    const pass = await gmailBackfill(days);
+    if (!pass.ran) {
+      return res.redirect(`/settings?msg=${encodeURIComponent("A sync or backfill is already running — wait for it to finish, then try again.")}#connections`);
+    }
+    if (pass.result) {
+      return res.redirect(`/settings?msg=${encodeURIComponent(`Backfill failed: ${pass.result.message}`)}#connections`);
     }
     repo.audit(null, req.staff!.username, "gmail_backfill", `Pulled mail from the last ${days} days into the console`);
     res.redirect(`/settings?msg=${encodeURIComponent(`History pulled — mail from the last ${days} days is now in All Mail.`)}#connections`);
@@ -2434,9 +2468,12 @@ export function createApp(deps: WebDeps): Express {
   // ── Staff management (admin) ─────────────────────────────────────────────
 
   // OR-8: save a staff member's ENTIRE school scope in one action.
+  // H-3: every /staff/* route resolves its target only inside the acting
+  // administrator's own organization — an org-1 admin can never act on an
+  // org-2 account by guessing its id.
   app.post("/staff/scopes", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const staffId = Number(req.body.staff_id);
-    const member = repo.getStaff(staffId);
+    const member = repo.staffInOrganization(staffId, organizationId(req));
     if (!member) return res.redirect("/staff?msg=" + encodeURIComponent("Unknown staff member — nothing saved."));
     const raw = req.body.schools;
     const schools = (Array.isArray(raw) ? raw : raw ? [raw] : []).map((x) => String(x).trim()).filter(Boolean);
@@ -2464,8 +2501,9 @@ export function createApp(deps: WebDeps): Express {
   );
 
   // PPR P1-8: grant/revoke the four automation permissions per staff member.
+  // H-3: only the acting organization's staff are read or granted.
   app.post("/staff/permissions", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    for (const st of repo.listStaff()) {
+    for (const st of repo.listStaff(organizationId(req))) {
       if (st.role === "admin") continue; // admins implicitly hold all four
       const grants: Permission[] = [];
       for (const p of PERMISSIONS) {
@@ -2477,22 +2515,26 @@ export function createApp(deps: WebDeps): Express {
     res.redirect("/staff?msg=" + encodeURIComponent("Automation permissions saved."));
   });
 
+  // H-2: the new account belongs to the ACTING admin's organization — never
+  // a hard-coded tenant. Usernames stay globally unique (the column is
+  // UNIQUE), so the clash check still looks across every tenant.
   app.post("/staff/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const username = String(req.body.username ?? "").trim();
+    const username = normalizeUsername(String(req.body.username ?? ""));
     const password = String(req.body.password ?? "");
     const role = String(req.body.role) === "admin" ? "admin" : "user";
     const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
     if (!username) return res.redirect(staffMsg("Username is required."));
-    if (!/^[a-z0-9_.-]{2,32}$/i.test(username)) return res.redirect(staffMsg("Username may contain letters, digits, dots, dashes and underscores (2–32 chars)."));
+    if (!USERNAME_RE.test(username)) return res.redirect(staffMsg("Username may contain letters, digits, dots, dashes and underscores (2–32 chars)."));
     if (!password || password.length < 8) return res.redirect(staffMsg(`Password for “${username}” must be at least 8 characters.`));
     if (repo.getStaffByUsername(username)) return res.redirect(staffMsg(`Username “${username}” is already taken.`));
-    repo.createStaff(username, String(req.body.display_name ?? username), hashPassword(password), role);
-    repo.audit(null, req.staff!.username, "staff_created", `${username} (${role})`);
+    const orgId = organizationId(req);
+    repo.createStaff(username, String(req.body.display_name ?? username), hashPassword(password), role, false, orgId);
+    repo.audit(null, req.staff!.username, "staff_created", `${username} (${role}) in organization ${orgId}`);
     res.redirect(staffMsg(`Staff account “${username}” created (${role}).`));
   });
 
   app.post("/staff/toggle", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const s = repo.getStaff(Number(req.body.id));
+    const s = repo.staffInOrganization(Number(req.body.id), organizationId(req));
     const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
     if (!s) return res.redirect("/staff");
     if (s.id === req.staff!.id) return res.redirect(staffMsg("You cannot disable your own account."));
@@ -2506,21 +2548,25 @@ export function createApp(deps: WebDeps): Express {
     const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
     const password = String(req.body.password ?? "");
     const confirm = String(req.body.confirm ?? "");
-    const target = repo.getStaff(id);
+    const target = repo.staffInOrganization(id, organizationId(req));
     if (!target) return res.redirect(staffMsg("Unknown staff member."));
     // Same rules as first-run setup — one rulebook for every password write.
     if (password.length < 8) return res.redirect(staffMsg(`Password for “${target.username}” must be at least 8 characters.`));
     if (password !== confirm) return res.redirect(staffMsg(`The passwords do not match — nothing changed.`));
     repo.setStaffPassword(id, hashPassword(password));
-    repo.audit(null, req.staff!.username, "staff_password_reset", `user #${id}`);
-    res.redirect(staffMsg(`Password reset for “${target.username}”.`));
+    // Session hygiene: an admin reset (stolen laptop, offboarding, suspected
+    // compromise) must end the member's live sessions — the self-service
+    // reset-code path already purges; this path has to agree with it.
+    const ended = repo.purgeStaffSessions(id);
+    repo.audit(null, req.staff!.username, "staff_password_reset", `user #${id}; ${ended} session(s) ended`);
+    res.redirect(staffMsg(`Password reset for “${target.username}” — their open sessions were ended.`));
   });
 
   // Forgot password: issue a one-time code for a member. Deliberately a
   // 200 re-render, NOT a redirect — the code is shown exactly once, in the
   // response body, and must never appear in a URL (history/Referer).
   app.post("/staff/reset-code", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const target = repo.getStaff(Number(req.body.id));
+    const target = repo.staffInOrganization(Number(req.body.id), organizationId(req));
     if (!target) return res.send(staffPage(c(req), "Unknown staff member — no code issued."));
     const code = repo.issueResetCode(target.id, req.staff!.username);
     repo.audit(null, req.staff!.username, "password_reset_code_issued", `for ${target.username}`);

@@ -16,8 +16,8 @@ vitest. SSR staff console (no client framework).
 The app ships with **no accounts and no mock data**. On a fresh database:
 
 1. `npm install`
-2. `npm run serve` (default port 3000; `PORT=…` to change)
-3. Open `http://localhost:3000` — every page redirects to the one-time **setup screen**
+2. `npm run serve` (default port 8080; `PORT=…` to change)
+3. Open `http://localhost:8080` — every page redirects to the one-time **setup screen**
 4. Create your administrator account (your name, a username, a password of ≥8 characters)
 
 The setup screen disappears permanently after the first account exists. There is no
@@ -56,9 +56,12 @@ flow). For headless/live ingestion via environment variables, copy `.env.example
 | --- | --- |
 | `npm run serve` | Start the staff console + pipeline (reads `data/email-sorter.sqlite`) |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | Full vitest suite (311 tests) |
-| `npm run simulate` | Fixture corpus through the pipeline — **in-memory DB only**; it refuses to touch the server database |
+| `npm run build` | Compile to `dist/` (`tsc -p tsconfig.json`) |
+| `npm start` | Run the compiled build (`node dist/src/cli/serve.js`) — run `npm run build` first |
+| `npm run stress` | Load/stress harness against a throwaway database (`src/cli/stress.ts`) |
 | `npm run seed:demo-org` | One-off, idempotent seed of the **demo second organization** (Aperture People Ops, `APO`) alongside Organization #1 — see [docs/DEMO_ORG.md](docs/DEMO_ORG.md). `SEED_DEMO_ORG=1 npm run serve` does the same on boot |
+| `npm test` | Full vitest suite (652 tests + 3 environment-gated skips across 78 files) |
+| `npm run simulate` | Fixture corpus (26 scenarios / 316 checks) through the pipeline — **in-memory DB by default**; it refuses to touch the server database. CI gate: exits non-zero when any check fails |
 | `npm run purge-mock` | One-time safe cleanup of old demo/simulation rows (backup first, idempotent) |
 | `npm run ingest / queue / escalate / followups / retain / backup / restore` | Operational CLIs |
 
@@ -80,3 +83,10 @@ demo/simulation, never real Gmail or staff data.
 `npm test` — unit + integration + HTTP tests (in-memory DBs, ephemeral ports).
 Acceptance gates for owner-reported issues live in `test/owner-acceptance.test.ts`;
 evidence log in `OWNER_ISSUES.md`.
+
+## Static analysis policy
+
+`npm run typecheck` (`tsc --noEmit`, strict mode) is the project's **only** static
+gate — it runs before every test run and in CI. There is deliberately no ESLint
+config: `npx eslint` here reflects no project policy, and ad-hoc lint output can
+be ignored. Keep new code strict-clean under the existing `tsconfig.json`.

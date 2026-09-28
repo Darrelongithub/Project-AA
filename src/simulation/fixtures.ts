@@ -278,7 +278,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
   {
     fixtures.push({
       name: "henry-inquiry",
-      description: "Inquiry with no attachments → factual auto document-request (never a decision).",
+      description: "Inquiry with no attachments → education triage holds it for a human reply (rule_enquiry_triage) — a question never triggers an automated send or a decision.",
       emails: [
         email({
           id: "email-henry-1", threadId: "thread-henry", from: "henry.kalu@student.example.org", fromName: "Henry Kalu",
@@ -288,7 +288,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           attachments: [],
         }),
       ],
-      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: false, autoKind: "docs_request", flagTypes: [], superseded: 0, duplicates: 0, missing: ["application_form", "birth_cert", "exam_result_slip", "id", "leaving_certificate", "passport_photo"], category: "application", priority: "normal" }, // qualification gate: held suggestion — OR-5 checklist
+      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: false, autoKind: null, flagTypes: [], superseded: 0, duplicates: 0, missing: ["application_form", "birth_cert", "exam_result_slip", "id", "leaving_certificate", "passport_photo"], category: "admission_enquiry", priority: "normal" }, // enquiry triage: held for a human (never an auto checklist)
     });
   }
 
@@ -349,7 +349,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
     const idPdf = await makeTextPdf(docLines("id", { name, idNumber: "26677889" }));
     fixtures.push({
       name: "kevin-duplicate",
-      description: "Same ID file sent twice → recognised as a duplicate, file stays Green.",
+      description: "Same ID file sent twice → recognised as a duplicate, file stays Green → auto-admitted like any clean file (admission letter sent).",
       emails: [
         email({
           id: "email-kevin-1", threadId: "thread-kevin", from: "kevin.njoroge@student.example.org", fromName: "Kevin Njoroge",
@@ -372,7 +372,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           attachments: [await att({ filename: "kevin-id-again.pdf", docType: "id", name, content: idPdf })],
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 1, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 1, missing: [], category: "document_submission", priority: "normal" },
     });
   }
 
@@ -404,7 +404,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
   {
     fixtures.push({
       name: "mary-complaint",
-      description: "Complaint email → categorised, priority raised, factual document request sent.",
+      description: "Complaint email → categorised, priority raised to high, held for a human (rule_complaint) — never an automated reply or decision.",
       emails: [
         email({
           id: "email-mary-1", threadId: "thread-mary", from: "mary.adhiambo@student.example.org", fromName: "Mary Adhiambo",
@@ -414,7 +414,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           attachments: [],
         }),
       ],
-      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: false, autoKind: "docs_request", flagTypes: [], superseded: 0, duplicates: 0, missing: ["application_form", "birth_cert", "exam_result_slip", "id", "leaving_certificate", "passport_photo"], category: "complaint", priority: "high" }, // qualification gate: held suggestion — OR-5 checklist
+      expected: { finalStatus: "Red", lifecycle: "application_received", autoSent: false, autoKind: null, flagTypes: [], superseded: 0, duplicates: 0, missing: ["application_form", "birth_cert", "exam_result_slip", "id", "leaving_certificate", "passport_photo"], category: "complaint", priority: "high" }, // complaint triage: held for a human, priority high
     });
   }
 
@@ -592,7 +592,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
     const name = "UMA WANJIRU MUTURI";
     fixtures.push({
       name: "uma-reopen",
-      description: "Completed applicant submits a corrected certificate from a new thread → existing case reopens (no duplicate applicant).",
+      description: "Completed applicant submits a corrected certificate from a new thread → existing case reopens (no duplicate applicant); the corrected file re-verifies and the case auto-admits again.",
       beforeEmail: (repo, i) => {
         if (i === 1) {
           const a = repo.findByEmailAny("uma.wanjiru@student.example.org")!;
@@ -624,7 +624,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "documents_checked", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 1, duplicates: 0, missing: [], category: "document_submission", priority: "normal", audited: ["case_reopened"] },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 1, duplicates: 0, missing: [], category: "document_submission", priority: "normal", audited: ["case_reopened"] },
     });
   }
 
@@ -693,7 +693,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Green", lifecycle: "completed", autoSent: true, autoKind: "ack", flagTypes: [], superseded: 0, duplicates: 0, missing: [], category: "application", priority: "normal" }, // no "find attached … documents" phrasing → plain application
     });
   }
   {
@@ -715,7 +715,7 @@ export async function buildFixtures(): Promise<Fixture[]> {
           ]),
         }),
       ],
-      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["low_confidence"], superseded: 0, duplicates: 0, missing: [], category: "document_submission", priority: "normal" },
+      expected: { finalStatus: "Orange", lifecycle: "awaiting_review", autoSent: false, autoKind: null, flagTypes: ["low_confidence"], superseded: 0, duplicates: 0, missing: [], category: "application", priority: "normal" }, // no "find attached … documents" phrasing → plain application
     });
   }
   {

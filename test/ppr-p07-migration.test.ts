@@ -146,13 +146,16 @@ describe("PPR P0-7: migration tested on a production-shaped Riara copy", () => {
     // Profile stamping: the programme-derived + GENERAL types become the
     // education module with the PRESERVED legacy automation posture
     // (invariant f: only the migrated Riara profile keeps auto-reply/auto-admit
-    // semantics explicitly — qualification-gated, never an auto decision).
+    // semantics explicitly — qualification-gated, provisional and reversible).
     for (const id of [1, 2]) {
       const ct = db.prepare("SELECT education_module, qualification_gate, default_reply_action, auto_admit, config_version FROM case_types WHERE id = ?").get(id) as Record<string, unknown>;
       expect(ct.education_module).toBe(1);
       expect(ct.qualification_gate).toBe(1);
       expect(ct.default_reply_action).toBe("send"); // preserved legacy setting
-      expect(ct.auto_admit).toBe(0); // never an auto decision
+      // M-3: the migration stamp originally shipped with auto_admit = 0, which
+      // silently killed the migrated profile's provisional-admission path. The
+      // one-shot `education_auto_admit_restored_v1` marker restores it.
+      expect(ct.auto_admit).toBe(1);
       expect(ct.config_version).toBe(1); // migrated profile version 1
     }
     // Case stamping: every historical case is frozen as "opened under version
@@ -211,12 +214,13 @@ describe("PPR P0-7: migration tested on a production-shaped Riara copy", () => {
     // application, admission_letter → admission) and set both markers.
     expect((db.prepare("SELECT attach_pack FROM templates WHERE key = 'docs_request'").get() as { attach_pack: string }).attach_pack).toBe("application");
     expect((db.prepare("SELECT attach_pack FROM templates WHERE key = 'admission_letter'").get() as { attach_pack: string }).attach_pack).toBe("admission");
-    for (const marker of ["pack_defaults_migrated", "education_profiles_stamped"]) {
+    for (const marker of ["pack_defaults_migrated", "education_profiles_stamped", "education_auto_admit_restored_v1"]) {
       expect((db.prepare("SELECT value FROM settings WHERE key = ?").get(marker) as { value: string }).value).toBe("1");
     }
 
     // Staff make deliberate post-migration choices…
     db.prepare("UPDATE case_types SET education_module = 0 WHERE id = 2").run();
+    db.prepare("UPDATE case_types SET auto_admit = 0 WHERE id = 2").run();
     db.prepare("UPDATE templates SET attach_pack = 'none' WHERE key = 'docs_request'").run();
     const auditCount = (db.prepare("SELECT COUNT(*) AS n FROM audit_log").get() as { n: number }).n;
     db.close();
@@ -224,6 +228,7 @@ describe("PPR P0-7: migration tested on a production-shaped Riara copy", () => {
     // …and a re-open (every production restart) NEVER re-runs the stamps.
     db = openDb(file);
     expect((db.prepare("SELECT education_module FROM case_types WHERE id = 2").get() as { education_module: number }).education_module).toBe(0);
+    expect((db.prepare("SELECT auto_admit FROM case_types WHERE id = 2").get() as { auto_admit: number }).auto_admit).toBe(0); // M-3 marker is one-shot too
     expect((db.prepare("SELECT attach_pack FROM templates WHERE key = 'docs_request'").get() as { attach_pack: string }).attach_pack).toBe("none");
     // No re-stamped history, no new audit rows, snapshots still frozen.
     expect((db.prepare("SELECT COUNT(*) AS n FROM audit_log").get() as { n: number }).n).toBe(auditCount);

@@ -1,3 +1,5 @@
+> **Historical document — superseded by [STATUS.md](./STATUS.md).** Kept for the audit trail; figures and statements may be stale. Do not update.
+
 # BUG HUNT — email-sorter
 
 Passes: repo.ts ×3, pipeline ×2, server.ts ×2, pages.ts ×2, views.ts ×2, db.ts ×2,

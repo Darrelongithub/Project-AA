@@ -77,10 +77,10 @@ describe("backfill route + settings card", () => {
     const app = createApp({
       repo,
       ctx,
-      gmailSync: async () => null,
+      gmailSync: async () => ({ ran: true, result: null }),
       gmailBackfill: async (days: number) => {
         backfillCalls.push(days);
-        return null;
+        return { ran: true, result: null };
       },
     });
     server = app.listen(0);

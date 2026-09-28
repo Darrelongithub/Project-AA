@@ -110,10 +110,11 @@ describe("identity matching (features 4, 5, 34)", () => {
 
   it("pipeline: completed case + new substantive email → SAME case reopened", async () => {
     const first = mustProcessed(await processEmail(mkEmail("u1", "tu-a", "uma@example.org", { attachments: await fullSet("UMA WANJIRU MUTURI") }), ctx));
-    // Qualification is not a final admission decision. Simulate the human
-    // completion that makes the reopen behaviour applicable.
-    expect(first.lifecycle).toBe("documents_checked");
-    repo.setLifecycle(first.applicantId, "completed", "admin", "human completion for reopen regression");
+    // On the migrated profile a clean qualified file is auto-admitted, which
+    // completes the case by itself — exactly the terminal state the reopen
+    // behaviour must still honour.
+    expect(first.lifecycle).toBe("completed");
+    expect(repo.getApplicant(first.applicantId)!.admission_decision).toBe("auto_admitted");
 
     const res = mustProcessed(await processEmail(
       mkEmail("u2", "tu-b", "uma@example.org", { attachments: [await mkAtt("i2.pdf", "id", "UMA WANJIRU MUTURI", { idNumber: "99988877" })] }),

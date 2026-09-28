@@ -14,11 +14,12 @@
  *   - a size guard rejects oversized mail BEFORE base64-buffering it.
  */
 import type { IncomingEmail } from "../types";
+import { envInt } from "../util/envnum";
 import { MAX_ATTACHMENT_BYTES } from "../extraction/extract";
 import { log } from "../util/log";
 
 /** Whole-message cap; above this the mail is parked, never downloaded. */
-export const MAX_EMAIL_BYTES = Number(process.env.GMAIL_MAX_EMAIL_BYTES || 40 * 1024 * 1024);
+export const MAX_EMAIL_BYTES = envInt(process.env.GMAIL_MAX_EMAIL_BYTES, 40 * 1024 * 1024);
 
 /** A message too big to process — park it permanently, tell a human. */
 export class EmailTooLargeError extends Error {

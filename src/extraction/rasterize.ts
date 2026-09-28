@@ -14,6 +14,7 @@
  * per-page pixel cap, and an overall time budget.
  */
 import type { Canvas, CanvasRenderingContext2D } from "canvas";
+import { envInt, envNum } from "../util/envnum";
 import { log } from "../util/log";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -92,10 +93,10 @@ export interface RasterOptions {
 }
 
 export const RASTER_DEFAULTS: Required<RasterOptions> = {
-  maxPages: Number(process.env.RASTER_MAX_PAGES || 10),
-  scale: Number(process.env.RASTER_SCALE || 2.2),
-  maxPixelsPerPage: Number(process.env.RASTER_MAX_PIXELS || 4000 * 4000),
-  timeoutMs: Number(process.env.RASTER_TIMEOUT_MS || 120_000),
+  maxPages: envInt(process.env.RASTER_MAX_PAGES, 10),
+  scale: envNum(process.env.RASTER_SCALE, 2.2),
+  maxPixelsPerPage: envInt(process.env.RASTER_MAX_PIXELS, 4000 * 4000),
+  timeoutMs: envInt(process.env.RASTER_TIMEOUT_MS, 120_000),
 };
 
 /**

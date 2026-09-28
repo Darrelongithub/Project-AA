@@ -3,6 +3,7 @@
  * credentials the system runs in mock mode (tests, simulation, demo).
  */
 import { DEFAULT_INTAKE_HOTWORDS } from "./intake";
+import { envInt } from "./util/envnum";
 import { DEFAULT_GEMINI_MODEL } from "./extraction/gemini";
 import * as dotenv from "dotenv";
 
@@ -33,7 +34,6 @@ export interface AppConfig {
 export function loadConfig(): AppConfig {
   const env = process.env;
   const mode = env.MODE === "live" ? "live" : "mock";
-
   const gmailConfigured =
     !!env.GMAIL_ADDRESS &&
     !!env.GMAIL_OAUTH_CLIENT_ID &&
@@ -43,7 +43,7 @@ export function loadConfig(): AppConfig {
   return {
     mode,
     dbPath: env.DB_PATH || "./data/email-sorter.sqlite",
-    port: Number(env.PORT || 8080),
+    port: envInt(env.PORT, 8080),
     geminiApiKey: env.GEMINI_API_KEY || undefined,
     geminiModel: env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
     gmail: gmailConfigured
@@ -58,7 +58,7 @@ export function loadConfig(): AppConfig {
     // A two-day default silently hid older applications. Settings can still
     // override this per deployment, but a fresh server starts with a useful
     // two-week history window (the web UI can backfill 30/90/365 days).
-    ingestLookbackDays: Number(env.INGEST_LOOKBACK_DAYS || 14),
+    ingestLookbackDays: envInt(env.INGEST_LOOKBACK_DAYS, 14),
     disableOcr: env.DISABLE_OCR === "1",
     logToFile: env.LOG_TO_FILE !== "0",
     autoMissingDocsEmails: env.AUTO_MISSING_DOCS_EMAILS !== "0",

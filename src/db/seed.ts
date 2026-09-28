@@ -251,7 +251,7 @@ function seedGenericModel(repo: Repo): void {
   const migrated = migratedOrganizationOne();
   if (!org) {
     repo.db.prepare("INSERT INTO organizations (id, name, ref_prefix, theme) VALUES (1, ?, ?, ?)")
-      .run(migrated?.name || DEFAULT_SETTINGS.institution_name || "Organization", "RU", JSON.stringify({ primary: "#650019", accent: "#e18b9a" }));
+      .run(migrated?.name || DEFAULT_SETTINGS.institution_name || "Organization", "RU", JSON.stringify({ primary: "#650019", accent: "#c89a4a" }));
   }
   if (migrated?.tagline && !repo.getSetting("splash_tagline", "")) repo.setSetting("splash_tagline", migrated.tagline);
   // PPR P1-5: the migrated identity's sender display name becomes real org
@@ -264,11 +264,14 @@ function seedGenericModel(repo: Repo): void {
   // Case types are the canonical generic equivalent of the legacy programme
   // catalogue. Codes are stable, so this is safe on every boot. PPR P0-2:
   // the migrated academic profiles carry the education module with today's
-  // exact automation posture (qualification-gated sends, never auto-decide).
+  // exact automation posture — qualification-gated sends AND the preserved
+  // legacy provisional-admission behaviour (M-3 restored auto-admit routing).
+  // New organizations never go through this path: their profiles are created
+  // through the console with draft automation and auto-admit OFF.
   for (const p of DEFAULT_PROGRAMMES) {
-    repo.createCaseType(1, { code: p.code, name: p.name, category: p.school || "general", educationModule: true, qualificationGate: true, defaultReplyAction: "send" });
+    repo.createCaseType(1, { code: p.code, name: p.name, category: p.school || "general", educationModule: true, qualificationGate: true, defaultReplyAction: "send", autoAdmit: true });
   }
-  repo.createCaseType(1, { code: "GENERAL", name: "General enquiry", category: "general", educationModule: true, qualificationGate: true, defaultReplyAction: "send" });
+  repo.createCaseType(1, { code: "GENERAL", name: "General enquiry", category: "general", educationModule: true, qualificationGate: true, defaultReplyAction: "send", autoAdmit: true });
   const categories = [
     ["admission", "Admission enquiry"], ["normal", "Normal enquiry"],
     ["document_submission", "Document submission"], ["support", "Support"],

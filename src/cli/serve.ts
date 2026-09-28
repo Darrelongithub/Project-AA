@@ -6,6 +6,7 @@
  * so archived and new admissions emails flow into the dashboard automatically.
  */
 import { loadConfig } from "../config";
+import { envInt } from "../util/envnum";
 import { openDb } from "../db/db";
 import { Repo } from "../db/repo";
 import { seedDefaults } from "../db/seed";
@@ -157,7 +158,8 @@ async function main(): Promise<void> {
   // each sweep so Settings changes apply without a restart.
   setInterval(() => {
     try {
-      const escalationHours = Number(repo.getSetting("escalation_hours", "8"));
+      // A corrupt setting must not poison the sweep's audit trail (NaN window).
+      const escalationHours = envInt(repo.getSetting("escalation_hours", "8"), 8);
       runEscalationSweep(repo, escalationHours);
     } catch (e) {
       log(`escalation sweep failed: ${(e as Error).message}`, "error");

@@ -18,6 +18,7 @@
  *     stops hammering a dead API.
  */
 import * as crypto from "crypto";
+import { envInt } from "../util/envnum";
 import type { Attachment, DocType, VisionExtraction } from "../types";
 import { DOC_TYPES } from "../types";
 
@@ -110,7 +111,7 @@ Respond with ONLY a JSON object, no markdown, in exactly this shape:
 "subjectGrades" lists every subject grade visible on the document; use {} when none are shown.`;
 
 /** A hung vision call must never stall the pipeline forever. */
-const VISION_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 60_000);
+const VISION_TIMEOUT_MS = envInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -229,7 +230,7 @@ export class BudgetedVisionAdapter implements VisionAdapter {
   constructor(
     private inner: VisionAdapter,
     private store: VisionCacheStore,
-    private dailyBudget: number = Number(process.env.GEMINI_DAILY_BUDGET || 100),
+    private dailyBudget: number = envInt(process.env.GEMINI_DAILY_BUDGET, 100),
     private circuitThreshold = 3,
     private circuitCooldownMs = 5 * 60_000
   ) {}

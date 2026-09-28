@@ -126,7 +126,7 @@ export class Repo {
       | { id: number; name: string; logo: string | null; ref_prefix: string; theme: string; from_name: string | null; reply_to: string | null; locale: string | null; timezone: string | null }
       | undefined;
     if (!row) return undefined;
-    let theme: OrganizationTheme = { primary: "#650019", accent: "#e18b9a" };
+    let theme: OrganizationTheme = { primary: "#650019", accent: "#c89a4a" };
     try { theme = { ...theme, ...(JSON.parse(row.theme || "{}") as Partial<OrganizationTheme>) }; } catch { /* use safe defaults */ }
     return {
       id: row.id, name: row.name, logo: row.logo, ref_prefix: row.ref_prefix || (id === 1 ? "RU" : "ORG"), theme,
@@ -140,7 +140,7 @@ export class Repo {
     if (!name) throw new Error("Organization name is required");
     const theme = {
       primary: input.theme?.primary ?? "#650019",
-      accent: input.theme?.accent ?? "#e18b9a",
+      accent: input.theme?.accent ?? "#c89a4a",
     };
     const prefix = (input.refPrefix ?? "ORG").trim().toUpperCase();
     if (!/^[A-Z]{1,8}$/.test(prefix)) throw new Error("Reference prefix must be 1–8 letters");
@@ -1553,16 +1553,28 @@ export class Repo {
 
   // ── Staff users & sessions (features 31, 32) ─────────────────────────────
 
-  createStaff(username: string, displayName: string, passwordHash: string, role: string, demo = false): void {
+  /**
+   * H-2: the account belongs to a REAL tenant — never a hard-coded one.
+   * `organizationId` defaults to 1 for the first-run admin (the only case
+   * where no tenant exists yet), but every staff-adding route passes the
+   * acting administrator's own organization.
+   */
+  createStaff(username: string, displayName: string, passwordHash: string, role: string, demo = false, organizationId = 1): void {
     this.db
       .prepare(
         "INSERT INTO staff_users (username, display_name, password_hash, role, demo, organization_id) VALUES (?,?,?,?,?,?)"
       )
-      .run(username, displayName, passwordHash, role, demo ? 1 : 0, 1);
+      .run(username, displayName, passwordHash, role, demo ? 1 : 0, organizationId);
   }
 
-  createStaffAndReturn(username: string, displayName: string, passwordHash: string, role: "admin" | "user" = "user"): StaffUser {
-    this.createStaff(username, displayName, passwordHash, role);
+  createStaffAndReturn(
+    username: string,
+    displayName: string,
+    passwordHash: string,
+    role: "admin" | "user" = "user",
+    organizationId = 1
+  ): StaffUser {
+    this.createStaff(username, displayName, passwordHash, role, false, organizationId);
     return this.getStaffByUsername(username)!;
   }
 
@@ -1603,9 +1615,14 @@ export class Repo {
     this.db.prepare("UPDATE staff_users SET display_name = ? WHERE id = ?").run(displayName, id);
   }
 
+  /**
+   * M-2: usernames have one canonical case (lowercase, see util/username.ts)
+   * and are matched case-insensitively, so an account created before the rule
+   * still resolves whichever way it is typed.
+   */
   getStaffByUsername(username: string): (StaffUser & { password_hash: string }) | undefined {
     return this.db
-      .prepare("SELECT id, username, display_name, password_hash, role, active, demo, organization_id FROM staff_users WHERE username = ?")
+      .prepare("SELECT id, username, display_name, password_hash, role, active, demo, organization_id FROM staff_users WHERE username = ? COLLATE NOCASE")
       .get(username) as never;
   }
 
@@ -1615,10 +1632,24 @@ export class Repo {
       .get(id) as StaffUser | undefined;
   }
 
-  listStaff(): StaffUser[] {
-    return this.db
-      .prepare("SELECT id, username, display_name, role, active, demo, organization_id FROM staff_users ORDER BY id")
-      .all() as StaffUser[];
+  listStaff(organizationId?: number): StaffUser[] {
+    const sql = organizationId === undefined
+      ? "SELECT id, username, display_name, role, active, demo, organization_id FROM staff_users ORDER BY id"
+      : "SELECT id, username, display_name, role, active, demo, organization_id FROM staff_users WHERE COALESCE(organization_id, 1) = ? ORDER BY id";
+    return (organizationId === undefined
+      ? this.db.prepare(sql).all()
+      : this.db.prepare(sql).all(organizationId)) as StaffUser[];
+  }
+
+  /**
+   * H-3: cross-tenant guard. Resolve a staff id ONLY when the account belongs
+   * to the acting administrator's organization — the single entry point every
+   * /staff/* route uses before acting on a target id.
+   */
+  staffInOrganization(staffId: number, organizationId: number): StaffUser | undefined {
+    const staff = this.getStaff(staffId);
+    if (!staff) return undefined;
+    return (staff.organization_id ?? 1) === organizationId ? staff : undefined;
   }
 
   setStaffUsername(id: number, username: string): void {
@@ -2315,8 +2346,10 @@ export class Repo {
     const dp: unknown[] = demo === undefined ? [...scope.params] : [demo, ...scope.params];
     const one = (sql: string, p: unknown[] = []) => (this.db.prepare(sql).get(...p) as { n: number }).n;
     const applications = one(`SELECT COUNT(*) AS n FROM applicants a WHERE 1=1${pred}`, dp);
+    // M-4: superseded documents are inactive everywhere else (case view,
+    // CSV) — the dashboard must not count them either.
     const documents = one(
-      `SELECT COUNT(*) AS n FROM documents d JOIN applicants a ON a.id = d.applicant_id WHERE d.is_duplicate = 0${pred}`,
+      `SELECT COUNT(*) AS n FROM documents d JOIN applicants a ON a.id = d.applicant_id WHERE d.is_duplicate = 0 AND d.superseded_by IS NULL${pred}`,
       dp
     );
     const autoHandled = one(
@@ -2496,8 +2529,8 @@ export class Repo {
    *   outgoing reply on their assigned cases
    * - admissionsCompleted: distinct cases they moved to "completed"
    */
-  staffStats(demo?: number): StaffStatsRow[] {
-    const staff = this.listStaff();
+  staffStats(demo?: number, organizationId?: number): StaffStatsRow[] {
+    const staff = this.listStaff(organizationId);
     const demoSql = demo === undefined ? "" : " AND a.demo = ?";
     const dp: unknown[] = demo === undefined ? [] : [demo];
     const qAssigned = this.db.prepare(`SELECT COUNT(*) AS c FROM applicants a WHERE a.assigned_to = ?${demoSql}`);

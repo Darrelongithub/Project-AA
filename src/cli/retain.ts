@@ -7,6 +7,7 @@
  * never touched. Default retention: 730 days (2 years).
  */
 import * as fs from "fs";
+import { envInt } from "../util/envnum";
 import * as path from "path";
 import { loadConfig } from "../config";
 import { openDb } from "../db/db";
@@ -18,7 +19,9 @@ const cfg = loadConfig();
 const repo = new Repo(openDb(cfg.dbPath));
 seedDefaults(repo, { live: cfg.mode === "live" });
 
-const retentionDays = Number(repo.getSetting("retention_days", "730"));
+// A corrupt setting must not crash the run with an opaque RangeError from
+// Invalid Date — fall back to the documented 730-day default.
+const retentionDays = envInt(repo.getSetting("retention_days", "730"), 730);
 const cutoff = new Date(Date.now() - retentionDays * 24 * 3600_000).toISOString();
 const archiveDir = path.resolve(path.dirname(path.resolve(cfg.dbPath)), "archive");
 // The archive holds full PII in plain JSON — lock the DIRECTORY to the

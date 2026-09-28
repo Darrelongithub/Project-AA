@@ -1,3 +1,5 @@
+> **Historical document — superseded by [STATUS.md](./STATUS.md).** Kept for the audit trail; figures and statements may be stale. Do not update.
+
 # Owner Round — Final Report
 
 **Date:** 2026-09-19 · **Branch:** `main` · Final commit of the round: `2ecea68`

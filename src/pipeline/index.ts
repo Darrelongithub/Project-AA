@@ -27,6 +27,7 @@ import type {
   WatcherInput,
 } from "../types";
 import { recordDocuments } from "../matching";
+import { envInt } from "../util/envnum";
 import { resolveIdentity } from "../matching/identity";
 import { extractAttachment, MIN_AUTO_PASS_SCORE } from "../extraction/extract";
 import { consistencyCheck } from "../extraction/crosscheck";
@@ -44,7 +45,7 @@ import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftC
 import { writeDecisionLog } from "../logs";
 import { emailBanner, organizationName, organizationSender } from "../branding";
 import type { SendExtras } from "./adapters";
-import { LIFECYCLE_LABELS } from "../types";
+import { LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
 import { log } from "../util/log";
 import type { PipelineContext } from "./adapters";
 
@@ -264,6 +265,21 @@ async function processEmailInner(
   // action (create + reply in one rule — P0-4).
   const intakeCarriesReply = Boolean(intakeRule?.action.reply_action && intakeRule.action.reply_action !== "none");
   if (!educationCase && scopedResponseRules.length === 0 && !intakeCarriesReply) humanTriageOnly = true;
+  // M-3: the profile's deterministic auto-admit posture (explicit opt-in only).
+  // The migrated education profile carries it; every profile a new
+  // organization creates starts with auto-admit OFF and draft automation, so
+  // a new organization can never enter this path. Draft mode always wins: a
+  // profile (or the global/per-category setting) that says "draft" holds every
+  // automatic reply — and therefore withholds the provisional admission too.
+  const profileReplyMode = genericCaseType?.default_reply_action;
+  const autoAdmitEligible = Boolean(
+    educationCase &&
+      genericCaseType?.auto_admit === 1 &&
+      profileReplyMode !== "draft" &&
+      profileReplyMode !== "hold" &&
+      repo.automationMode(category) === "auto" &&
+      !humanTriageOnly
+  );
   const preFlags: DerivedFlag[] = [];
   if (identity.concern) {
     preFlags.push({ type: "identity_check", detail: identity.concern });
@@ -549,9 +565,12 @@ async function processEmailInner(
   }
   // PPR P0-2 (audit F1): the academic engine runs ONLY for education-module
   // cases. A non-academic profile never loads grades, routing or auto-admit.
+  // M-3: a profile with the legacy auto-admit opt-in lets the evaluator record
+  // the PROVISIONAL auto_admit route; the decision + letter below still wait
+  // for the watcher, the blocking flags, the qualification gate and draft mode.
   const admission = genericRuleResult || !educationCase
     ? { derivedFlags: [] as DerivedFlag[] }
-    : evaluateAdmission(repo, applicant.id, preFlags);
+    : evaluateAdmission(repo, applicant.id, preFlags, { autoAdmit: autoAdmitEligible });
   preFlags.push(...admission.derivedFlags);
 
   // ── Rules: pure deterministic decision (feature 10) ─────────────────────
@@ -795,7 +814,6 @@ async function processEmailInner(
   //    profile can declare its own default (new profiles default to draft —
   //    automation is opt-in per profile; the migrated education profile keeps
   //    its preserved "auto" setting). ──────────────────────────────────────
-  const profileReplyMode = genericCaseType?.default_reply_action;
   const replyMode: "auto" | "draft" = profileReplyMode === "draft" || profileReplyMode === "hold" ? "draft" : repo.automationMode(category);
   const replyAttempted = autoKind !== null || ruleTemplateKey !== null;
   const heldForApproval = replyAttempted && replyMode === "draft";
@@ -831,9 +849,28 @@ async function processEmailInner(
   }
 
   // ── Admission safety gate ────────────────────────────────────────────────
-  // A passing rules evaluation is evidence for a reviewer, never an admission
-  // decision. The evaluator may record a provisional route for legacy reports,
-  // but this intake path never sets admission_decision or sends a letter.
+  // A passing rules evaluation is evidence for a reviewer, never by itself an
+  // admission decision. The evaluator records the PROVISIONAL auto_admit
+  // route for profiles that opt in; the decision is written below only after
+  // every gate has agreed (watcher clean, no blocking flag, fully qualified,
+  // not in draft mode, nothing queued for a human) — and the admission letter
+  // is the single automatic mail that goes out for such a case. Every other
+  // passing evaluation stays human review, exactly as it always has.
+  const organizationId = applicantNow.organization_id ?? applicant.organization_id ?? 1;
+  const caseTypeId = genericCaseType?.id;
+  const freshRouting = repo.getApplicant(applicant.id)!.routing;
+  const admitNow = Boolean(
+    autoAdmitEligible &&
+      freshRouting === "auto_admit" &&
+      finalStatus === "Green" &&
+      !watcherFlagged &&
+      activeBlockingFlags.length === 0 &&
+      !humanTriageOnly &&
+      !heldForApproval &&
+      !heldForQualification &&
+      !queueForHuman &&
+      repo.getTemplate("admission_letter", organizationId, caseTypeId)
+  );
 
   // ── Drafting (features 14, 35) ──────────────────────────────────────────
   const institution = organizationName(repo, applicantNow.organization_id ?? applicant.organization_id ?? 1);
@@ -844,19 +881,21 @@ async function processEmailInner(
     activeDocs
       .map((d) => normalizeName(d.extracted_fields?.name as string | undefined))
       .find((n) => n.length >= 3) || freshApplicant.full_name || email.fromName;
-  let lifecycleAfter: LifecycleStage = humanTriageOnly
-    ? "application_received"
-    : heldForApproval || heldForQualification
-      ? activeDocs.length > 0
-        ? "documents_received"
-        : "application_received"
-      : autoKind === "ack"
-        ? "documents_checked"
-        : queueForHuman && finalStatus !== "Green"
-          ? "awaiting_review"
-          : activeDocs.length > 0
-            ? "documents_received"
-            : "application_received";
+  let lifecycleAfter: LifecycleStage = admitNow
+    ? "completed"
+    : humanTriageOnly
+      ? "application_received"
+      : heldForApproval || heldForQualification
+        ? activeDocs.length > 0
+          ? "documents_received"
+          : "application_received"
+        : autoKind === "ack"
+          ? "documents_checked"
+          : queueForHuman && finalStatus !== "Green"
+            ? "awaiting_review"
+            : activeDocs.length > 0
+              ? "documents_received"
+              : "application_received";
   // PPR P0-4/P1-2: a response rule may declare the stage explicitly — either
   // a built-in lifecycle id or one of this profile's configured stage ids.
   if (replyAction?.stage) {
@@ -881,10 +920,13 @@ async function processEmailInner(
     documentIssues: documentIssuesText(activeDocs),
   };
 
-  // Admission letters are only available through a human decision; the intake
-  // pipeline drafts factual acknowledgements and review notes only. (A
-  // response rule may name any profile template key — that wins here.)
-  const templateKey = ruleTemplateKey ?? (autoKind === "ack"
+  // M-3: a case that has qualified for the provisional admission sends the
+  // ADMISSION LETTER as its automatic reply — the letter IS the receipt for a
+  // file that has already been decided — with the profile's admission
+  // attachment set riding along (the template's attach_pack). Everything else
+  // keeps the ordinary template chain: factual acknowledgements and review
+  // notes only, unless a response rule names a profile template key.
+  const templateKey = (admitNow ? "admission_letter" : null) ?? ruleTemplateKey ?? (autoKind === "ack"
     ? "ack_received"
     : autoKind === "docs_request"
         ? "docs_request"
@@ -894,8 +936,6 @@ async function processEmailInner(
             ? "status_answer"
             : null);
 
-  const organizationId = applicantNow.organization_id ?? applicant.organization_id ?? 1;
-  const caseTypeId = genericCaseType?.id;
   if (templateKey) {
     const tpl = repo.getTemplate(templateKey, organizationId, caseTypeId);
     if (tpl) {
@@ -938,6 +978,8 @@ async function processEmailInner(
   // Send failures are never fatal: the reply becomes a queued draft and a
   // human handles it (v3 reliability requirement).
   let autoSent = false;
+  /** M-3: the admission letter actually left the building this pass. */
+  let admissionLetterSent = false;
   // A rule that answers with "draft", "approve" or "hold" means exactly that:
   // the pipeline never escalates it to a send, whatever the gates say. Only
   // "send" (or legacy non-rule automation) may reach the wire.
@@ -994,6 +1036,7 @@ async function processEmailInner(
       repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind ?? templateKey}: "${draft.subject}"`);
       log(`pipeline: auto-sent [${autoKind ?? templateKey}] to ${applicantNow.email_address}`);
       autoSent = true;
+      if (templateKey === "admission_letter") admissionLetterSent = true;
     } catch (e) {
       repo.audit(applicant.id, "system", "send_failed", `auto-send [${autoKind ?? templateKey}] failed: ${(e as Error).message}`);
       repo.addOutbox({
@@ -1020,6 +1063,44 @@ async function processEmailInner(
       template_key: draft.templateKey ?? "",
       needs_approval: draftNeedsApproval ? 1 : 0,
     });
+  }
+
+  // ── Provisional admission (M-3: the legacy auto-admit path, restored) ───
+  // The letter went out under the profile's explicit opt-in, so the case is
+  // admitted provisionally and the decision is recorded as AUTOMATED:
+  // admission_route "auto" (never "human"), decision_reason explains the
+  // basis, and the audit trail carries the exact event. Nothing here decides
+  // on its own — the evaluator routed auto_admit only on a complete matrix +
+  // satisfied rule tree + reliable extraction, and every gate above has
+  // agreed. A registrar may reverse it through the ordinary not_admitted
+  // decision path on the case page.
+  let autoAdmitted = false;
+  if (admissionLetterSent) {
+    // The trail must show the step the file actually passed through before it
+    // was admitted: every required document was read and checked. Auto-admit
+    // would otherwise jump straight from documents_received to completed.
+    const stageNow = repo.getApplicant(applicant.id)!.lifecycle;
+    if (LIFECYCLE_ORDER.indexOf(stageNow) < LIFECYCLE_ORDER.indexOf("documents_checked")) {
+      repo.setLifecycle(applicant.id, "documents_checked", "system", "all required documents verified automatically");
+    }
+    repo.updateApplicant(applicant.id, {
+      admission_decision: "auto_admitted",
+      admission_route: "auto",
+      decision_reason: "All configured admission requirements satisfied — provisional admission recorded automatically; a registrar may reverse it.",
+      decision_at: new Date().toISOString(),
+    });
+    repo.audit(
+      applicant.id,
+      "system",
+      "auto_admission_triggered",
+      `${applicantNow.ref_number}: complete file, satisfied rules and clean watcher on auto-admit profile “${genericCaseType?.name ?? ""}” — provisional admission recorded and the admission letter sent`
+    );
+    repo.notify(
+      "auto_admitted",
+      `${applicantNow.ref_number}: provisionally admitted automatically — reversal available on the case page`,
+      applicant.id
+    );
+    autoAdmitted = true;
   }
 
   // ── Follow-up ladder (v3 feature 13) ─────────────────────────────────────
@@ -1050,7 +1131,8 @@ async function processEmailInner(
   if (queueForHuman) {
     // SLA clock starts (feature 28); staff action stops it. A response rule
     // may declare its own target hours.
-    const slaHours = replyAction?.sla_hours ?? Number(repo.getSetting("sla_target_hours", "4"));
+    // A corrupt setting must not crash intake (NaN → Invalid Date → throw).
+    const slaHours = replyAction?.sla_hours ?? envInt(repo.getSetting("sla_target_hours", "4"), 4);
     const due = new Date(Date.now() + slaHours * 3600_000).toISOString();
     const cur = repo.getApplicant(applicant.id)!;
     if (!cur.sla_handled_at) repo.updateApplicant(applicant.id, { sla_due_at: due });
@@ -1071,9 +1153,15 @@ async function processEmailInner(
   }
 
   // ── Lifecycle transition + status history (features 15, 16) ─────────────
+  // The provisional admission set the file to "completed" above; if that
+  // admission never completed (send failed, letter template missing), the
+  // file waits for a person — it is never presented as closed.
+  if (admitNow && !autoAdmitted) lifecycleAfter = "awaiting_review";
   const lifecycleNow = repo.getApplicant(applicant.id)!.lifecycle;
   if (lifecycleNow !== lifecycleAfter) {
-    const why = autoKind === "ack"
+    const why = autoAdmitted
+        ? "provisional admission recorded — the admission letter was sent; a registrar may reverse it"
+      : autoKind === "ack"
         ? "all required documents verified automatically"
         : lifecycleAfter === "awaiting_review"
           ? "queued for human review"

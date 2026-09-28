@@ -6,7 +6,6 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import { loadConfig } from "./config";
 import { log } from "./util/log";
 import type { Repo } from "./db/repo";
 
@@ -33,7 +32,36 @@ export const PACK_SLOTS: PackSlot[] = [
   { key: "credit-transfer-form", file: "credit-transfer-form.pdf", pretty: "Credit transfer form.pdf", pack: "transfer", purpose: "For applicants transferring credit from another institution" },
 ];
 
-export const DATA_DIR = path.dirname(path.resolve(loadConfig().dbPath));
+/**
+ * Where the BUNDLED data lives (migration JSON + pack PDFs).
+ *
+ * C-1: this is resolved from THIS module's own location — never from the
+ * process CWD and never from DB_PATH. A deployment may keep its database
+ * anywhere (a temp directory, a mounted volume); that must not change where
+ * the compiled/source module looks for its own bundled files. Booting with
+ * DB_PATH outside the checkout used to derive DATA_DIR from the database
+ * path, find no migration data, and crash in seedDefaults() before listen().
+ *
+ * A deployment that genuinely needs to relocate the bundled directory (e.g.
+ * a packaged build that ships the files elsewhere) sets BUNDLED_DATA_DIR.
+ */
+function bundledDataDir(): string {
+  const override = (process.env.BUNDLED_DATA_DIR || "").trim();
+  if (override) return path.resolve(override);
+  // Walk up from this file to the package root (the directory holding
+  // package.json). Works for src/pack.ts (tsx) and dist/src/pack.js (tsc).
+  let dir = __dirname;
+  for (let i = 0; i < 6; i++) {
+    if (fs.existsSync(path.join(dir, "package.json"))) return path.join(dir, "data");
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // Last resort: the conventional layout (src/ or dist/src/ under the root).
+  return path.resolve(__dirname, "..", "..", "data");
+}
+
+export const DATA_DIR = bundledDataDir();
 export const PACK_DIR = path.join(DATA_DIR, "pack");
 const MIGRATED_ORG_ONE = path.join(DATA_DIR, "migrated", "organization-1.json");
 type MigratedPack = { name: string; from_name: string; tagline?: string; pack: Record<string, Array<{ file: string; filename: string; mime: string }>> };

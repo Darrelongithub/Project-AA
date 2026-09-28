@@ -315,6 +315,9 @@ CREATE TABLE IF NOT EXISTS outbox (
   needs_approval INTEGER NOT NULL DEFAULT 0,
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Queue listings run EXISTS (SELECT 1 FROM outbox WHERE applicant_id = …)
+-- per rendered applicant row; without this index each one is a full scan.
+CREATE INDEX IF NOT EXISTS idx_outbox_applicant ON outbox(applicant_id, mode);
 
 -- ══ Admissions rules engine (round 18) ══════════════════════════════════════
 -- Machine-evaluable requirement trees, versioned per (programme, system).
@@ -647,6 +650,20 @@ function migrate(db: Database.Database): void {
       WHERE organization_id = 1 AND (code = 'GENERAL' OR code IN (SELECT code FROM programmes))`);
     db.exec(`INSERT OR REPLACE INTO settings (key, value) VALUES ('education_profiles_stamped', '1')`);
   }
+  // M-3: the stamp above shipped with auto_admit = 0, which silently disabled
+  // the migrated profile's provisional-admission behaviour. Restore the
+  // preserved legacy posture ONE TIME for the profiles stamped as the
+  // education module (new organizations' profiles are never touched — their
+  // education_module is 0 or they were created after this marker).
+  const autoAdmitRestored = db.prepare("SELECT value FROM settings WHERE key = 'education_auto_admit_restored_v1'").get();
+  if (!autoAdmitRestored) {
+    db.exec("UPDATE case_types SET auto_admit = 1 WHERE organization_id = 1 AND education_module = 1");
+    db.exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('education_auto_admit_restored_v1', '1')");
+  }
+  // M-2: usernames have exactly one canonical case (lowercase). Fold any
+  // historical mixed-case rows once; lookups are case-insensitive (COLLATE
+  // NOCASE) so a member who still types their old spelling can sign in.
+  db.exec("UPDATE staff_users SET username = lower(username) WHERE username <> lower(username)");
   // PPR P0-7: legacy rows are stamped with their migrated education profile —
   // programme-derived type where the row names a programme, otherwise the
   // GENERAL education profile. Idempotent (only NULL rows are touched), so a
