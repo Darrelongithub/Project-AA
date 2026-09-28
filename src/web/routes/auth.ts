@@ -9,6 +9,7 @@ import { clearSessionCookie, csrfCheck, loginAttempt, parseCookies, sessionCooki
 import { hashPassword } from "../../util/password";
 import { USERNAME_RE, normalizeUsername } from "../../util/username";
 import { LoginThrottle } from "../throttle";
+import { metrics } from "../../metrics";
 import type { RouteCtx } from "./ctx";
 
 export function registerAuth(app: Express, rt: RouteCtx): void {
@@ -121,6 +122,7 @@ export function registerAuth(app: Express, rt: RouteCtx): void {
   app.post("/login", (req, res) => {
     const ip = req.ip ?? "?";
     if (loginBlocked(ip)) {
+      metrics.incr("login.blocked");
       res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, rt.authName(), newLoginCsrf(res)));
       return;
     }
@@ -135,9 +137,11 @@ export function registerAuth(app: Express, rt: RouteCtx): void {
     const staff = loginAttempt(rt.repo, String(req.body.username ?? ""), String(req.body.password ?? ""));
     if (!staff) {
       loginRecordFail(ip);
+      metrics.incr("login.fail");
       res.status(401).send(loginPage("Invalid username or password.", req.theme, rt.authName(), newLoginCsrf(res)));
       return;
     }
+    metrics.incr("login.success");
     const session = rt.repo.createSession(staff.id);
     rt.repo.audit(null, staff.username, "staff_login", "");
     res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies));

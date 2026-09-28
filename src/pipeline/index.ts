@@ -18,6 +18,7 @@
  * answers. Anything ambiguous queues for a human. Never a decision.
  */
 import type { IncomingEmail, ProcessResult } from "../types";
+import { metrics } from "../metrics";
 import type { PipelineContext } from "./adapters";
 import { log } from "../util/log";
 import {
@@ -68,11 +69,14 @@ export async function processEmail(
   opts: PipelineOptions = DEFAULT_OPTS
 ): Promise<ProcessResult> {
   const { repo } = ctx;
+  const start = Date.now();
 
   // Atomic claim FIRST: a concurrent run of the same email loses here and
   // skips, so one message can never be processed (and replied to) twice.
   if (!repo.claimProcessed(email.id, email.threadId)) {
     log(`pipeline: skipping ${email.id} (already processed or claimed)`);
+    metrics.incr("email.skipped");
+    metrics.observe("email.duration_ms", Date.now() - start);
     return {
       skipped: true,
       applicantId: null,
@@ -87,11 +91,16 @@ export async function processEmail(
     };
   }
   try {
-    return await processEmailInner(email, ctx, opts);
+    const out = await processEmailInner(email, ctx, opts);
+    metrics.incr("email.processed");
+    return out;
   } catch (e) {
     // Release the claim: the ingest dead-letter machinery owns retries.
+    metrics.incr("email.failed");
     repo.unmarkProcessed(email.id);
     throw e;
+  } finally {
+    metrics.observe("email.duration_ms", Date.now() - start);
   }
 }
 

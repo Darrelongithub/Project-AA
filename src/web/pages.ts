@@ -17,3 +17,4 @@ export { ruleTreeText, configPage } from "./pages/config";
 export { templatesPage } from "./pages/templates";
 export { staffPage } from "./pages/staff";
 export { replayPage, sampleFactsFromRules, intakeTestPage } from "./pages/diagnostics";
+export { metricsPage } from "./pages/metrics";

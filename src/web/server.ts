@@ -26,6 +26,7 @@ import { registerExport } from "./routes/export";
 import { registerSystem } from "./routes/system";
 import type { Repo } from "../db/repo";
 import { log } from "../util/log";
+import { metrics } from "../metrics";
 
 export function createApp(deps: WebDeps): Express {
   const app = express();
@@ -35,6 +36,17 @@ export function createApp(deps: WebDeps): Express {
   // proxy's address unless this is set — which makes every per-IP rate
   // limiter a single global counter for ALL users. Opt in via TRUST_PROXY=1.
   if (process.env.TRUST_PROXY === "1") app.set("trust proxy", 1);
+  // Phase 6: per-route request counts (route templates, so cardinality is
+  // bounded) + a 5xx counter. Observes on finish; never changes responses.
+  app.use((req, res, next) => {
+    res.on("finish", () => {
+      const route = req.route?.path ?? "unmatched";
+      metrics.incr("http.requests");
+      metrics.incr(`http.${req.method}.${Array.isArray(route) ? route.join(",") : route}`);
+      if (res.statusCode >= 500) metrics.incr("http.5xx");
+    });
+    next();
+  });
   app.use(express.urlencoded({ extended: true, limit: "2mb" }));
   app.use(express.json({ limit: "1mb" }));
   app.use(authMiddleware(deps.repo));
@@ -67,5 +79,7 @@ export function runEscalationSweep(repo: Repo, escalationHours: number): number 
     n++;
     log(`escalation: ${a.ref_number} exceeded response target → urgent`, "warn");
   }
+  metrics.incr("sweep.runs");
+  metrics.incr("sweep.escalated", n);
   return n;
 }

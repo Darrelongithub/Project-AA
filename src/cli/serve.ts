@@ -18,6 +18,7 @@ import { ingestNewEmails } from "../ingestion";
 import { missingGmailCredentials, resolveLookbackDays } from "../ingestion/sync";
 import { createApp, runEscalationSweep } from "../web/server";
 import { onceAtATime } from "../util/once";
+import { flushMetrics } from "../metrics";
 import { log } from "../util/log";
 
 /** Forwards to a swappable inner sender so Gmail can connect without a restart. */
@@ -153,6 +154,16 @@ async function main(): Promise<void> {
     log(`serve: staff console → /login — on a fresh install you create the administrator account on first visit`);
     log(`serve: applicants who email just their reference number receive a status reply`);
   });
+
+  // Phase 6: persist operational metrics every 60s (the /metrics page
+  // flushes on demand too, so this only bounds crash-loss).
+  setInterval(() => {
+    try {
+      flushMetrics((day, name, n, sum) => repo.upsertMetric(day, name, n, sum));
+    } catch (e) {
+      log(`metrics flush failed: ${(e as Error).message}`, "error");
+    }
+  }, 60_000);
 
   // Escalation sweep every 5 minutes (feature 29). The window is re-read
   // each sweep so Settings changes apply without a restart.

@@ -11,6 +11,7 @@ import { csrfCheck, requireLogin, requireRole } from "../auth";
 import { GmailClient } from "../../ingestion/gmailClient";
 import { GeminiWatcher, makeHeuristicWatcher } from "../../watcher";
 import { gmailRedirectUri } from "../oauth";
+import { metrics } from "../../metrics";
 import type { LegacyAcademicLevel } from "./ctx";
 import type { RouteCtx } from "./ctx";
 
@@ -169,14 +170,17 @@ export function registerSettings(app: Express, rt: RouteCtx): void {
     }
     const pass = await rt.gmailSync();
     if (!pass.ran) {
+      metrics.incr("gmail.sync.skipped");
       return res.redirect(settingsBack("A sync is already running — give it a few seconds, then try again."));
     }
     const err = pass.result;
     if (err) {
+      metrics.incr("gmail.sync.error");
       rt.repo.setSetting("gmail_last_error", err.message.slice(0, 300));
       rt.repo.audit(null, req.staff!.username, "gmail_sync_failed", err.message.slice(0, 200));
       return res.redirect(settingsBack(`Sync failed: ${err.message}`));
     }
+    metrics.incr("gmail.sync.ran");
     rt.repo.setSetting("gmail_last_sync_at", new Date().toISOString());
     rt.repo.setSetting("gmail_last_error", "");
     rt.repo.audit(null, req.staff!.username, "gmail_synced", "manual sync from Settings");
@@ -194,11 +198,14 @@ export function registerSettings(app: Express, rt: RouteCtx): void {
     }
     const pass = await rt.gmailBackfill(days);
     if (!pass.ran) {
+      metrics.incr("gmail.backfill.skipped");
       return res.redirect(`/settings?msg=${encodeURIComponent("A sync or backfill is already running — wait for it to finish, then try again.")}#connections`);
     }
     if (pass.result) {
+      metrics.incr("gmail.backfill.error");
       return res.redirect(`/settings?msg=${encodeURIComponent(`Backfill failed: ${pass.result.message}`)}#connections`);
     }
+    metrics.incr("gmail.backfill.ran");
     rt.repo.audit(null, req.staff!.username, "gmail_backfill", `Pulled mail from the last ${days} days into the console`);
     res.redirect(`/settings?msg=${encodeURIComponent(`History pulled — mail from the last ${days} days is now in All Mail.`)}#connections`);
   });

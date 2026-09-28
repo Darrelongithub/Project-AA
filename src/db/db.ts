@@ -821,6 +821,15 @@ function migrate(db: Database.Database): void {
     name TEXT NOT NULL UNIQUE
   )`);
   db.exec(`INSERT OR IGNORE INTO schools (name) SELECT DISTINCT school FROM programmes WHERE school <> ''`);
+  // Phase 6: operational metrics — additive daily counters, no existing
+  // table is touched. Day buckets are UTC (see flushMetrics).
+  db.exec(`CREATE TABLE IF NOT EXISTS metric_daily (
+    day TEXT NOT NULL,
+    name TEXT NOT NULL,
+    n INTEGER NOT NULL DEFAULT 0,
+    sum REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, name)
+  )`);
   // Compatibility projection: old admissions callers still read applicants,
   // while generic callers can use cases/outcome/category without losing rows.
   db.exec(`CREATE VIEW IF NOT EXISTS cases AS

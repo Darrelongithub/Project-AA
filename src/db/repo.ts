@@ -28,6 +28,7 @@ import * as scopes from "./repo/scopes";
 import * as rulesets from "./repo/rulesets";
 import * as vision from "./repo/vision";
 import * as deadletters from "./repo/deadletters";
+import * as metrics from "./repo/metrics";
 export { SECRET_KEYS, EDUCATION_STAGE_PRESET, GENERIC_STAGE_PRESET, EDUCATION_QUEUE_PRESET, GENERIC_QUEUE_PRESET } from "./repo/shared";
 
 /** Query shape for {@link Repo.searchApplicants} — shared with the web layer. */
@@ -1201,5 +1202,13 @@ export class Repo {
 
   isDeadLetter(messageId: string): boolean {
     return deadletters.isDeadLetter(this, messageId);
+  }
+
+  upsertMetric(day: string, name: string, n: number, sum: number): void {
+    return metrics.upsertMetric(this, day, name, n, sum);
+  }
+
+  metricDaily(days: number): metrics.MetricDayRow[] {
+    return metrics.metricDaily(this, days);
   }
 }

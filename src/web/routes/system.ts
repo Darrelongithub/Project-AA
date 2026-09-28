@@ -4,8 +4,10 @@
  */
 import type { Express, Request, Response } from "express";
 import { avatar, layout } from "../views";
-import { requireLogin } from "../auth";
+import { requireLogin, requireRole } from "../auth";
 import { log } from "../../util/log";
+import { flushMetrics } from "../../metrics";
+import { metricsPage } from "../pages";
 import type { RouteCtx } from "./ctx";
 
 export function registerSystem(app: Express, rt: RouteCtx): void {
@@ -25,6 +27,13 @@ export function registerSystem(app: Express, rt: RouteCtx): void {
         avatar: avatar(a.full_name ?? a.ref_number, 26),
       })),
     });
+  });
+
+  // Phase 6: operational metrics, admin only. Flushes pending in-memory
+  // samples first so the view is current (drain is idempotent).
+  app.get("/metrics", requireLogin, requireRole("admin"), (req, res) => {
+    flushMetrics((day, name, n, sum) => rt.repo.upsertMetric(day, name, n, sum));
+    res.send(metricsPage(rt.c(req)));
   });
 
   // Branded 404 instead of Express's raw "Cannot GET …" page.
