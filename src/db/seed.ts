@@ -9,148 +9,13 @@ import { DEFAULT_INTAKES, DEFAULT_PROGRAMMES, DEFAULT_SETTINGS, DEFAULT_STRUCTUR
 import { migratedOrganizationOne, migratedAttachmentSets } from "../pack";
 import { blockToNodes, CATALOGUE_SEED } from "../admissions/convert";
 import type { CourseLevel, RuleNode } from "../types";
+import { admissionsPreset } from "../presets/loader";
 
-export const TEMPLATE_SEEDS: Array<{ key: string; name: string; subject: string; body: string }> = [
-  {
-    key: "ack_received",
-    name: "Documents received (complete file)",
-    subject: "Your application documents have been received",
-    body: `Dear {first_name},
-
-Thank you for submitting your documents. Your application file {ref} is now COMPLETE:
-
-{checklist}
-
-Your file has been forwarded for verification. Current status: {status}.
-
-Please note this acknowledgement confirms receipt only. The final decision on your application will be made by the admissions committee and communicated to you in due course.
-
-Kind regards,
-{institution} — Admissions Office`,
-  },
-  {
-    key: "missing_documents",
-    name: "Missing documents notice",
-    subject: "We have received some of your documents — action needed",
-    body: `Dear {first_name},
-
-We've received your application ({ref}). Thank you. The following documents have been logged so far:
-
-{checklist}
-
-We are still missing:
-
-{missing_docs}
-
-Please send the outstanding item(s) as PDF attachments in reply to this thread. Your file will proceed once it is complete.
-
-{document_issues}
-
-Kind regards,
-{institution} — Admissions Office`,
-  },
-  {
-    key: "docs_request",
-    name: "Document request (new enquiry)",
-    subject: "Your application: the documents we need from you",
-    body: `Dear {first_name},
-
-Thank you for your interest in {institution}. To open your application file ({ref}) we need the following documents as PDF attachments:
-
-{missing_docs}
-
-Once received, we will confirm within this thread.
-
-Kind regards,
-{institution} — Admissions Office`,
-  },
-  {
-    key: "status_answer",
-    name: "Status answer (have you received my documents?)",
-    subject: "The status of your application documents",
-    body: `Dear {first_name},
-
-Thank you for your message. Here is the current status of your application file {ref}:
-
-Status: {status}
-
-Your document checklist:
-
-{checklist}
-
-{missing_docs_section}
-
-{read_back}
-
-Kind regards,
-{institution} — Admissions Office`,
-  },
-  {
-    key: "under_review",
-    name: "Under review",
-    subject: "Your application is under review",
-    body: `Dear {first_name},
-
-Your application ({ref}) is currently under review. Current status: {status}.
-
-We will contact you if we need anything further.
-
-Kind regards,
-{institution} — Admissions Office`,
-  },
-  {
-    key: "verification",
-    name: "Verification stage",
-    subject: "Your application has moved to verification",
-    body: `Dear {first_name},
-
-Your application ({ref}) has moved to the verification stage. We are verifying the documents you submitted and will update you once complete.
-
-Kind regards,
-{institution} — Admissions Office`,
-  },
-  {
-    key: "generic_enquiry",
-    name: "Generic enquiry",
-    subject: "Thank you for contacting Admissions",
-    body: `Dear {first_name},
-
-Thank you for contacting the {institution} Admissions Office. We have received your message regarding application {ref} and will respond as soon as possible.
-
-Kind regards,
-{institution} — Admissions Office`,
-  },
-];
+export const TEMPLATE_SEEDS: Array<{ key: string; name: string; subject: string; body: string }> =
+  admissionsPreset().templates;
 
 /** The official admission letter (OR-7: also the reset default). */
-export const ADMISSION_LETTER_DEFAULT = {
-  name: "Admission letter (with full admission pack)",
-  subject: "Welcome to {institution} — Your Admission to {programme}",
-  body: `Dear {name},
-
-Welcome to {institution}!
-
-Congratulations on your admission to the {programme} programme. We are delighted to extend our warmest greetings as you embark on an exciting academic journey with us. Your admission to {institution} signifies the beginning of an enriching and transformative experience, and we are thrilled to have you as part of our vibrant community.
-
-In preparation for the upcoming semester, please note the following important information and deadlines:
-
-Registration Date: registration and verification of your original documents is scheduled on or before {reg_date}. Please ensure your timely arrival to facilitate a smooth transition into university life.
-
-Orientation: the orientation programme is set for {orientation_dates}, where you will receive valuable information about our academic policies, support services and campus resources. Attendance is essential for all new students.
-
-Documents for Verification: bring the following (originals and copies): i) certificates (high school, certificate, diploma and/or degree), ii) one passport-size photograph, iii) ID card or passport (or a waiting card / parent or guardian ID where applicable), and iv) birth certificate.
-
-Laptop Requirement: it is mandatory for all students to own a personal laptop upon admission.
-
-Enclosed with this letter you will find the student medical form, data protection form, next of kin form, hostels list, fee structure, sponsorship form and the orientation programme — complete them and bring them for verification.
-
-Your reference number: {ref}.
-
-Kind regards,
-{institution} — Admissions Office`,
-  include_banner: true,
-  attach_pack: "admission",
-};
+export const ADMISSION_LETTER_DEFAULT = admissionsPreset().admissionLetter;
 
 /** OR-7: the official defaults, used by "Reset to default" on the Templates
  * page. Resetting restores exactly what shipped — nothing invented. */
@@ -357,20 +222,17 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
       };
       for (const n of nodes) write(n, null);
     };
-    const SYSTEM_MAP: Record<string, string | null> = {
-      KCSE: "KCSE", IGCSE: "IGCSE", ALEVEL: "ALEVEL", IB: "IB",
-      DIPLOMA: "DIPLOMA", DEGREE: "DEGREE", PREUNI: null, // no automated PREUNI route — humans decide it
-    };
+    // Systems without an automated rule route (humans decide them) come from
+    // the preset; every other system seeds under its own code.
+    const noAutoRoute = new Set(admissionsPreset().noAutomatedRuleRoute);
     for (const b of DEFAULT_STRUCTURED_BASE) {
-      const sys = SYSTEM_MAP[b.block.system];
-      if (!sys) continue;
-      seedTree(null, b.level, sys, blockToNodes(b.block));
+      if (noAutoRoute.has(b.block.system)) continue;
+      seedTree(null, b.level, b.block.system, blockToNodes(b.block));
     }
     for (const c of DEFAULT_STRUCTURED_COURSES) {
-      const sys = SYSTEM_MAP[c.block.system];
-      if (!sys) continue;
+      if (noAutoRoute.has(c.block.system)) continue;
       const level = DEFAULT_PROGRAMMES.find((p) => p.code === c.programme)?.level ?? "degree";
-      seedTree(c.programme, level, sys, blockToNodes(c.block));
+      seedTree(c.programme, level, c.block.system, blockToNodes(c.block));
     }
   }
   // OR-5: document requirements are generated deterministically from the
@@ -404,8 +266,9 @@ export function seedDefaults(repo: Repo, opts: { live?: boolean } = {}): void {
   }
 
   // Admission-letter dates (editable in Settings → Response targets).
-  if (!repo.getSetting("reg_date", "")) repo.setSetting("reg_date", "Monday 31st August, 2026");
-  if (!repo.getSetting("orientation_dates", "")) repo.setSetting("orientation_dates", "Thursday 3rd and Friday 4th September, 2026");
+  const dates = admissionsPreset().admissionDates;
+  if (!repo.getSetting("reg_date", "")) repo.setSetting("reg_date", dates.regDate);
+  if (!repo.getSetting("orientation_dates", "")) repo.setSetting("orientation_dates", dates.orientationDates);
 
   // No generic banner is seeded. An organization can upload its own logo or
   // configure a banner through the organization-owned branding settings.

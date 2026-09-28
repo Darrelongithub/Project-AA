@@ -3,6 +3,7 @@
  * No AI: categories are routing hints for humans, never decisions.
  */
 import type { EmailCategory } from "../types";
+import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 
 const COMPLAINT_RE = /\b(complain(?:t|ts|ing)?|grievance|dissatisf\w*|unacceptable|appall\w*|rude|escalat\w*|ombuds\w*)\b/i;
 const FEE_RE = /\b(fee(?:s)?|tuition|payment|invoice|deposit|hesb|helb|billing|arrears)\b/i;
@@ -116,7 +117,7 @@ async function geminiCategoryLabel(input: { subject: string; body: string }, cat
   // Gemini receives categories as data and can only return one of them.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { GoogleGenerativeAI } = require("@google/generative-ai");
-  const model = new GoogleGenerativeAI(key).getGenerativeModel({ model: process.env.GEMINI_MODEL || "gemini-3.8-flash" });
+  const model = new GoogleGenerativeAI(key).getGenerativeModel({ model: process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL });
   const prompt = `Classify this message using exactly one category from ${JSON.stringify(categories)}. Return JSON only: {"label":"...","confidence":0}. The label is routing metadata only and must not make an approval or rejection decision.\nSubject: ${input.subject}\nBody: ${input.body}`;
   const response = await model.generateContent(prompt);
   const raw = String(response?.response?.text?.() ?? "");

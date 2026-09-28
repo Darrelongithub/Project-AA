@@ -103,7 +103,7 @@ export async function runSimulation(
   const repo = new Repo(openDb(dbPath));
   seedDefaults(repo);
   // Base set = the published application basics incl. the general minimum
-  // (KCSE mean grade C+ on the secondary certificate); programme overrides
+  // (national-secondary mean grade C+ on the secondary certificate); programme overrides
   // for diplomas/certificates/postgrad come from seedDefaults.
   // OR-5: requirements come from the deterministic matrix — nothing to seed.
   const sender = new MockSender();

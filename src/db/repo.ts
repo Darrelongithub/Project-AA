@@ -34,11 +34,11 @@ import type {
   CaseType,
   CaseConfigFrozen,
   DocumentDefinition,
-  CaseOutcome,
   AttachmentSet,
   Permission,
 } from "../types";
-import { PERMISSIONS } from "../types";
+import { PERMISSIONS, normalizeProfileReplyAction } from "../types";
+import { Decision, autoDecisionsAllowed } from "../decisions";
 import type { WorkflowRule } from "../rules/workflow";
 import { documentRequirementsFor, fillSlots, type ApplicantNationality, type ProgrammeLevel } from "../documents/matrix";
 import type { VisionCacheStore } from "../extraction/gemini";
@@ -49,6 +49,15 @@ const nowIso = () => new Date().toISOString();
 
 /** PPR P0-1: the only keys that may live in the secrets store. */
 export const SECRET_KEYS: readonly string[] = ["gemini_api_key", "gmail_client_secret", "gmail_refresh_token"];
+
+/**
+ * Raw `case_types` row as it comes out of SQLite: JSON columns are still
+ * strings and `default_reply_action` is free TEXT (legacy/foreign values
+ * possible) — rowToCaseType parses + normalizes it into a CaseType.
+ */
+type CaseTypeRow = Omit<CaseType, "config" | "terminology" | "stages" | "queues" | "default_reply_action"> & {
+  config: string; terminology: string; stages: string; queues: string; default_reply_action: unknown;
+};
 
 /** PPR P1-2: the current six lifecycle stages / five queues are the EDUCATION
  * preset — data now, not a core assumption. Stage ids stay stable (they are
@@ -201,11 +210,11 @@ export class Repo {
 
   getCaseType(code: string, organizationId = 1): CaseType | undefined {
     const row = this.db.prepare("SELECT id, organization_id, code, name, category, config, active, education_module, terminology, stages, queues, config_version, default_reply_action, qualification_gate, auto_admit FROM case_types WHERE organization_id = ? AND code = ? COLLATE NOCASE")
-      .get(organizationId, code.trim()) as (Omit<CaseType, "config" | "terminology" | "stages" | "queues"> & { config: string; terminology: string; stages: string; queues: string }) | undefined;
+      .get(organizationId, code.trim()) as CaseTypeRow | undefined;
     return row ? this.rowToCaseType(row) : undefined;
   }
 
-  private rowToCaseType(row: Omit<CaseType, "config" | "terminology" | "stages" | "queues"> & { config: string; terminology: string; stages: string; queues: string }): CaseType {
+  private rowToCaseType(row: CaseTypeRow): CaseType {
     let config: Record<string, unknown> = {};
     try { config = JSON.parse(row.config || "{}"); } catch { /* safe empty config */ }
     let terminology: Record<string, string> = {};
@@ -214,7 +223,10 @@ export class Repo {
     try { stages = JSON.parse(row.stages || "[]"); } catch { /* safe empty */ }
     let queues: Array<{ id: string; label: string }> = [];
     try { queues = JSON.parse(row.queues || "[]"); } catch { /* safe empty */ }
-    return { ...row, config, terminology, stages, queues };
+    // The column is free TEXT: legacy/foreign values coerce to the safe
+    // "draft" posture here, at the single read boundary for profiles.
+    const default_reply_action = normalizeProfileReplyAction(row.default_reply_action);
+    return { ...row, config, terminology, stages, queues, default_reply_action };
   }
 
   listCaseTypes(organizationId = 1): CaseType[] {
@@ -675,22 +687,27 @@ export class Repo {
         | "req_result"
         | "routing"
         | "routing_reason"
-        | "admission_decision"
-        | "admission_route"
-        | "decision_by"
-        | "decision_reason"
-        | "decision_at"
       >
     >
   ): void {
     // Column names are interpolated into SQL — only ever from this allow-list,
     // never from caller-provided strings.
+    // Decision columns (outcome/admission_decision/admission_route/decision_by/
+    // decision_reason/decision_at) are DELIBERATELY absent: outcomes travel
+    // only through recordDecision with a genuine Decision (see src/decisions.ts).
+    if (
+      Object.prototype.hasOwnProperty.call(patch, "admission_decision") ||
+      Object.prototype.hasOwnProperty.call(patch, "admission_route") ||
+      Object.prototype.hasOwnProperty.call(patch, "decision_by") ||
+      Object.prototype.hasOwnProperty.call(patch, "decision_reason") ||
+      Object.prototype.hasOwnProperty.call(patch, "decision_at")
+    ) {
+      throw new Error("updateApplicant: refusing outcome write — use recordDecision with a Decision");
+    }
     const ALLOWED = new Set([
       "full_name", "phone", "programme", "intake", "priority", "assigned_to",
       "lifecycle", "triage", "queue", "sla_due_at", "sla_handled_at", "escalated",
       "transfer", "nationality", "req_result", "routing", "routing_reason",
-      "admission_decision", "admission_route", "decision_by", "decision_reason",
-      "decision_at",
     ]);
     const keys = Object.keys(patch) as Array<keyof typeof patch>;
     if (keys.length === 0) return;
@@ -700,25 +717,37 @@ export class Repo {
     const setSql = keys.map((k) => `${k} = ?`).join(", ");
     const vals = keys.map((k) => patch[k] ?? null);
     this.db.prepare(`UPDATE applicants SET ${setSql}, updated_at = ? WHERE id = ?`).run(...vals, nowIso(), id);
-    if (Object.prototype.hasOwnProperty.call(patch, "admission_decision")) {
-      const decision = patch.admission_decision;
-      const outcome = decision === "auto_admitted" ? "auto_approved" : decision === "admitted_after_review" ? "approved_after_review" : decision === "not_admitted" ? "not_approved" : "undecided";
-      this.db.prepare("UPDATE applicants SET outcome = ? WHERE id = ?").run(outcome, id);
-    }
     if (Object.prototype.hasOwnProperty.call(patch, "programme")) {
       this.db.prepare("UPDATE applicants SET category = programme WHERE id = ?").run(id);
     }
   }
 
-  updateCase(id: number, patch: { category?: string | null; outcome?: CaseOutcome; case_type_id?: number | null }): void {
+  /**
+   * THE outcome writer: records a case outcome from a genuine Decision only.
+   * Forged/plain-object outcomes throw, and automated decisions throw unless
+   * the organization's policy flags allow them (autoDecisionsAllowed — the
+   * single enforcement point). Writes both the generic `outcome` and the
+   * legacy admissions-vocabulary mirror columns.
+   */
+  recordDecision(id: number, decision: Decision): void {
+    if (!Decision.isGenuine(decision)) {
+      throw new Error("recordDecision: refusing outcome — not a genuine Decision (use Decision.auto()/Decision.human())");
+    }
+    if (decision.source === "rules-auto" && !autoDecisionsAllowed(this, id)) {
+      throw new Error("recordDecision: refusing automated decision — organization policy flags do not allow auto-decisions");
+    }
+    const at = nowIso();
+    this.db.prepare("UPDATE applicants SET outcome = ?, admission_decision = ?, admission_route = ?, decision_by = ?, decision_reason = ?, decision_at = ?, updated_at = ? WHERE id = ?")
+      .run(decision.outcome, decision.legacyDecision(), decision.route(), decision.decidedBy, decision.reasoning, at, at, id);
+  }
+
+  updateCase(id: number, patch: { category?: string | null; outcome?: Decision; case_type_id?: number | null }): void {
     const allowed = Object.keys(patch);
     if (allowed.some((key) => !["category", "outcome", "case_type_id"].includes(key))) throw new Error("updateCase: refusing unknown column");
     if (patch.category !== undefined) this.db.prepare("UPDATE applicants SET category = ? WHERE id = ?").run(patch.category, id);
     if (patch.case_type_id !== undefined) this.db.prepare("UPDATE applicants SET case_type_id = ? WHERE id = ?").run(patch.case_type_id, id);
-    if (patch.outcome !== undefined) {
-      const legacy = patch.outcome === "auto_approved" ? "auto_admitted" : patch.outcome === "approved_after_review" ? "admitted_after_review" : patch.outcome === "not_approved" ? "not_admitted" : "undecided";
-      this.db.prepare("UPDATE applicants SET outcome = ?, admission_decision = ?, updated_at = ? WHERE id = ?").run(patch.outcome, legacy, nowIso(), id);
-    }
+    // Outcomes travel only as a genuine Decision (provenance + policy gate).
+    if (patch.outcome !== undefined) this.recordDecision(id, patch.outcome);
   }
 
   // ── Lifecycle + status history (features 15, 16) ─────────────────────────
@@ -1067,7 +1096,7 @@ export class Repo {
 
   /**
    * OR-5: document requirements come from the DETERMINISTIC generator
-   * (level × curriculum × nationality × route + KCPE constant), sourced from
+   * (level × curriculum × nationality × route + primary-cert constant), sourced from
    * the official application-form checklist. The legacy requirement_rules
    * table is no longer read — requirements are not staff-configurable.
    */

@@ -62,10 +62,10 @@ CREATE TABLE IF NOT EXISTS course_requirements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   programme TEXT,                     -- NULL = university-wide defaults
   level TEXT NOT NULL,                -- degree|diploma|certificate|masters|phd
-  system TEXT NOT NULL,               -- KCSE|IGCSE|ALEVEL|IB|DIPLOMA|PREUNI|DEGREE
+  system TEXT NOT NULL,               -- national-secondary|o-level|alevel|ib|diploma|preuni|degree
   enabled INTEGER NOT NULL DEFAULT 1,
-  overall TEXT,                       -- KCSE mean grade (grade ladder)
-  min_credits INTEGER,                -- IGCSE subjects at C or better
+  overall TEXT,                       -- national-secondary mean grade (grade ladder)
+  min_credits INTEGER,                -- o-level subjects at C or better
   min_principals INTEGER,             -- GCE A-Level / KACE principal passes
   min_subsidiaries INTEGER,
   min_points INTEGER,                 -- IB total points
@@ -347,7 +347,7 @@ CREATE TABLE IF NOT EXISTS admission_rules (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   programme  TEXT,                    -- NULL = university-wide default
   level      TEXT NOT NULL DEFAULT 'degree',
-  system     TEXT NOT NULL,           -- KCSE|IGCSE|IB|ALEVEL|KACE|EACE|DIPLOMA|PROFCERT|DEGREE|OTHER
+  system     TEXT NOT NULL,           -- secondary|o-level|ib|alevel|kace|eace|diploma|profcert|degree|other
   version    INTEGER NOT NULL DEFAULT 1,
   status     TEXT NOT NULL DEFAULT 'draft',   -- draft|active|retired
   created_by TEXT NOT NULL DEFAULT 'system',
@@ -748,7 +748,7 @@ function migrate(db: Database.Database): void {
   // 'user' (they keep their accounts; permissions are re-derived from role).
   db.exec("UPDATE staff_users SET role = 'user' WHERE role NOT IN ('admin','user')");
   // Migrate any legacy min-points rules into a best-effort grade equivalent
-  // so old databases keep meaningful rules (points → the KCSE grade ladder).
+  // so old databases keep meaningful rules (points → the national grade ladder).
   try {
     const legacy = db
       .prepare("SELECT id, min_grade_points FROM requirement_rules WHERE min_grade_points IS NOT NULL AND mean_grade IS NULL")

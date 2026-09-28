@@ -18,6 +18,7 @@ import type { ApplicantRow, LifecycleStage, Permission } from "../types";
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS, type EmailCategory } from "../types";
 import { checklistText, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
+import { Decision } from "../decisions";
 import { fillSlots } from "../documents/matrix";
 import { autoAdmitPolicy, evaluateAdmission, evaluateCaseTypeRules } from "../admissions/evaluate";
 import { ADMISSION_SYSTEMS, DOC_TYPES, type AdmissionSystem, type DocType, type RuleField } from "../types";
@@ -47,6 +48,7 @@ import { LoginThrottle } from "./throttle";
 import { emailBanner, organizationName, organizationSender, organizationTheme } from "../branding";
 import { PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
 import { EXAM_SYSTEMS } from "../config";
+import { admissionsPreset } from "../presets/loader";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -1143,22 +1145,19 @@ export function createApp(deps: WebDeps): Express {
     if (!reason) {
       return res.redirect(backToCase(id, "A reason is required for every human admission decision — it goes on the audit trail."));
     }
-    const ROUTES: Record<string, string> = {
-      alternative_qualification: "Alternative qualification",
-      approved_exception: "Approved exception",
-      special_consideration: "Special consideration",
-      documented_pathway: "Documented pathway",
-      standard_review: "Standard review",
-    };
-    const route = decision === "admit" ? (ROUTES[String(req.body.route ?? "")] ?? "Standard review") : "Standard review";
-    const outcome = decision === "admit" ? "admitted_after_review" : "not_admitted";
-    repo.updateApplicant(id, {
-      admission_decision: outcome,
-      admission_route: "human",
-      decision_by: req.staff!.username,
-      decision_reason: `${route}: ${reason}`,
-      decision_at: new Date().toISOString(),
-    });
+    // Human-review routes come from the admissions preset; an unknown route
+    // falls back to the standard-review label, as it always has.
+    const ROUTES: Record<string, string> = Object.fromEntries(
+      admissionsPreset().decisionRoutes.map((r) => [r.value, r.label])
+    );
+    const standardRoute = ROUTES["standard_review"];
+    const route = decision === "admit" ? (ROUTES[String(req.body.route ?? "")] ?? standardRoute) : standardRoute;
+    const outcome = decision === "admit" ? "approved_after_review" : "not_approved";
+    repo.recordDecision(id, Decision.human({
+      outcome,
+      reasoning: `${route}: ${reason}`,
+      decidedBy: req.staff!.username,
+    }));
     // The file is closed either way; the decision field says HOW it closed.
     repo.setLifecycle(id, "completed", req.staff!.username,
       decision === "admit" ? `admitted after human review (${route})` : "not admitted after human review");

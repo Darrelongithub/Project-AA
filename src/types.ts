@@ -5,6 +5,7 @@
 
 // ── Triage verdicts (unchanged from v1) ────────────────────────────────────
 
+import { admissionsPreset } from "./presets/loader";
 export type Classification = "Green" | "Orange" | "Red";
 
 /** PPR P1-8: the four automation actions, gated as distinct permissions. */
@@ -41,7 +42,6 @@ export type DocType =
   | "student_pass_application"
   | "foreign_qualification_equivalence"
   | "academic_cert"
-  | "kcpe_cert"
   | "unknown"
   /** Organization-owned document keys for non-academic CaseTypes. */
   | (string & {});
@@ -63,7 +63,7 @@ export const DOC_TYPES: DocType[] = [
   "student_pass_application",
   "foreign_qualification_equivalence",
   "academic_cert",
-  "kcpe_cert",
+  admissionsPreset().documents.primaryCertSpec.document_type,
   "unknown",
 ];
 
@@ -196,9 +196,9 @@ export interface SubjectRequirement {
 export interface SystemBlock {
   system: ExamSystem;
   enabled: boolean;
-  /** KCSE mean grade (grade ladder) — the overall floor for this route. */
+  /** National-secondary mean grade (grade ladder) — the overall floor for this route. */
   overall?: string | null;
-  /** IGCSE/O-Level: minimum subjects at grade C or better. */
+  /** O-Level route: minimum subjects at grade C or better. */
   minCredits?: number | null;
   /** GCE A-Level / KACE: minimum principal passes (+ optional subsidiaries). */
   minPrincipals?: number | null;
@@ -251,15 +251,13 @@ export interface RequirementRule extends RequirementSetEntry {
 // Machine-evaluable requirement trees per (programme, qualification system).
 // Failure of a published rule NEVER rejects — it routes to human review.
 
-/** Qualification routes the engine can evaluate. */
-export type AdmissionSystem =
-  | "KCSE" | "IGCSE" | "IB" | "ALEVEL" | "KACE" | "EACE"
-  | "DIPLOMA" | "PROFCERT" | "DEGREE" | "OTHER";
+/** Qualification routes the engine can evaluate.
+ * Phase 3: the route codes are preset-defined vocabulary (data/presets/
+ * admissions.json -> admissionSystems) — the core threads them opaquely and
+ * never spells them. ADMISSION_SYSTEMS below is that list. */
+export type AdmissionSystem = string;
 
-export const ADMISSION_SYSTEMS: AdmissionSystem[] = [
-  "KCSE", "IGCSE", "IB", "ALEVEL", "KACE", "EACE",
-  "DIPLOMA", "PROFCERT", "DEGREE", "OTHER",
-];
+export const ADMISSION_SYSTEMS: AdmissionSystem[] = admissionsPreset().admissionSystems;
 
 /** What a condition compares. */
 export type RuleField =
@@ -344,6 +342,24 @@ export type AdmissionDecision = "undecided" | "auto_admitted" | "admitted_after_
  * names above remain as source-compatible aliases for existing deployments. */
 export type CaseOutcome = "undecided" | "auto_approved" | "approved_after_review" | "not_approved";
 export type Case = ApplicantRow;
+/**
+ * Automation posture for a workflow profile's rules. Every value the product
+ * has ever written is named here explicitly:
+ * - "draft" (default everywhere) / "hold": automatic replies are held.
+ * - "auto": the workflow UI's "auto-send when a rule says so".
+ * - "send": the migrated Organization #1 education profile's preserved
+ *   legacy posture (see the PPR P07 migration in src/db/db.ts).
+ * - "none" / "approve": rule-action vocabulary, accepted for forward compat.
+ * Anything else found in the database is a legacy/foreign value and is
+ * coerced to "draft" (the safe posture) at the read boundary — see
+ * normalizeProfileReplyAction, applied in Repo.rowToCaseType.
+ */
+export type ProfileReplyAction = "none" | "draft" | "hold" | "approve" | "send" | "auto";
+const PROFILE_REPLY_ACTIONS: ReadonlySet<string> = new Set(["none", "draft", "hold", "approve", "send", "auto"]);
+/** Coerce a stored profile reply action to the strict union ("draft" when unknown). */
+export function normalizeProfileReplyAction(value: unknown): ProfileReplyAction {
+  return typeof value === "string" && PROFILE_REPLY_ACTIONS.has(value) ? (value as ProfileReplyAction) : "draft";
+}
 export type CaseType = {
   id: number;
   organization_id: number;
@@ -362,7 +378,7 @@ export type CaseType = {
   /** PPR P0-3: bumped on every publish of rules/documents for the profile. */
   config_version?: number;
   /** Automation posture for the profile's rules (PPR P0-4/P1-3). */
-  default_reply_action?: "none" | "draft" | "approve" | "send" | string;
+  default_reply_action?: ProfileReplyAction;
   /** Education safety default: never auto-send unless the file is fully qualified. */
   qualification_gate?: number;
   /** Deterministic auto-decision switch — OFF everywhere except explicit opt-in. */
@@ -400,8 +416,9 @@ export interface DocumentDefinition {
 
 // ── Documents & extraction ─────────────────────────────────────────────────
 
-/** Qualification systems the engine can check deterministically. */
-export type ExamSystem = "KCSE" | "IGCSE" | "ALEVEL" | "IB" | "DIPLOMA" | "PREUNI" | "DEGREE";
+/** Qualification systems the engine can check deterministically.
+ * Phase 3: system codes are preset-defined vocabulary — see AdmissionSystem. */
+export type ExamSystem = string;
 
 export interface ExtractedFields {
   name?: string | null;
@@ -411,7 +428,7 @@ export interface ExtractedFields {
   subjectGrades?: Record<string, string> | null;
   /** Qualification system detected on the document. */
   examSystem?: ExamSystem | null;
-  /** IGCSE/O-Level: subjects passed at grade C or better. */
+  /** O-Level route: subjects passed at grade C or better. */
   credits?: number | null;
   /** GCE A-Level / KACE: principal passes (and subsidiaries). */
   principals?: number | null;

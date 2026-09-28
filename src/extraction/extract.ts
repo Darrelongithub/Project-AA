@@ -25,6 +25,7 @@
 import * as crypto from "crypto";
 import type { Attachment, Confidence, DocType, ExtractionResult, ExtractedFields } from "../types";
 import { classifyDocumentType } from "./classify";
+import { PRIMARY_CERT_TYPE } from "../documents/matrix";
 import { extractFields } from "./fields";
 import { isGoodText, assessTextQuality, thresholdsFor } from "./quality";
 import { pdfRead } from "./pdfText";
@@ -102,7 +103,7 @@ export function fieldScore(fields: ExtractedFields, docType: DocType): number {
       if (f.examSystem) s += 10;
       return s;
     }
-    case "kcpe_cert": {
+    case PRIMARY_CERT_TYPE: {
       let s = 0;
       if (f.gradePoints) s += 50;
       if (hasName) s += 35;

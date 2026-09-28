@@ -4,6 +4,8 @@
  */
 import type { ExtractedFields } from "../types";
 import { dobCanonical } from "./crosscheck";
+import { admissionsPreset } from "../presets/loader";
+import { O_LEVEL_SYSTEM } from "../admissions/systems";
 
 const NAME_RE =
   /^(?:FULL\s+NAME|NAME\s+OF\s+(?:APPLICANT|STUDENT|HOLDER|CANDIDATE|DECEASED|CHILD)|APPLICANT(?:'S)?\s+NAME|CANDIDATE(?:\s+NAME)?|STUDENT(?:\s+NAME)?|HOLDER(?:'S)?\s+NAME|NAME)\s*[:\-]\s*(.+)$/im;
@@ -28,12 +30,14 @@ export function cleanExtractedName(raw: string): string | null {
   return n;
 }
 
-const POINTS_RE = [
-  // A digit BOUNDARY after the capture is load-bearing: without it,
-  // "KCSE 2026" truncated to "202" and read as 202 points.
-  /(?:KCPE|KCSE)\s*(?:TOTAL\s*)?(?:POINTS|MARKS)?\s*[:\-]?\s*(\d{2,3})\b(?!\d)/i,
-  /(\d{3})\s*(?:KCPE\s*)?(?:POINTS|MARKS)/i,
-];
+/**
+ * Points-total patterns — preset data (same sources and flags as shipped),
+ * compiled once. A digit BOUNDARY after the capture is load-bearing: without
+ * it, a year like "2026" truncates to "202" and is read as 202 points.
+ */
+const POINTS_RE: RegExp[] = admissionsPreset().extraction.pointsPatterns.map(
+  (p) => new RegExp(p.pattern, p.flags)
+);
 
 const MEAN_GRADE_RE = /MEAN\s+GRADE\s*[:\-]?\s*([A-E][+-]?)/i;
 const MEAN_GRADE_WORD_RE = /MEAN\s+GRADE\s*[:\-]?\s*([A-E])\s*\(\s*(plus|minus|plain)\s*\)/i;
@@ -86,6 +90,18 @@ function validIdCandidate(v: string): boolean {
 const YEAR_RE = /(?:YEAR|INDEX\s+YEAR|EXAM(?:INATION)?\s+YEAR)\s*[:\-]?\s*(19|20)\d{2}/i;
 const DOB_RE =
   /\b(?:DATE\s+OF\s+BIRTH|DOB|BORN\s+ON|DAY\s+OF\s+BIRTH)\s*[:\-]?\s*(\d{1,2}[\/\-.]\d{1,2}[\/\-.](?:19|20)\d{2}|(?:19|20)\d{2}[\/\-.]\d{1,2}[\/\-.]\d{1,2}|\d{1,2}(?:ST|ND|RD|TH)?\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\s*,?\s*(?:19|20)\d{2})/gi;
+
+/**
+ * System detectors — preset data (same order, codes and patterns as shipped),
+ * compiled once. `andPattern` is an extra required keyword (DIPLOMA needs a
+ * transcript/result/grade/certificate word alongside it).
+ */
+const SYSTEM_DETECTORS: Array<{ system: string; pattern: RegExp; andPattern?: RegExp }> =
+  admissionsPreset().extraction.systemDetectors.map((d) => ({
+    system: d.system,
+    pattern: new RegExp(d.pattern, d.flags),
+    ...(d.andPattern ? { andPattern: new RegExp(d.andPattern, d.flags) } : {}),
+  }));
 
 export function extractFields(text: string): ExtractedFields {
   const fields: ExtractedFields = {};
@@ -162,15 +178,22 @@ export function extractFields(text: string): ExtractedFields {
   if (year) fields.examYear = year[0].match(/(19|20)\d{2}/)![0];
 
   // ── Qualification system detection + system-specific readings ────────────
-  // KCSE keeps its native readings above (mean grade + KNEC subject lines);
-  // the other systems carry different marks entirely, so each gets its own
-  // parser. Detection is keyword-driven and conservative: when nothing is
+  // The national-secondary route keeps its native readings above (mean grade
+  // + subject lines); the other systems carry different marks entirely, so
+  // each gets its own parser. Detection is keyword-driven and conservative:
+  // preset detectors run in order, first match wins; when nothing is
   // recognised, examSystem stays unset and a human decides the route.
   const up = text.toUpperCase();
-  if (/KENYA\s+CERTIFICATE\s+OF\s+SECONDARY|\bKCSE\b/.test(up)) {
-    fields.examSystem = "KCSE";
-  } else if (/INTERNATIONAL\s+BACCALAUREATE|\bIB\s+DIPLOMA\b/.test(up)) {
-    fields.examSystem = "IB";
+  for (const det of SYSTEM_DETECTORS) {
+    if (!det.pattern.test(up)) continue;
+    if (det.andPattern && !det.andPattern.test(up)) continue;
+    fields.examSystem = det.system;
+    break;
+  }
+  // System-specific parsers run for exactly the detected system — the same
+  // pairing the old if/else chain had, dispatched on the detected code.
+  const detected = fields.examSystem ?? null;
+  if (detected === "IB") {
     const pts =
       up.match(/(?:TOTAL\s+POINTS?|IB\s+POINTS?|DIPLOMA\s+POINTS?|POINTS\s+AWARDED|SCORE)\s*[:\-]?\s*(\d{1,2})(?:\s*\/\s*45)?/) ||
       up.match(/(\d{2})\s*\/\s*45(?:\s+POINTS?)?/);
@@ -184,8 +207,7 @@ export function extractFields(text: string): ExtractedFields {
       ibSubjects[prettifySubject(m[1])] = m[2];
     }
     if (Object.keys(ibSubjects).length) fields.subjectGrades = { ...(fields.subjectGrades ?? {}), ...ibSubjects };
-  } else if (/GCE\s+ADVANCED\s+LEVEL|ADVANCED\s+LEVEL\s+(?:EXAMINATION|RESULTS?|CERTIFICATE)|ADVANCED\s+LEVELS?(?!\s+OF\b)|\bKACE\b|\bEAACE\b|\bA[\s-]LEVELS?(?!\s+OF\b)/.test(up)) {
-    fields.examSystem = "ALEVEL";
+  } else if (detected === "ALEVEL") {
     // Principal passes: subjects listed with a grade A–E. Subsidiary passes
     // are marked explicitly on the slip.
     // Combo form first: "GRADES: A*AA" / "GRADE COMBINATION A* A A".
@@ -212,8 +234,7 @@ export function extractFields(text: string): ExtractedFields {
       fields.subsidiaries = subsidiaries;
       fields.subjectGrades = { ...(fields.subjectGrades ?? {}), ...principalSubjects };
     }
-  } else if (/\bIGCSE\b|CAMBRIDGE\s+INTERNATIONAL|GCE\s+ORDINARY\s+LEVEL|INTERNATIONAL\s+GCSE/.test(up)) {
-    fields.examSystem = "IGCSE";
+  } else if (detected === O_LEVEL_SYSTEM) {
     // Subject grades A*–G; a "credit" is any pass at C or better.
     const igSubjects: Record<string, string> = {};
     for (const m of up.matchAll(/\b(ENGLISH(?:\s+LANGUAGE)?|KISWAHILI|MATHEMATICS|BIOLOGY|CHEMISTRY|PHYSICS|HISTORY|GEOGRAPHY|ECONOMICS|BUSINESS\s+STUDIES|COMPUTER(?:\s+SCIENCE)?|FRENCH|SPANISH|LITERATURE|ACCOUNTING)\s*[:\-]\s*(A\*|[A-G]|[1-9])(?![A-Z0-9])/g)) {
@@ -226,12 +247,6 @@ export function extractFields(text: string): ExtractedFields {
         ["A*", "A", "B", "C"].includes(g) || (/^[1-9]$/.test(g) && parseInt(g, 10) >= 4)
       ).length;
     }
-  } else if (/PRE-?UNIVERSITY|BRIDGING\s+(?:PROGRAMME|CERTIFICATE)/.test(up)) {
-    fields.examSystem = "PREUNI";
-  } else if (/\bDIPLOMA\b/.test(up) && /TRANSCRIPT|RESULT|GRADE|CERTIFICATE/.test(up)) {
-    fields.examSystem = "DIPLOMA";
-  } else if (/\bDEGREE\b|BACHELOR|MASTER\s+OF|POSTGRADUATE/.test(up)) {
-    fields.examSystem = "DEGREE";
   }
 
   // GPA (Pre-University, diplomas, IB Grade 12…) — any system.

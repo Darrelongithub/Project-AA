@@ -2,7 +2,7 @@
  * Applicant-facing extraction feedback (round 19).
  *
  * Two small renderers, both written in words an applicant should see:
- *   - readBackText:      "your KCSE was read as mean grade B+ with these
+ *   - readBackText:      "your certificate was read as mean grade B+ with these
  *                        subjects…" — lets applicants spot a misread grade
  *                        before a human has to.
  *   - documentIssuesText: "we couldn't read your results — the PDF is
@@ -14,6 +14,7 @@
  */
 import type { DocumentRecord } from "../types";
 import { SYSTEM_LABELS } from "../admissions/systems";
+import { PRIMARY_CERT_TYPE } from "../documents/matrix";
 import { docLabel } from "../rules";
 
 /**
@@ -41,12 +42,12 @@ function subjectSummary(grades: Record<string, string>): string {
 export function readBackText(docs: DocumentRecord[]): string {
   const lines: string[] = [];
   for (const d of docs) {
-    if (d.document_type !== "academic_cert" && d.document_type !== "kcpe_cert") continue;
+    if (d.document_type !== "academic_cert" && d.document_type !== PRIMARY_CERT_TYPE) continue;
     const f = d.extracted_fields ?? {};
     const label = docLabel(d.document_type);
     const bits: string[] = [];
 
-    if (d.document_type === "kcpe_cert" && f.gradePoints) {
+    if (d.document_type === PRIMARY_CERT_TYPE && f.gradePoints) {
       bits.push(`${f.gradePoints} points`);
     }
     if (f.examSystem && SYSTEM_LABELS[f.examSystem as keyof typeof SYSTEM_LABELS]) {

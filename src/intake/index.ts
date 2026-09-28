@@ -10,10 +10,10 @@
  * Everything else is PARKED, not dropped: it is kept in the Mail window
  * without an applicant, so a human can still find it.
  */
+import { admissionsPreset } from "../presets/loader";
 
-/** Sensible defaults for a Kenyan university admissions inbox. */
-export const DEFAULT_INTAKE_HOTWORDS =
-  "application, admission, admissions, apply, applicant, prospective, enrol, enroll, matric, intake, prospectus, readmission, upgrade, transfer, entry requirements";
+/** Default intake hotwords — the admissions preset's word set (data, not code). */
+export const DEFAULT_INTAKE_HOTWORDS: string = admissionsPreset().intake.defaultHotwords;
 
 const ESC_RE = /[.*+?^${}()|[\]\\]/g;
 

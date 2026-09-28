@@ -1,0 +1,317 @@
+{
+  "academic_cert": {
+    "bySystem": {
+      "ALEVEL": {
+        "defaults": {
+          "subsidiaries": 1
+        },
+        "lines": [
+          "GCE ADVANCED LEVEL EXAMINATION",
+          "STATEMENT OF RESULTS",
+          "",
+          "NAME: {name}",
+          "YEAR: {year}",
+          "__SUBJECTS__",
+          "SUBSIDIARY: {subsidiaries}"
+        ],
+        "subjects": {
+          "default": {
+            "MATHEMATICS": "B",
+            "PHYSICS": "C",
+            "ECONOMICS": "C"
+          }
+        }
+      },
+      "DEGREE": {
+        "defaults": {
+          "classAwarded": "SECOND CLASS HONOURS (UPPER DIVISION)",
+          "degreeTitle": "BACHELOR OF BUSINESS ADMINISTRATION"
+        },
+        "lines": [
+          "{degreeTitle} — DEGREE TRANSCRIPT",
+          "",
+          "NAME: {name}",
+          "DEGREE CLASSIFICATION: {classAwarded}",
+          "YEAR: {year}"
+        ]
+      },
+      "DIPLOMA": {
+        "defaults": {
+          "classAwarded": "CREDIT",
+          "diplomaTitle": "DIPLOMA IN BUSINESS MANAGEMENT",
+          "gpa": 2.8
+        },
+        "lines": [
+          "{diplomaTitle} — DIPLOMA TRANSCRIPT",
+          "",
+          "NAME: {name}",
+          "OVERALL GRADE: {classAwarded}",
+          "GPA: {gpa}",
+          "YEAR: {year}"
+        ]
+      },
+      "IB": {
+        "defaults": {
+          "ibPoints": 28
+        },
+        "lines": [
+          "INTERNATIONAL BACCALAUREATE DIPLOMA — RESULTS",
+          "",
+          "NAME: {name}",
+          "TOTAL POINTS: {ibPoints}",
+          "YEAR: {year}",
+          "ENGLISH HL: 5",
+          "MATHEMATICS HL: 5",
+          "PHYSICS SL: 4",
+          "HISTORY SL: 5",
+          "BIOLOGY SL: 5",
+          "FRENCH SL: 4"
+        ]
+      },
+      "IGCSE": {
+        "defaults": {},
+        "lines": [
+          "CAMBRIDGE INTERNATIONAL EXAMINATIONS",
+          "INTERNATIONAL GCSE (IGCSE) — STATEMENT OF RESULTS",
+          "",
+          "NAME: {name}",
+          "YEAR: {year}",
+          "__SUBJECTS__"
+        ],
+        "subjects": {
+          "default": {
+            "ENGLISH": "C",
+            "MATHEMATICS": "B",
+            "BIOLOGY": "C",
+            "CHEMISTRY": "C",
+            "PHYSICS": "D",
+            "HISTORY": "C"
+          }
+        }
+      },
+      "PREUNI": {
+        "defaults": {
+          "gpa": 3.0
+        },
+        "lines": [
+          "PRE-UNIVERSITY CERTIFICATE — BRIDGING PROGRAMME",
+          "",
+          "NAME: {name}",
+          "GPA: {gpa}",
+          "YEAR: {year}"
+        ]
+      }
+    },
+    "default": {
+      "defaults": {
+        "secondaryMeanGrade": "C+"
+      },
+      "lines": [
+        "REPUBLIC OF KENYA",
+        "KENYA CERTIFICATE OF SECONDARY EDUCATION",
+        "ACADEMIC TRANSCRIPT",
+        "",
+        "NAME: {name}",
+        "MEAN GRADE: {secondaryMeanGrade}",
+        "YEAR: {year}",
+        "__SUBJECTS__"
+      ],
+      "subjects": {
+        "default": {
+          "ENGLISH": "B",
+          "KISWAHILI": "B",
+          "MATHEMATICS": "B",
+          "PHYSICS": "B",
+          "CHEMISTRY": "B",
+          "BIOLOGY": "B"
+        }
+      }
+    }
+  },
+  "application_form": {
+    "defaults": {
+      "programme": "BSC COMPUTER SCIENCE"
+    },
+    "lines": [
+      "UNIVERSITY APPLICATION FORM",
+      "OFFICE OF ADMISSIONS",
+      "",
+      "NAME OF APPLICANT: {name}",
+      "PROGRAMME APPLIED FOR: {programme}",
+      "YEAR OF ENTRY: {year}"
+    ]
+  },
+  "birth_cert": {
+    "defaults": {},
+    "lines": [
+      "REPUBLIC OF KENYA",
+      "CERTIFICATE OF BIRTH",
+      "",
+      "NAME: {name}",
+      "DATE OF BIRTH: 04 MAR 2001",
+      "REGISTRATION NO: 00441289"
+    ]
+  },
+  "business_statement_of_objective": {
+    "defaults": {},
+    "lines": [
+      "STATEMENT OF OBJECTIVE",
+      "(BBA applicants — not more than 300 words)",
+      "",
+      "NAME: {name}",
+      "My objective is to build a family enterprise with sound governance."
+    ]
+  },
+  "credit_transfer_form": {
+    "defaults": {
+      "previousInstitution": "KENYATTA UNIVERSITY",
+      "programme": "BACHELOR OF BUSINESS ADMINISTRATION"
+    },
+    "lines": [
+      "INSTITUTION — OFFICE OF ADMISSIONS",
+      "CREDIT TRANSFER APPLICATION FORM",
+      "",
+      "NAME OF APPLICANT: {name}",
+      "PREVIOUS INSTITUTION: {previousInstitution}",
+      "PROGRAMME APPLIED FOR: {programme}",
+      "YEAR OF ENTRY: {year}"
+    ]
+  },
+  "exam_result_slip": {
+    "defaults": {
+      "secondaryMeanGrade": "C+"
+    },
+    "lines": [
+      "REPUBLIC OF KENYA",
+      "KENYA CERTIFICATE OF SECONDARY EDUCATION",
+      "EXAMINATION RESULT SLIP",
+      "",
+      "NAME: {name}",
+      "YEAR: {year}",
+      "MEAN GRADE: {secondaryMeanGrade}",
+      "INDEX NO: 20438112"
+    ]
+  },
+  "id": {
+    "defaults": {
+      "idNumber": "12345678"
+    },
+    "lines": [
+      "REPUBLIC OF KENYA",
+      "NATIONAL IDENTITY CARD",
+      "",
+      "NAME: {name}",
+      "ID NO: {idNumber}",
+      "DATE OF ISSUE: 12 JAN 2020"
+    ]
+  },
+  "kcpe_cert": {
+    "defaults": {
+      "meanGrade": "B",
+      "primaryPoints": 300,
+      "year": "2017"
+    },
+    "lines": [
+      "REPUBLIC OF KENYA",
+      "KENYA CERTIFICATE OF PRIMARY EDUCATION",
+      "(KCPE)",
+      "",
+      "NAME: {name}",
+      "KCPE POINTS: {primaryPoints}",
+      "MEAN GRADE: {meanGrade}",
+      "YEAR: {year}",
+      "INDEX NO: 10438211"
+    ]
+  },
+  "law_personal_statement": {
+    "defaults": {},
+    "lines": [
+      "PERSONAL STATEMENT",
+      "(LLB applicants — not more than 500 words)",
+      "",
+      "NAME: {name}",
+      "I wish to study law because I believe justice begins with listening.",
+      "My debate club leadership taught me advocacy grounded in evidence."
+    ]
+  },
+  "leaving_certificate": {
+    "defaults": {
+      "previousInstitution": "ALLIANCE HIGH SCHOOL"
+    },
+    "lines": [
+      "{previousInstitution}",
+      "HIGH SCHOOL LEAVING CERTIFICATE",
+      "",
+      "NAME: {name}",
+      "YEAR OF COMPLETION: {year}",
+      "KCSE EXAMINATION CANDIDATE"
+    ]
+  },
+  "masters_degree_certificate": {
+    "defaults": {
+      "degreeTitle": "MASTER OF BUSINESS ADMINISTRATION",
+      "previousInstitution": "UNIVERSITY OF NAIROBI"
+    },
+    "lines": [
+      "{previousInstitution}",
+      "MASTER'S DEGREE CERTIFICATE",
+      "",
+      "NAME: {name}",
+      "DEGREE: {degreeTitle}",
+      "YEAR OF GRADUATION: {year}"
+    ]
+  },
+  "masters_transcript": {
+    "defaults": {
+      "degreeTitle": "MASTER OF BUSINESS ADMINISTRATION",
+      "previousInstitution": "UNIVERSITY OF NAIROBI"
+    },
+    "lines": [
+      "{previousInstitution}",
+      "MASTER'S ACADEMIC TRANSCRIPT",
+      "",
+      "NAME: {name}",
+      "PROGRAMME: {degreeTitle}",
+      "YEAR: {year}"
+    ]
+  },
+  "passport_photo": {
+    "defaults": {},
+    "lines": [
+      "PASSPORT SIZE PHOTOGRAPH",
+      "(Applicant writes their name at the back)",
+      "",
+      "NAME: {name}"
+    ]
+  },
+  "undergraduate_degree_certificate": {
+    "defaults": {
+      "degreeTitle": "BACHELOR OF COMMERCE",
+      "previousInstitution": "UNIVERSITY OF NAIROBI"
+    },
+    "lines": [
+      "{previousInstitution}",
+      "UNDERGRADUATE DEGREE CERTIFICATE",
+      "",
+      "NAME: {name}",
+      "DEGREE: {degreeTitle}",
+      "YEAR OF GRADUATION: {year}"
+    ]
+  },
+  "undergraduate_transcript": {
+    "defaults": {
+      "classAwarded": "SECOND CLASS HONOURS (UPPER DIVISION)",
+      "degreeTitle": "BACHELOR OF COMMERCE",
+      "previousInstitution": "UNIVERSITY OF NAIROBI"
+    },
+    "lines": [
+      "{previousInstitution}",
+      "UNDERGRADUATE ACADEMIC TRANSCRIPT",
+      "",
+      "NAME: {name}",
+      "PROGRAMME: {degreeTitle}",
+      "CLASSIFICATION: {classAwarded}",
+      "YEAR: {year}"
+    ]
+  }
+}

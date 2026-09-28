@@ -3,8 +3,13 @@
  *
  * What an application file must contain is a PURE function of:
  *
- *   level × curriculum × nationality × route (+ the KCPE constant)
+ *   level × curriculum × nationality × route (+ preset cases)
  *
+ * The mechanism (which AXIS each item hangs off) is generic code; the
+ * education CASES themselves (programme-conditional items, the Kenyan
+ * school-leaver constant, result-slip wording) live in the admissions
+ * preset (data/presets/admissions.json) and are read through the loader.
+
  * It is NOT staff-configurable: there are deliberately no toggles, no table
  * edits, no overrides in the console. The source-of-truth hierarchy used to
  * build this matrix (owner instruction):
@@ -19,15 +24,19 @@
  *   - conditional items are ASKED FOR, never assumed satisfied;
  *   - missing data is never treated as failure (existing product rule);
  *   - no slot may use a vague umbrella name (see BANNED_GENERIC_TERMS);
- *   - KENYAN_REQUIRES_KCPE is an owner constant, currently false: the KCPE
- *     certificate is never demanded of anyone;
+ *   - nationalRequiresPrimaryCert is a preset constant, currently false: the primary
+ *     leaving certificate is never demanded of anyone;
  *   - post-admission items for international applicants never block a file.
  */
 import type { DocType } from "../types";
+import { admissionsPreset } from "../presets/loader";
 
-/** Owner-set constant. If ever true, Kenyan school-leaver files would also
- * require the KCPE certificate. Currently false — it never appears. */
-export const KENYAN_REQUIRES_KCPE = false;
+/** Preset constant (data/presets/admissions.json → documents). If ever true,
+ * Kenyan school-leaver files would also require the leaving certificate.
+ * Currently false — it never appears. */
+export const NATIONAL_REQUIRES_PRIMARY_CERT: boolean = admissionsPreset().documents.nationalRequiresPrimaryCert;
+/** The preset's primary-certificate document-type token (comparisons use this, never a literal). */
+export const PRIMARY_CERT_TYPE: DocType = admissionsPreset().documents.primaryCertSpec.document_type;
 
 /** Umbrella phrases that must never describe a required document. */
 export const BANNED_GENERIC_TERMS = ["academic certificate"];
@@ -40,7 +49,7 @@ export interface RequirementInput {
   level: ProgrammeLevel;
   route: AdmissionRoute;
   nationality: ApplicantNationality;
-  /** Qualification system wording, e.g. "KCSE" — refines the result-slip label. */
+  /** Qualification system wording — refines the result-slip label. */
   curriculum?: string | null;
   /** Programme code for programme-conditional items ("LLB", "BBA"). */
   programmeCode?: string | null;
@@ -77,11 +86,12 @@ export const ACADEMIC_SLOT_ORDER: DocType[] = [
 ];
 
 function resultSlipLabel(curriculum?: string | null): string {
+  const preset = admissionsPreset().documents.resultSlip;
   const sys = (curriculum ?? "").trim().toUpperCase();
-  if (sys === "KCSE" || sys === "") {
-    return "Certified copy of the examination result slip (KCSE result slip or equivalent)";
+  if (sys === preset.defaultSystem || sys === "") {
+    return preset.defaultLabel;
   }
-  return `Certified copy of the ${sys} examination result slip/statement of results`;
+  return preset.template.replace("{SYS}", sys);
 }
 
 /** The matrix itself. Deterministic: same inputs → same output, every time. */
@@ -146,38 +156,18 @@ export function documentRequirementsFor(input: RequirementInput): RequirementSpe
     }
   );
 
-  // KCPE: the owner constant governs. Currently false → never required.
-  if (KENYAN_REQUIRES_KCPE && nationality === "kenyan" && (level === "certificate" || level === "diploma" || level === "degree")) {
-    specs.push({
-      document_type: "kcpe_cert",
-      label: "KCPE certificate",
-      required: true,
-      blocking: true,
-      source: OWNER,
-    });
+  // Preset-governed leaving-certificate case. Currently false → never required.
+  if (NATIONAL_REQUIRES_PRIMARY_CERT && nationality === "kenyan" && (level === "certificate" || level === "diploma" || level === "degree")) {
+    specs.push({ ...admissionsPreset().documents.primaryCertSpec });
   }
 
   // ── Programme-conditional statements (checklist: asked, never assumed) ──
+  // The cases are preset data keyed by programme code — no per-programme
+  // branches in code.
   const code = (programmeCode ?? "").trim().toUpperCase();
-  if (code === "LLB") {
-    specs.push({
-      document_type: "law_personal_statement",
-      label: "Personal statement of not more than 500 words",
-      required: true,
-      blocking: true,
-      conditional: "Required of LLB applicants by the application-form checklist.",
-      source: PACK,
-    });
-  }
-  if (code === "BBA") {
-    specs.push({
-      document_type: "business_statement_of_objective",
-      label: "Statement of objective of not more than 300 words",
-      required: true,
-      blocking: true,
-      conditional: "Required of BBA applicants by the application-form checklist.",
-      source: PACK,
-    });
+  const programmeCase = admissionsPreset().documents.programmeCases[code];
+  if (programmeCase) {
+    specs.push({ ...programmeCase });
   }
 
   // ── Route-conditional: transfer cases ──

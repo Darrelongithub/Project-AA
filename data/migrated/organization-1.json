@@ -4,17 +4,70 @@
   "tagline": "Nurturing Innovations",
   "pack": {
     "application": [
-      { "file": "application-form.pdf", "filename": "Riara University Application Form.pdf", "mime": "application/pdf" },
-      { "file": "brochure-2026.pdf", "filename": "Riara University Brochure 2026.pdf", "mime": "application/pdf" }
+      {
+        "file": "application-form.pdf",
+        "filename": "Riara University Application Form.pdf",
+        "mime": "application/pdf",
+        "key": "application-form"
+      },
+      {
+        "file": "brochure-2026.pdf",
+        "filename": "Riara University Brochure 2026.pdf",
+        "mime": "application/pdf",
+        "key": "brochure-2026"
+      }
     ],
     "admission": [
-      { "file": "student-medical-form.pdf", "filename": "RU Student Medical Form.pdf", "mime": "application/pdf" },
-      { "file": "data-protection-form.pdf", "filename": "RU Data Protection Form.pdf", "mime": "application/pdf" },
-      { "file": "next-of-kin-form.pdf", "filename": "RU Next of Kin Form.pdf", "mime": "application/pdf" },
-      { "file": "hostels-list.pdf", "filename": "RU Hostels List.pdf", "mime": "application/pdf" },
-      { "file": "fee-structure-2026.pdf", "filename": "Riara University Fee Structure 2026.pdf", "mime": "application/pdf" },
-      { "file": "sponsorship-form.pdf", "filename": "RU Sponsorship Form.pdf", "mime": "application/pdf" },
-      { "file": "orientation-programme-2026.pdf", "filename": "September 2026 Orientation Programmes.pdf", "mime": "application/pdf" }
+      {
+        "file": "student-medical-form.pdf",
+        "filename": "RU Student Medical Form.pdf",
+        "mime": "application/pdf",
+        "key": "student-medical-form"
+      },
+      {
+        "file": "data-protection-form.pdf",
+        "filename": "RU Data Protection Form.pdf",
+        "mime": "application/pdf",
+        "key": "data-protection-form"
+      },
+      {
+        "file": "next-of-kin-form.pdf",
+        "filename": "RU Next of Kin Form.pdf",
+        "mime": "application/pdf",
+        "key": "next-of-kin-form"
+      },
+      {
+        "file": "hostels-list.pdf",
+        "filename": "RU Hostels List.pdf",
+        "mime": "application/pdf",
+        "key": "hostels-list"
+      },
+      {
+        "file": "fee-structure-2026.pdf",
+        "filename": "Riara University Fee Structure 2026.pdf",
+        "mime": "application/pdf",
+        "key": "fee-structure-2026"
+      },
+      {
+        "file": "sponsorship-form.pdf",
+        "filename": "RU Sponsorship Form.pdf",
+        "mime": "application/pdf",
+        "key": "sponsorship-form"
+      },
+      {
+        "file": "orientation-programme-2026.pdf",
+        "filename": "September 2026 Orientation Programmes.pdf",
+        "mime": "application/pdf",
+        "key": "orientation-programme-2026"
+      }
+    ],
+    "transfer": [
+      {
+        "key": "credit-transfer-form",
+        "file": "credit-transfer-form.pdf",
+        "filename": "Credit transfer form.pdf",
+        "mime": "application/pdf"
+      }
     ]
   }
 }

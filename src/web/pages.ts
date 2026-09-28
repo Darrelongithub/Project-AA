@@ -19,6 +19,7 @@ import { describeRuleTree, interpretRuleTree } from "../admissions/engine";
 import { docLabel } from "../rules";
 import { renderTemplate } from "../drafting";
 import { EXAM_SYSTEMS } from "../config";
+import { admissionsPreset } from "../presets/loader";
 import { packManifest } from "../pack";
 import { organizationName, organizationTheme } from "../branding";
 import {
@@ -1000,14 +1001,18 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
   // the registrar records not_admitted through the same decision path a human
   // review uses, and the reversal carries their name on the audit trail.
   const autoDecided = decided && a.admission_route !== "human";
+  const copy = admissionsPreset().decisionCopy;
+  const routeOptions = admissionsPreset().decisionRoutes
+    .map((r) => `<option value="${r.value}">${r.label}</option>`)
+    .join("\n              ");
   const reversalForm = autoDecided
     ? `<form class="decision-form" method="post" action="/case/${a.id}/admission-decision" style="margin-top:10px">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-        <h3 style="margin:0 0 8px">Reverse this decision</h3>
-        <p class="small muted" style="margin:0 0 10px">Provisional admissions are provisional. If the applicant should not be admitted — the file was misread, a document does not hold up, a requirement is disputed — record it below: it is stored as a HUMAN decision with your name on the audit trail.</p>
+        <h3 style="margin:0 0 8px">${copy.reverseTitle}</h3>
+        <p class="small muted" style="margin:0 0 10px">${copy.reverseBody}</p>
         <div class="row">
-          <input name="reason" required placeholder="Reason — recorded on the audit trail" style="flex:1">
-          <button class="btn danger" name="decision" value="decline">Reverse — Not Admitted</button>
+          <input name="reason" required placeholder="${copy.reasonPlaceholder}" style="flex:1">
+          <button class="btn danger" name="decision" value="decline">${copy.reverseButton}</button>
         </div>
       </form>`
     : "";
@@ -1019,21 +1024,17 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
        </div>${reversalForm}`
     : `<form class="decision-form" method="post" action="/case/${a.id}/admission-decision">
           <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-          <h3 style="margin:0 0 8px">Human decision</h3>
-          <p class="small muted" style="margin:0 0 10px">The automated path stopped here. If the applicant should still be admitted — alternative qualification, approved exception, special consideration, documented pathway — record it below. It is stored as a HUMAN decision, separately from anything automated, with your name on the audit trail.</p>
+          <h3 style="margin:0 0 8px">${copy.formTitle}</h3>
+          <p class="small muted" style="margin:0 0 10px">${copy.formBody}</p>
           <div class="row">
             <select name="route">
-              <option value="alternative_qualification">Alternative qualification</option>
-              <option value="approved_exception">Approved exception</option>
-              <option value="special_consideration">Special consideration</option>
-              <option value="documented_pathway">Documented pathway</option>
-              <option value="standard_review">Standard review</option>
+              ${routeOptions}
             </select>
-            <input name="reason" required placeholder="Reason — recorded on the audit trail" style="flex:1">
+            <input name="reason" required placeholder="${copy.reasonPlaceholder}" style="flex:1">
           </div>
           <div class="row" style="margin-top:10px">
-            <button class="btn" name="decision" value="admit">Admit after Human Review</button>
-            <button class="btn danger" name="decision" value="decline">Not Admitted</button>
+            <button class="btn" name="decision" value="admit">${copy.admitButton}</button>
+            <button class="btn danger" name="decision" value="decline">${copy.declineButton}</button>
           </div>
         </form>`;
 
@@ -2399,7 +2400,7 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
   const { repo } = c;
   const programmes = repo.listProgrammes();
 
-  const system = (reqsSystem && (ADMISSION_SYSTEMS as readonly string[]).includes(reqsSystem) ? reqsSystem : "KCSE") as AdmissionSystem;
+  const system = (reqsSystem && (ADMISSION_SYSTEMS as readonly string[]).includes(reqsSystem) ? reqsSystem : admissionsPreset().defaultSystem) as AdmissionSystem;
   const targetOptions = [
     ["BASE:degree", "University-wide defaults — Degree"],
     ["BASE:diploma", "University-wide defaults — Diploma"],
@@ -2449,7 +2450,7 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
         <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${tf}<input type="hidden" name="kind" value="condition"><button class="btn small">+ Add a requirement</button></form>
         <form method="post" action="/config/requirements/node-add" style="margin:0">${csrf}${tf}<input type="hidden" name="kind" value="group"><button class="btn small ghost">+ Add an either/or group</button></form>
       </div>
-      <p class="small muted" style="margin:8px 0 0">A <b>requirement</b> is one check, e.g. “Mean grade ≥ C+”. An <b>either/or group</b> bundles checks where any single pass counts — e.g. “KCSE A in Mathematics <i>or</i> A-Level A in Mathematics”.</p>
+      <p class="small muted" style="margin:8px 0 0">${admissionsPreset().pageSamples.requirementExample}</p>
     </div>
     ${shownTree.length ? shownTree.map((n) => ruleNodeEditor(c, target, system, n, 0, subjects, level)).join("") : `<p class="small muted">No requirements yet. Start with “+ Add a requirement” — e.g. <b>Mean grade ≥ C+</b>. Everything you add below must all be met for an applicant to qualify; an either/or group passes when any one of its options passes.</p>`}
   ` : `<p class="small muted">No requirement set exists for this programme/system yet — add a first rule to create a draft.</p>
@@ -3101,7 +3102,7 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
     programme: "Bachelor of Laws",
     regDate: repo.getSetting("reg_date", ""),
     orientationDates: repo.getSetting("orientation_dates", ""),
-    readBack: "We read your KCSE mean grade as B (plain).",
+    readBack: admissionsPreset().pageSamples.readBackSample,
     documentIssues: "",
   });
   const unknown = [...new Set(((tpl.subject + " " + tpl.body).match(/\{[a-z_]+\}/g) ?? []).filter((ph) => !PLACEHOLDER_DOCS.some(([k]) => k === ph)))];

@@ -7,7 +7,7 @@
  *   • a file is only auto-admitted when NOTHING blocking is missing and no
  *     blocking flag is active (the no-wrong-applicant guarantee);
  *   • missing lists are exactly the deterministic matrix minus what arrived;
- *   • KCPE is never demanded; banned umbrella labels never appear;
+ *   • the primary certificate is never demanded; banned umbrella labels never appear;
  *   • the whole thing is deterministic (sampled cases re-run identically).
  *
  * Deterministic: a fixed seed drives every choice, so a failure is
@@ -21,7 +21,8 @@ import { DEFAULT_PROGRAMMES } from "../config";
 import { MockSender, buildAdapters, type PipelineContext } from "../pipeline/adapters";
 import { processEmail } from "../pipeline";
 import { makeTextPdf, docLines } from "../simulation/pdfFactory";
-import { documentRequirementsFor, fillSlots, KENYAN_REQUIRES_KCPE, type ProgrammeLevel } from "../documents/matrix";
+import { documentRequirementsFor, fillSlots, NATIONAL_REQUIRES_PRIMARY_CERT, PRIMARY_CERT_TYPE, type ProgrammeLevel } from "../documents/matrix";
+import { admissionsPreset } from "../presets/loader";
 import type { AppConfig } from "../config";
 import type { Attachment, DocType, IncomingEmail } from "../types";
 
@@ -145,7 +146,7 @@ function makeCase(i: number): StressCase {
   if (roll < 0.50) {
     const prog = pick(schoolProgrammes);
     const docs: StressCase["docs"] = [
-      { filename: `s${i}-academic.pdf`, docType: "academic_cert", spec: { name, kcseMeanGrade: "B", subjects: { ENGLISH: "B", KISWAHILI: "B", MATHEMATICS: "B", PHYSICS: "B", CHEMISTRY: "B", BIOLOGY: "B" } } },
+      { filename: `s${i}-academic.pdf`, docType: "academic_cert", spec: { name, secondaryMeanGrade: "B", subjects: { ENGLISH: "B", KISWAHILI: "B", MATHEMATICS: "B", PHYSICS: "B", CHEMISTRY: "B", BIOLOGY: "B" } } },
       { filename: `s${i}-leaving.pdf`, docType: "leaving_certificate", spec: { name } },
       { filename: `s${i}-photo.pdf`, docType: "passport_photo", spec: { name } },
       { filename: `s${i}-birth.pdf`, docType: "birth_cert", spec: { name } },
@@ -158,7 +159,7 @@ function makeCase(i: number): StressCase {
     const drops = rnd() < 0.5 ? someOf([0, 1, 2, 3, 4, 5, 6], Math.floor(rnd() * 2)) : [];
     const supplied = docs.filter((_, idx) => !drops.includes(idx));
     const suppliedTypes = supplied.map((d) => d.docType as DocType);
-    const gen = documentRequirementsFor({ level: prog.level as ProgrammeLevel, route: "transfer", nationality: "unknown", curriculum: "KCSE", programmeCode: prog.code });
+    const gen = documentRequirementsFor({ level: prog.level as ProgrammeLevel, route: "transfer", nationality: "unknown", curriculum: admissionsPreset().defaultSystem, programmeCode: prog.code });
     return {
       id: `stress-${i}`, profile: "transfer", programme: { code: prog.code, name: prog.name, level: prog.level }, route: "transfer",
       docs: supplied,
@@ -170,7 +171,7 @@ function makeCase(i: number): StressCase {
   // ── School-leaver degree/diploma/certificate (50%) ──
   const prog = pick(schoolProgrammes);
   const lowGrades = chance(0.18);
-  // Below-floor grades must sit under the university-wide KCSE floor FOR THE
+  // Below-floor grades must sit under the university-wide national floor FOR THE
   // LEVEL: degree C+, diploma C, certificate D+. (A D+ "failure" would be a
   // legitimate pass for certificate entry — the floor is data, not a guess.)
   const lowMean = prog.level === "degree" ? "D+" : prog.level === "diploma" ? "D-" : "E";
@@ -178,8 +179,8 @@ function makeCase(i: number): StressCase {
     {
       filename: `s${i}-academic.pdf`, docType: "academic_cert",
       spec: lowGrades
-        ? { name, kcseMeanGrade: lowMean, subjects: { ENGLISH: "E", KISWAHILI: "E", MATHEMATICS: "E", PHYSICS: "E", CHEMISTRY: "E", BIOLOGY: "E" } }
-        : { name, kcseMeanGrade: "B", subjects: { ENGLISH: "B", KISWAHILI: "B", MATHEMATICS: "B", PHYSICS: "B", CHEMISTRY: "B", BIOLOGY: "B" } },
+        ? { name, secondaryMeanGrade: lowMean, subjects: { ENGLISH: "E", KISWAHILI: "E", MATHEMATICS: "E", PHYSICS: "E", CHEMISTRY: "E", BIOLOGY: "E" } }
+        : { name, secondaryMeanGrade: "B", subjects: { ENGLISH: "B", KISWAHILI: "B", MATHEMATICS: "B", PHYSICS: "B", CHEMISTRY: "B", BIOLOGY: "B" } },
     },
     { filename: `s${i}-leaving.pdf`, docType: "leaving_certificate", spec: { name } },
     { filename: `s${i}-photo.pdf`, docType: "passport_photo", spec: { name } },
@@ -193,7 +194,7 @@ function makeCase(i: number): StressCase {
   const drops = rnd() < 0.6 ? someOf([0, 1, 2, 3, 4, 5], Math.floor(rnd() * 3)) : [];
   const supplied = docs.filter((_, idx) => !drops.includes(idx));
   const suppliedTypes = supplied.map((d) => d.docType as DocType);
-  const gen = documentRequirementsFor({ level: prog.level as ProgrammeLevel, route: "fresh", nationality: "unknown", curriculum: "KCSE", programmeCode: prog.code });
+  const gen = documentRequirementsFor({ level: prog.level as ProgrammeLevel, route: "fresh", nationality: "unknown", curriculum: admissionsPreset().defaultSystem, programmeCode: prog.code });
   return {
     id: `stress-${i}`, profile: "degree", programme: { code: prog.code, name: prog.name, level: prog.level }, route: "fresh",
     docs: supplied, lowGrades,
@@ -270,14 +271,14 @@ async function runCase(i: number, c: StressCase, ctx: PipelineContext, repo: Rep
   // 1. Reference format always valid.
   if (!/^[A-Z]{1,4}-\d{4}-\d{6}$/.test(applicant.ref_number)) failures.push(`bad ref format: ${applicant.ref_number}`);
 
-  // 2. KCPE is never demanded; banned umbrella labels never appear.
-  if (KENYAN_REQUIRES_KCPE !== false || result.missing.includes("kcpe_cert")) {
-    failures.push("kcpe_cert demanded despite KENYAN_REQUIRES_KCPE=false");
+  // 2. The primary certificate is never demanded; banned umbrella labels never appear.
+  if (NATIONAL_REQUIRES_PRIMARY_CERT !== false || result.missing.includes(PRIMARY_CERT_TYPE)) {
+    failures.push("primary certificate demanded despite NATIONAL_REQUIRES_PRIMARY_CERT=false");
   }
   const genForCheck = documentRequirementsFor({
     level: (applicant.programme ? (repo.programmeByCode(applicant.programme)?.level ?? "degree") : "degree") as ProgrammeLevel,
     route: applicant.transfer ? "transfer" : "fresh",
-    nationality: "unknown", curriculum: "KCSE", programmeCode: applicant.programme ?? null,
+    nationality: "unknown", curriculum: admissionsPreset().defaultSystem, programmeCode: applicant.programme ?? null,
   });
   for (const spec of genForCheck) {
     if (/academic certificate/i.test(spec.label)) failures.push(`banned umbrella label: "${spec.label}"`);
@@ -303,7 +304,7 @@ async function runCase(i: number, c: StressCase, ctx: PipelineContext, repo: Rep
     if (exp !== act) failures.push(`missing mismatch — expected [${exp}] got [${act}]`);
   } else {
     // adversarial: missing must only ever contain real requirement slots
-    const gen = documentRequirementsFor({ level: "degree", route: "fresh", nationality: "unknown", curriculum: "KCSE", programmeCode: null });
+    const gen = documentRequirementsFor({ level: "degree", route: "fresh", nationality: "unknown", curriculum: admissionsPreset().defaultSystem, programmeCode: null });
     const valid = new Set(gen.map((g) => g.document_type));
     for (const m of result.missing) if (!valid.has(m)) failures.push(`missing contains non-slot type: ${m}`);
   }
