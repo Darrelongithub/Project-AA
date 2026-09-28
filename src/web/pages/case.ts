@@ -10,6 +10,7 @@ import { ApplicantRow, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER 
 import { avatar, categoryBadge, esc, flagLabel, fmtDate, lifecycleBadge, lifecycleStepper, priorityBadge, readabilityScore, slaText, triageBadge } from "../views";
 import { DECISION_BADGES, capFirst, decisionBadge, head, resultBadge } from "./shared";
 import type { Ctx } from "./shared";
+import { badge, csrfField } from "../tpl";
 
 function reasoningFlags(reasoning: string): Set<string> {
   const out = new Set<string>();
@@ -116,7 +117,7 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
     const slotLabel = (t: string): string =>
       (caseType ? repo.listDocumentDefinitions(caseType.id).find((d) => d.key === String(t))?.label : undefined) ?? docLabel(t);
     const rows = requirements.length
-      ? requirements.map((r) => `<div class="field"><span class="lbl">${esc(slotLabel(r.document_type))}</span><span class="val">${present.has(r.document_type) ? `<span class="badge b-green">on file</span>` : `<span class="badge b-orange">outstanding</span>`}</span></div>`).join("")
+      ? requirements.map((r) => `<div class="field"><span class="lbl">${esc(slotLabel(r.document_type))}</span><span class="val">${present.has(r.document_type) ? badge("green", "on file") : badge("orange", "outstanding")}</span></div>`).join("")
       : `<div class="small muted">No required-information list is configured for this case type — configure one in Configuration → Case types.</div>`;
     return `<section class="sec">
       <div class="sec-head"><h2>Required information</h2></div>
@@ -152,10 +153,10 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
     .map((g) => `<div class="small muted" style="margin-top:4px">Group alternative satisfied: <b>${esc(g.via)}</b> (${esc(g.label)})</div>`)
     .join("");
   const missingDocs = ev.missingDocuments.length
-    ? `<div class="small" style="margin-top:8px">Still missing: ${ev.missingDocuments.map((m) => `<span class="badge b-blue">${esc(m)}</span>`).join(" ")}</div>`
+    ? `<div class="small" style="margin-top:8px">Still missing: ${ev.missingDocuments.map((m) => badge("blue", m)).join(" ")}</div>`
     : "";
   const blocking = ev.blockingFlags.length
-    ? `<div class="small" style="margin-top:8px">Blocking flags: ${ev.blockingFlags.map((f) => `<span class="badge b-orange">${esc(flagLabel(f))}</span>`).join(" ")}</div>`
+    ? `<div class="small" style="margin-top:8px">Blocking flags: ${ev.blockingFlags.map((f) => badge("orange", flagLabel(f))).join(" ")}</div>`
     : "";
   const [toneCls, toneLabel, toneText] = ROUTING_TEXT[ev.routing] ?? ROUTING_TEXT.human_review;
   const reasonLine = ev.routing !== "auto_admit" && ev.reason ? `<div style="margin-top:6px"><b>Why:</b> ${esc(ev.reason)}</div>` : "";
@@ -171,7 +172,7 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
     .join("\n              ");
   const reversalForm = autoDecided
     ? `<form class="decision-form" method="post" action="/case/${a.id}/admission-decision" style="margin-top:10px">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        ${csrfField(c.csrf)}
         <h3 style="margin:0 0 8px">${copy.reverseTitle}</h3>
         <p class="small muted" style="margin:0 0 10px">${copy.reverseBody}</p>
         <div class="row">
@@ -187,7 +188,7 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
         ${a.decision_reason ? `<div class="small" style="margin-top:4px">${esc(a.decision_reason)}</div>` : ""}
        </div>${reversalForm}`
     : `<form class="decision-form" method="post" action="/case/${a.id}/admission-decision">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          ${csrfField(c.csrf)}
           <h3 style="margin:0 0 8px">${copy.formTitle}</h3>
           <p class="small muted" style="margin:0 0 10px">${copy.formBody}</p>
           <div class="row">
@@ -219,7 +220,7 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
     ${decisionBlock}
     <div class="row" style="margin-top:12px;justify-content:space-between">
       <span class="small muted">Evaluations are reproducible from the stored rule version and applicant data — ${ev.frozenAt ? "this case keeps its frozen set; configuration changes only affect future evaluations." : "no requirement set has been frozen yet."}</span>
-      <form method="post" action="/case/${a.id}/reevaluate" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Re-run evaluation</button></form>
+      <form method="post" action="/case/${a.id}/reevaluate" style="margin:0">${csrfField(c.csrf)}<button class="btn small ghost">Re-run evaluation</button></form>
     </div>
   </section>`;
 }
@@ -279,16 +280,16 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
       const req = reqByType.get(d.document_type);
       const reqBadge = req
         ? req.required
-          ? `<span class="badge b-purple">Required</span>`
-          : `<span class="badge b-gray">Optional</span>`
-        : `<span class="badge b-gray">—</span>`;
+          ? badge("purple", "Required")
+          : badge("gray", "Optional")
+        : badge("gray", "—");
       const state = d.is_duplicate
         ? `<span class="badge b-gray">duplicate of #${d.duplicate_of}</span>`
         : d.superseded_by
-          ? `<span class="badge b-gray">superseded by #${d.superseded_by}</span>`
+          ? badge("gray", "superseded by #", d.superseded_by)
           : d.extraction_method === "none"
-            ? `<span class="badge b-orange">Unreadable</span>`
-            : `<span class="badge b-green">Received</span>`;
+            ? badge("orange", "Unreadable")
+            : badge("green", "Received");
       const fields = Object.entries(d.extracted_fields)
         .filter(([, v]) => v !== null && v !== undefined && v !== "" && JSON.stringify(v) !== "{}")
         .map(([k, v]) => `<div><div class="k">${esc(k)}</div><div class="v">${esc(typeof v === "object" ? Object.entries(v as Record<string, string>).map(([sk, sv]) => `${sk} ${sv}`).join(", ") : String(v))}</div></div>`)
@@ -324,15 +325,15 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
     .map((e) => {
       const attached = repo.parseAttachmentList(e.attachments);
       const attLine = attached.length
-        ? `<p class="small muted" style="margin:0 0 6px"><b>Attached (${attached.length}):</b> ${attached.map((f) => `<span class="badge b-gray">${esc(f)}</span>`).join(" ")}</p>`
+        ? `<p class="small muted" style="margin:0 0 6px"><b>Attached (${attached.length}):</b> ${attached.map((f) => badge("gray", f)).join(" ")}</p>`
         : "";
       return `<details class="mail-item ${e.direction === "out" ? "out" : ""}">
       <summary>
         <span class="badge ${e.direction === "in" ? "b-blue" : "b-purple"}">${e.direction === "in" ? `← From ${esc(terms.contact.toLowerCase())}` : `→ To ${esc(terms.contact.toLowerCase())}`}</span>
         ${categoryBadge(e.category)}
-        ${e.auto ? `<span class="badge b-gray">automated</span>` : ""}
-        ${attached.length ? `<span class="badge b-purple">${attached.length} file(s) attached</span>` : ""}
-        ${e.channel && e.channel !== "email" ? `<span class="badge b-blue">via ${esc(e.channel)}</span>` : ""}
+        ${e.auto ? badge("gray", "automated") : ""}
+        ${attached.length ? badge("purple", attached.length, " file(s) attached") : ""}
+        ${e.channel && e.channel !== "email" ? badge("blue", "via ", e.channel) : ""}
         <span class="m-sub">${esc(e.subject)}</span>
         <span class="m-when" title="${esc(fmtDate(e.at))}">${esc(fmtDate(e.at))}</span>
       </summary>
@@ -386,7 +387,7 @@ ${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
         ${lifecycleBadge(a.lifecycle)}
         ${triageBadge(a.triage)}
         ${priorityBadge(a.priority)}
-        ${a.escalated ? `<span class="badge b-red">escalated</span>` : ""}
+        ${a.escalated ? badge("red", "escalated") : ""}
       </div>
     </div>
   </div>
@@ -394,7 +395,7 @@ ${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
     <a class="btn ghost small" href="/case/${a.id}/replay">Decision replay</a>
     <button class="btn ghost small" onclick="window.print()">Print case brief</button>
     <form method="post" action="/case/${a.id}/assign" class="ops-inline" style="margin:0">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      ${csrfField(c.csrf)}
       <select name="staff_id" style="max-width:160px"><option value="">Assign to…</option>${staffOptions}</select>
       <button class="btn small">Assign</button>
     </form>
@@ -484,12 +485,12 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       </div>
       <hr class="ops-divider">
       <div class="ops-secondary">
-        ${nextStage ? `<form method="post" action="/case/${a.id}/action" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost" name="action" value="advance">Advance → ${esc(LIFECYCLE_LABELS[nextStage])}</button></form>` : ""}
-        ${a.lifecycle !== "completed" ? `<form method="post" action="/case/${a.id}/action" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost" name="action" value="complete">Mark completed</button></form>` : ""}
+        ${nextStage ? `<form method="post" action="/case/${a.id}/action" style="margin:0">${csrfField(c.csrf)}<button class="btn ghost" name="action" value="advance">Advance → ${esc(LIFECYCLE_LABELS[nextStage])}</button></form>` : ""}
+        ${a.lifecycle !== "completed" ? `<form method="post" action="/case/${a.id}/action" style="margin:0">${csrfField(c.csrf)}<button class="btn ghost" name="action" value="complete">Mark completed</button></form>` : ""}
       </div>
       <hr class="ops-divider">
       <form method="post" action="/case/${a.id}/priority" class="ops-inline" style="margin:0">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        ${csrfField(c.csrf)}
         <select name="priority" style="flex:1">${["normal", "high", "urgent"].map((p) => `<option value="${p}" ${a.priority === p ? "selected" : ""}>${p} priority</option>`).join("")}</select>
         <button class="btn small ghost">Set</button>
       </form>
@@ -502,7 +503,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       <p class="ops-sub">Pick a reply template — it is rendered with this ${esc(terms.contact.toLowerCase())}'s details. Preview first; nothing is sent without your click.</p>
       ${preview ? `<div class="resp-preview"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>` : ""}
       <form method="post" action="/case/${a.id}/send">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        ${csrfField(c.csrf)}
         <label>Template</label>
         <select name="template">${tplOptions}</select>
         <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
@@ -523,15 +524,15 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       </details>
       <div class="ops-secondary">
         <form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the application pack — form and brochure attached?')" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="kind" value="application">
+          ${csrfField(c.csrf)}<input type="hidden" name="kind" value="application">
           <button class="btn">Send application pack</button>
         </form>
         <form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the admission pack — letter plus accompanying documents?')" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="kind" value="admission">
+          ${csrfField(c.csrf)}<input type="hidden" name="kind" value="admission">
           <button class="btn">Send admission pack</button>
         </form>
         <form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the credit transfer form to this applicant?')" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="kind" value="transfer">
+          ${csrfField(c.csrf)}<input type="hidden" name="kind" value="transfer">
           <button class="btn ghost">Send credit transfer form</button>
         </form>
       </div>
@@ -542,7 +543,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       <p class="small" style="margin:0 0 8px"><a href="/config?tab=pack">Manage the document library (sets &amp; files) →</a></p>
       ${repo.listAttachmentSets(c.user.organization_id ?? 1).length
         ? `<div class="ops-secondary">${repo.listAttachmentSets(c.user.organization_id ?? 1).map((s) => `<form method="post" action="/case/${a.id}/send-pack" onsubmit="return confirm('Send the “${esc(s.name)}” set to this requester?')" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="kind" value="${esc(s.name)}">
+          ${csrfField(c.csrf)}<input type="hidden" name="kind" value="${esc(s.name)}">
           <button class="btn">Send “${esc(s.name)}” set</button>
         </form>`).join("")}</div>`
         : `<p class="small muted">No document sets yet — define them in the document library.</p>`}
@@ -557,7 +558,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
         <div class="resp-preview" style="margin-top:8px"><b>${esc(outbox.subject)}</b>\n\n${esc(draftView ? draftView.text : outbox.body)}</div>
       </details>
       <form method="post" action="/case/${a.id}/draft">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        ${csrfField(c.csrf)}
         <label>Subject</label>
         <input type="text" name="subject" value="${esc(outbox.subject)}">
         <label>Body</label>
@@ -574,7 +575,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       <h2>Tasks</h2>
       ${tasks.length ? tasks.map((t) => `<div class="taskrow ${t.done ? "done" : ""}">
         <form method="post" action="/case/${a.id}/task/toggle" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          ${csrfField(c.csrf)}
           <input type="hidden" name="task_id" value="${t.id}">
           <button class="btn small ghost" title="toggle">${t.done ? "☑" : "☐"}</button>
         </form>
@@ -582,7 +583,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
         <span class="small muted" style="margin-left:auto">${t.done ? "done" : ""} ${esc(t.display_name ?? "")}</span>
       </div>`).join("") : `<p class="muted small">No tasks yet.</p>`}
       <form method="post" action="/case/${a.id}/task/add" style="display:flex;gap:6px;margin-top:10px">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        ${csrfField(c.csrf)}
         <input type="text" name="title" placeholder="e.g. Verify certificate with KNEC" style="flex:1">
         <button class="btn small">Add task</button>
       </form>
@@ -601,7 +602,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       <span class="note-banner">Internal · not visible to ${esc(terms.contact.toLowerCase())}</span>
       ${noteCards || `<p class="muted small">No notes yet.</p>`}
       <form method="post" action="/case/${a.id}/note">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        ${csrfField(c.csrf)}
         <label>Add note</label>
         <textarea name="body" style="min-height:60px" placeholder="e.g. Applicant called. Waiting for original certificate."></textarea>
         <p style="margin-top:8px"><button class="btn small">Add note</button></p>
@@ -612,7 +613,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       <h2>Re-categorise</h2>
       <p class="ops-sub">If triage put the newest incoming email in the wrong bucket, move it after your review. Recorded in the audit trail${latestIncoming ? ` — currently <b>${esc(latestIncoming.category ?? "uncategorised")}</b>` : ""}.</p>
       <form method="post" action="/case/${a.id}/category" class="ops-inline" style="align-items:center;margin:0">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        ${csrfField(c.csrf)}
         <select name="category" style="flex:1">
           ${Object.entries(EMAIL_CATEGORY_LABELS).filter(([k]) => educationCasePage || k !== "admission_enquiry").map(([k, v]) => `<option value="${k}" ${latestIncoming?.category === k ? "selected" : ""}>${v}</option>`).join("")}
         </select>
@@ -686,7 +687,7 @@ export function composePage(c: Ctx, a: ApplicantRow, tpl: { key: string; name: s
   ${error ? `<div class="flash err" style="position:static;margin-bottom:16px">${esc(error)}</div>` : ""}
   <p class="small muted" style="margin-top:0">Everything below is already filled in from the case file — the checklist, the missing documents, the reference number. Edit if you like; nothing is sent until you press Send.</p>
   <form method="post" action="/case/${a.id}/compose">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <input type="hidden" name="template" value="${esc(tpl.key)}">
     <label>Subject</label>
     <input type="text" name="subject" value="${esc(rendered.subject)}">
@@ -696,7 +697,7 @@ export function composePage(c: Ctx, a: ApplicantRow, tpl: { key: string; name: s
       <button class="btn">Send now</button>
       <a class="btn ghost" href="/case/${a.id}">Cancel — don't send</a>
       ${tpl.include_banner === 0 ? `<span class="muted small">sends without the branded banner</span>` : `<span class="muted small">branded banner is attached automatically</span>`}
-      ${tpl.attach_pack && tpl.attach_pack !== "none" ? `<span class="badge b-purple">${esc(tpl.attach_pack)} set PDFs will be attached</span>` : ""}
+      ${tpl.attach_pack && tpl.attach_pack !== "none" ? badge("purple", tpl.attach_pack, " set PDFs will be attached") : ""}
     </div>
   </form>
 </div>`
@@ -793,7 +794,7 @@ export function composeWindowPage(
   <p class="small muted" style="margin-top:0">Everything below is editable — nothing is sent until you press Send. Pick a template to pre-fill the draft:</p>
   <p style="margin:0 0 14px;line-height:2.1">${chips}</p>
   <form method="post" action="/compose">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <input type="hidden" name="case" value="${a.id}">
     <input type="hidden" name="template" value="${esc(tpl?.key ?? "")}">
     <label>Subject</label>
@@ -804,7 +805,7 @@ export function composeWindowPage(
       <button class="btn">Send now</button>
       <a class="btn ghost" href="/case/${a.id}">Cancel — don’t send</a>
       ${tpl ? (tpl.include_banner === 0 ? `<span class="muted small">sends without the branded banner</span>` : `<span class="muted small">branded banner is attached automatically</span>`) : `<span class="muted small">branded banner is attached automatically</span>`}
-      ${tpl && tpl.attach_pack && tpl.attach_pack !== "none" ? `<span class="badge b-purple">${esc(tpl.attach_pack)} set PDFs will be attached</span>` : ""}
+      ${tpl && tpl.attach_pack && tpl.attach_pack !== "none" ? badge("purple", tpl.attach_pack, " set PDFs will be attached") : ""}
     </div>
   </form>
 </div>`);

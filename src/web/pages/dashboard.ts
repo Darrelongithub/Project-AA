@@ -8,6 +8,7 @@ import { envInt } from "../../util/envnum";
 import { avatar, esc, flagLabel, fmtDate, gaugeRow, heroClock, priorityBadge, slaText, triageBadge } from "../views";
 import { capFirst, formatDuration, greeting, head } from "./shared";
 import type { Ctx } from "./shared";
+import { badge, csrfField, emptyState, raw, statCell } from "../tpl";
 
 /** Alert kinds arrive as snake_case — staff read words, not tokens. */
 export function kindLabel(kind: string): string {
@@ -69,11 +70,11 @@ function adminDashboard(c: Ctx): string {
     .map((a) => {
       const appr = repo.approverFor(a.id);
       const decision = a.admission_decision === "auto_admitted"
-        ? `<span class="badge b-green">auto-admitted</span>`
+        ? badge("green", "auto-admitted")
         : a.admission_decision === "admitted_after_review"
-          ? `<span class="badge b-purple">admitted after review</span>`
+          ? badge("purple", "admitted after review")
           : a.admission_decision === "not_admitted"
-            ? `<span class="badge b-red">not admitted</span>`
+            ? badge("red", "not admitted")
             : "";
       return `<tr>
         <td class="mono"><a href="/case/${a.id}">${esc(a.ref_number)}</a></td>
@@ -133,12 +134,12 @@ NO. 01</span>
 </section>
 
 <section class="card nopad" id="alerts">
-  <div class="card-head"><h2>Alerts${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
-    ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark all read</button></form>` : ""}
+  <div class="card-head"><h2>Alerts${c.unread ? ` ${badge("purple", c.unread, " new")}` : ""}</h2>
+    ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0">${csrfField(c.csrf)}<button class="btn small ghost">Mark all read</button></form>` : ""}
   </div>
   ${alerts.length
     ? `<div class="feed">${alertRows}</div>`
-    : `<div class="empty"><p>No alerts. Escalations and auto-admissions appear here.</p></div>`}
+    : emptyState(`<p>No alerts. Escalations and auto-admissions appear here.</p>`)}
 </section>
 
 ${missingDocs.length
@@ -146,7 +147,7 @@ ${missingDocs.length
     <h2>Most requested missing documents</h2>
     <p class="small muted" style="margin-top:-6px">Required documents the most open cases are still waiting on — work down the list.</p>
     <div class="kv">
-      ${missingDocs.map((m) => `<div><span>${esc(docLabel(m.type as DocType))}</span><b>${m.count} case${m.count === 1 ? "" : "s"}</b></div>`).join("")}
+      ${missingDocs.map((m) => statCell(docLabel(m.type as DocType), raw(`${m.count} case${m.count === 1 ? "" : "s"}`))).join("")}
     </div>
   </section>`
   : ""}
@@ -157,24 +158,24 @@ ${triageTile(triage)}
   <div class="card-head"><h2>Team performance <span class="muted small" style="text-transform:none;letter-spacing:0">— how your staff are working</span></h2><a class="small" href="/staff">staff configuration →</a></div>
   ${team.length
     ? `<table><tr><th>Staff member</th><th>Assigned cases</th><th>Emails</th><th>Avg response</th><th>Files completed</th></tr>${teamRows}</table>`
-    : `<div class="empty"><p>No staff accounts yet.</p></div>`}
+    : emptyState(`<p>No staff accounts yet.</p>`)}
 </section>
 
 <section class="card nopad">
   <div class="card-head"><h2>Completed files &amp; approvals <span class="muted small" style="text-transform:none;letter-spacing:0">— who finished what, and when</span></h2></div>
   ${completedFiles
     ? `<table><tr><th>Ref</th><th>Applicant</th><th>Case</th><th>Decision / completed by</th><th>When</th></tr>${completedFiles}</table>`
-    : `<div class="empty"><p>No completed files yet — approvals appear here as cases finish.</p></div>`}
+    : emptyState(`<p>No completed files yet — approvals appear here as cases finish.</p>`)}
 </section>
 
 <section class="card">
   <h2>System</h2>
   <div class="kv">
     <div><span>Gmail</span><b>${gmailConnected ? `connected${lastSync ? ` · synced ${esc(fmtDate(lastSync))}` : ""}` : "not connected"} <a class="small" href="/settings#connections">manage</a></b></div>
-    <div><span>Document AI (Gemini)</span><b>${repo.hasSecret("gemini_api_key") ? "key saved · live" : "not set"} <a class="small" href="/settings#connections">manage</a></b></div>
-    <div><span>Automation</span><b>${globalMode === "draft" ? "draft-first" : "auto"} · <a class="small" href="/settings#automation">change</a></b></div>
-    <div><span>Team</span><b>${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">staff configuration</a></b></div>
-    <div><span>Replies to date</span><b>${(() => { const ac = repo.accuracyStats(realm); return Number(ac.autoSends) + Number(ac.humanSends); })()}</b></div>
+    ${statCell("Document AI (Gemini)", raw(`${repo.hasSecret("gemini_api_key") ? "key saved · live" : "not set"} <a class="small" href="/settings#connections">manage</a>`))}
+    ${statCell("Automation", raw(`${globalMode === "draft" ? "draft-first" : "auto"} · <a class="small" href="/settings#automation">change</a>`))}
+    ${statCell("Team", raw(`${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">staff configuration</a>`))}
+    ${statCell("Replies to date", (() => { const ac = repo.accuracyStats(realm); return Number(ac.autoSends) + Number(ac.humanSends); })())}
   </div>
 </section>`
   );
@@ -314,12 +315,12 @@ function officerDashboard(c: Ctx): string {
   // Alerts sit IMMEDIATELY after the gauges — the first thing after the
   // pipeline picture is what needs a human right now.
   const alertsCard = `<section class="card nopad" id="alerts">
-    <div class="card-head"><h2>Alerts${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
-      ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark all read</button></form>` : ""}
+    <div class="card-head"><h2>Alerts${c.unread ? ` ${badge("purple", c.unread, " new")}` : ""}</h2>
+      ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0">${csrfField(c.csrf)}<button class="btn small ghost">Mark all read</button></form>` : ""}
     </div>
     ${alerts.length
       ? `<div class="feed">${alertRows}</div>`
-      : `<div class="empty"><p>No alerts. Escalations and auto-admissions appear here.</p></div>`}
+      : emptyState(`<p>No alerts. Escalations and auto-admissions appear here.</p>`)}
   </section>`;
 
   return head(
@@ -367,7 +368,7 @@ ${missingDocs.length
     <h2>Most requested missing documents</h2>
     <p class="small muted" style="margin-top:-6px">Required documents the most open cases are still waiting on — work down the list.</p>
     <div class="kv">
-      ${missingDocs.map((m) => `<div><span>${esc(docLabel(m.type as DocType))}</span><b>${m.count} case${m.count === 1 ? "" : "s"}</b></div>`).join("")}
+      ${missingDocs.map((m) => statCell(docLabel(m.type as DocType), raw(`${m.count} case${m.count === 1 ? "" : "s"}`))).join("")}
     </div>
   </section>`
   : ""}
@@ -382,11 +383,11 @@ ${triageTile(triage)}
   <section class="card">
     <h2>Today</h2>
     <div class="kv">
-      <div><span>Emails today</span><b>${today.emailsToday}</b></div>
-      <div><span>Documents today</span><b>${today.docsToday}</b></div>
-      <div><span>Cases completed today</span><b>${today.completedToday}</b></div>
-      <div><span>Avg auto-response (7 days)</span><b>${esc(avgAuto)}</b></div>
-      <div><span>Avg review time</span><b>${esc(avgReview)}</b></div>
+      ${statCell("Emails today", today.emailsToday)}
+      ${statCell("Documents today", today.docsToday)}
+      ${statCell("Cases completed today", today.completedToday)}
+      ${statCell("Avg auto-response (7 days)", avgAuto)}
+      ${statCell("Avg review time", avgReview)}
     </div>
   </section>
 </div>
@@ -395,7 +396,7 @@ ${triageTile(triage)}
   <div class="card-head"><h2>What needs my attention</h2><a class="small" href="/applicants?queue=human_review">open the Human Review queue →</a></div>
   ${queue.length
     ? `<table><tr><th>Ref</th><th>Applicant</th><th>Verdict</th><th>Flags</th><th>SLA</th></tr>${needsAttention}</table>`
-    : `<div class="empty"><p>Queue is empty — every case is handled.</p></div>`}
+    : emptyState(`<p>Queue is empty — every case is handled.</p>`)}
 </section>
 
 <div class="cols wide">
@@ -403,7 +404,7 @@ ${triageTile(triage)}
     <div class="card-head"><h2>Unanswered emails <span class="muted small">(target ${target}h)</span></h2></div>
     ${unanswered.length
       ? `<table><tr><th>Ref</th><th>Applicant</th><th>Waiting</th></tr>${unansweredRows}</table>`
-      : `<div class="empty"><p>Every applicant email has a reply.</p></div>`}
+      : emptyState(`<p>Every applicant email has a reply.</p>`)}
   </section>
   <section class="card">
     <h2>Where applicants get stuck</h2>
@@ -418,9 +419,9 @@ ${triageTile(triage)}
     ? `<p style="margin:2px 0 12px"><span style="font-family:var(--display);font-size:30px">${accuracyPct}%</span> <span class="muted small">of automation decisions stood uncorrected</span></p>`
     : `<p class="muted">No automation decisions recorded yet — accuracy appears here once the engine has processed mail.</p>`}
   <div class="kv">
-    <div><span>Clean Greens</span><b>${accuracy.greenCases}</b></div>
-    <div><span>Watcher catches</span><b>${accuracy.watcherCatches}</b></div>
-    <div><span>Human overrides</span><b>${accuracy.humanOverrides}</b></div>
+    ${statCell("Clean Greens", accuracy.greenCases)}
+    ${statCell("Watcher catches", accuracy.watcherCatches)}
+    ${statCell("Human overrides", accuracy.humanOverrides)}
     <div><span>Send errors</span><b ${accuracy.sendErrors > 0 ? 'style="color:var(--red)"' : ""}>${accuracy.sendErrors}</b></div>
   </div>
   <p class="small muted" style="margin-bottom:0">${accuracy.autoSends} automated sends vs ${accuracy.humanSends} human sends · ${accuracy.reopened} cases reopened</p>

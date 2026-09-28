@@ -7,6 +7,7 @@ import { admissionsPreset } from "../../presets/loader";
 import { esc } from "../views";
 import { head } from "./shared";
 import type { Ctx } from "./shared";
+import { badge, csrfField } from "../tpl";
 
 // ── OR-7: Templates section — one home for every outgoing email type ──────
 // What sends each template is annotated right next to it, placeholders are
@@ -85,7 +86,7 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
   const unknown = [...new Set(((tpl.subject + " " + tpl.body).match(/\{[a-z_]+\}/g) ?? []).filter((ph) => !PLACEHOLDER_DOCS.some(([k]) => k === ph)))];
 
   const editor = `<form method="post" action="/templates/save">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <input type="hidden" name="key" value="${esc(tpl.key)}">
     <label>Display name</label><input type="text" name="name" value="${esc(tpl.name)}">
     <label>Subject (the reference number is prepended automatically)</label><input type="text" name="subject" value="${esc(tpl.subject)}">
@@ -112,13 +113,13 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
     </div>
   </form>
   <form method="post" action="/templates/reset" style="margin-top:10px" onsubmit="return confirm('Reset this template to its own saved default? Your edits will be lost.')">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <input type="hidden" name="key" value="${esc(tpl.key)}">
     <button class="btn ghost">Reset to this template's own default</button>
   </form>
   <details style="margin-top:14px"><summary class="small" style="cursor:pointer">Create a new template key</summary>
     <form method="post" action="/templates/create" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      ${csrfField(c.csrf)}
       <div class="field" style="min-width:180px"><span class="lbl">Machine key</span><input name="key" required placeholder="e.g. scholarship_reply"></div>
       <div class="field" style="min-width:180px"><span class="lbl">Display name</span><input name="name" required placeholder="e.g. Scholarship reply"></div>
       <div class="field" style="min-width:180px"><span class="lbl">Belongs to profile</span>
@@ -133,7 +134,7 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
   const list = templates.map((t) => `<tr>
       <td><a href="/templates?template=${encodeURIComponent(t.key)}#tpl-${esc(t.key)}"><b>${esc(t.name)}</b></a><br><span class="mono small muted">${esc(t.key)}</span></td>
       <td class="small muted">${esc(TEMPLATE_USAGE[t.key] ?? "Manual staff reply.")}</td>
-      <td>${!t.attach_pack || t.attach_pack === "none" ? `<span class="muted small">—</span>` : `<span class="badge b-purple">${esc(t.attach_pack)} set</span>`}</td>
+      <td>${!t.attach_pack || t.attach_pack === "none" ? `<span class="muted small">—</span>` : badge("purple", t.attach_pack, " set")}</td>
     </tr>`).join("");
 
   return head(

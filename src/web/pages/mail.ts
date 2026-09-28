@@ -6,6 +6,7 @@ import { ApplicantRow, EmailRecord } from "../../types";
 import { avatar, esc, icon, lifecycleBadge } from "../views";
 import { head } from "./shared";
 import type { Ctx } from "./shared";
+import { csrfField } from "../tpl";
 
 /** Gmail-style mail window: folders sidebar + conversation list. */
 export function mailPage(
@@ -53,7 +54,7 @@ export function mailPage(
       <td style="width:26px;padding-right:0">${unread ? `<span title="Unread" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--wine)"></span>` : ""}</td>
       <td style="width:34px;padding-right:0">
         <form class="starform" method="post" action="${threadUrl}/action" onclick="event.stopPropagation()" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          ${csrfField(c.csrf)}
           <input type="hidden" name="action" value="${t.star_n ? "unstar" : "star"}">
           <input type="hidden" name="back" value="${esc(opts.backUrl)}">
           <button class="starbtn${t.star_n ? " on" : ""}" title="${t.star_n ? "Remove star" : "Star"}">${icon(t.star_n ? "star" : "star-o", 15)}</button>
@@ -132,7 +133,7 @@ export function mailThreadPage(
   const threadPath = `/mail/thread/${encodeURIComponent(opts.tkey)}`;
   const actionForm = (action: string, label: string, ic: Parameters<typeof icon>[0], back = threadPath) => `
     <form method="post" action="${threadPath}/action" style="margin:0">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      ${csrfField(c.csrf)}
       <input type="hidden" name="action" value="${action}">
       <input type="hidden" name="back" value="${esc(back)}">
       <button class="btn small ghost">${icon(ic, 13)} ${label}</button>

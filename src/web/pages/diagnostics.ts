@@ -6,6 +6,7 @@ import { ApplicantRow, RuleNode } from "../../types";
 import { esc, flagLabel, fmtDate } from "../views";
 import { capFirst, head } from "./shared";
 import type { Ctx } from "./shared";
+import { badge, csrfField } from "../tpl";
 
 // ── Decision replay (v3 feature 32): step-by-step "why was this flagged?" ──
 export function replayPage(c: Ctx, a: ApplicantRow): string {
@@ -70,7 +71,7 @@ export function replayPage(c: Ctx, a: ApplicantRow): string {
 
   const flagList = flags.length
     ? `<div class="card"><h2>Active flags</h2><ul style="margin:0;padding-left:18px">${flags
-        .map((f) => `<li><span class="badge b-orange">${esc(flagLabel(f.type))}</span> ${esc(f.detail)}</li>`)
+        .map((f) => `<li>${badge("orange", flagLabel(f.type))} ${esc(f.detail)}</li>`)
         .join("")}</ul></div>`
     : "";
 
@@ -133,7 +134,7 @@ ${opts.msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">$
   </form>
 </div>
 <form method="post" action="/intake/test" class="card">
-  <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+  ${csrfField(c.csrf)}
   <input type="hidden" name="case_type" value="${esc(selected.code)}">
   <h2>${esc(selected.name)}</h2>
   <div class="formrow">

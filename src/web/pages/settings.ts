@@ -8,6 +8,7 @@ import { missingGmailCredentials, resolveLookbackDays } from "../../ingestion/sy
 import { Theme, esc, fmtDate } from "../views";
 import { capFirst, head } from "./shared";
 import type { Ctx } from "./shared";
+import { badge, csrfField, raw } from "../tpl";
 
 // ── Settings (app behaviour) & Configuration (admissions setup) ────────────
 export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string): string {
@@ -43,7 +44,7 @@ ${connectionsSection(c, gmailRedirectUri)}
   </ul>
   <p class="small muted" style="margin-top:0">Everything else is <b>parked</b>: kept in <a href="/mail?f=all">All Mail</a> so nothing is ever lost, but no case number, queue entry or auto-reply is created for it. Add a word below whenever mail you wanted as a case gets parked.</p>
   <form method="post" action="/settings/general">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div style="max-width:560px"><label>Intake hotwords (comma-separated — your words, always decisive)</label><input type="text" name="intake_hotwords" value="${esc(settings["intake_hotwords"] ?? "")}" style="width:100%"></div>
     <p><button class="btn">Save hotwords</button></p>
   </form>
@@ -63,7 +64,7 @@ ${connectionsSection(c, gmailRedirectUri)}
   <h2>Automation mode (draft-first)</h2>
   <p class="small muted" style="margin-top:-6px">Two rules always apply. First, automated sending is reserved for <b>fully qualified</b> applicants — a Green verdict with no flags; everyone else gets the reply as a <b>suggested draft</b> for staff to review, edit or discard, because borderline files can still be admitted on special acceptance. Second, the rollout dial: keep the global mode on <b>draft</b> (every automated reply waits for a human), then switch automation on category by category as you trust it.</p>
   <form method="post" action="/settings/automation/global" class="formrow" style="align-items:end">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div><label>Global mode</label><select name="mode">
       <option value="auto" ${settings["automation_mode"] !== "draft" ? "selected" : ""}>auto — safe categories send automatically</option>
       <option value="draft" ${settings["automation_mode"] === "draft" ? "selected" : ""}>draft — hold EVERY automated reply for approval</option>
@@ -77,7 +78,7 @@ ${connectionsSection(c, gmailRedirectUri)}
         return `<tr><td>${esc(cat.replace(/_/g, " "))}</td>
         <td><span class="badge ${mode === "auto" ? "b-green" : "b-orange"}">${mode === "auto" ? "auto-send" : "draft for approval"}</span></td>
         <td><form method="post" action="/settings/automation/category" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          ${csrfField(c.csrf)}
           <input type="hidden" name="category" value="${esc(cat)}">
           <button class="btn small ghost" name="mode" value="${mode === "auto" ? "draft" : "auto"}">switch to ${mode === "auto" ? "draft" : "auto"}</button>
         </form></td></tr>`;
@@ -91,7 +92,7 @@ ${connectionsSection(c, gmailRedirectUri)}
   <h2>Response targets &amp; SLA</h2>
   <p class="small muted" style="margin-top:-6px">How fast the office promises to respond, when a slow case is escalated, and the reminder ladder for missing documents. These numbers drive the SLA clock on every queued case and the scheduled reminders.</p>
   <form method="post" action="/settings/general">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div class="formrow">
       ${settingInput("sla_target_hours", "SLA target (hours to first response)")}
       ${settingInput("escalation_hours", "Escalation (hours before a case is escalated)")}
@@ -109,7 +110,7 @@ ${connectionsSection(c, gmailRedirectUri)}
   <h2>Letters &amp; identity</h2>
   <p class="small muted" style="margin-top:-6px">Identity and theme belong to this organization. The same values are used by the console, outgoing messages and generated documents.</p>
   <form method="post" action="/settings/organization">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div class="formrow">
       ${organizationInput("organization_name", (c.user.organization_id ?? 1) === 1 ? "Organisation / school name" : "Organisation name", organization?.name ?? c.institution)}
       ${organizationInput("primary_color", "Primary colour", organization ? organizationTheme(repo, organizationId).primary : "#650019")}
@@ -128,14 +129,14 @@ ${connectionsSection(c, gmailRedirectUri)}
   <div class="card" style="margin:14px 0 0;padding:14px;background:var(--card2)">
     <b>Logo</b><p class="small muted" style="margin:3px 0 10px">Upload a PNG, JPEG or SVG logo for this organization. It replaces the neutral mark across the workspace.</p>
     <form method="post" action="/config/organization/logo" enctype="application/octet-stream">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      ${csrfField(c.csrf)}
       <input type="file" name="logo" accept="image/png,image/jpeg,image/svg+xml" data-logo-upload>
       <button class="btn small ghost" type="button" data-logo-save>Upload logo</button>
       <span class="small muted" data-logo-message></span>
     </form>
   </div>
   <form method="post" action="/settings/general" style="margin-top:14px">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div class="formrow">
       ${settingInput("institution_name", "Legacy identity setting")}
       ${settingInput("reg_date", "Registration date (admission letter)")}
@@ -204,8 +205,8 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
 
 <div class="card" id="gmail">
   <h2>Gmail connection ${connected
-    ? `<span class="badge b-green">connected — live sorting on</span>`
-    : `<span class="badge b-orange">not connected</span>`}</h2>
+    ? badge("green", "connected — live sorting on")
+    : badge("orange", "not connected")}</h2>
   <p class="small muted" style="margin-top:-6px">Connect the admissions mailbox so incoming mail is fetched, triaged and sorted automatically every minute.</p>
   ${proxyUriWarning}
   ${!connected && (gAddress || gClientId || gClientSecret || gRefresh)
@@ -220,7 +221,7 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
     <li>No OAuth client of your own? Use the <b>OAuth Playground</b> (developers.google.com/oauthplayground) with your own client ID and the <span class="mono">gmail.modify</span> scope, then paste the resulting refresh token into the advanced field.</li>
   </ol>
   <form method="post" action="/settings/gmail/credentials">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div class="formrow">
       <div><label>Gmail address</label><input type="email" name="gmail_address" value="${esc(gAddress)}" placeholder="admissions@institution.ac.ke"></div>
       <div><label>OAuth client ID</label><input type="text" name="gmail_client_id" value="${esc(gClientId)}" placeholder="…apps.googleusercontent.com"></div>
@@ -237,10 +238,10 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   </form>
   ${connected ? `
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
-    <form method="post" action="/settings/gmail/test" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost">Test connection</button></form>
-    <form method="post" action="/settings/gmail/sync" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost">Sync now</button></form>
-    <form method="post" action="/settings/gmail/backfill" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><select name="days" class="small"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">365 days</option></select> <button class="btn ghost">Pull older mail</button></form>
-    <form method="post" action="/settings/gmail/disconnect" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger">Disconnect</button></form>
+    <form method="post" action="/settings/gmail/test" style="margin:0">${csrfField(c.csrf)}<button class="btn ghost">Test connection</button></form>
+    <form method="post" action="/settings/gmail/sync" style="margin:0">${csrfField(c.csrf)}<button class="btn ghost">Sync now</button></form>
+    <form method="post" action="/settings/gmail/backfill" style="margin:0">${csrfField(c.csrf)}<select name="days" class="small"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">365 days</option></select> <button class="btn ghost">Pull older mail</button></form>
+    <form method="post" action="/settings/gmail/disconnect" style="margin:0">${csrfField(c.csrf)}<button class="btn ghost danger">Disconnect</button></form>
   </div>` : ""}
   <p class="small muted" style="margin-top:10px">${connected
     ? `Signed in as <b>${esc(gAddress)}</b>. New incoming mail is fetched automatically every minute from <b>All Mail</b> (excluding sent, spam and trash), covering the last ${resolveLookbackDays(repo, undefined)} days — older mail is brought in with “Pull older mail”.${settings["gmail_last_sync_at"] ? ` Last successful sync: <b>${esc(fmtDate(settings["gmail_last_sync_at"]))}</b>.` : " First sync pending (runs every minute)."}`
@@ -250,11 +251,11 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
 
 <div class="card" id="gemini">
   <h2>Document AI (Gemini) ${geminiKeySaved
-    ? `<span class="badge b-green">key saved — AI reads what OCR can't</span>`
-    : `<span class="badge b-gray">optional</span>`}</h2>
+    ? badge("green", raw("key saved — AI reads what OCR can't"))
+    : badge("gray", "optional")}</h2>
   <p class="small muted" style="margin-top:-6px">When a document beats text extraction and OCR (bad scans, photos, handwriting), Gemini reads it as a vision model. Get a free key at <b>aistudio.google.com/apikey</b> (Google account → “Get API key”). The key is tested with one real call on save and goes live <b>immediately</b>, no restart. Without a key the console still works; unreadable files simply land in the review queue.</p>
   <form method="post" action="/settings/gemini">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div class="formrow">
       <div style="flex:2"><label>Gemini API key ${geminiKeySaved ? "(saved — paste a new value to replace)" : ""}</label><input type="password" name="gemini_api_key" value="" placeholder="AIza…" autocomplete="new-password"></div>
       ${(() => {
@@ -266,7 +267,7 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
       <div style="flex:0"><label>&nbsp;</label><button class="btn">Save &amp; test key</button></div>
     </div>
   </form>
-  ${geminiKeySaved ? `<form method="post" action="/settings/gemini" style="margin-top:8px"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn ghost danger small" name="clear" value="1">Remove key</button></form>` : ""}
+  ${geminiKeySaved ? `<form method="post" action="/settings/gemini" style="margin-top:8px">${csrfField(c.csrf)}<button class="btn ghost danger small" name="clear" value="1">Remove key</button></form>` : ""}
   ${settings["gemini_last_error"] ? `<p class="small" style="color:var(--red)">Last test failed: ${esc(settings["gemini_last_error"])}</p>` : ""}
 </div>
 </div>`;
@@ -288,7 +289,7 @@ ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(
 <div class="card" id="profile">
   <h2>Username</h2>
   <form method="post" action="/account/username" class="formrow" style="align-items:end">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div><label>Username</label><input name="username" value="${esc(u.username)}" required minlength="3" maxlength="40" autocomplete="username"></div>
     <div style="flex:0"><button class="btn">Update username</button></div>
   </form>
@@ -298,7 +299,7 @@ ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(
 <div class="card" id="password">
   <h2>Password</h2>
   <form method="post" action="/account/password">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div class="formrow">
       <div><label>Current password</label><input type="password" name="current" required autocomplete="current-password"></div>
       <div><label>New password</label><input type="password" name="next" required minlength="8" autocomplete="new-password"></div>
@@ -312,7 +313,7 @@ ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(
   <h2>Appearance</h2>
   <p class="small muted" style="margin-top:-6px">Choose how the console looks. You can also flip it at any time with the sun/moon button in the top bar.</p>
   <form method="post" action="/account/theme" class="formrow" style="align-items:end">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div><label>Theme</label><select name="theme">
       <option value="light" ${theme === "light" ? "selected" : ""}>Light</option>
       <option value="dark" ${theme === "dark" ? "selected" : ""}>Dark</option>

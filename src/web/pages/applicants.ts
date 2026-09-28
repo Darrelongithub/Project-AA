@@ -6,6 +6,7 @@ import { QUEUES, QueueKey, SUB_LABELS, queueOf } from "../../admissions/queues";
 import { avatar, esc, fmtDate } from "../views";
 import { decisionBadge, head, resultBadge } from "./shared";
 import type { Ctx } from "./shared";
+import { emptyState } from "../tpl";
 
 export function applicantsPage(
   c: Ctx,
@@ -139,8 +140,8 @@ export function applicantsPage(
         ${trs}
       </table>`
     : searchMode
-      ? `<div class="empty"><h3>No matches</h3><p>Nothing matches that search in this dataset.</p></div>`
-      : `<div class="empty"><h3>Nothing in this queue</h3><p>Cases move here automatically as their situation changes.</p></div>`}
+      ? emptyState(`<h3>No matches</h3><p>Nothing matches that search in this dataset.</p>`)
+      : emptyState(`<h3>Nothing in this queue</h3><p>Cases move here automatically as their situation changes.</p>`)}
 </section>`
   );
 }

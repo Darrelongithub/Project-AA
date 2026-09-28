@@ -6,6 +6,7 @@ import { LIFECYCLE_LABELS } from "../../types";
 import { avatar, esc, flowLine, fmtDate, gaugeRow } from "../views";
 import { head } from "./shared";
 import type { Ctx } from "./shared";
+import { emptyState } from "../tpl";
 
 // ── Admissions: the pipeline split into its levels ──────────────────────────
 const STAGE_TABS: Array<{ key: string; label: string }> = [
@@ -101,7 +102,7 @@ export function admissionsPage(c: Ctx, stage: string): string {
         <tr><th>Ref</th><th>Applicant</th><th>Applied for</th><th>Level</th><th>Applied</th><th>Handled by</th><th></th></tr>
         ${tableRows}
       </table>`
-    : `<div class="empty">${flowLine(150, 26)}<p>Nobody at this level right now.</p><p class="small muted">New applications land at <b>Application received</b> and move down the pipeline as your team works them.</p></div>`}
+    : emptyState(`${flowLine(150, 26)}<p>Nobody at this level right now.</p><p class="small muted">New applications land at <b>Application received</b> and move down the pipeline as your team works them.</p>`)}
 </section>`
   );
 }

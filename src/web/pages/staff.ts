@@ -10,6 +10,7 @@ import { DOC_TYPES, PERMISSIONS, PERMISSION_LABELS } from "../../types";
 import { avatar, esc } from "../views";
 import { capFirst, formatDuration, head } from "./shared";
 import type { Ctx } from "./shared";
+import { badge, csrfField, emptyState } from "../tpl";
 
 type LegacyAcademicProgramme = ReturnType<Repo["listProgrammes"]>[number];
 
@@ -30,7 +31,7 @@ function scopeMatrix(c: Ctx): string {
     if (m.role === "admin") {
       return `<tr>
         <td><b>${esc(m.display_name)}</b><br><span class="muted small">@${esc(m.username)}</span></td>
-        <td colspan="${schools.length + 1}"><span class="badge b-purple">admin</span> <span class="small muted">always sees every school — admins cannot be scoped</span></td>
+        <td colspan="${schools.length + 1}">${badge("purple", "admin")} <span class="small muted">always sees every school — admins cannot be scoped</span></td>
       </tr>`;
     }
     const current = new Set(repo.scopesFor(m.id));
@@ -40,7 +41,7 @@ function scopeMatrix(c: Ctx): string {
       <td><b>${esc(m.display_name)}</b><br><span class="muted small">@${esc(m.username)}</span></td>
       <form method="post" action="/staff/scopes"><td colspan="${schools.length + 1}" style="display:table-cell">
         <div style="display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          ${csrfField(c.csrf)}
           <input type="hidden" name="staff_id" value="${m.id}">
           ${schools.map((s) => `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="schools" value="${esc(s)}" style="width:auto" ${current.has(s) ? "checked" : ""}> ${esc(s)}</label>`).join("")}
           <button class="btn small ghost">Save assigned schools</button>
@@ -53,7 +54,7 @@ function scopeMatrix(c: Ctx): string {
   return `<section class="card nopad" id="scopes">
     <div class="card-head"><h2>Visibility scope</h2></div>
     <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the schools each officer handles and press <b>Save assigned schools</b> — one action per person. From then on they see only cases from those schools, everywhere: queues, levels, search, direct links and the API. Saving an empty selection gives <b>no case access</b>; use <b>Restore full visibility</b> when that is intentional. Schools are managed in <a href="/config?tab=courses#schools">Configuration</a>.</p>
-    ${schools.length ? `<table><tr><th>Staff member</th><th>Schools they may see</th></tr>${rows}</table>` : `<div class="empty"><p>Add a school in Configuration first.</p></div>`}
+    ${schools.length ? `<table><tr><th>Staff member</th><th>Schools they may see</th></tr>${rows}</table>` : emptyState(`<p>Add a school in Configuration first.</p>`)}
   </section>`;
 }
 
@@ -79,7 +80,7 @@ function coursesConfigHtml(c: Ctx): string {
 
   const assignForm = (p: { code: string; owner_id: number | null }) =>
     `<form method="post" action="/config/course-owner" style="display:flex;gap:6px;margin:0;align-items:center">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      ${csrfField(c.csrf)}
       <input type="hidden" name="programme" value="${esc(p.code)}">
       <select name="owner" style="width:auto;min-width:190px">
         <option value="">Unassigned</option>
@@ -104,7 +105,7 @@ function coursesConfigHtml(c: Ctx): string {
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <b>${esc(school || "No school assigned")}</b>
         ${school ? `<form method="post" action="/config/schools/rename" style="display:flex;gap:6px;margin:0;align-items:center">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+          ${csrfField(c.csrf)}
           <input type="hidden" name="from" value="${esc(school)}">
           <input type="text" name="to" value="${esc(school)}" title="New school name" style="width:auto;min-width:220px;margin:0">
           <button class="btn small ghost" title="Rename this school for every course in it">Rename school</button>
@@ -115,7 +116,7 @@ function coursesConfigHtml(c: Ctx): string {
         <td><b>${esc(pr.code)}</b><br><span class="small muted">${esc(pr.name)}</span><br><span class="badge ${pr.level === "phd" || pr.level === "masters" ? "b-purple" : "b-gray"}" style="margin-top:4px">${pr.level === "phd" ? "PhD" : capFirst(pr.level)}</span></td>
         <td>
           <form method="post" action="/config/programme/edit" style="display:flex;gap:6px;align-items:flex-start;max-width:640px">
-            <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+            ${csrfField(c.csrf)}
             <input type="hidden" name="programme" value="${esc(pr.code)}">
             <div style="flex:1">
               <input type="text" name="name" value="${esc(pr.name)}" title="Course name" style="margin-bottom:6px">
@@ -165,12 +166,12 @@ function coursesConfigHtml(c: Ctx): string {
         <p class="small muted">Tick exactly the documents this course requires — untick a default to drop it, tick anything else to add it. New applicants are checked against this list; cases that already froze their requirement set keep theirs.</p>
         <div style="display:flex;gap:24px;flex-wrap:wrap">
           <form method="post" action="/staff/course-docs" style="flex:1;min-width:280px">
-            <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+            ${csrfField(c.csrf)}
             <input type="hidden" name="programme" value="${esc(pr.code)}">
             ${rows}
             <div style="margin-top:10px"><button class="btn small" type="submit">Save required documents</button></div>
           </form>
-          ${configured ? `<form method="post" action="/staff/course-docs/reset" style="align-self:flex-end;padding-bottom:4px"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="programme" value="${esc(pr.code)}"><button class="btn small ghost" type="submit">Reset to generated</button></form>` : ""}
+          ${configured ? `<form method="post" action="/staff/course-docs/reset" style="align-self:flex-end;padding-bottom:4px">${csrfField(c.csrf)}<input type="hidden" name="programme" value="${esc(pr.code)}"><button class="btn small ghost" type="submit">Reset to generated</button></form>` : ""}
         </div>
       </div>
     </details>`;
@@ -183,7 +184,7 @@ function coursesConfigHtml(c: Ctx): string {
     ${c.repo.listIntakeRows().map((i) => `<tr>
       <td>${esc(i.name)}</td>
       <td><form method="post" action="/settings/intake-deadline" style="display:flex;gap:6px;margin:0">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        ${csrfField(c.csrf)}
         <input type="hidden" name="name" value="${esc(i.name)}">
         <input type="date" name="deadline" value="${esc(i.deadline ? i.deadline.slice(0, 10) : "")}" style="width:auto">
         <button class="btn small ghost">Save</button>
@@ -199,7 +200,7 @@ function coursesConfigHtml(c: Ctx): string {
   <p class="small muted" style="padding:0 24px;margin:8px 0 0">Every course is handled by someone — assign the responsible officer here. The notes column is free-text reference; the <b>enforced</b> subject-and-grade rules for each course live in the <a href="/config?tab=requirements">Requirements tab</a>.</p>
   ${programmes.length
     ? `<table><tr><th>Programme</th><th>Course details &amp; reference notes</th><th>Handled by</th></tr>${courseRows}</table>`
-    : `<div class="empty"><p>No courses yet — add the first one below.</p></div>`}
+    : emptyState(`<p>No courses yet — add the first one below.</p>`)}
   <div style="padding:18px 24px 22px;border-top:1px solid var(--line2);margin-top:14px">
     <h2>Required documents — per course</h2>
     <p class="small muted" style="margin-top:-2px">Each course starts on the <b>generated checklist</b> (level × curriculum, from the official application form). Open a course and tick exactly the documents it requires — saving customises that course only; “Reset to generated” puts it back. Conditional items (e.g. credit-transfer forms) are asked for automatically and are not toggled here.</p>
@@ -211,7 +212,7 @@ function coursesConfigHtml(c: Ctx): string {
     <h2 style="margin-top:26px" id="addcourse">Add a course or intake</h2>
     <p class="small muted" style="margin-top:-6px">Create a new programme — it appears immediately in the table above, in course ownership and across the admissions pipeline — or add another intake for existing courses. Master's and PhD are separate levels, each judged by its own university-wide defaults.</p>
     <form method="post" action="/settings/lists/add" class="formrow" style="margin-top:10px">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      ${csrfField(c.csrf)}
       <div><label>New programme code</label><input type="text" name="prog_code" placeholder="e.g. MED"></div>
       <div style="flex:2"><label>Programme name</label><input type="text" name="prog_name" placeholder="e.g. Bachelor of Medicine"></div>
       <div><label>School</label><select name="prog_school"><option value="">No school yet</option>${schools.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}</select></div>
@@ -222,7 +223,7 @@ function coursesConfigHtml(c: Ctx): string {
     <h2 style="margin-top:26px" id="schools">Schools (faculties)</h2>
     <p class="small muted" style="margin-top:-6px">A school exists as soon as it is created — even before its first course. Rename it in the course table above (the rename follows every course); add a new one here.</p>
     <form method="post" action="/config/schools/add" class="formrow" style="margin-top:10px">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      ${csrfField(c.csrf)}
       <div style="flex:2"><label>New school name</label><input type="text" name="name" placeholder="e.g. School of Aviation"></div>
       <div style="flex:0"><label>&nbsp;</label><button class="btn">Add school</button></div>
     </form>
@@ -261,7 +262,7 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
   <h2>Automation permissions</h2>
   <p class="small muted" style="margin-top:-6px">The four automation actions are distinct permissions (PPR P1-8) — not a role split. Admins hold all four automatically; regular staff hold what is ticked here (with no ticks, they may send replies and approve automation, as staff always could).</p>
   <form method="post" action="/staff/permissions">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <table>
       <tr><th>Staff</th>${PERMISSIONS.map((p) => `<th style="text-align:left">${esc(PERMISSION_LABELS[p])}</th>`).join("")}</tr>
       ${repo.listStaff(orgId).map((st) => {
@@ -269,7 +270,7 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
         return `<tr>
         <td><b>${esc(st.display_name)}</b><br><span class="muted small">@${esc(st.username)} · ${esc(st.role)}</span></td>
         ${PERMISSIONS.map((p) => `<td>${st.role === "admin"
-          ? `<span class="badge b-green">always</span><input type="hidden" name="perm_${st.id}_${p}" value="1">`
+          ? `${badge("green", "always")}<input type="hidden" name="perm_${st.id}_${p}" value="1">`
           : `<input type="checkbox" name="perm_${st.id}_${p}" value="1" ${grants.includes(p) ? "checked" : ""} style="width:auto">`}</td>`).join("")}
       </tr>`;
       }).join("")}
@@ -285,12 +286,12 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
       .map((st) => `<tr>
         <td class="mono">${esc(st.username)}</td>
         <td>${esc(st.display_name)}</td>
-        <td><span class="badge b-gray">${esc(capFirst(st.role))}</span></td>
-        <td>${st.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-red">disabled</span>`}</td>
+        <td>${badge("gray", capFirst(st.role))}</td>
+        <td>${st.active ? badge("green", "active") : badge("red", "disabled")}</td>
         <td>
-          <form method="post" action="/staff/toggle" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><button class="btn small ghost">${st.active ? "Disable" : "Enable"}</button></form>
-          <form method="post" action="/staff/password" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><input type="password" name="password" placeholder="new password" style="width:150px;display:inline-block"><input type="password" name="confirm" placeholder="confirm" style="width:150px;display:inline-block"><button class="btn small ghost">Reset</button></form>
-          <form method="post" action="/staff/reset-code" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><button class="btn small ghost" title="Issue a one-time code the member can use on the public “Forgot password” page (no email involved)">Reset code</button></form>
+          <form method="post" action="/staff/toggle" style="display:inline">${csrfField(c.csrf)}<input type="hidden" name="id" value="${st.id}"><button class="btn small ghost">${st.active ? "Disable" : "Enable"}</button></form>
+          <form method="post" action="/staff/password" style="display:inline">${csrfField(c.csrf)}<input type="hidden" name="id" value="${st.id}"><input type="password" name="password" placeholder="new password" style="width:150px;display:inline-block"><input type="password" name="confirm" placeholder="confirm" style="width:150px;display:inline-block"><button class="btn small ghost">Reset</button></form>
+          <form method="post" action="/staff/reset-code" style="display:inline">${csrfField(c.csrf)}<input type="hidden" name="id" value="${st.id}"><button class="btn small ghost" title="Issue a one-time code the member can use on the public “Forgot password” page (no email involved)">Reset code</button></form>
         </td>
       </tr>`)
       .join("")}
@@ -299,7 +300,7 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
 <section class="card">
   <h2>Add staff member</h2>
   <form method="post" action="/staff/add" class="formrow">
-    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    ${csrfField(c.csrf)}
     <div><label>Username</label><input type="text" name="username" required></div>
     <div><label>Display name</label><input type="text" name="display_name" required></div>
     <div><label>Password</label><input type="password" name="password" required></div>

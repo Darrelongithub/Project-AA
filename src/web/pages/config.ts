@@ -13,6 +13,7 @@ import { ADMISSION_SYSTEMS, AdmissionSystem, CaseType, LIFECYCLE_LABELS, RuleNod
 import { esc } from "../views";
 import { head } from "./shared";
 import type { Ctx } from "./shared";
+import { badge, csrfField, emptyState } from "../tpl";
 
 type LegacyAcademicLevel = "degree" | "diploma" | "certificate" | "masters" | "phd";
 
@@ -42,7 +43,7 @@ function attachmentSetsCard(c: Ctx): string {
             <td class="small">${fmt(f.content.length)}</td>
             <td class="small muted">${esc(f.provenance)}</td>
             <td><form method="post" action="/config/attachment-sets/file-delete" style="margin:0">
-              <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="file_id" value="${f.id}">
+              ${csrfField(c.csrf)}<input type="hidden" name="file_id" value="${f.id}">
               <button class="btn small ghost" onclick="return confirm('Remove this file from the set?')">Remove</button></form></td>
           </tr>`).join("") : `<tr><td colspan="4" class="small muted">No files yet — upload a PDF below.</td></tr>`}
         </table>
@@ -52,7 +53,7 @@ function attachmentSetsCard(c: Ctx): string {
           <span class="small muted" id="aset-msg-${s.id}" role="status"></span>
         </div>
         <form method="post" action="/config/attachment-sets/delete" style="margin-top:10px">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="set_id" value="${s.id}">
+          ${csrfField(c.csrf)}<input type="hidden" name="set_id" value="${s.id}">
           <button class="btn small ghost" onclick="return confirm('Delete this entire set?')">Delete set</button>
         </form>
       </div>
@@ -66,7 +67,7 @@ function attachmentSetsCard(c: Ctx): string {
     ${setBlocks || `<p class="muted small">No attachment sets yet — create one below.</p>`}
     <h3 style="margin-top:16px">Create a set</h3>
     <form method="post" action="/config/attachment-sets/create" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      ${csrfField(c.csrf)}
       <div class="field" style="min-width:200px"><span class="lbl">Set name</span><input name="name" required placeholder="e.g. Enquiry pack"></div>
       <div class="field" style="min-width:260px"><span class="lbl">Description</span><input name="description" placeholder="What this set is for"></div>
       <button class="btn">Create set</button>
@@ -112,10 +113,10 @@ function documentsPackCard(c: Ctx): string {
     c.repo.listAttachmentSetFiles(s.id).map((f) => `<tr>
       <td>${esc(f.filename)}</td>
       <td class="small">${fmt(f.content.length)}</td>
-      <td class="small"><span class="badge b-gray">${esc(s.name)}</span></td>
+      <td class="small">${badge("gray", s.name)}</td>
       <td class="small muted">${esc(f.provenance)}</td>
       <td><form method="post" action="/config/attachment-sets/file-delete" style="margin:0">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="file_id" value="${f.id}">
+        ${csrfField(c.csrf)}<input type="hidden" name="file_id" value="${f.id}">
         <button class="btn small ghost" onclick="return confirm('Remove this file from the library?')">Remove</button></form></td>
     </tr>`));
   const manifest = packManifest(c.repo, orgId);
@@ -222,14 +223,14 @@ function conditionValuePicker(system: string, level: LegacyAcademicLevel, node: 
 
 /** Recursive visual builder for one node of the rule tree. */
 function ruleNodeEditor(c: Ctx, target: string, system: string, node: RuleNode, depth: number, subjects: string[], level: LegacyAcademicLevel): string {
-  const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
+  const csrf = csrfField(c.csrf);
   const targetFields = `<input type="hidden" name="target" value="${esc(target)}"><input type="hidden" name="system" value="${esc(system)}">`;
   const pad = depth * 18;
 
   if (node.kind === "group") {
     const logicForm = `<form class="node-row" method="post" action="/config/requirements/node-save" style="margin-left:${pad}px">
       ${csrf}${targetFields}<input type="hidden" name="node" value="${node.id}">
-      <span class="badge b-purple">Either/or group</span>
+      ${badge("purple", "Either/or group")}
       <select name="logic" style="width:auto" title="How the options inside this group combine">
         ${["AND", "OR", "NOT"].map((l) => `<option value="${l}" ${node.logic === l ? "selected" : ""}>${l === "OR" ? "any of these (either/or)" : l === "AND" ? "all of these (must all pass)" : "none of these (must all fail)"}</option>`).join("")}
       </select>
@@ -305,14 +306,14 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
     </select>
   </form>`;
 
-  const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
+  const csrf = csrfField(c.csrf);
   const tf = `<input type="hidden" name="target" value="${esc(target)}"><input type="hidden" name="system" value="${esc(system)}">`;
 
   const versionNote = shown
     ? shown.status === "draft"
-      ? `<span class="badge b-orange">DRAFT v${shown.version}</span> <span class="small muted">based on active v${shown.version - 1} — not yet judging anyone</span>`
-      : `<span class="badge b-green">ACTIVE v${shown.version}</span> <span class="small muted">edits create a draft; the active set keeps judging until you activate the replacement</span>`
-    : `<span class="badge b-gray">NO SET YET</span>`;
+      ? `${badge("orange", "DRAFT v", shown.version)} <span class="small muted">based on active v${shown.version - 1} — not yet judging anyone</span>`
+      : `${badge("green", "ACTIVE v", shown.version)} <span class="small muted">edits create a draft; the active set keeps judging until you activate the replacement</span>`
+    : badge("gray", "NO SET YET");
 
   const builder = shown ? `
     <div class="card" style="margin-bottom:14px;padding:12px 16px">
@@ -347,7 +348,7 @@ function requirementsTab(c: Ctx, reqsTarget?: string, reqsSystem?: string): stri
       <table style="margin-top:6px"><tr><th>Subject</th><th>Status</th><th style="min-width:280px">Rename</th><th></th></tr>
         ${items.map((r) => `<tr>
           <td>${esc(r.name)}</td>
-          <td>${r.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-gray">retired</span>`}</td>
+          <td>${r.active ? badge("green", "active") : badge("gray", "retired")}</td>
           <td><form method="post" action="/config/requirements/catalogue-rename" style="display:flex;gap:6px;margin:0">${csrf}<input type="hidden" name="id" value="${r.id}"><input type="text" name="name" value="${esc(r.name)}" style="margin:0"><button class="btn small ghost">Save</button></form></td>
           <td><form method="post" action="/config/requirements/catalogue-toggle" style="margin:0">${csrf}<input type="hidden" name="id" value="${r.id}"><button class="btn small ghost">${r.active ? "Retire" : "Restore"}</button></form></td>
         </tr>`).join("")}
@@ -468,7 +469,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
     : c.user.organization_id ?? 1;
   const organization = c.repo.getOrganization(organizationId);
   const caseTypes = c.repo.listCaseTypes(organizationId);
-  const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
+  const csrf = csrfField(c.csrf);
   const orgPicker = `<form method="get" action="/config" class="inline" style="margin-bottom:16px">
     <input type="hidden" name="tab" value="case-types">
     <label class="small muted">Organization</label>
@@ -544,7 +545,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
       </form>
       <p class="small muted" style="margin-bottom:0">Configure the selected organization, then create a CaseType such as <b>HR_ONBOARDING</b>. Empty rule trees remain undecided and are sent to a human.</p>
     </section>
-    ${caseTypes.length ? `<div class="type-groups">${caseTypeGroups}</div>` : `<div class="empty"><p>No CaseTypes yet for ${esc(organization?.name ?? "this organization")}.</p></div>`}
+    ${caseTypes.length ? `<div class="type-groups">${caseTypeGroups}</div>` : emptyState(`<p>No CaseTypes yet for ${esc(organization?.name ?? "this organization")}.</p>`)}
   </div>`;
 }
 
@@ -770,7 +771,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     return `<details style="margin:8px 0;border:1px solid var(--line2);border-radius:8px">
       <summary style="cursor:pointer;padding:10px 14px"><b>${esc(t.name)}</b> — vocabulary, stages &amp; queues <span class="muted small">(PPR P1-1/P1-2)</span></summary>
       <form method="post" action="/config/case-types/vocabulary" style="padding:10px 16px 16px">
-        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        ${csrfField(c.csrf)}
         <input type="hidden" name="id" value="${t.id}">
         <p class="small muted">Five surface words, defaulted to the current education wording. Internal keys and database columns never move — only what staff and applicants read.</p>
         <div class="formrow">
@@ -794,7 +795,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     <tr><th>Profile</th><th>Education module</th><th>Automation default</th><th>Qualification gate</th><th>Auto-admit</th><th></th></tr>
     ${caseTypes.map((t) => `<tr>
       <td><b>${esc(t.name)}</b> <span class=\"small muted\">${esc(t.code)}</span></td>
-      <td>${t.education_module ? `<span class=\"badge b-purple\">on</span>` : `<span class=\"badge b-gray\">off</span>`}</td>
+      <td>${t.education_module ? badge("purple", "on") : badge("gray", "off")}</td>
       <td><form method=\"post\" action=\"/config/case-types/profile\" style=\"display:flex;gap:6px;margin:0\">
         <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\"><input type=\"hidden\" name=\"id\" value=\"${t.id}\">
         <select name=\"default_reply_action\">
@@ -808,7 +809,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
         <button class=\"btn small ghost\">Save</button>
       </form></td>
       <td>${t.qualification_gate !== 0 ? "on" : "off"}</td>
-      <td>${t.auto_admit ? `<span class=\"badge b-orange\">legacy on</span>` : `<span class=\"badge b-green\">off</span>`}</td>
+      <td>${t.auto_admit ? badge("orange", "legacy on") : badge("green", "off")}</td>
       <td></td>
     </tr>`).join("")}
   </table>
