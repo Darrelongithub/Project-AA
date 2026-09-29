@@ -39,7 +39,11 @@ export function registerMail(app: Express, rt: RouteCtx): void {
   app.get("/mail/thread/:tkey", requireLogin, (req, res) => {
     const tkey = String(req.params.tkey);
     const emails = rt.repo.emailsForThread(tkey);
-    if (!emails.length) {
+    const a = emails.length && emails[0].applicant_id != null ? (rt.repo.getApplicant(emails[0].applicant_id) ?? null) : null;
+    // Realm guard (matches the /case/:id choke point): cross-realm mail —
+    // case-attached or parked — is indistinguishable from missing mail.
+    const crossRealm = a ? !rt.sameRealm(req, a) : emails.length > 0 && (req.staff!.demo ?? 0) !== 0;
+    if (!emails.length || crossRealm) {
       return res.status(404).send(layout({
         title: "Conversation not found",
         institution: rt.instName(req),
@@ -53,13 +57,7 @@ export function registerMail(app: Express, rt: RouteCtx): void {
         </div>`,
       }));
     }
-    const a = emails[0].applicant_id != null ? (rt.repo.getApplicant(emails[0].applicant_id) ?? null) : null;
-    if (a) {
-      if (!rt.repo.applicantVisibleTo(req.staff!, a)) return rt.refuseScope(req, res, "/mail", "← Back to mail");
-    } else if ((req.staff!.demo ?? 0) !== 0) {
-      // Parked mail (no applicant) belongs to the live realm — demo accounts never see it.
-      return rt.refuseScope(req, res, "/mail", "← Back to mail");
-    }
+    if (a && !rt.repo.applicantVisibleTo(req.staff!, a)) return rt.refuseScope(req, res, "/mail", "← Back to mail");
     rt.repo.markThreadRead(tkey);
     const labels = rt.repo.threadLabelState(tkey);
     const backUrl = mailBack(req.query.back, labels.bin ? "/mail?f=bin" : labels.spam ? "/mail?f=spam" : "/mail");
@@ -82,14 +80,10 @@ export function registerMail(app: Express, rt: RouteCtx): void {
   app.post("/mail/thread/:tkey/action", requireLogin, csrfCheck, (req, res) => {
     const tkey = String(req.params.tkey);
     const emails = rt.repo.emailsForThread(tkey);
-    if (!emails.length) return res.status(404).send("Conversation not found.");
-    const a = emails[0].applicant_id != null ? (rt.repo.getApplicant(emails[0].applicant_id) ?? null) : null;
-    if (a) {
-      if (!rt.repo.applicantVisibleTo(req.staff!, a)) return rt.refuseScope(req, res, "/mail", "← Back to mail");
-    } else if ((req.staff!.demo ?? 0) !== 0) {
-      // Parked mail (no applicant) belongs to the live realm — demo accounts never see it.
-      return rt.refuseScope(req, res, "/mail", "← Back to mail");
-    }
+    const a = emails.length && emails[0].applicant_id != null ? (rt.repo.getApplicant(emails[0].applicant_id) ?? null) : null;
+    const crossRealm = a ? !rt.sameRealm(req, a) : emails.length > 0 && (req.staff!.demo ?? 0) !== 0;
+    if (!emails.length || crossRealm) return res.status(404).send("Conversation not found.");
+    if (a && !rt.repo.applicantVisibleTo(req.staff!, a)) return rt.refuseScope(req, res, "/mail", "← Back to mail");
     const action = THREAD_ACTIONS[String(req.body.action ?? "")];
     if (!action) return res.redirect(`/mail/thread/${encodeURIComponent(tkey)}`);
     const refBit = a ? ` (${a.ref_number})` : " (no case)";

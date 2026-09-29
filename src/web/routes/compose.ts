@@ -34,11 +34,15 @@ export function registerCompose(app: Express, rt: RouteCtx): void {
       orientationDates: rt.repo.getSetting("orientation_dates", ""),
     });
   /** Case id from the composer (query or body) — visibility-checked. */
-  const composeCase = (req: Request, raw: unknown): ApplicantRow | null | "refused" => {
+  const composeCase = (req: Request, raw: unknown): ApplicantRow | null | "refused" | "crossRealm" => {
     const id = Number(raw);
     if (!Number.isFinite(id)) return null;
     const a = rt.repo.getApplicant(id);
     if (!a || !rt.repo.applicantVisibleTo(req.staff!, a)) return "refused";
+    // Realm guard (matches the /case/:id choke point): a cross-realm case is
+    // indistinguishable from a non-existent one — demo staff can neither
+    // open nor send to a live case, and vice versa.
+    if (!rt.sameRealm(req, a)) return "crossRealm";
     return a;
   };
 
@@ -48,6 +52,7 @@ export function registerCompose(app: Express, rt: RouteCtx): void {
     if (caseId) {
       const a = composeCase(req, caseId);
       if (a === "refused") return rt.refuseScope(req, res);
+      if (a === "crossRealm") return res.status(404).send("Case not found.");
       if (a) {
         const tpl = templateKey ? rt.repo.getTemplate(templateKey, rt.organizationId(req)) : undefined;
         const rendered = tpl ? renderFor(a, tpl.subject, tpl.body) : undefined;
@@ -68,6 +73,7 @@ export function registerCompose(app: Express, rt: RouteCtx): void {
   app.post("/compose", requireLogin, csrfCheck, async (req, res) => {
     const a = composeCase(req, req.body.case);
     if (a === "refused") return rt.refuseScope(req, res);
+    if (a === "crossRealm") return res.status(404).send("Case not found.");
     if (!a) return res.redirect("/compose");
     // Template choice happens via GET (chips re-render the draft); the POST
     // has exactly one job: send. The template only decides pack + banner.
