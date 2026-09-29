@@ -464,17 +464,21 @@ export function ruleTreeText(nodes: RuleNode[]): string {
 
 function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
   const organizations = c.repo.listOrganizations();
-  const organizationId = selectedOrganizationId && organizations.some((o) => o.id === selectedOrganizationId)
+  // The org picker is an installation-owner surface (same accounts that may
+  // /org/switch): a tenant admin always sees their own catalogue, and a
+  // ?organization= override in the URL is ignored for them.
+  const canSwitch = c.user.role === "admin" && c.user.can_switch_org === true;
+  const organizationId = canSwitch && selectedOrganizationId && organizations.some((o) => o.id === selectedOrganizationId)
     ? selectedOrganizationId
     : c.user.organization_id ?? 1;
   const organization = c.repo.getOrganization(organizationId);
   const caseTypes = c.repo.listCaseTypes(organizationId);
   const csrf = csrfField(c.csrf);
-  const orgPicker = `<form method="get" action="/config" class="inline" style="margin-bottom:16px">
+  const orgPicker = canSwitch ? `<form method="get" action="/config" class="inline" style="margin-bottom:16px">
     <input type="hidden" name="tab" value="case-types">
     <label class="small muted">Organization</label>
     <select name="organization" onchange="this.form.submit()">${organizations.map((o) => `<option value="${o.id}" ${o.id === organizationId ? "selected" : ""}>${esc(o.name)} · ${esc(o.ref_prefix)}</option>`).join("")}</select>
-  </form>`;
+  </form>` : `<p class="small muted" style="margin-bottom:16px">Organization: <strong>${esc(organization?.name ?? "")}</strong> · ${esc(organization?.ref_prefix ?? "")}</p>`;
   const typeCard = (ct: CaseType): string => {
     const definitions = c.repo.listDocumentDefinitions(ct.id);
     const rules = c.repo.caseTypeRules(ct);

@@ -51,6 +51,16 @@ export function templateDefaultSnapshot(repo: Repo, key: string, organizationId 
  *  workflow profile (0 = organization-wide); the default snapshot is
  *  captured at creation and never rewritten by later edits. */
 export function upsertTemplate(repo: Repo, key: string, name: string, subject: string, body: string, includeBanner?: boolean, attachPack?: string, organizationId = 1, caseTypeId = 0): void {
+  // A CaseType-scoped template must name a CaseType that exists AND belongs
+  // to the template's organization — a forged id otherwise cross-links two
+  // tenants' catalogues (the id is route input; validated here so every
+  // caller is covered). 0/undefined stays org-wide.
+  if (caseTypeId > 0) {
+    const ct = repo.caseTypeById(caseTypeId);
+    if (!ct || ct.organization_id !== organizationId) {
+      throw new Error(`Unknown CaseType #${caseTypeId} for organization ${organizationId}`);
+    }
+  }
   // PPR P0-5 (E3 close): a template may attach NOTHING or one of the
   // organization's OWN attachment sets — validated here at the repo level,
   // not just in one route. Unknown refs fail loudly; nothing is silently

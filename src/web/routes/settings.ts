@@ -351,13 +351,19 @@ export function registerSettings(app: Express, rt: RouteCtx): void {
     const cat = String(req.body.category ?? "");
     const mode = String(req.body.mode ?? "auto") === "draft" ? "draft" : "auto";
     if (cat) {
-      rt.repo.setAutomationMode(cat, mode);
+      try {
+        rt.repo.setAutomationMode(cat, mode);
+      } catch {
+        return res.redirect(`/settings?msg=${encodeURIComponent(`Unknown automation category '${cat}' — nothing changed.`)}`);
+      }
       rt.repo.audit(null, req.staff!.username, "automation_changed", `category '${cat}' → ${mode}`);
     }
     res.redirect("/settings");
   });
 
   app.post("/settings/intake-deadline", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    // Intakes are a global (Organization 1) list — tenant admins use CaseTypes.
+    if ((req.staff!.organization_id ?? 1) !== 1) return res.redirect("/config?tab=case-types&msg=Use+CaseTypes+for+this+organization");
     const name = String(req.body.name ?? "").trim();
     const deadline = String(req.body.deadline ?? "").trim();
     if (name) {
@@ -388,7 +394,9 @@ export function registerSettings(app: Express, rt: RouteCtx): void {
   });
 
   app.post("/settings/lists/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    if ((req.staff!.organization_id ?? 1) !== 1 && (req.body.prog_code || req.body.prog_name)) return res.redirect("/config?tab=case-types&msg=Use+CaseTypes+for+this+organization");
+    // Programmes AND intakes are Organization 1's global lists (the old
+    // gate covered programmes only — a tenant intake add polluted org 1).
+    if ((req.staff!.organization_id ?? 1) !== 1) return res.redirect("/config?tab=case-types&msg=Use+CaseTypes+for+this+organization");
     const added: string[] = [];
     if (req.body.prog_code && req.body.prog_name) {
       const school = String(req.body.prog_school ?? "").trim();

@@ -3,7 +3,7 @@
  * every function takes the Repo as its first argument and the Repo
  * facade in ../repo.ts delegates to it (same API, same behaviour).
  */
-import { ApplicantRow } from "../../types";
+import { ApplicantRow, EMAIL_CATEGORY_LABELS } from "../../types";
 import type { Repo } from "../repo";
 import { nowIso } from "./shared";
 
@@ -17,6 +17,14 @@ export function automationMode(repo: Repo, category: string): "auto" | "draft" {
 
 
 export function setAutomationMode(repo: Repo, category: string, mode: "auto" | "draft"): void {
+  // The pipeline keys reads off the 8 email categories plus "normal" (the
+  // applicant-default bucket in decisions.ts, pinned by
+  // decision-provenance.test.ts). Anything else — programme code, typo,
+  // forged form value — would write a row the /settings page never shows
+  // while the writer believes they changed behaviour. Refuse it loudly.
+  if (!(category in EMAIL_CATEGORY_LABELS) && category !== "normal") {
+    throw new Error(`Unknown automation category '${category}'`);
+  }
   repo.db
     .prepare(
       "INSERT INTO automation_config (category, mode) VALUES (?, ?) ON CONFLICT(category) DO UPDATE SET mode = excluded.mode"

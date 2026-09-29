@@ -26,11 +26,20 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
    */
   app.post("/config/reevaluate-open", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#rules`;
+    const orgId = rt.organizationId(req);
     let done = 0;
     let failed = 0;
+    let skipped = 0;
     for (const id of rt.repo.openApplicantIds()) {
       const a = rt.repo.getApplicant(id);
       if (!a || !rt.sameRealm(req, a)) continue;
+      // This bulk action re-runs the ACADEMIC engine: it is confined to the
+      // acting org, and generic (CaseType) profiles are left to their own
+      // rule trees — running degree requirements against an HR file
+      // overwrote its flags with academic verdicts (the pipeline already
+      // excludes non-education cases; this route did not).
+      if ((a.organization_id ?? 1) !== orgId) { skipped++; continue; }
+      if (!rt.repo.educationCaseFor(a)) { skipped++; continue; }
       try {
         const flags = rt.repo.activeFlags(id).filter((f) => f.type !== "duplicate_submission");
         const result = evaluateAdmission(rt.repo, id, flags, { autoAdmit: autoAdmitPolicy(rt.repo, id) });
@@ -43,9 +52,9 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
         rt.repo.audit(id, req.staff!.username, "evaluation_rerun_failed", (e as Error).message.slice(0, 200));
       }
     }
-    rt.repo.audit(null, req.staff!.username, "bulk_reevaluation", `${done} open case(s) re-evaluated${failed ? `, ${failed} failed` : ""}`);
+    rt.repo.audit(null, req.staff!.username, "bulk_reevaluation", `${done} open case(s) re-evaluated${failed ? `, ${failed} failed` : ""}${skipped ? `, ${skipped} skipped (other org or non-education)` : ""}`);
     res.redirect(back(
-      `Re-evaluated ${done} open case(s) against their frozen rule sets.${failed ? ` ${failed} case(s) failed — see their audit trails.` : ""}`
+      `Re-evaluated ${done} open case(s) against their frozen rule sets.${failed ? ` ${failed} case(s) failed — see their audit trails.` : ""}${skipped ? ` ${skipped} case(s) skipped (other organization or generic profile).` : ""}`
     ));
   });
 
@@ -89,9 +98,21 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
       ));
   });
 
+  // Generic CaseType administration. Installation-owner admins (the same
+  // accounts that may /org/switch) manage every organization's catalogue
+  // through the tab's org picker; tenant admins are confined to their own
+  // organization — a forged organization_id outside it is refused.
+  const caseTypesTargetOk = (req: Request, organizationId: number): boolean =>
+    req.staff!.can_switch_org === true || organizationId === rt.organizationId(req);
+  const caseTypesRefused = (organizationId: number): string =>
+    `/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent("That organization is outside your administration scope — nothing was changed.")}`;
+
   // Generic CaseType administration. These routes are organization-scoped;
   // no academic catalogue or global settings are touched.
   app.post("/config/organizations/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    // Only installation-owner admins may mint organizations; a tenant admin
+    // creating orgs they cannot see would strand half-configured tenants.
+    if (req.staff!.can_switch_org !== true) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("Only an installation administrator can create organizations.")}`);
     const name = String(req.body.name ?? "").trim();
     const refPrefix = String(req.body.ref_prefix ?? "").trim().toUpperCase();
     if (!name || !/^[A-Z]{1,8}$/.test(refPrefix)) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("Organization name and a 1–8 letter reference prefix are required.")}`);
@@ -288,7 +309,7 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
   app.post("/config/case-types/vocabulary", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const id = Number(req.body.id);
     const ct = rt.repo.listCaseTypes(req.staff!.organization_id ?? 1).find((x) => x.id === id)
-      ?? rt.repo.caseTypeById(id);
+      ?? (req.staff!.can_switch_org === true ? rt.repo.caseTypeById(id) : undefined);
     if (!ct) return res.redirect(`/config?tab=rules&msg=${encodeURIComponent("Unknown profile.")}`);
     const parseIdLabels = (text: string): Array<{ id: string; label: string; requires?: string[] }> =>
       String(text ?? "").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
@@ -330,6 +351,7 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
 
   app.post("/config/case-types/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
+    if (!caseTypesTargetOk(req, organizationId)) return res.redirect(caseTypesRefused(organizationId));
     const code = String(req.body.code ?? "").trim();
     const name = String(req.body.name ?? "").trim();
     const category = String(req.body.category ?? "general").trim() || "general";
@@ -341,6 +363,7 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
 
   app.post("/config/case-types/document", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
+    if (!caseTypesTargetOk(req, organizationId)) return res.redirect(caseTypesRefused(organizationId));
     const caseTypeId = Number(req.body.case_type_id);
     const ct = rt.repo.listCaseTypes(organizationId).find((x) => x.id === caseTypeId);
     const key = String(req.body.key ?? "").trim();
@@ -353,6 +376,7 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
 
   app.post("/config/case-types/document-delete", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
+    if (!caseTypesTargetOk(req, organizationId)) return res.redirect(caseTypesRefused(organizationId));
     const caseTypeId = Number(req.body.case_type_id);
     const ct = rt.repo.listCaseTypes(organizationId).find((x) => x.id === caseTypeId);
     if (ct) rt.repo.deleteDocumentDefinition(caseTypeId, String(req.body.key ?? ""));
@@ -361,6 +385,7 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
 
   app.post("/config/case-types/rules", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
+    if (!caseTypesTargetOk(req, organizationId)) return res.redirect(caseTypesRefused(organizationId));
     const caseTypeId = Number(req.body.case_type_id);
     const ct = rt.repo.listCaseTypes(organizationId).find((x) => x.id === caseTypeId);
     if (!ct) return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent("Unknown CaseType — no rules saved.")}`);
@@ -379,6 +404,7 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
 
   app.post("/config/case-types/axes", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
+    if (!caseTypesTargetOk(req, organizationId)) return res.redirect(caseTypesRefused(organizationId));
     if (!rt.repo.getOrganization(organizationId)) return res.redirect("/config?tab=case-types&msg=Unknown+organization");
     try {
       const parsed: unknown = JSON.parse(String(req.body.axes_json ?? "[]"));
@@ -512,7 +538,17 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
     return { programme, level: normalized, system, back };
   };
 
+  // The academic-compat surface (rule trees, subject catalogue, schools)
+  // is Organization 1's domain — the GET tab already redirects other orgs
+  // away, and these POSTs must refuse them too. Same rule as course-owner.
+  const org1Only = (req: Request): string | null =>
+    (req.staff!.organization_id ?? 1) !== 1
+      ? "/config?tab=case-types&msg=Academic+compatibility+routes+are+Organization+1+only"
+      : null;
+
   app.post("/config/requirements/node-add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const refused = org1Only(req);
+    if (refused) return res.redirect(refused);
     const t = reqsTarget(req);
     if (!t) return res.redirect("/config?tab=requirements");
     const set = rt.repo.ensureDraftSet(t.programme, t.level, t.system, req.staff!.username);
@@ -524,6 +560,8 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
   });
 
   app.post("/config/requirements/node-save", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const refused = org1Only(req);
+    if (refused) return res.redirect(refused);
     const t = reqsTarget(req);
     if (!t) return res.redirect("/config?tab=requirements");
     const nodeId = Number(req.body.node);
@@ -556,6 +594,8 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
   });
 
   app.post("/config/requirements/node-delete", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const refused = org1Only(req);
+    if (refused) return res.redirect(refused);
     const t = reqsTarget(req);
     if (!t) return res.redirect("/config?tab=requirements");
     const nodeId = Number(req.body.node);
@@ -568,6 +608,8 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
   });
 
   app.post("/config/requirements/activate", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const refused = org1Only(req);
+    if (refused) return res.redirect(refused);
     const t = reqsTarget(req);
     if (!t) return res.redirect("/config?tab=requirements");
     const draft = rt.repo.getDraftSet(t.programme, t.level, t.system);
@@ -582,6 +624,8 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
   });
 
   app.post("/config/requirements/discard", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const refused = org1Only(req);
+    if (refused) return res.redirect(refused);
     const t = reqsTarget(req);
     if (!t) return res.redirect("/config?tab=requirements");
     const draft = rt.repo.getDraftSet(t.programme, t.level, t.system);
@@ -590,6 +634,8 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
   });
 
   app.post("/config/requirements/catalogue-add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const refused = org1Only(req);
+    if (refused) return res.redirect(refused);
     const system = String(req.body.system ?? "").trim();
     const name = String(req.body.name ?? "").trim();
     const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#catalogue`;
@@ -604,6 +650,8 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
   });
 
   app.post("/config/requirements/catalogue-rename", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const refused = org1Only(req);
+    if (refused) return res.redirect(refused);
     const id = Number(req.body.id);
     const name = String(req.body.name ?? "").trim();
     const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#catalogue`;
@@ -620,6 +668,8 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
   // OR-6: schools & courses live on ONE page — schools are first-class so a
   // faculty exists before its first course and renames cascade to courses.
   app.post("/config/schools/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const refused = org1Only(req);
+    if (refused) return res.redirect(refused);
     const name = String(req.body.name ?? "").trim();
     const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#schools`;
     if (!name) return res.redirect(back("School name was empty — nothing added."));
@@ -629,6 +679,8 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
   });
 
   app.post("/config/schools/rename", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const refused = org1Only(req);
+    if (refused) return res.redirect(refused);
     const from = String(req.body.from ?? "").trim();
     const to = String(req.body.to ?? "").trim();
     const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#schools`;
@@ -641,6 +693,8 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
   });
 
   app.post("/config/requirements/catalogue-toggle", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const refused = org1Only(req);
+    if (refused) return res.redirect(refused);
     const id = Number(req.body.id);
     const row = rt.repo.listSubjectCatalogue().find((r) => r.id === id);
     if (row) {

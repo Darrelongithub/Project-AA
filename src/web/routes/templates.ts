@@ -65,7 +65,11 @@ export function registerTemplates(app: Express, rt: RouteCtx): void {
     if (rt.repo.getTemplate(key, rt.organizationId(req), caseTypeId || undefined)) {
       return res.redirect(`/templates?template=${encodeURIComponent(key)}&msg=${encodeURIComponent("That key already exists for this organization — opening it instead.")}`);
     }
-    rt.repo.upsertTemplate(key, name, `Subject for ${name}`, `Hello {name},\n\n\n\nKind regards,\n{institution}`, true, "none", rt.organizationId(req), caseTypeId);
+    try {
+      rt.repo.upsertTemplate(key, name, `Subject for ${name}`, `Hello {name},\n\n\n\nKind regards,\n{institution}`, true, "none", rt.organizationId(req), caseTypeId);
+    } catch (e) {
+      return res.redirect(`/templates?msg=${encodeURIComponent(`Template not created: ${(e as Error).message}`)}`);
+    }
     rt.repo.audit(null, req.staff!.username, "template_created", `${key}${caseTypeId ? ` [profile #${caseTypeId}]` : ""}`);
     res.redirect(`/templates?template=${encodeURIComponent(key)}&msg=${encodeURIComponent(`Template “${name}” created — its first version is its saved default.`)}`);
   });
