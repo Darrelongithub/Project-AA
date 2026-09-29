@@ -1,7 +1,7 @@
 /**
  * Owner acceptance gates (OR-1 … OR-8). One describe block per issue ID.
  * Every test here was written BEFORE the fix and watched fail (RED), then
- * pass (GREEN). See OWNER_ISSUES.md for the evidence log.
+ * pass (GREEN). See BUGS.md for the defect index (per-round evidence in git history).
  */
 import { describe, expect, it } from "vitest";
 import { webLogin } from "./helpers";

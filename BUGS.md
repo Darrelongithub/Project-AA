@@ -1,14 +1,22 @@
-# BUGS — consolidated defect index (all audit/review rounds)
+# BUGS — the defect index (all audit/review rounds)
 
-**This is the single consolidated bug table.** Every defect, regression,
-false positive, and piece of open hardening guidance from the historical
-audit/review documents is indexed here exactly once, verified against the
-current code on 2026-09-28, and marked fixed / not-a-bug / accepted /
-open. The historical documents (`AUDIT.md`, `BUGLOG.md`, `CODE_REVIEW.md`,
-`MIGRATION.md`, `OWNER_ISSUES.md`, `PPR-REPORT.md`, `REPORT.md`,
-`STAB-ROUND-REPORT.md`) are kept untouched as the audit trail — this file
-is the index, they are the evidence. Nothing was deleted: the 42 defects
-from the original bughunt `BUGS.md` are rows BH-01…BH-42 below.
+**This is the single bug file.** Every defect, regression, false
+positive, and piece of open hardening guidance from every audit/review
+round is indexed here exactly once, verified against the code on
+2026-09-28, and marked fixed / not-a-bug / accepted / open. The 42
+defects from the original bughunt `BUGS.md` are rows BH-01…BH-42 below.
+
+**Merge note (2026-09-29):** the per-round reports (`AUDIT.md`,
+`BUGLOG.md`, `CODE_REVIEW.md`, `OWNER_ISSUES.md`, `PPR-REPORT.md`,
+`REPORT.md`, `STAB-ROUND-REPORT.md`) were consolidated here in Phase 7
+and then deleted — this file is the mash, there is no other bug report.
+`Source` citations below still name those documents; they refer to the
+pre-merge texts, recoverable from git history, e.g.
+`git log --all --oneline -- OWNER_ISSUES.md` then
+`git show <commit>:OWNER_ISSUES.md`. Still-live decisions and operator
+notes that lived only in those reports are carried forward in the
+appendix at the bottom of this file. (`MIGRATION.md` was never a bug
+report — it is the migration plan — and stays.)
 
 ## Verification methodology (2026-09-28)
 
@@ -290,8 +298,69 @@ defects (migration plan + rollback + verification) and contributes no rows.
 
 
 
-d contributes no rows.
 
 
 
 
+## Appendix — carried-forward decisions & operator notes (merge 2026-09-29)
+
+Still-live content from the deleted per-round reports. Everything else
+they held (RED→GREEN narratives, commit hashes, gate counts) survives in
+git history — `git log -- <report>` — and every behavior below is pinned
+by the test files named in the rows above.
+
+### Owner interpretations still governing behavior (ex OWNER_ISSUES.md / REPORT.md)
+
+- Scoping is by **school**; the scope matrix is admin-only; nobody loses
+  access until an admin explicitly saves a scope; an assigned-but-empty
+  set matches nothing, never everything. (OR-8)
+- The pack flag is a property of the **template**, so automated and manual
+  sends cannot diverge; Reset restores only shipped `TEMPLATE_DEFAULTS` —
+  nothing is invented. (OR-7)
+- The application fee is not a document slot; KCPE is never required for
+  Kenyan applicants; exports stay admin-only. (OR-5 / OR-8)
+- Login CSRF uses a double-submit token (no session exists pre-login);
+  sign-in pages mint a fresh token on every render. (hostile review #18)
+- "Hostels list / Data Protection never appear" was a send-path integrity
+  defect (attachments invisible in-console + dropped by held-draft
+  approval), fixed — pack content was always complete. (#17)
+
+### Operator notes (ex STAB-ROUND-REPORT.md / REPORT.md)
+
+- M-2: the one-time mixed-case username fold SKIPS loudly if both `Admin`
+  and `admin` exist — resolve the duplicate manually; it never violates
+  UNIQUE by itself.
+- `npm run simulate` requires Tesseract OCR (the scanned-KCPE fixture
+  exercises the real OCR tier); `DISABLE_OCR=1` applies to the vitest
+  stress slice only.
+- Stress determinism re-runs a 13-case sample by design (a full re-run
+  would double wall time).
+- Legacy `/queue` and `/team` aliases still resolve; retire them once no
+  external links rely on them.
+
+### PPR reconciliation decisions (ex PPR-REPORT.md)
+
+- Profile "version" is an integer (`config_version`), not a content hash —
+  staff can read it in re-evaluation messages. (S1-3)
+- Reply verbs are `none|draft|send|hold` plus `approve`; the follow-up
+  policy adds a rung action — the base list could not express §2-3's
+  four-way requirement. (S1-4 / S2-3)
+- `PACK_SLOTS` / `applicationPack()` / `admissionPack()` stay as labeled
+  migration readers (the legacy profile and `test/pack.test.ts` depend on
+  them); removed from the send path and UI only. (S1-5)
+- `from_name` was wired into MIME via `organizationSender`, not removed —
+  P1-5 lists it as required behavior. (S2-5)
+- Stage order stays lifecycle order (the history spine); only
+  labels/membership are configurable. (S2-2)
+- `approve_automation` gates only `needs_approval=1` drafts — ordinary
+  drafts stay officer work per §2-3. (S2-8)
+- Response-targets settings supersede the older removal (an explicit later
+  requirement beats the earlier decision); the retention-UI ban stands
+  (P1-6 never asked for it). (S2-6)
+
+### Where the evidence lives now
+
+- RED→GREEN narratives, commit hashes, gate counts: git history.
+- Live behavior pins: the test files named in each row's Repro column.
+- Current status: `STATUS.md`. Migration plan: `MIGRATION.md`. Archive-key
+  contract: `ARCHIVE_ENCRYPTION.md`.

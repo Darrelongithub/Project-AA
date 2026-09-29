@@ -1,11 +1,11 @@
 # STATUS — current project status
 
-**This is the single current-status document.** Every other root-level markdown
-(`AUDIT.md`, `BUGLOG.md`, `BUGS.md`, `CODE_REVIEW.md`, `MIGRATION.md`,
-`OWNER_ISSUES.md`, `PPR-REPORT.md`, `REPORT.md`) is historical: kept for the
-audit trail, figures may be stale. When the state of the project changes,
-update THIS file — not the historical ones. The consolidated, verified
-defect index lives in [BUGS.md](./BUGS.md) (Phase 7, 2026-09-28).
+**This is the single current-status document.** The consolidated, verified
+defect index lives in [BUGS.md](./BUGS.md) — the only bug file (the
+per-round reports were merged into it 2026-09-29; their full text survives
+in git history). `MIGRATION.md` is the migration plan,
+`ARCHIVE_ENCRYPTION.md` the archive-key contract, `README.md` the entry
+point. When the state of the project changes, update THIS file.
 
 ## State of the build (as of 2026-09-28)
 

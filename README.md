@@ -82,7 +82,7 @@ demo/simulation, never real Gmail or staff data.
 
 `npm test` — unit + integration + HTTP tests (in-memory DBs, ephemeral ports).
 Acceptance gates for owner-reported issues live in `test/owner-acceptance.test.ts`;
-evidence log in `OWNER_ISSUES.md`.
+evidence log in `BUGS.md` (the defect index; per-round narratives in git history).
 
 ## Static analysis policy
 

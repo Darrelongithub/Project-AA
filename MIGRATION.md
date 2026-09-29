@@ -65,4 +65,4 @@ binary.
 
 `npx vitest test/ppr-p07-migration.test.ts` — 6 tests, each named after the
 invariant it evidences, running against the production-shaped copy described
-above. The Section 3 report (`PPR-REPORT.md`) cites this evidence per finding.
+above. The defect index (`BUGS.md`) cites this evidence where findings depend on it.
