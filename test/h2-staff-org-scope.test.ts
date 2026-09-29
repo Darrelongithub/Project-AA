@@ -162,7 +162,9 @@ describe("H-3: cross-tenant staff writes are refused", () => {
     const html = await res.text();
     expect(html).toContain("Unknown staff member — no code issued.");
     expect(html).not.toMatch(/Reset code issued/);
-    expect(html).not.toMatch(/[A-HJKMNPQRSTUVWXYZ2-9]{10}/);
+    // Scoped to the code block's id: a whole-page code-alphabet regex flaked
+    // on random CSRF/session token runs (failed 2/4 full-suite runs 2026-09-29).
+    expect(html).not.toContain('id="reset-code"');
   });
 
   it("org-2 admin cannot re-scope org-1 staff via /staff/scopes", async () => {
