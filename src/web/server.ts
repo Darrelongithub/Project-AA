@@ -22,6 +22,7 @@ import { registerSettings } from "./routes/settings";
 import { registerConfig } from "./routes/config";
 import { registerTemplates } from "./routes/templates";
 import { registerStaff } from "./routes/staff";
+import { registerConsole } from "./routes/console";
 import { registerExport } from "./routes/export";
 import { registerSystem } from "./routes/system";
 import type { Repo } from "../db/repo";
@@ -63,6 +64,7 @@ export function createApp(deps: WebDeps): Express {
   registerConfig(app, rt);
   registerTemplates(app, rt);
   registerStaff(app, rt);
+  registerConsole(app, rt);
   registerExport(app, rt);
   registerSystem(app, rt);
   return app;

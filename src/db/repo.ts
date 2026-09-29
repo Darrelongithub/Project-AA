@@ -391,20 +391,20 @@ export class Repo {
   }
 
   // ── Phase 12 admin security console (org-scoped in SQL) ────────────────
-  consoleLogins(orgId: number, since?: string): consoleq.ConsoleLoginRow[] {
-    return consoleq.consoleLogins(this, orgId, since);
+  consoleLogins(orgId: number, since?: string, until?: string): consoleq.ConsoleLoginRow[] {
+    return consoleq.consoleLogins(this, orgId, since, until);
   }
-  consoleLoginFailCounts(orgId: number, since?: string): Array<{ actor: string; display_name: string; fails: number; last_at: string }> {
-    return consoleq.consoleLoginFailCounts(this, orgId, since);
+  consoleLoginFailCounts(orgId: number, since?: string, until?: string): Array<{ actor: string; display_name: string; fails: number; last_at: string }> {
+    return consoleq.consoleLoginFailCounts(this, orgId, since, until);
   }
-  consoleRuns(orgId: number, since?: string): consoleq.ConsoleRunRow[] {
-    return consoleq.consoleRuns(this, orgId, since);
+  consoleRuns(orgId: number, since?: string, until?: string): consoleq.ConsoleRunRow[] {
+    return consoleq.consoleRuns(this, orgId, since, until);
   }
-  consoleErrors(orgId: number, since?: string): consoleq.ConsoleErrorRow[] {
-    return consoleq.consoleErrors(this, orgId, since);
+  consoleErrors(orgId: number, since?: string, until?: string): consoleq.ConsoleErrorRow[] {
+    return consoleq.consoleErrors(this, orgId, since, until);
   }
-  consoleAlerts(orgId: number, since?: string): consoleq.ConsoleAlertRow[] {
-    return consoleq.consoleAlerts(this, orgId, since);
+  consoleAlerts(orgId: number, since?: string, until?: string): consoleq.ConsoleAlertRow[] {
+    return consoleq.consoleAlerts(this, orgId, since, until);
   }
   consoleTamperOutcomes(orgId: number): consoleq.ConsoleTamperRow[] {
     return consoleq.consoleTamperOutcomes(this, orgId);
@@ -412,14 +412,14 @@ export class Repo {
   consoleTamperActors(orgId: number): consoleq.ConsoleTamperRow[] {
     return consoleq.consoleTamperActors(this, orgId);
   }
-  consoleVisionAttempts(orgId: number, since?: string): consoleq.ConsoleVisionRow[] {
-    return consoleq.consoleVisionAttempts(this, orgId, since);
+  consoleVisionAttempts(orgId: number, since?: string, until?: string): consoleq.ConsoleVisionRow[] {
+    return consoleq.consoleVisionAttempts(this, orgId, since, until);
   }
-  consoleRoutings(orgId: number, since?: string): consoleq.ConsoleRoutingRow[] {
-    return consoleq.consoleRoutings(this, orgId, since);
+  consoleRoutings(orgId: number, since?: string, until?: string): consoleq.ConsoleRoutingRow[] {
+    return consoleq.consoleRoutings(this, orgId, since, until);
   }
-  consoleFallbackTriggers(orgId: number, since?: string): consoleq.ConsoleErrorRow[] {
-    return consoleq.consoleFallbackTriggers(this, orgId, since);
+  consoleFallbackTriggers(orgId: number, since?: string, until?: string): consoleq.ConsoleErrorRow[] {
+    return consoleq.consoleFallbackTriggers(this, orgId, since, until);
   }
   consoleOrgDuration(orgId: number, days: number): { n: number; avgMs: number } {
     return consoleq.consoleOrgDuration(this, orgId, days);

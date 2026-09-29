@@ -262,3 +262,115 @@ describe("org-scoped durations", () => {
     expect(org!.sum).toBeGreaterThanOrEqual(0);
   });
 });
+
+describe("console route access + rendering (HTTP)", () => {
+  let crepo: Repo;
+  let server: Server;
+  let base: string;
+  let r1: string;
+  let r2: string;
+  let rb: string;
+
+  beforeAll(async () => {
+    crepo = new Repo(openDb(":memory:"));
+    seedDefaults(crepo);
+    crepo.createStaff("kadmin1", "K Admin One", hashPassword("pw1pw1pw1"), "admin", false, 1);
+    crepo.createStaff("kadmin2", "K Admin Two", hashPassword("pw2pw2pw2"), "admin", false, 2);
+    crepo.createStaff("kuser1", "K User One", hashPassword("pw3pw3pw3"), "user", false, 1);
+    const ka1 = crepo.getOrCreateApplicant("ka1@example.org", "kt-a1", { organizationId: 1 }).id;
+    const ka2 = crepo.getOrCreateApplicant("ka2@example.org", "kt-a2", { organizationId: 1 }).id;
+    const kb1 = crepo.getOrCreateApplicant("kb1@example.org", "kt-b1", { organizationId: 2 }).id;
+    crepo.db.prepare("UPDATE applicants SET organization_id = 2 WHERE id = ?").run(kb1);
+    r1 = crepo.requireApplicant(ka1).ref_number;
+    r2 = crepo.requireApplicant(ka2).ref_number;
+    rb = crepo.requireApplicant(kb1).ref_number;
+    // logins
+    crepo.audit(null, "kadmin1", "staff_login", "ip=1.2.3.4");
+    // runs (one fresh, one backdated)
+    crepo.insertEmail({ applicant_id: ka1, message_id: "km1", thread_id: "kt-a1", direction: "in", from_addr: "ka1@example.org", to_addr: "", subject: "Hello", body: "hi", category: null, auto: 0, at: "2026-09-29T10:00:00.000Z" });
+    crepo.insertDecisionLog({ applicant_id: ka1, triggering_email_id: "km1", computed_status: "Green", reasoning: "ok", auto_sent: true });
+    crepo.insertDecisionLog({ applicant_id: ka2, triggering_email_id: "km2", computed_status: "Red", reasoning: "old", auto_sent: false });
+    crepo.db.prepare("UPDATE decision_logs SET timestamp = '2020-05-05 05:05:05' WHERE applicant_id = ?").run(ka2);
+    // errors + decoy
+    crepo.audit(ka1, "system", "send_failed", "smtp boom");
+    crepo.audit(kb1, "system", "send_failed", "other org boom");
+    crepo.insertDecisionLog({ applicant_id: kb1, triggering_email_id: "kmB", computed_status: "Red", reasoning: "no", auto_sent: false });
+    // tampering: ka1 decided twice (multi_decision)
+    crepo.audit(ka1, "kadmin1", "human_admission_decision", "admit");
+    crepo.audit(ka1, "kadmin1", "human_admission_decision", "admit again");
+    crepo.db.prepare("UPDATE applicants SET admission_decision = 'admitted_after_review', admission_route = 'human', decision_by = 'kadmin1' WHERE id = ?").run(ka1);
+    // health: 1 success + 1 timeout failure + human fallback on ka1; decoy failure on kb1
+    crepo.insertDocument({ applicant_id: ka1, document_type: "unknown", source_email_id: "km1", extraction_method: "gemini_vision", extracted_text: "t", extracted_fields: {}, confidence: "high", received_at: new Date().toISOString() });
+    crepo.insertDocument({ applicant_id: ka1, document_type: "unknown", source_email_id: "km1", extraction_method: "none", extracted_text: "", extracted_fields: {}, confidence: "low", received_at: new Date().toISOString(), extraction_note: "Vision model unavailable (timeout). kept." });
+    crepo.insertDocument({ applicant_id: kb1, document_type: "unknown", source_email_id: "kmB", extraction_method: "none", extracted_text: "", extracted_fields: {}, confidence: "low", received_at: new Date().toISOString(), extraction_note: "Vision model unavailable (api). kept." });
+    crepo.insertEvaluation({ applicant_id: ka1, set_id: null, programme: null, system: null, set_version: null, result: "undetermined", routing: "human_review", reason: "r", reason_code: "manual_decision_required", detail: "{}", rule_snapshot: "[]" });
+    crepo.audit(ka1, "system", "human_review_triggered", "why");
+
+    const sender = new MockSender();
+    const ctx: PipelineContext = { repo: crepo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
+    const app = createApp({ repo: crepo, ctx });
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, "127.0.0.1", () => resolve()) as unknown as Server;
+    });
+    const addr = server.address() as { port: number };
+    base = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterAll(() => {
+    server?.close();
+  });
+
+  async function get(path: string, username: string, password: string): Promise<{ status: number; html: string }> {
+    const l = await webLogin(base, username, password);
+    expect(l.status).toBe(302);
+    const res = await fetch(`${base}${path}`, { headers: { cookie: l.cookie } });
+    return { status: res.status, html: await res.text() };
+  }
+
+  it("refuses non-admin staff with 403", async () => {
+    const r = await get("/console", "kuser1", "pw3pw3pw3");
+    expect(r.status).toBe(403);
+  });
+
+  it("refuses cross-org ?org= with 403 and renders nothing", async () => {
+    const r = await get("/console?org=2", "kadmin1", "pw1pw1pw1");
+    expect(r.status).toBe(403);
+    expect(r.html).not.toContain(rb);
+    expect(r.html).not.toContain(r1);
+  });
+
+  it("scopes every section to the admin's own org", async () => {
+    const a = await get("/console?range=all", "kadmin1", "pw1pw1pw1");
+    expect(a.status).toBe(200);
+    expect(a.html).toContain("Security console");
+    for (const marker of [r1, "Hello", "1.2.3.4", "send_failed", "smtp boom", "decided more than once", "50%", "timeout: 1", "Human-review fallback"]) {
+      expect(a.html, marker).toContain(marker);
+    }
+    expect(a.html).not.toContain(rb);
+    expect(a.html).not.toContain("other org boom");
+    const b = await get("/console?range=all", "kadmin2", "pw2pw2pw2");
+    expect(b.status).toBe(200);
+    expect(b.html).toContain(rb);
+    expect(b.html).not.toContain(r1);
+  });
+
+  it("reflects a simulated vision failure in the health rates", async () => {
+    const a = await get("/console?range=all", "kadmin1", "pw1pw1pw1");
+    // 1 failure of 2 attempts = 50%; the failed case reached human review = 100% fallback.
+    expect(a.html).toContain("Gemini failure rate");
+    expect(a.html).toContain("50%");
+    expect(a.html).toContain("100%");
+  });
+
+  it("range filtering hides out-of-range rows", async () => {
+    const day = await get("/console?range=24h", "kadmin1", "pw1pw1pw1");
+    expect(day.status).toBe(200);
+    expect(day.html).not.toContain(r2); // backdated 2020 run
+    expect(day.html).toContain(r1);
+    const all = await get("/console?range=all", "kadmin1", "pw1pw1pw1");
+    expect(all.html).toContain(r2);
+    const custom = await get("/console?range=custom&from=2020-05-01&to=2020-05-31", "kadmin1", "pw1pw1pw1");
+    expect(custom.html).toContain(r2);
+    expect(custom.html).not.toContain("Hello"); // fresh run outside the window
+  });
+});

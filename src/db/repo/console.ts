@@ -18,10 +18,17 @@ const ORG_APPLICANT = "COALESCE(a.organization_id, 1) = ?";
 /** Org predicate for staff-joined rows (staff_users aliased `u`). */
 const ORG_STAFF = "COALESCE(u.organization_id, 1) = ?";
 
-function sinceSql(col: string, since: string | undefined, params: unknown[]): string {
-  if (since === undefined) return "";
-  params.push(since);
-  return ` AND datetime(${col}) >= datetime(?)`;
+function boundsSql(col: string, since: string | undefined, until: string | undefined, params: unknown[]): string {
+  let sql = "";
+  if (since !== undefined) {
+    params.push(since);
+    sql += ` AND datetime(${col}) >= datetime(?)`;
+  }
+  if (until !== undefined) {
+    params.push(until);
+    sql += ` AND datetime(${col}) <= datetime(?)`;
+  }
+  return sql;
 }
 
 // ── Per-org processing durations (Phase 6 metric, org-suffixed name) ─────
@@ -56,7 +63,7 @@ export interface ConsoleLoginRow {
  * `detail` may be empty. Joining staff_users on the actor both resolves
  * display names AND enforces the org boundary.
  */
-export function consoleLogins(repo: Repo, orgId: number, since?: string): ConsoleLoginRow[] {
+export function consoleLogins(repo: Repo, orgId: number, since?: string, until?: string): ConsoleLoginRow[] {
   const params: unknown[] = [orgId];
   const rows = repo.db
     .prepare(
@@ -64,7 +71,7 @@ export function consoleLogins(repo: Repo, orgId: number, since?: string): Consol
               l.at AS at, l.detail AS detail
        FROM audit_log l JOIN staff_users u ON u.username = l.actor
        WHERE l.event IN ('staff_login', 'staff_login_failed', 'staff_login_blocked') AND ${ORG_STAFF}
-       ${sinceSql("l.at", since, params)}
+       ${boundsSql("l.at", since, until, params)}
        ORDER BY l.id DESC LIMIT 500`
     )
     .all(...params) as ConsoleLoginRow[];
@@ -73,7 +80,7 @@ export function consoleLogins(repo: Repo, orgId: number, since?: string): Consol
 
 /** Failed-login counts per staff member (repeated-failure surfacing). */
 export function consoleLoginFailCounts(
-  repo: Repo, orgId: number, since?: string
+  repo: Repo, orgId: number, since?: string, until?: string
 ): Array<{ actor: string; display_name: string; fails: number; last_at: string }> {
   const params: unknown[] = [orgId];
   return repo.db
@@ -82,7 +89,7 @@ export function consoleLoginFailCounts(
               COUNT(*) AS fails, MAX(l.at) AS last_at
        FROM audit_log l JOIN staff_users u ON u.username = l.actor
        WHERE l.event = 'staff_login_failed' AND ${ORG_STAFF}
-       ${sinceSql("l.at", since, params)}
+       ${boundsSql("l.at", since, until, params)}
        GROUP BY l.actor ORDER BY fails DESC`
     )
     .all(...params) as Array<{ actor: string; display_name: string; fails: number; last_at: string }>;
@@ -107,7 +114,7 @@ export interface ConsoleRunRow {
  * decision latency (email arrival → recorded decision) from existing
  * timestamps — no new per-run timer was added.
  */
-export function consoleRuns(repo: Repo, orgId: number, since?: string): ConsoleRunRow[] {
+export function consoleRuns(repo: Repo, orgId: number, since?: string, until?: string): ConsoleRunRow[] {
   const params: unknown[] = [orgId];
   const rows = repo.db
     .prepare(
@@ -118,7 +125,7 @@ export function consoleRuns(repo: Repo, orgId: number, since?: string): ConsoleR
               e.subject AS subject
        FROM decision_logs d JOIN applicants a ON a.id = d.applicant_id
        LEFT JOIN emails e ON e.message_id = d.triggering_email_id
-       WHERE ${ORG_APPLICANT}${sinceSql("d.timestamp", since, params)}
+       WHERE ${ORG_APPLICANT}${boundsSql("d.timestamp", since, until, params)}
        ORDER BY d.id DESC LIMIT 500`
     )
     .all(...params) as Array<Omit<ConsoleRunRow, "auto_sent"> & { auto_sent: number }>;
@@ -151,7 +158,7 @@ export interface ConsoleErrorRow {
   ref_number: string;
 }
 
-export function consoleErrors(repo: Repo, orgId: number, since?: string): ConsoleErrorRow[] {
+export function consoleErrors(repo: Repo, orgId: number, since?: string, until?: string): ConsoleErrorRow[] {
   // Param order must match the SQL: IN-list, org, since.
   const params: unknown[] = [...CONSOLE_ERROR_EVENTS];
   const placeholders = CONSOLE_ERROR_EVENTS.map(() => "?").join(",");
@@ -162,7 +169,7 @@ export function consoleErrors(repo: Repo, orgId: number, since?: string): Consol
               l.applicant_id AS applicant_id, a.ref_number AS ref_number
        FROM audit_log l JOIN applicants a ON a.id = l.applicant_id
        WHERE l.event IN (${placeholders}) AND ${ORG_APPLICANT}
-       ${sinceSql("l.at", since, params)}
+       ${boundsSql("l.at", since, until, params)}
        ORDER BY l.id DESC LIMIT 500`
     )
     .all(...params) as ConsoleErrorRow[];
@@ -177,7 +184,7 @@ export interface ConsoleAlertRow {
 }
 
 /** Failure-ish notifications tied to the org's cases (escalations, review-needed). */
-export function consoleAlerts(repo: Repo, orgId: number, since?: string): ConsoleAlertRow[] {
+export function consoleAlerts(repo: Repo, orgId: number, since?: string, until?: string): ConsoleAlertRow[] {
   const params: unknown[] = [orgId];
   return repo.db
     .prepare(
@@ -185,7 +192,7 @@ export function consoleAlerts(repo: Repo, orgId: number, since?: string): Consol
               n.applicant_id AS applicant_id, a.ref_number AS ref_number
        FROM notifications n JOIN applicants a ON a.id = n.applicant_id
        WHERE n.kind IN ('escalation', 'review_needed') AND ${ORG_APPLICANT}
-       ${sinceSql("n.at", since, params)}
+       ${boundsSql("n.at", since, until, params)}
        ORDER BY n.id DESC LIMIT 200`
     )
     .all(...params) as ConsoleAlertRow[];
@@ -294,7 +301,7 @@ export interface ConsoleVisionRow {
 }
 
 /** Vision attempts in range: successes (method) + failures (note prefix). */
-export function consoleVisionAttempts(repo: Repo, orgId: number, since?: string): ConsoleVisionRow[] {
+export function consoleVisionAttempts(repo: Repo, orgId: number, since?: string, until?: string): ConsoleVisionRow[] {
   const params: unknown[] = [orgId];
   return repo.db
     .prepare(
@@ -304,7 +311,7 @@ export function consoleVisionAttempts(repo: Repo, orgId: number, since?: string)
        FROM documents d JOIN applicants a ON a.id = d.applicant_id
        WHERE ${ORG_APPLICANT}
          AND (d.extraction_method = 'gemini_vision' OR d.extraction_note LIKE 'Vision model unavailable%')
-       ${sinceSql("d.received_at", since, params)}
+       ${boundsSql("d.received_at", since, until, params)}
        ORDER BY d.id DESC LIMIT 1000`
     )
     .all(...params) as ConsoleVisionRow[];
@@ -320,7 +327,7 @@ export interface ConsoleRoutingRow {
 }
 
 /** Evaluation routings in range (is the human-review fallback firing?). */
-export function consoleRoutings(repo: Repo, orgId: number, since?: string): ConsoleRoutingRow[] {
+export function consoleRoutings(repo: Repo, orgId: number, since?: string, until?: string): ConsoleRoutingRow[] {
   const params: unknown[] = [orgId];
   return repo.db
     .prepare(
@@ -328,14 +335,14 @@ export function consoleRoutings(repo: Repo, orgId: number, since?: string): Cons
               e.result AS result, e.routing AS routing,
               e.reason_code AS reason_code, e.evaluated_at AS evaluated_at
        FROM evaluations e JOIN applicants a ON a.id = e.applicant_id
-       WHERE ${ORG_APPLICANT}${sinceSql("e.evaluated_at", since, params)}
+       WHERE ${ORG_APPLICANT}${boundsSql("e.evaluated_at", since, until, params)}
        ORDER BY e.id DESC LIMIT 1000`
     )
     .all(...params) as ConsoleRoutingRow[];
 }
 
 /** Fallback-firing audits in range (human_review_triggered for org cases). */
-export function consoleFallbackTriggers(repo: Repo, orgId: number, since?: string): ConsoleErrorRow[] {
+export function consoleFallbackTriggers(repo: Repo, orgId: number, since?: string, until?: string): ConsoleErrorRow[] {
   const params: unknown[] = [orgId];
   return repo.db
     .prepare(
@@ -343,7 +350,7 @@ export function consoleFallbackTriggers(repo: Repo, orgId: number, since?: strin
               l.applicant_id AS applicant_id, a.ref_number AS ref_number
        FROM audit_log l JOIN applicants a ON a.id = l.applicant_id
        WHERE l.event = 'human_review_triggered' AND ${ORG_APPLICANT}
-       ${sinceSql("l.at", since, params)}
+       ${boundsSql("l.at", since, until, params)}
        ORDER BY l.id DESC LIMIT 500`
     )
     .all(...params) as ConsoleErrorRow[];

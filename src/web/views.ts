@@ -1229,7 +1229,8 @@ export function layout(opts: {
         { label: "Staff Configuration", hint: "team", href: "/staff", keys: "staff team accounts performance courses ownership" },
         { label: "Configuration", hint: "setup", href: "/config", keys: "courses requirements gmail templates intakes" },
         { label: "Settings", hint: "app", href: "/settings", keys: "settings automation targets retention" },
-        { label: "Metrics", hint: "ops", href: "/metrics", keys: "metrics operations monitoring counters requests email" }
+        { label: "Metrics", hint: "ops", href: "/metrics", keys: "metrics operations monitoring counters requests email" },
+        { label: "Console", hint: "security", href: "/console", keys: "console security monitoring logins runs errors tampering health" }
       );
     }
     paletteLinks.push({ label: "Alerts", hint: "alerts", href: "/#alerts", keys: "alerts notifications bell" });
@@ -1257,6 +1258,7 @@ export function layout(opts: {
             { href: "/templates", label: "Templates", active: "templates" },
             { href: "/settings", label: "Settings", active: "settings" },
             { href: "/metrics", label: "Metrics", active: "metrics" },
+            { href: "/console", label: "Console", active: "console" },
           ]
         : []),
       { href: "/account", label: "Account", active: "account" },
@@ -1264,7 +1266,7 @@ export function layout(opts: {
     const navIcons: Record<string, keyof typeof ICONS> = {
       "Overview": "grid", "Admissions": "chart", "Queues": "inbox", "Mail": "archive",
       "Compose": "send", "Staff Configuration": "users", "Configuration": "gear",
-      "Templates": "clip", "Settings": "gear", "Metrics": "chart", "Account": "users",
+      "Templates": "clip", "Settings": "gear", "Metrics": "chart", "Console": "shield", "Account": "users",
     };
     // DEMO: a visible organization switcher next to the account chip, so an
     // admin can move between tenants without knowing any URL.
