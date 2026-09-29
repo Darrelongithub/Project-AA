@@ -29,6 +29,7 @@ import * as rulesets from "./repo/rulesets";
 import * as vision from "./repo/vision";
 import * as deadletters from "./repo/deadletters";
 import * as metrics from "./repo/metrics";
+import * as consoleq from "./repo/console";
 export { SECRET_KEYS, EDUCATION_STAGE_PRESET, GENERIC_STAGE_PRESET, EDUCATION_QUEUE_PRESET, GENERIC_QUEUE_PRESET } from "./repo/shared";
 
 /** Query shape for {@link Repo.searchApplicants} — shared with the web layer. */
@@ -387,6 +388,38 @@ export class Repo {
 
   decisionLogs(applicantId?: number): DecisionLogEntry[] {
     return cases.decisionLogs(this, applicantId);
+  }
+
+  // ── Phase 12 admin security console (org-scoped in SQL) ────────────────
+  consoleLogins(orgId: number, since?: string): consoleq.ConsoleLoginRow[] {
+    return consoleq.consoleLogins(this, orgId, since);
+  }
+  consoleLoginFailCounts(orgId: number, since?: string): Array<{ actor: string; display_name: string; fails: number; last_at: string }> {
+    return consoleq.consoleLoginFailCounts(this, orgId, since);
+  }
+  consoleRuns(orgId: number, since?: string): consoleq.ConsoleRunRow[] {
+    return consoleq.consoleRuns(this, orgId, since);
+  }
+  consoleErrors(orgId: number, since?: string): consoleq.ConsoleErrorRow[] {
+    return consoleq.consoleErrors(this, orgId, since);
+  }
+  consoleAlerts(orgId: number, since?: string): consoleq.ConsoleAlertRow[] {
+    return consoleq.consoleAlerts(this, orgId, since);
+  }
+  consoleTamperOutcomes(orgId: number): consoleq.ConsoleTamperRow[] {
+    return consoleq.consoleTamperOutcomes(this, orgId);
+  }
+  consoleTamperActors(orgId: number): consoleq.ConsoleTamperRow[] {
+    return consoleq.consoleTamperActors(this, orgId);
+  }
+  consoleVisionAttempts(orgId: number, since?: string): consoleq.ConsoleVisionRow[] {
+    return consoleq.consoleVisionAttempts(this, orgId, since);
+  }
+  consoleRoutings(orgId: number, since?: string): consoleq.ConsoleRoutingRow[] {
+    return consoleq.consoleRoutings(this, orgId, since);
+  }
+  consoleFallbackTriggers(orgId: number, since?: string): consoleq.ConsoleErrorRow[] {
+    return consoleq.consoleFallbackTriggers(this, orgId, since);
   }
 
   approverFor(applicantId: number): { actor: string; at: string } | undefined {
