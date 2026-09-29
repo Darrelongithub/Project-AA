@@ -22,28 +22,27 @@ export function recordDeadLetter(repo: Repo, input: {
   from_addr: string;
   error: string;
 }): { attempts: number; dead: boolean; id: number } {
-  const existing = repo.db
-    .prepare("SELECT * FROM dead_letters WHERE message_id = ?")
-    .get(input.message_id) as (DeadLetter & { dead: number }) | undefined;
-  if (existing) {
-    const attempts = existing.attempts + 1;
-    const dead = attempts >= repo.deadLetterMaxAttempts() ? 1 : existing.dead;
-    repo.db
-      .prepare(
-        `UPDATE dead_letters SET attempts = ?, error = ?, dead = ?, updated_at = datetime('now') WHERE id = ?`
-      )
-      .run(attempts, input.error, dead, existing.id);
-    return { attempts, dead: dead === 1, id: existing.id };
-  }
-  const attempts = 1;
-  const dead = attempts >= repo.deadLetterMaxAttempts() ? 1 : 0;
-  const res = repo.db
+  // Atomic upsert: the old SELECT-then-INSERT raced when two syncs (web
+  // timer + CLI ingest) recorded the same poison message concurrently —
+  // the loser died on UNIQUE(message_id) mid-batch, and concurrent
+  // increments could lose an attempt count. Same observable behaviour
+  // (attempts+1, latest error wins, once dead stays dead).
+  const max = repo.deadLetterMaxAttempts();
+  repo.db
     .prepare(
       `INSERT INTO dead_letters (message_id, subject, from_addr, error, attempts, dead)
-       VALUES (?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, 1, CASE WHEN 1 >= ? THEN 1 ELSE 0 END)
+       ON CONFLICT(message_id) DO UPDATE SET
+         error = excluded.error,
+         attempts = dead_letters.attempts + 1,
+         dead = CASE WHEN dead_letters.attempts + 1 >= ? THEN 1 ELSE dead_letters.dead END,
+         updated_at = datetime('now')`
     )
-    .run(input.message_id, input.subject, input.from_addr, input.error, attempts, dead);
-  return { attempts, dead: dead === 1, id: Number(res.lastInsertRowid) };
+    .run(input.message_id, input.subject, input.from_addr, input.error, max, max);
+  const row = repo.db
+    .prepare("SELECT id, attempts, dead FROM dead_letters WHERE message_id = ?")
+    .get(input.message_id) as { id: number; attempts: number; dead: number };
+  return { attempts: row.attempts, dead: row.dead === 1, id: row.id };
 }
 
 

@@ -75,7 +75,14 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
     const d = rt.repo.getDeadLetter(Number(req.body.id ?? 0));
     if (!d) return res.redirect(back("That parked message no longer exists."));
     rt.repo.removeDeadLetter(d.id);
-    rt.repo.audit(null, req.staff!.username, "dead_letter_dropped", `message ${d.message_id} ("${d.subject}") dropped by staff`);
+    // "Removes it for good" must hold: a dropped letter that is still in
+    // the mailbox would otherwise be re-ingested as new mail on the next
+    // sync (it is not marked processed — poison fails before the claim —
+    // and its dead row is gone, so neither skip gate fires) and re-parked
+    // a few polls later. Bury it in processed_emails, which is keyed by
+    // message id only; the thread was never captured for dead letters.
+    rt.repo.markProcessed(d.message_id, "");
+    rt.repo.audit(null, req.staff!.username, "dead_letter_dropped", `message ${d.message_id} ("${d.subject}") dropped by staff; buried so future syncs skip it`);
     res.redirect(back(`"${d.subject || d.message_id}" was dropped.`));
   });
 

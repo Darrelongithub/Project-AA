@@ -13,6 +13,8 @@ import { casePage, replayPage } from "../pages";
 import { layout } from "../views";
 import { html } from "../tpl";
 import { UNKNOWN_STAFF_MEMBER, csrfCheck, requireLogin, requireRole } from "../auth";
+import { LoginThrottle } from "../throttle";
+import { outgoingMessageId } from "../../util/ids";
 import { emailBanner } from "../../branding";
 import { admissionsPreset } from "../../presets/loader";
 import type { RouteCtx } from "./ctx";
@@ -137,7 +139,7 @@ export function registerCase(app: Express, rt: RouteCtx): void {
         attachments: pack ? pack.files : [],
       });
       rt.repo.insertEmail({
-        applicant_id: id, message_id: `handoff-${draft.id}-${Date.now()}`, thread_id: a.thread_id,
+        applicant_id: id, message_id: outgoingMessageId(`handoff-${draft.id}`), thread_id: a.thread_id,
         direction: "out", from_addr: "", to_addr: a.email_address, subject, body,
         category: null, auto: 0, at: new Date().toISOString(),
         attachments: pack ? pack.files.map((f) => f.filename) : [],
@@ -211,15 +213,11 @@ export function registerCase(app: Express, rt: RouteCtx): void {
 
   // Rapid double-click protection for template sends: the same officer sending
   // the same template to the same case within 5s is treated as one action.
-  const recentSends = new Map<string, number>();
-  const sendGuardOk = (key: string): boolean => {
-    const now = Date.now();
-    if (recentSends.size > 2000) recentSends.clear();
-    const last = recentSends.get(key) ?? 0;
-    if (now - last < 5000) return false;
-    recentSends.set(key, now);
-    return true;
-  };
+  // Shared LoginThrottle (claim-once semantics) instead of the bespoke map,
+  // whose size>2000 bulk clear() was the exact pattern throttle.ts condemns
+  // — and whose entries never expired by time. Same 5s window, same 2000 cap.
+  const sendGuard = new LoginThrottle({ windowMs: 5000, maxFails: 1, maxEntries: 2000 });
+  const sendGuardOk = (key: string): boolean => sendGuard.claim(key);
 
   app.post("/case/:id/send", requireLogin, csrfCheck, async (req, res) => {
     const id = Number(req.params.id);
@@ -257,7 +255,7 @@ export function registerCase(app: Express, rt: RouteCtx): void {
       return res.redirect(rt.backToCase(id, `Send failed: ${(e as Error).message}`));
     }
     rt.repo.insertEmail({
-      applicant_id: id, message_id: `manual-${Date.now()}`, thread_id: a.thread_id, direction: "out",
+      applicant_id: id, message_id: outgoingMessageId("manual"), thread_id: a.thread_id, direction: "out",
       from_addr: "", to_addr: a.email_address, subject: rendered.subject, body: rendered.body, category: null, auto: 0,
       at: new Date().toISOString(),
       attachments: pack ? pack.files.map((f) => f.filename) : [],
@@ -307,7 +305,7 @@ export function registerCase(app: Express, rt: RouteCtx): void {
       return res.redirect(rt.backToCase(id, `Send failed: ${(e as Error).message}`));
     }
     rt.repo.insertEmail({
-      applicant_id: id, message_id: `pack-${Date.now()}`, thread_id: a.thread_id, direction: "out",
+      applicant_id: id, message_id: outgoingMessageId("pack"), thread_id: a.thread_id, direction: "out",
       from_addr: "", to_addr: a.email_address, subject: rendered.subject, body: rendered.body, category: null, auto: 0,
       at: new Date().toISOString(),
       attachments: pack.files.map((f) => f.filename),

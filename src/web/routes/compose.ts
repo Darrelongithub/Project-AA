@@ -8,6 +8,8 @@ import { checklistText, renderTemplate } from "../../drafting";
 import { docLabel } from "../../rules";
 import { composePage, composeWindowPage } from "../pages";
 import { csrfCheck, requireLogin } from "../auth";
+import { LoginThrottle } from "../throttle";
+import { outgoingMessageId } from "../../util/ids";
 import { emailBanner, organizationName } from "../../branding";
 import type { RouteCtx } from "./ctx";
 
@@ -70,6 +72,10 @@ export function registerCompose(app: Express, rt: RouteCtx): void {
     res.send(composeWindowPage(rt.c(req), { matches, q, templateKey }));
   });
 
+  // Same double-click guard as /case/:id/send: without it a double POST
+  // mailed the applicant TWICE (and minted duplicate message_ids).
+  const sendGuard = new LoginThrottle({ windowMs: 5000, maxFails: 1, maxEntries: 2000 });
+
   app.post("/compose", requireLogin, csrfCheck, async (req, res) => {
     const a = composeCase(req, req.body.case);
     if (a === "refused") return rt.refuseScope(req, res);
@@ -88,6 +94,12 @@ export function registerCompose(app: Express, rt: RouteCtx): void {
         error: "Both a subject and a message are needed before this can be sent.",
       }));
     }
+    if (!sendGuard.claim(`${req.staff!.id}:${a.id}:${tpl?.key ?? "-"}:${subject} ${body}`)) {
+      return res.send(composeWindowPage(rt.c(req), {
+        applicant: a, templateKey: tpl?.key, subject, body,
+        error: "Duplicate send ignored — that reply was just sent.",
+      }));
+    }
     const pack = rt.packForTemplate(tpl?.attach_pack, a.id, req.staff!.username);
     try {
       await rt.sendOrgMail(a, subject, body, {
@@ -102,7 +114,7 @@ export function registerCompose(app: Express, rt: RouteCtx): void {
       }));
     }
     rt.repo.insertEmail({
-      applicant_id: a.id, message_id: `composewin-${Date.now()}`, thread_id: a.thread_id, direction: "out",
+      applicant_id: a.id, message_id: outgoingMessageId("composewin"), thread_id: a.thread_id, direction: "out",
       from_addr: "", to_addr: a.email_address, subject, body, category: null, auto: 0,
       at: new Date().toISOString(),
       attachments: pack ? pack.files.map((f) => f.filename) : [],
@@ -132,6 +144,9 @@ export function registerCompose(app: Express, rt: RouteCtx): void {
       const rendered = renderFor(a, subject || tpl.subject, body || tpl.body);
       return res.send(composePage(rt.c(req), a, tpl, rendered, "Both a subject and a body are needed before this can be sent."));
     }
+    if (!sendGuard.claim(`${req.staff!.id}:${a.id}:${tpl.key}:${subject} ${body}`)) {
+      return res.redirect(rt.backToCase(a.id, "Duplicate send ignored — that reply was just sent."));
+    }
     const pack = rt.packForTemplate(tpl.attach_pack, a.id, req.staff!.username);
     try {
       await rt.sendOrgMail(a, subject, body, {
@@ -143,7 +158,7 @@ export function registerCompose(app: Express, rt: RouteCtx): void {
       return res.redirect(rt.backToCase(a.id, `Send failed: ${(e as Error).message}`));
     }
     rt.repo.insertEmail({
-      applicant_id: a.id, message_id: `compose-${Date.now()}`, thread_id: a.thread_id, direction: "out",
+      applicant_id: a.id, message_id: outgoingMessageId("compose"), thread_id: a.thread_id, direction: "out",
       from_addr: "", to_addr: a.email_address, subject, body, category: null, auto: 0, at: new Date().toISOString(),
       attachments: pack ? pack.files.map((f) => f.filename) : [],
     });
