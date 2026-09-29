@@ -299,6 +299,10 @@ export class Repo {
     return cases.getApplicant(this, id);
   }
 
+  findApplicantId(emailAddress: string, threadId: string): number | undefined {
+    return cases.findApplicantId(this, emailAddress, threadId);
+  }
+
   /** getApplicant that throws ApplicantNotFoundError instead of returning undefined. */
   requireApplicant(id: number): ApplicantRow {
     return cases.requireApplicant(this, id);

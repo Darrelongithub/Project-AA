@@ -21,6 +21,9 @@ import { utcDay } from "../src/util/day";
 import { orgDurationMetric } from "../src/db/repo/console";
 import { processEmail } from "../src/pipeline";
 import type { IncomingEmail } from "../src/types";
+import { handleHttpError } from "../src/web/routes/system";
+import { ingestNewEmails } from "../src/ingestion";
+import type { GmailClient } from "../src/ingestion/gmailClient";
 
 let repo: Repo;
 let a1: number; // org 1 applicant
@@ -305,6 +308,10 @@ describe("console route access + rendering (HTTP)", () => {
     crepo.insertDocument({ applicant_id: kb1, document_type: "unknown", source_email_id: "kmB", extraction_method: "none", extracted_text: "", extracted_fields: {}, confidence: "low", received_at: new Date().toISOString(), extraction_note: "Vision model unavailable (api). kept." });
     crepo.insertEvaluation({ applicant_id: ka1, set_id: null, programme: null, system: null, set_version: null, result: "undetermined", routing: "human_review", reason: "r", reason_code: "manual_decision_required", detail: "{}", rule_snapshot: "[]" });
     crepo.audit(ka1, "system", "human_review_triggered", "why");
+    // unhandled exceptions: one per org + one unattributable
+    crepo.recordErrorEvent({ source: "http", applicant_id: ka1, actor: "kadmin1", request: "GET /case/1", message: "render-check kaboom" });
+    crepo.recordErrorEvent({ source: "ingest", request: "mX", message: "unattributable fetch failure" });
+    crepo.recordErrorEvent({ source: "http", applicant_id: kb1, actor: "kadmin2", request: "GET /case/9", message: "org-two kaboom" });
 
     const sender = new MockSender();
     const ctx: PipelineContext = { repo: crepo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
@@ -372,5 +379,149 @@ describe("console route access + rendering (HTTP)", () => {
     const custom = await get("/console?range=custom&from=2020-05-01&to=2020-05-31", "kadmin1", "pw1pw1pw1");
     expect(custom.html).toContain(r2);
     expect(custom.html).not.toContain("Hello"); // fresh run outside the window
+  });
+
+  it("renders unhandled exceptions scoped to the admin's org", async () => {
+    const a = await get("/console?range=all", "kadmin1", "pw1pw1pw1");
+    expect(a.status).toBe(200);
+    expect(a.html).toContain("Unhandled exceptions");
+    expect(a.html).toContain("render-check kaboom");
+    expect(a.html).not.toContain("org-two kaboom");
+    expect(a.html).not.toContain("unattributable fetch failure");
+    const b = await get("/console?range=all", "kadmin2", "pw2pw2pw2");
+    expect(b.status).toBe(200);
+    expect(b.html).toContain("org-two kaboom");
+    expect(b.html).not.toContain("render-check kaboom");
+    expect(b.html).not.toContain("unattributable fetch failure");
+  });
+});
+
+describe("error events (data layer)", () => {
+  function eventCount(): number {
+    return (repo.db.prepare("SELECT COUNT(*) AS n FROM error_events").get() as { n: number }).n;
+  }
+
+  it("records and queries attributed events, newest first", () => {
+    repo.recordErrorEvent({ source: "http", applicant_id: a1, actor: "admin1", request: "GET /case/1", message: "boom1" });
+    // applicant org is authoritative even when the caller passes another org
+    repo.recordErrorEvent({ source: "intake_test", applicant_id: a2, organization_id: 2, actor: "admin1", request: "/intake/test", message: "boom2" });
+    const rows = repo.consoleErrorEvents(1);
+    expect(rows.map((r) => r.message)).toEqual(["boom2", "boom1"]);
+    expect(rows[0].ref_number).toBe(repo.requireApplicant(a2).ref_number);
+    expect(rows[0].actor).toBe("admin1");
+    expect(rows[0].source).toBe("intake_test");
+    expect(repo.consoleErrorEvents(2)).toEqual([]);
+  });
+
+  it("stores unattributable rows but shows them to no org", () => {
+    repo.recordErrorEvent({ source: "ingest", request: "m1", message: "fetch down" });
+    repo.recordErrorEvent({ source: "http", organization_id: 2, actor: "admin2", request: "GET /", message: "org2boom" });
+    expect(eventCount()).toBe(2);
+    expect(repo.consoleErrorEvents(1)).toEqual([]);
+    expect(repo.consoleErrorEvents(2).map((r) => r.message)).toEqual(["org2boom"]);
+  });
+
+  it("never defaults dangling applicant ids into an org", () => {
+    repo.recordErrorEvent({ source: "http", applicant_id: 424242, organization_id: 1, message: "ghost" });
+    expect(repo.consoleErrorEvents(1)).toEqual([]);
+    expect(repo.consoleErrorEvents(2)).toEqual([]);
+    const row = repo.db.prepare("SELECT organization_id AS o, applicant_id AS a, detail AS d FROM error_events").get() as { o: number | null; a: number | null; d: string };
+    expect(row.o).toBeNull();
+    expect(row.a).toBeNull();
+    expect(row.d).toContain("424242");
+  });
+
+  it("honors since/until and truncates long fields", () => {
+    repo.recordErrorEvent({ source: "http", applicant_id: a1, message: "fresh" });
+    repo.recordErrorEvent({ source: "http", applicant_id: a1, message: "old" });
+    const oldId = (repo.db.prepare("SELECT MAX(id) AS m FROM error_events").get() as { m: number }).m;
+    backdate("error_events", "id", oldId, "at");
+    expect(repo.consoleErrorEvents(1, SINCE).map((r) => r.message)).toEqual(["fresh"]);
+    expect(repo.consoleErrorEvents(1, undefined, "2021-01-01T00:00:00.000Z").map((r) => r.message)).toEqual(["old"]);
+    repo.recordErrorEvent({ source: "http", applicant_id: a1, actor: "y".repeat(100), message: "x".repeat(600) });
+    const trunc = repo.db.prepare("SELECT LENGTH(message) AS m, LENGTH(actor) AS a FROM error_events ORDER BY id DESC LIMIT 1").get() as { m: number; a: number };
+    expect(trunc).toEqual({ m: 500, a: 80 });
+  });
+});
+
+describe("findApplicantId (lookup-only)", () => {
+  it("matches existing cases case-insensitively and never creates", () => {
+    const before = (repo.db.prepare("SELECT COUNT(*) AS n FROM applicants").get() as { n: number }).n;
+    expect(repo.findApplicantId("a1@example.org", "t-a1")).toBe(a1);
+    expect(repo.findApplicantId("A1@EXAMPLE.ORG", "t-a1")).toBe(a1);
+    expect(repo.findApplicantId("nobody@example.org", "t-nope")).toBeUndefined();
+    expect(repo.findApplicantId("a1@example.org", "wrong-thread")).toBeUndefined();
+    expect(repo.findApplicantId(undefined as unknown as string, "t-a1")).toBeUndefined();
+    const after = (repo.db.prepare("SELECT COUNT(*) AS n FROM applicants").get() as { n: number }).n;
+    expect(after).toBe(before);
+  });
+});
+
+describe("http error persistence", () => {
+  type Rt = Parameters<typeof handleHttpError>[0];
+  type Req = Parameters<typeof handleHttpError>[2];
+  type Res = Parameters<typeof handleHttpError>[3];
+  function rig(path: string, staff?: Record<string, unknown>): { req: Req; res: Res; sent: { status: number; json?: unknown; html?: string } } {
+    const sent: { status: number; json?: unknown; html?: string } = { status: 0 };
+    const req = { method: "GET", path, staff } as unknown as Req;
+    const res = {
+      headersSent: false,
+      status: (code: number) => {
+        sent.status = code;
+        return { json: (b: unknown) => { sent.json = b; }, send: (b: string) => { sent.html = b; } };
+      },
+    } as unknown as Res;
+    return { req, res, sent };
+  }
+  function rt(): Rt {
+    return { repo, instName: () => "Test School" } as unknown as Rt;
+  }
+
+  it("attributes case paths to the case org (case wins over session)", () => {
+    const { req, res, sent } = rig(`/case/${a1}`, { username: "admin2", organization_id: 2, role: "admin", display_name: "Org Two Admin" });
+    handleHttpError(rt(), new Error("page exploded"), req, res);
+    expect(sent.status).toBe(500);
+    expect(sent.html).toContain("Something went wrong");
+    const rows = repo.consoleErrorEvents(1);
+    expect(rows.map((r) => r.message)).toEqual(["page exploded"]);
+    expect(rows[0].actor).toBe("admin2");
+    expect(rows[0].applicant_id).toBe(a1);
+    expect(repo.consoleErrorEvents(2)).toEqual([]);
+  });
+
+  it("keeps the JSON 500 contract for /api/ and falls back to the session org", () => {
+    const { req, res, sent } = rig("/api/cases", { username: "admin2", organization_id: 2 });
+    handleHttpError(rt(), new Error("api exploded"), req, res);
+    expect(sent.status).toBe(500);
+    expect(sent.json).toEqual({ ok: false, error: "internal error" });
+    expect(repo.consoleErrorEvents(2).map((r) => r.message)).toEqual(["api exploded"]);
+    expect(repo.consoleErrorEvents(1)).toEqual([]);
+  });
+
+  it("stores anonymous non-case failures as unattributable", () => {
+    const { req, res, sent } = rig("/login");
+    handleHttpError(rt(), new Error("anon exploded"), req, res);
+    expect(sent.status).toBe(500);
+    expect(repo.consoleErrorEvents(1)).toEqual([]);
+    expect(repo.consoleErrorEvents(2)).toEqual([]);
+    expect((repo.db.prepare("SELECT COUNT(*) AS n FROM error_events").get() as { n: number }).n).toBe(1);
+  });
+});
+
+describe("ingestion error persistence", () => {
+  it("persists fetch failures as unattributable and keeps the poll alive", async () => {
+    const gmail = {
+      listRecentMessageIds: async () => ["m-fail"],
+      fetchEmail: async () => { throw new Error("imap exploded"); },
+      watchTarget: () => "test-mailbox",
+    } as unknown as GmailClient;
+    const ctx: PipelineContext = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender: new MockSender() } };
+    const results = await ingestNewEmails(gmail, ctx, 1);
+    expect(results).toEqual([]);
+    expect(repo.isDeadLetter("m-fail")).toBe(false); // attempt 1 of budget, not parked
+    const row = repo.db.prepare("SELECT source AS s, organization_id AS o, request AS r, message AS m FROM error_events").get() as { s: string; o: number | null; r: string; m: string };
+    expect(row).toEqual({ s: "ingest", o: null, r: "m-fail", m: "imap exploded" });
+    expect(repo.consoleErrorEvents(1)).toEqual([]);
+    expect(repo.consoleErrorEvents(2)).toEqual([]);
   });
 });

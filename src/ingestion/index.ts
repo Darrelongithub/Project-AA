@@ -57,6 +57,9 @@ export async function ingestNewEmails(
         continue;
       }
       const dl = repo.recordDeadLetter({ message_id: id, subject: "", from_addr: "", error: msg });
+      // Phase 12: persist for the console (org unknown at fetch time — the
+      // row stays unattributable until a case exists for the sender).
+      repo.recordErrorEvent({ source: "ingest", request: id, message: msg, detail: `fetch failed (attempt ${dl.attempts})` });
       if (dl.dead) {
         repo.notify("review_needed", `Message ${id} failed ${dl.attempts} times and was parked: ${msg.slice(0, 200)}`, null);
         log(`ingestion: ${id} dead-lettered after ${dl.attempts} attempts — ${msg}`, "error");
@@ -80,6 +83,15 @@ export async function ingestNewEmails(
         subject: email.subject,
         from_addr: email.from,
         error: msg,
+      });
+      // Phase 12: attribute to the sender's case when one exists (lookup
+      // only — error paths never create cases).
+      repo.recordErrorEvent({
+        source: "ingest",
+        applicant_id: repo.findApplicantId(email.from, email.threadId) ?? null,
+        request: email.id,
+        message: msg,
+        detail: `processing failed (attempt ${dl.attempts}): ${email.subject}`,
       });
       if (dl.dead) {
         repo.notify(

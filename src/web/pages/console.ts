@@ -77,6 +77,7 @@ export function consolePage(c: Ctx, orgId: number, orgName: string, q: ConsoleQu
   const dur = repo.consoleOrgDuration(orgId, durDays);
   const errors = repo.consoleErrors(orgId, since, until);
   const alerts = repo.consoleAlerts(orgId, since, until);
+  const crashes = repo.consoleErrorEvents(orgId, since, until);
   const tampers = [...repo.consoleTamperOutcomes(orgId), ...repo.consoleTamperActors(orgId)];
   const vision = repo.consoleVisionAttempts(orgId, since, until);
   const routings = repo.consoleRoutings(orgId, since, until);
@@ -108,6 +109,11 @@ export function consolePage(c: Ctx, orgId: number, orgName: string, q: ConsoleQu
     <td><a href="/case/${e.applicant_id}"><span class="mono">${e.ref_number}</span></a></td>
     <td><span class="mono small">${e.event}</span></td><td class="small">${e.actor}</td>
     <td class="small">${trunc(e.detail, 120)}</td></tr>`).join("");
+  const crashRows = crashes.map((e) => html`<tr><td class="small nowrap">${fmtDate(e.at)}</td>
+    <td>${badge("red", e.source)}</td>
+    <td>${e.applicant_id ? html`<a href="/case/${e.applicant_id}"><span class="mono">${e.ref_number}</span></a>` : "—"}</td>
+    <td class="small">${trunc(e.message, 120)}</td><td class="small">${e.actor || "—"}</td>
+    <td class="mono small">${trunc(e.request, 60)}</td></tr>`).join("");
   const alertRows = alerts.map((a) => html`<tr><td class="small nowrap">${fmtDate(a.at)}</td>
     <td><a href="/case/${a.applicant_id}"><span class="mono">${a.ref_number}</span></a></td>
     <td>${badge(a.kind === "escalation" ? "red" : "orange", a.kind)}</td><td class="small">${trunc(a.message, 120)}</td></tr>`).join("");
@@ -166,6 +172,10 @@ export function consolePage(c: Ctx, orgId: number, orgName: string, q: ConsoleQu
     <h3 style="margin-top:16px">Alerts</h3>
     ${raw(alerts.length ? `<table><tr><th>When</th><th>Case</th><th>Kind</th><th>Message</th></tr>${alertRows}</table>`
       : emptyState(`<p>No escalations or review requests in this range.</p>`))}
+    <h3 style="margin-top:16px">Unhandled exceptions</h3>
+    <p class="small muted">HTTP 500s, ingestion failures and staff-tool errors attributed to this org. Failures that can't be tied to any org never appear here.</p>
+    ${raw(crashes.length ? `<table><tr><th>When</th><th>Source</th><th>Case</th><th>Error</th><th>Actor</th><th>Request</th></tr>${crashRows}</table>`
+      : emptyState(`<p>No unhandled exceptions recorded in this range.</p>`))}
   </div>
 
   <div class="card" id="tampering"><h2>Case-tampering signals</h2>

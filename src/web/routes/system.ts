@@ -59,11 +59,31 @@ export function registerSystem(app: Express, rt: RouteCtx): void {
 
   // Last-resort error handler: log the detail, show a calm page — never a stack trace.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  app.use((err: unknown, req: Request, res: Response, _next: unknown) => {
-    log(`unhandled error on ${req.method} ${req.path}: ${(err as Error)?.stack ?? err}`, "error");
+  app.use((err: unknown, req: Request, res: Response, _next: unknown) => handleHttpError(rt, err, req, res));
+}
+
+/**
+ * Last-resort HTTP error handling, extracted for testability. Besides the
+ * calm 500 page it persists the exception (Phase 12) so the admin console
+ * can show it: case id from the path when present, org from the case else
+ * the staff session, unattributable (anonymous, non-case) otherwise.
+ */
+export function handleHttpError(rt: RouteCtx, err: unknown, req: Request, res: Response): void {
+  log(`unhandled error on ${req.method} ${req.path}: ${(err as Error)?.stack ?? err}`, "error");
+    const caseId = /^\/case\/(\d+)/.exec(req.path)?.[1];
+    rt.repo.recordErrorEvent({
+      source: "http",
+      applicant_id: caseId !== undefined ? Number(caseId) : null,
+      organization_id: req.staff?.organization_id ?? null,
+      actor: req.staff?.username ?? "",
+      request: `${req.method} ${req.path}`,
+      message: (err as Error)?.message ?? String(err),
+      detail: (err as Error)?.stack ?? "",
+    });
     if (res.headersSent) return;
     if (req.path.startsWith("/api/")) {
-      return res.status(500).json({ ok: false, error: "internal error" });
+      res.status(500).json({ ok: false, error: "internal error" });
+      return;
     }
     res.status(500).send(layout({
       title: "Something went wrong",
@@ -76,5 +96,4 @@ export function registerSystem(app: Express, rt: RouteCtx): void {
         <p><a class="btn" href="/">← Back to the start</a></p>
       </div>`,
     }));
-  });
 }

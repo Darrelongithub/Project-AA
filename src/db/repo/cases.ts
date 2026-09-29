@@ -108,6 +108,22 @@ export function getApplicant(repo: Repo, id: number): ApplicantRow | undefined {
   return repo.db.prepare("SELECT * FROM applicants WHERE id = ?").get(id) as ApplicantRow | undefined;
 }
 
+
+/**
+ * Lookup-only applicant id for error attribution (Phase 12): unlike
+ * getOrCreateApplicant it NEVER creates — error paths must not write
+ * cases into existence. Returns undefined when no case matches.
+ */
+export function findApplicantId(repo: Repo, emailAddress: string, threadId: string): number | undefined {
+  // Total: error paths call this on untrusted failure context, so junk
+  // input is "no match", never a throw.
+  if (typeof emailAddress !== "string" || typeof threadId !== "string") return undefined;
+  const row = repo.db
+    .prepare("SELECT id FROM applicants WHERE email_address = ? AND thread_id = ?")
+    .get(emailAddress.trim().toLowerCase(), threadId) as { id: number } | undefined;
+  return row?.id;
+}
+
 /** Typed error: a caller needed an applicant row that is not in the store. */
 export class ApplicantNotFoundError extends Error {
   readonly applicantId: number;

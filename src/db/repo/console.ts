@@ -381,9 +381,20 @@ export interface ErrorEventInput {
 export function recordErrorEvent(repo: Repo, e: ErrorEventInput): void {
   try {
     let org: number | null = e.organization_id ?? null;
-    const applicantId = e.applicant_id ?? null;
+    let applicantId = e.applicant_id ?? null;
+    let detail = e.detail ?? "";
     if (applicantId !== null) {
-      org = (repo.getApplicant(applicantId)?.organization_id ?? 1) as number;
+      // Applicant org is authoritative — but a dangling id (deleted case,
+      // guessed URL) must NEVER default into org 1; it is unattributable.
+      // (Also stored as NULL: FK enforcement would reject the row.)
+      const a = repo.getApplicant(applicantId);
+      if (!a) {
+        detail = `[applicant ${applicantId} not found] ${detail}`;
+        applicantId = null;
+        org = null;
+      } else {
+        org = a.organization_id ?? 1;
+      }
     }
     repo.db
       .prepare(
@@ -397,7 +408,7 @@ export function recordErrorEvent(repo: Repo, e: ErrorEventInput): void {
         (e.actor ?? "").slice(0, 80),
         (e.request ?? "").slice(0, 200),
         e.message.slice(0, 500),
-        (e.detail ?? "").slice(0, 2000)
+        detail.slice(0, 2000)
       );
   } catch (err) {
     log(`recordErrorEvent failed (${(err as Error).message}); original: ${e.source} ${e.message.slice(0, 200)}`, "error");

@@ -66,6 +66,15 @@ export function registerDash(app: Express, rt: RouteCtx): void {
       rt.repo.audit(result.applicantId, req.staff!.username, "test_intake_submitted", `${ct.code}: ${slots.length} document(s)`);
       return res.redirect(rt.backToCase(result.applicantId, `Test message processed for ${ct.name}.`));
     } catch (e) {
+      // Phase 12: staff-triggered pipeline failures are fully attributable.
+      rt.repo.recordErrorEvent({
+        source: "intake_test",
+        applicant_id: rt.repo.findApplicantId(from, `test-intake-${stamp}`) ?? null,
+        organization_id: orgId,
+        actor: req.staff!.username,
+        request: `/intake/test ${ct.code}`,
+        message: (e as Error).message,
+      });
       return res.redirect(`/intake/test?case_type=${encodeURIComponent(ct.code)}&msg=` + encodeURIComponent(`Processing failed: ${(e as Error).message}`));
     }
   });
