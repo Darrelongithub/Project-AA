@@ -10,7 +10,7 @@ import { DOC_TYPES, PERMISSIONS, PERMISSION_LABELS } from "../../types";
 import { avatar, esc } from "../views";
 import { capFirst, formatDuration, head } from "./shared";
 import type { Ctx } from "./shared";
-import { badge, csrfField, emptyState } from "../tpl";
+import { badge, csrfField, emptyState, flash as flashBanner } from "../tpl";
 
 type LegacyAcademicProgramme = ReturnType<Repo["listProgrammes"]>[number];
 
@@ -322,7 +322,7 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
     `
 <h1>Staff Configuration</h1>
 <div class="sub">Who handles what — workload, responsiveness, accounts and course ownership.</div>
-${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+${flash ? flashBanner("ok", flash, "position:static;margin-bottom:16px") : ""}
 ${resetCode ? `
 <div class="card" id="reset-code" style="position:static;margin-bottom:16px;border-left:4px solid var(--green)">
   <b>One-time reset code issued</b>

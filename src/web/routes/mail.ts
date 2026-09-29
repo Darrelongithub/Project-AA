@@ -6,6 +6,7 @@ import type { Express } from "express";
 import { Repo } from "../../db/repo";
 import { mailPage, mailThreadPage } from "../pages";
 import { layout } from "../views";
+import { html } from "../tpl";
 import { csrfCheck, requireLogin } from "../auth";
 import type { RouteCtx } from "./ctx";
 
@@ -45,7 +46,7 @@ export function registerMail(app: Express, rt: RouteCtx): void {
         user: req.staff,
         unread: rt.repo.unreadCount(req.staff!.id, req.staff!.demo, rt.repo.caseScopeFor(req.staff!)),
         csrf: req.csrfToken,
-        content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
+        content: html`<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
           <h1>Conversation not found</h1>
           <p class="sub">That conversation does not exist (or has no messages yet).</p>
           <p><a class="btn" href="/mail">← Back to mail</a></p>

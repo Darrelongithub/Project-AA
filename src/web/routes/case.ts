@@ -11,6 +11,7 @@ import { fillSlots } from "../../documents/matrix";
 import { autoAdmitPolicy, evaluateAdmission, evaluateCaseTypeRules } from "../../admissions/evaluate";
 import { casePage, replayPage } from "../pages";
 import { layout } from "../views";
+import { html } from "../tpl";
 import { UNKNOWN_STAFF_MEMBER, csrfCheck, requireLogin, requireRole } from "../auth";
 import { emailBanner } from "../../branding";
 import { admissionsPreset } from "../../presets/loader";
@@ -36,7 +37,7 @@ export function registerCase(app: Express, rt: RouteCtx): void {
         user: req.staff,
         unread: rt.repo.unreadCount(req.staff!.id, req.staff!.demo, rt.repo.caseScopeFor(req.staff!)),
         csrf: req.csrfToken,
-        content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
+        content: html`<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
           <h1>This case is outside your assigned schools</h1>
           <p class="sub">You can only open cases that belong to a school you handle. If this should be yours, ask an administrator to update your visibility scope.</p>
           <p><a class="btn" href="/applicants">← Back to your queues</a></p>

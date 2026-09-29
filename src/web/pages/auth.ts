@@ -2,7 +2,8 @@
  * Page renderers — login / setup / password pages. Extracted verbatim from pages.ts;
  * pages.ts re-exports the page API unchanged.
  */
-import { Theme, crest, esc, layout } from "../views";
+import { Theme, crest, layout } from "../views";
+import { flash, html, raw } from "../tpl";
 
 /** Stable school grouping for course lists. */
 // ── Login ──────────────────────────────────────────────────────────────────
@@ -12,16 +13,16 @@ export function loginPage(error?: string, theme?: Theme, institution = "Organiza
     institution,
     publicPage: true,
     theme,
-    content: `
+    content: html`
 <div class="loginbox card">
-  ${crest(58)}
+  ${raw(crest(58))}
   <div class="brand-lockup"><span>PROJECT</span><b>a<sup>2</sup></b></div>
   <h1 class="center">Sign in</h1>
-  <p class="sub center">${esc(institution)} · Automated admissions</p>
-  ${okMsg ? `<div class="flash ok" style="position:static;margin-bottom:14px">${esc(okMsg)}</div>` : ""}
-  ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
+  <p class="sub center">${institution} · Automated admissions</p>
+  ${raw(okMsg ? flash("ok", okMsg, "position:static;margin-bottom:14px") : "")}
+  ${raw(error ? flash("err", error, "position:static;margin-bottom:14px") : "")}
   <form method="post" action="/login">
-    ${loginCsrf ? `<input type="hidden" name="_lcsrf" value="${esc(loginCsrf)}">` : ""}
+    ${raw(loginCsrf ? html`<input type="hidden" name="_lcsrf" value="${loginCsrf}">` : "")}
     <label>Username</label>
     <input type="text" name="username" autofocus autocomplete="username" placeholder="your.username">
     <label>Password</label>
@@ -42,15 +43,15 @@ export function resetPasswordPage(error?: string, theme?: Theme, institution = "
     institution,
     publicPage: true,
     theme,
-    content: `
+    content: html`
 <div class="loginbox card">
-  ${crest(58)}
+  ${raw(crest(58))}
   <div class="brand-lockup"><span>PROJECT</span><b>a<sup>2</sup></b></div>
   <h1 class="center">Reset password</h1>
   <p class="sub center">Enter your username and the one-time reset code your administrator issued for you. It works once and expires after 30 minutes.</p>
-  ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
+  ${raw(error ? flash("err", error, "position:static;margin-bottom:14px") : "")}
   <form method="post" action="/reset-password">
-    ${loginCsrf ? `<input type="hidden" name="_lcsrf" value="${esc(loginCsrf)}">` : ""}
+    ${raw(loginCsrf ? html`<input type="hidden" name="_lcsrf" value="${loginCsrf}">` : "")}
     <label>Username</label>
     <input type="text" name="username" autofocus autocomplete="username" placeholder="your.username">
     <label>Reset code (from your admin)</label>
@@ -74,13 +75,13 @@ export function setupPage(token: string, error?: string, theme?: Theme, institut
     institution,
     publicPage: true,
     theme,
-    content: `
+    content: html`
 <div class="loginbox card">
-  ${crest(58)}
+  ${raw(crest(58))}
   <div class="brand-lockup"><span>PROJECT</span><b>a<sup>2</sup></b></div>
-  <h1 class="center">Welcome to ${esc(institution)}</h1>
+  <h1 class="center">Welcome to ${institution}</h1>
   <p class="sub center">This is a fresh installation. Create the administrator account — you will not see this screen again.</p>
-  ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
+  ${raw(error ? flash("err", error, "position:static;margin-bottom:14px") : "")}
   <form method="post" action="/setup">
     <input type="hidden" name="_setup" value="${token}">
     <label>Your name</label>

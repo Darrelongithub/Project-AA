@@ -8,7 +8,7 @@ import { missingGmailCredentials, resolveLookbackDays } from "../../ingestion/sy
 import { Theme, esc, fmtDate } from "../views";
 import { capFirst, head } from "./shared";
 import type { Ctx } from "./shared";
-import { badge, csrfField, raw } from "../tpl";
+import { badge, csrfField, flash as flashBanner, raw } from "../tpl";
 
 // ── Settings (app behaviour) & Configuration (admissions setup) ────────────
 export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string): string {
@@ -28,7 +28,7 @@ export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string):
     `
 <h1>Settings</h1>
 <div class="sub">How the console behaves — automation, response targets, retention and workspace identity.</div>
-${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+${flash ? flashBanner("ok", flash, "position:static;margin-bottom:16px") : ""}
 
 ${connectionsSection(c, gmailRedirectUri)}
 
@@ -284,7 +284,7 @@ export function accountPage(c: Ctx, msg?: string): string {
     `
 <h1>Account settings</h1>
 <div class="sub">Your sign-in and appearance. These apply only to your account.</div>
-${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(msg)}</div>` : ""}
+${msg ? flashBanner("ok", msg, "position:static;margin-bottom:16px") : ""}
 
 <div class="card" id="profile">
   <h2>Username</h2>

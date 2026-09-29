@@ -6,7 +6,7 @@
  * quiet top-header shell, splash entry, command palette, toasts.
  */
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, type EmailCategory, type LifecycleStage, type Priority, type StaffUser } from "../types";
-import { esc } from "./tpl";
+import { badge, esc, html, raw, type BadgeTone } from "./tpl";
 
 export type Theme = "light" | "dark";
 
@@ -40,8 +40,8 @@ export function slaText(dueAt: string | null, handledAt: string | null): string 
 }
 
 export function confidenceBadge(c: string): string {
-  const cls = c === "high" ? "b-green" : c === "medium" ? "b-orange" : "b-red";
-  return `<span class="badge ${cls}">${esc(c)}</span>`;
+  const tone = c === "high" ? "green" : c === "medium" ? "orange" : "red";
+  return badge(tone as BadgeTone, c);
 }
 
 /** Numeric PDF readability (0-100) with a thin bar; >=75 is the auto-pass gate. */
@@ -49,39 +49,39 @@ export function readabilityScore(score: number | undefined, threshold = 75): str
   const s = Math.max(0, Math.min(100, Math.round(score ?? 0)));
   const ok = s >= threshold;
   const cls = ok ? "b-green" : s >= 40 ? "b-orange" : "b-red";
-  return `<span class="scorewrap"><span class="badge ${cls}">${s}% readable</span>
+  return html`<span class="scorewrap"><span class="badge ${cls}">${s}% readable</span>
     <span class="scorebar" title="PDF readability ${s}% — automatic pass needs ${threshold}%"><span class="scorebar-fill ${ok ? "good" : "low"}" style="width:${s}%"></span></span></span>`;
 }
 
 export function triageBadge(t: string | null): string {
-  if (!t) return `<span class="badge b-gray">—</span>`;
-  const cls = t === "Green" ? "b-green" : t === "Orange" ? "b-orange" : "b-red";
-  return `<span class="badge ${cls}"><span class="bdot">●</span>${esc(t)}</span>`;
+  if (!t) return badge("gray", "—");
+  const tone = t === "Green" ? "green" : t === "Orange" ? "orange" : "red";
+  return badge(tone as BadgeTone, raw('<span class="bdot">●</span>'), t);
 }
 
 export function priorityBadge(p: Priority): string {
-  const cls = p === "urgent" ? "b-red" : p === "high" ? "b-orange" : "b-gray";
-  return `<span class="badge ${cls}">${esc(p)}</span>`;
+  const tone = p === "urgent" ? "red" : p === "high" ? "orange" : "gray";
+  return badge(tone as BadgeTone, p);
 }
 
 export function lifecycleBadge(l: LifecycleStage, labels?: Record<string, string>): string {
   const cls =
     l === "completed" ? "b-green" : l === "awaiting_review" ? "b-orange" : l === "verification" ? "b-blue" : "b-purple";
-  return `<span class="badge ${cls}">${esc(labels?.[l] ?? LIFECYCLE_LABELS[l])}</span>`;
+  return badge(cls.replace(/^b-/, "") as BadgeTone, labels?.[l] ?? LIFECYCLE_LABELS[l]);
 }
 
 export function categoryBadge(c: EmailCategory | null): string {
   if (!c) return "";
-  return `<span class="badge b-gray">${esc(EMAIL_CATEGORY_LABELS[c])}</span>`;
+  return badge("gray", EMAIL_CATEGORY_LABELS[c]);
 }
 
 export function lifecycleStepper(current: LifecycleStage, labels?: Record<string, string>): string {
   const idx = LIFECYCLE_ORDER.indexOf(current);
   const steps = LIFECYCLE_ORDER.map((s, i) => {
     const cls = i < idx ? "step done" : i === idx ? "step current" : "step";
-    return `<div class="${cls}"><span class="dot">${i < idx ? "✓" : i === idx ? "●" : ""}</span>${esc(labels?.[s] ?? LIFECYCLE_LABELS[s])}</div>`;
+    return html`<div class="${cls}"><span class="dot">${i < idx ? "✓" : i === idx ? "●" : ""}</span>${labels?.[s] ?? LIFECYCLE_LABELS[s]}</div>`;
   });
-  return `<div class="stepper">${steps.join('<div class="step-line"></div>')}</div>`;
+  return html`<div class="stepper">${raw(steps.join('<div class="step-line"></div>'))}</div>`;
 }
 
 /** NOIR gauge: a 280° arc ring, the count centre-stage. Clicking it
@@ -97,7 +97,7 @@ export function gauge(opts: { n: number; label: string; href: string; tone?: "pu
   const CIRC = 2 * Math.PI * R;
   const ARC = 0.78 * CIRC; // 280° of the circle is the dial
   const filled = frac * ARC;
-  return `<a class="gauge g-${tone}" href="${esc(opts.href)}" title="Open ${esc(opts.label)}">
+  return html`<a class="gauge g-${tone}" href="${opts.href}" title="Open ${opts.label}">
     <span class="g-ring">
       <svg viewBox="0 0 110 110" width="118" height="118" aria-hidden="true">
         <circle class="g-track" cx="55" cy="55" r="${R}"/>
@@ -105,19 +105,19 @@ export function gauge(opts: { n: number; label: string; href: string; tone?: "pu
       </svg>
       <span class="g-n">${n}</span>
     </span>
-    <span class="g-l">${esc(opts.label)}</span>
-    ${opts.caption ? `<span class="g-c">${esc(opts.caption)}</span>` : ""}
+    <span class="g-l">${opts.label}</span>
+    ${raw(opts.caption ? html`<span class="g-c">${opts.caption}</span>` : "")}
   </a>`;
 }
 
 /** A row of gauges. */
 export function gaugeRow(gauges: Array<Parameters<typeof gauge>[0]>): string {
-  return `<div class="gauges">${gauges.map((g) => gauge(g)).join("")}</div>`;
+  return html`<div class="gauges">${raw(gauges.map((g) => gauge(g)).join(""))}</div>`;
 }
 
 /** The staff clock — big, top of the dashboard, ticking locally. */
 export function heroClock(): string {
-  return `<div class="clock" id="clock" aria-label="Current time">
+  return html`<div class="clock" id="clock" aria-label="Current time">
     <span class="clock-time" id="clock-time">--:--:--</span>
     <span class="clock-date" id="clock-date"></span>
   </div>`;
@@ -144,18 +144,18 @@ export function avatar(name: string | null | undefined, size = 34): string {
   let h = 0;
   for (const ch of n) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   const c1 = palette[h % palette.length][0];
-  return `<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px;background:${c1}">${esc(initials)}</span>`;
+  return html`<span class="avatar" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.38)}px;background:${c1}">${initials}</span>`;
 }
 
 /** Render the organization-owned logo, or a neutral text mark when none is configured. */
 export function crest(size = 40, variant: "auto" | "white" = "auto", logo?: string | null, alt = "Organization"): string {
-  if (logo) return `<span class="crest" style="height:${size}px"><img src="${esc(logo)}" alt="${esc(alt)}" style="max-height:${size}px;max-width:${size * 3}px;object-fit:contain"></span>`;
-  return `<span class="crest aa-mark ${variant === "white" ? "aa-mark-white" : ""}" style="height:${size}px" role="img" aria-label="${esc(alt)} — a squared"><svg viewBox="0 0 48 48" width="${size}" height="${size}" aria-hidden="true"><rect x="1.5" y="1.5" width="45" height="45" rx="13" fill="var(--wine)"/><text x="10" y="34" fill="var(--bone)" font-family="Manrope, sans-serif" font-size="29" font-weight="700" letter-spacing="-2">a<tspan font-size="14" baseline-shift="super" letter-spacing="0">2</tspan></text></svg></span>`;
+  if (logo) return html`<span class="crest" style="height:${size}px"><img src="${logo}" alt="${alt}" style="max-height:${size}px;max-width:${size * 3}px;object-fit:contain"></span>`;
+  return html`<span class="crest aa-mark ${variant === "white" ? "aa-mark-white" : ""}" style="height:${size}px" role="img" aria-label="${alt} — a squared"><svg viewBox="0 0 48 48" width="${size}" height="${size}" aria-hidden="true"><rect x="1.5" y="1.5" width="45" height="45" rx="13" fill="var(--wine)"/><text x="10" y="34" fill="var(--bone)" font-family="Manrope, sans-serif" font-size="29" font-weight="700" letter-spacing="-2">a<tspan font-size="14" baseline-shift="super" letter-spacing="0">2</tspan></text></svg></span>`;
 }
 
 /** The signature motif: one fine wine-toned line — progress and connection. */
 export function flowLine(width = 220, height = 34): string {
-  return `<svg class="flowline" width="${width}" height="${height}" viewBox="0 0 220 34" fill="none" aria-hidden="true" preserveAspectRatio="xMinYMid meet"><path d="M2 28 C 42 28, 52 6, 92 6 S 150 30, 184 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="210" cy="9" r="2.6" fill="currentColor"/></svg>`;
+  return html`<svg class="flowline" width="${width}" height="${height}" viewBox="0 0 220 34" fill="none" aria-hidden="true" preserveAspectRatio="xMinYMid meet"><path d="M2 28 C 42 28, 52 6, 92 6 S 150 30, 184 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="210" cy="9" r="2.6" fill="currentColor"/></svg>`;
 }
 
 export function flagLabel(t: string): string {
@@ -196,7 +196,7 @@ const ICONS: Record<string, string> = {
 };
 
 export function icon(name: keyof typeof ICONS, size = 17): string {
-  return `<span class="icn" style="width:${size}px;height:${size}px">${ICONS[name]}</span>`;
+  return html`<span class="icn" style="width:${size}px;height:${size}px">${raw(ICONS[name])}</span>`;
 }
 
 /**
@@ -1207,14 +1207,14 @@ export function layout(opts: {
 }): string {
   const brand = opts.brand;
   const brandStyle = brand && /^#[0-9a-f]{6}$/i.test(brand.primary) && /^#[0-9a-f]{6}$/i.test(brand.accent)
-    ? `<style>:root{--wine:${brand.primary};--wine-mid:${brand.accent};--wine-hover:${brand.primary};--wine-soft:${brand.accent};}[data-theme="light"]{--wine-mid:${accentOnPaper(brand.accent)};--wine-soft:${accentOnPaper(brand.accent)};}</style>`
+    ? html`<style>:root{--wine:${brand.primary};--wine-mid:${brand.accent};--wine-hover:${brand.primary};--wine-soft:${brand.accent};}[data-theme="light"]{--wine-mid:${accentOnPaper(brand.accent)};--wine-soft:${accentOnPaper(brand.accent)};}</style>`
     : "";
   const theme: Theme = opts.theme === "light" ? "light" : "dark";
   const otherTheme = theme === "dark" ? "light" : "dark";
   const inst = opts.institution ?? "Organization";
 
-  const themeBtn = `<form method="post" action="/theme" style="display:inline">
-      <button class="iconbtn" title="Switch to ${otherTheme} mode">${icon(theme === "dark" ? "sun" : "moon")}</button>
+  const themeBtn = html`<form method="post" action="/theme" style="display:inline">
+      <button class="iconbtn" title="Switch to ${otherTheme} mode">${raw(icon(theme === "dark" ? "sun" : "moon"))}</button>
     </form>`;
 
   // Ctrl+K palette links follow the same role separation as the navigation.
@@ -1271,78 +1271,78 @@ export function layout(opts: {
     const orgs = opts.organizations ?? [];
     const activeOrg = opts.activeOrganizationId ?? 1;
     const orgSwitcher = orgs.length > 1 && role === "admin"
-      ? `<form method="post" action="/org/switch" class="org-switcher" id="org-switcher" style="margin:0 0 10px">
-          <input type="hidden" name="_csrf" value="${esc(opts.csrf)}">
+      ? html`<form method="post" action="/org/switch" class="org-switcher" id="org-switcher" style="margin:0 0 10px">
+          <input type="hidden" name="_csrf" value="${opts.csrf}">
           <label for="org-switch-select" class="small muted" style="display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px">Organization</label>
           <div style="display:flex;gap:6px">
             <select id="org-switch-select" name="organization_id" aria-label="Switch organization" onchange="this.form.submit()" style="flex:1;min-width:0">
-              ${orgs.map((o) => `<option value="${o.id}"${o.id === activeOrg ? " selected" : ""}>${esc(o.name)}</option>`).join("")}
+              ${raw(orgs.map((o) => html`<option value="${o.id}"${o.id === activeOrg ? " selected" : ""}>${o.name}</option>`).join(""))}
             </select>
             <noscript><button class="btn small">Go</button></noscript>
           </div>
         </form>`
-      : `<div class="small muted org-current" style="margin:0 0 10px">${esc(inst)}</div>`;
-    shell = `
+      : html`<div class="small muted org-current" style="margin:0 0 10px">${inst}</div>`;
+    shell = html`
 <div class="app">
   <aside class="sitehead sidebar">
     <div class="head-in">
-      <a class="head-brand" href="/">${crest(42, "auto", brand?.logo, inst)}<span class="brand-copy"><b>PROJECT <em>a²</em></b><small>CASE INTAKE WORKSPACE</small></span><span class="sr-only">${esc(inst)} — case intake</span></a>
+      <a class="head-brand" href="/">${raw(crest(42, "auto", brand?.logo, inst))}<span class="brand-copy"><b>PROJECT <em>a²</em></b><small>CASE INTAKE WORKSPACE</small></span><span class="sr-only">${inst} — case intake</span></a>
       <div class="nav-kicker">WORKSPACE</div>
       <nav class="head-nav" aria-label="Main navigation">
-        ${nav.map((n) => `<a href="${n.href}" class="${opts.active === n.active ? "active" : ""}" ${opts.active === n.active ? 'aria-current="page"' : ""}>${icon(navIcons[n.label] ?? "grid", 18)}<span class="nav-label">${n.label}</span></a>`).join("")}
+        ${raw(nav.map((n) => html`<a href="${n.href}" class="${opts.active === n.active ? "active" : ""}" ${raw(opts.active === n.active ? html`aria-current="page"` : "")}>${raw(icon(navIcons[n.label] ?? "grid", 18))}<span class="nav-label">${n.label}</span></a>`).join(""))}
       </nav>
       <div class="sidebar-footer">
-        ${orgSwitcher}
+        ${raw(orgSwitcher)}
         <div class="userchip">
-          ${avatar(opts.user.display_name, 34)}
-          <div><b>${esc(opts.user.display_name)}</b><small>${esc(opts.user.role)}</small></div>
+          ${raw(avatar(opts.user.display_name, 34))}
+          <div><b>${opts.user.display_name}</b><small>${opts.user.role}</small></div>
         </div>
         <div class="sidebar-actions">
-          ${themeBtn}
-          <a class="iconbtn" href="/#alerts" title="Alerts">${icon("bell", 16)}${opts.unread ? `<span class="pip"></span>` : ""}</a>
-          <form method="post" action="/logout" style="margin:0"><input type="hidden" name="_csrf" value="${esc(opts.csrf)}"><button class="iconbtn" title="Sign out"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></button></form>
+          ${raw(themeBtn)}
+          <a class="iconbtn" href="/#alerts" title="Alerts">${raw(icon("bell", 16))}${raw(opts.unread ? html`<span class="pip"></span>` : "")}</a>
+          <form method="post" action="/logout" style="margin:0"><input type="hidden" name="_csrf" value="${opts.csrf}"><button class="iconbtn" title="Sign out"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></button></form>
         </div>
       </div>
     </div>
   </aside>
   <main class="wrap">
-    <div class="workspacebar"><div><span class="workspace-eyebrow">${esc(inst)} <i>/</i> WORKSPACE</span><span class="workspace-caption">Private operations</span></div><button class="searchbtn" id="searchbtn">${icon("search", 16)}<span>Search cases and pages</span><span class="kbd">⌘ K</span></button></div>
-${opts.content}
+    <div class="workspacebar"><div><span class="workspace-eyebrow">${inst} <i>/</i> WORKSPACE</span><span class="workspace-caption">Private operations</span></div><button class="searchbtn" id="searchbtn">${raw(icon("search", 16))}<span>Search cases and pages</span><span class="kbd">⌘ K</span></button></div>
+${raw(opts.content)}
   </main>
 </div>
 <div class="palette" id="palette">
   <div class="palette-box">
     <input id="palette-q" type="text" placeholder="Jump to a case, applicant or page…" autocomplete="off" spellcheck="false">
     <div id="palette-res"></div>
-    <div class="palette-keys"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span><span style="margin-left:auto">${esc(inst)} · intake workspace</span></div>
+    <div class="palette-keys"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">esc</span> close</span><span style="margin-left:auto">${inst} · intake workspace</span></div>
   </div>
 </div>`;
   } else {
-    shell = `
+    shell = html`
 <div class="publicbar">
-  <div class="brand">${crest(30)}<span class="sr-only">${esc(inst)} — automated admissions</span></div>
+  <div class="brand">${raw(crest(30))}<span class="sr-only">${inst} — automated admissions</span></div>
   <nav>
-    ${themeBtn}
+    ${raw(themeBtn)}
   </nav>
 </div>
 <div class="wrap" style="max-width:960px">
-${opts.content}
+${raw(opts.content)}
 </div>`;
   }
 
-  return `<!doctype html>
+  return html`<!doctype html>
 <html lang="en" data-theme="${theme}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon?v=5">
-${opts.user ? `<meta name="csrf" content="${esc(opts.csrf ?? "")}">` : ""}
-<title>${esc(opts.title)}</title>
-<style>${CSS}</style>
-${brandStyle}
+${raw(opts.user ? html`<meta name="csrf" content="${opts.csrf ?? ""}">` : "")}
+<title>${opts.title}</title>
+<style>${raw(CSS)}</style>
+${raw(brandStyle)}
 </head>
 <body>
-<div id="splash" aria-hidden="true">${crest(54, "auto", brand?.logo, inst)}${flowLine(160, 30)}<div class="s-sub">${esc(brand?.tagline || "Your workspace")}</div></div>
+<div id="splash" aria-hidden="true">${raw(crest(54, "auto", brand?.logo, inst))}${raw(flowLine(160, 30))}<div class="s-sub">${brand?.tagline || "Your workspace"}</div></div>
 <script>
   // The greeting shield plays once per tab session. Reloads, back/forward and
   // every later page load remove it instantly so navigation never feels stuck.
@@ -1356,8 +1356,8 @@ ${brandStyle}
     setTimeout(function () { if (sp.parentNode) sp.remove(); }, 1600);
   })();
 </script>
-${shell}
-<script>${paletteJs}${TOAST_JS}${CLOCK_JS}</script>
+${raw(shell)}
+<script>${raw(paletteJs)}${raw(TOAST_JS)}${raw(CLOCK_JS)}</script>
 </body>
 </html>`;
 }

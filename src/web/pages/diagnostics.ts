@@ -6,7 +6,7 @@ import { ApplicantRow, RuleNode } from "../../types";
 import { esc, flagLabel, fmtDate } from "../views";
 import { capFirst, head } from "./shared";
 import type { Ctx } from "./shared";
-import { badge, csrfField } from "../tpl";
+import { badge, csrfField, flash } from "../tpl";
 
 // ── Decision replay (v3 feature 32): step-by-step "why was this flagged?" ──
 export function replayPage(c: Ctx, a: ApplicantRow): string {
@@ -126,7 +126,7 @@ export function intakeTestPage(c: Ctx, opts: { caseTypeCode?: string; msg?: stri
   return head(c, "Test intake", "applicants", `
 <h1>Test intake — ${esc(c.institution)}</h1>
 <div class="sub">Submit a simulated inbound message to one of this organization's CaseTypes. It runs through the real intake pipeline (document matrix, rule tree, human gate) exactly like a mailbox message would, and opens a case in this organization's queues. Nothing is sent to the contact.</div>
-${opts.msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(opts.msg)}</div>` : ""}
+${opts.msg ? flash("ok", opts.msg, "position:static;margin-bottom:16px") : ""}
 <div class="card">
   <form method="get" action="/intake/test" class="formrow" style="align-items:end">
     <div><label>CaseType</label><select name="case_type" onchange="this.form.submit()">${types.map((t) => `<option value="${esc(t.code)}"${t.code === selected.code ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select></div>

@@ -7,6 +7,7 @@ import { Repo } from "../../db/repo";
 import type { PipelineContext } from "../../pipeline/adapters";
 import { type Permission, PERMISSION_LABELS } from "../../types";
 import { layout } from "../views";
+import { html } from "../tpl";
 import type { OnceResult } from "../../util/once";
 import { organizationName, organizationSender, organizationTheme } from "../../branding";
 import type { PackFile } from "../../pack";
@@ -113,7 +114,7 @@ export function buildRouteCtx(deps: WebDeps) {
       user: req.staff,
       unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.caseScopeFor(req.staff!)),
       csrf: req.csrfToken,
-      content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
+      content: html`<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
         <h1>This case is outside your assigned schools</h1>
         <p class="sub">You can only reach cases that belong to a school you handle. If this should be yours, ask an administrator to update your visibility scope.</p>
         <p><a class="btn" href="${backHref}">${backLabel}</a></p>

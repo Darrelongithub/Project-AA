@@ -4,6 +4,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { avatar, layout } from "../views";
+import { html } from "../tpl";
 import { requireLogin, requireRole } from "../auth";
 import { log } from "../../util/log";
 import { flushMetrics } from "../../metrics";
@@ -48,7 +49,7 @@ export function registerSystem(app: Express, rt: RouteCtx): void {
       user: req.staff,
       unread: req.staff ? rt.repo.unreadCount(req.staff.id, req.staff.demo, rt.repo.caseScopeFor(req.staff)) : undefined,
       csrf: req.staff ? req.csrfToken : undefined,
-      content: `<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
+      content: html`<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
         <h1>Page not found</h1>
         <p class="sub">That address does not exist${req.staff ? " in the console" : ""}.</p>
         <p><a class="btn" href="${req.staff ? "/" : "/login"}">${req.staff ? "← Back to the Overview" : "← Back to sign in"}</a></p>
@@ -69,7 +70,7 @@ export function registerSystem(app: Express, rt: RouteCtx): void {
       institution: rt.instName(req),
       publicPage: !req.staff,
       user: req.staff,
-      content: `<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
+      content: html`<div class="card" style="max-width:520px;margin:60px auto;text-align:center">
         <h1>Something went wrong</h1>
         <p class="sub">The error has been logged. Try again — if it persists, tell your system administrator.</p>
         <p><a class="btn" href="/">← Back to the start</a></p>

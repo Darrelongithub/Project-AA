@@ -5,7 +5,8 @@
 import { organizationName } from "../../branding";
 import { Repo } from "../../db/repo";
 import { StaffUser } from "../../types";
-import { Theme, esc, layout } from "../views";
+import { Theme, layout } from "../views";
+import { badge, type BadgeTone } from "../tpl";
 
 export interface Ctx {
   repo: Repo;
@@ -69,13 +70,13 @@ export const DECISION_BADGES: Record<string, [string, string]> = {
 
 export function resultBadge(result: string | null): string {
   const [label, cls] = RESULT_BADGES[result ?? ""] ?? [result ?? "—", "b-gray"];
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
+  return badge(cls.replace(/^b-/, "") as BadgeTone, label);
 }
 
 
 export function decisionBadge(decision: string): string {
   const [label, cls] = DECISION_BADGES[decision] ?? [decision, "b-gray"];
-  return `<span class="badge ${cls}">${esc(label)}</span>`;
+  return badge(cls.replace(/^b-/, "") as BadgeTone, label);
 }
 
 

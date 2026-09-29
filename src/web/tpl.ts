@@ -69,3 +69,15 @@ export function emptyState(inner: string): string {
 export function csrfField(token: string): string {
   return html`<input type="hidden" name="_csrf" value="${token}">`;
 }
+
+export type FlashKind = "" | "ok" | "err";
+
+/**
+ * Notice banner. The message is escaped unless passed as RawHtml; `style`
+ * is a literal style attribute (callers keep their exact historical value).
+ */
+export function flash(kind: FlashKind, message: string | RawHtml, style?: string): string {
+  const cls = kind ? `flash ${kind}` : "flash";
+  const styleAttr = style ? ` style="${style}"` : "";
+  return html`<div class="${cls}"${raw(styleAttr)}>${message}</div>`;
+}

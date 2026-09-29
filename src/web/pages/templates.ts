@@ -4,10 +4,9 @@
  */
 import { renderTemplate } from "../../drafting";
 import { admissionsPreset } from "../../presets/loader";
-import { esc } from "../views";
 import { head } from "./shared";
 import type { Ctx } from "./shared";
-import { badge, csrfField } from "../tpl";
+import { badge, csrfField, esc, flash, html, raw } from "../tpl";
 
 // ── OR-7: Templates section — one home for every outgoing email type ──────
 // What sends each template is annotated right next to it, placeholders are
@@ -52,16 +51,16 @@ function placeholderDocsFor(c: Ctx): Array<[string, string]> {
 }
 
 
-export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): string {
+export function templatesPage(c: Ctx, selectedKey?: string, flashMsg?: string): string {
   const { repo } = c;
   const templates = repo.listTemplates(c.user.organization_id ?? 1);
   const emptyTemplate = { key: "generic", name: "Generic reply", subject: "Your enquiry", body: "Hello {name},\\n\\nThank you for contacting {institution}. We will review your enquiry and reply shortly.\\n\\nKind regards,\\n{institution}", include_banner: 0, attach_pack: "none", case_type_id: 0 };
   const tpl = (selectedKey ? templates.find((t) => t.key === selectedKey) : undefined) ?? templates[0] ?? emptyTemplate;
 
-  const picker = `<form class="inline" method="get" action="/templates" style="margin-bottom:6px">
+  const picker = html`<form class="inline" method="get" action="/templates" style="margin-bottom:6px">
     <label class="small muted">Template</label>
     <select name="template" onchange="this.form.submit()">
-      ${templates.map((t) => `<option value="${esc(t.key)}" ${tpl.key === t.key ? "selected" : ""}>${esc(t.name)} (${esc(t.key)})</option>`).join("")}
+      ${raw(templates.map((t) => html`<option value="${t.key}" ${tpl.key === t.key ? "selected" : ""}>${t.name} (${t.key})</option>`).join(""))}
     </select>
   </form>`;
 
@@ -85,17 +84,17 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
   });
   const unknown = [...new Set(((tpl.subject + " " + tpl.body).match(/\{[a-z_]+\}/g) ?? []).filter((ph) => !PLACEHOLDER_DOCS.some(([k]) => k === ph)))];
 
-  const editor = `<form method="post" action="/templates/save">
-    ${csrfField(c.csrf)}
-    <input type="hidden" name="key" value="${esc(tpl.key)}">
-    <label>Display name</label><input type="text" name="name" value="${esc(tpl.name)}">
-    <label>Subject (the reference number is prepended automatically)</label><input type="text" name="subject" value="${esc(tpl.subject)}">
-    <label>Body</label><textarea name="body" style="min-height:260px">${esc(tpl.body)}</textarea>
+  const editor = html`<form method="post" action="/templates/save">
+    ${raw(csrfField(c.csrf))}
+    <input type="hidden" name="key" value="${tpl.key}">
+    <label>Display name</label><input type="text" name="name" value="${tpl.name}">
+    <label>Subject (the reference number is prepended automatically)</label><input type="text" name="subject" value="${tpl.subject}">
+    <label>Body</label><textarea name="body" style="min-height:260px">${tpl.body}</textarea>
     <div class="formrow" style="margin-top:10px">
       <div><label>Attach an attachment set</label><select name="attach_pack">
         <option value="none" ${packFlag === "none" ? "selected" : ""}>No attachments</option>
-        ${c.repo.listAttachmentSets(c.user.organization_id ?? 1).map((s) => `<option value="${esc(s.name)}" ${packFlag === s.name ? "selected" : ""}>${esc(s.name)} (${s.file_count} file${s.file_count === 1 ? "" : "s"})</option>`).join("")}
-        ${["application", "admission"].filter((legacy) => packFlag === legacy && !c.repo.listAttachmentSets(c.user.organization_id ?? 1).some((s) => s.name === legacy)).map((legacy) => `<option value="${legacy}" selected>${legacy} (missing set — create it in the Document library)</option>`).join("")}
+        ${raw(c.repo.listAttachmentSets(c.user.organization_id ?? 1).map((s) => html`<option value="${s.name}" ${packFlag === s.name ? "selected" : ""}>${s.name} (${s.file_count} file${s.file_count === 1 ? "" : "s"})</option>`).join(""))}
+        ${raw(["application", "admission"].filter((legacy) => packFlag === legacy && !c.repo.listAttachmentSets(c.user.organization_id ?? 1).some((s) => s.name === legacy)).map((legacy) => html`<option value="${legacy}" selected>${legacy} (missing set — create it in the Document library)</option>`).join(""))}
       </select></div>
       <div style="flex:2"><label>&nbsp;</label><span class="small muted">Applies to automated and manual sends alike. Sets are managed in Configuration → Document library. Missing set files are audited, never skipped silently.</span></div>
     </div>
@@ -107,66 +106,66 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
       <div><label>Belongs to profile</label>
         <select name="case_type_id">
           <option value="0" ${!tpl.case_type_id ? "selected" : ""}>Organization-wide (all profiles)</option>
-          ${c.repo.listCaseTypes(c.user.organization_id ?? 1).map((t) => `<option value="${t.id}" ${tpl.case_type_id === t.id ? "selected" : ""}>${esc(t.name)} (${esc(t.code)})</option>`).join("")}
+          ${raw(c.repo.listCaseTypes(c.user.organization_id ?? 1).map((t) => html`<option value="${t.id}" ${tpl.case_type_id === t.id ? "selected" : ""}>${t.name} (${t.code})</option>`).join(""))}
         </select></div>
       <div style="flex:2"><label>&nbsp;</label><span class="small muted">A profile-bound template is used only for that profile's cases. Keys are not a fixed list — create whatever a profile needs below.</span></div>
     </div>
   </form>
   <form method="post" action="/templates/reset" style="margin-top:10px" onsubmit="return confirm('Reset this template to its own saved default? Your edits will be lost.')">
-    ${csrfField(c.csrf)}
-    <input type="hidden" name="key" value="${esc(tpl.key)}">
+    ${raw(csrfField(c.csrf))}
+    <input type="hidden" name="key" value="${tpl.key}">
     <button class="btn ghost">Reset to this template's own default</button>
   </form>
   <details style="margin-top:14px"><summary class="small" style="cursor:pointer">Create a new template key</summary>
     <form method="post" action="/templates/create" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
-      ${csrfField(c.csrf)}
+      ${raw(csrfField(c.csrf))}
       <div class="field" style="min-width:180px"><span class="lbl">Machine key</span><input name="key" required placeholder="e.g. scholarship_reply"></div>
       <div class="field" style="min-width:180px"><span class="lbl">Display name</span><input name="name" required placeholder="e.g. Scholarship reply"></div>
       <div class="field" style="min-width:180px"><span class="lbl">Belongs to profile</span>
         <select name="case_type_id">
           <option value="0">Organization-wide (all profiles)</option>
-          ${c.repo.listCaseTypes(c.user.organization_id ?? 1).map((t) => `<option value="${t.id}">${esc(t.name)} (${esc(t.code)})</option>`).join("")}
+          ${raw(c.repo.listCaseTypes(c.user.organization_id ?? 1).map((t) => html`<option value="${t.id}">${t.name} (${t.code})</option>`).join(""))}
         </select></div>
       <button class="btn">Create template</button>
     </form>
   </details>`;
 
-  const list = templates.map((t) => `<tr>
-      <td><a href="/templates?template=${encodeURIComponent(t.key)}#tpl-${esc(t.key)}"><b>${esc(t.name)}</b></a><br><span class="mono small muted">${esc(t.key)}</span></td>
-      <td class="small muted">${esc(TEMPLATE_USAGE[t.key] ?? "Manual staff reply.")}</td>
-      <td>${!t.attach_pack || t.attach_pack === "none" ? `<span class="muted small">—</span>` : badge("purple", t.attach_pack, " set")}</td>
+  const list = templates.map((t) => html`<tr>
+      <td><a href="/templates?template=${encodeURIComponent(t.key)}#tpl-${t.key}"><b>${t.name}</b></a><br><span class="mono small muted">${t.key}</span></td>
+      <td class="small muted">${TEMPLATE_USAGE[t.key] ?? "Manual staff reply."}</td>
+      <td>${raw(!t.attach_pack || t.attach_pack === "none" ? html`<span class="muted small">—</span>` : badge("purple", t.attach_pack, " set"))}</td>
     </tr>`).join("");
 
   return head(
     c,
     "Templates",
     "templates",
-    `
+    html`
 <div class="hero">
   <h1>Templates</h1>
   <div class="sub">Every email this system sends — automated replies, reminders and staff messages — is built from one of these templates. Edit the words, pick the pack, reset any time.</div>
 </div>
-${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
+${raw(flashMsg ? flash("", flashMsg) : "")}
 
 <section class="card nopad">
   <div class="card-head"><h2>All outgoing types</h2></div>
-  <table><tr><th>Template</th><th>Who sends it</th><th>Pack attached</th></tr>${list}</table>
+  <table><tr><th>Template</th><th>Who sends it</th><th>Pack attached</th></tr>${raw(list)}</table>
 </section>
 
-<section class="card nopad" id="tpl-${esc(tpl.key)}">
-  <div class="card-head"><h2>Edit — ${esc(tpl.name)}</h2></div>
+<section class="card nopad" id="tpl-${tpl.key}">
+  <div class="card-head"><h2>Edit — ${tpl.name}</h2></div>
   <div style="padding:16px 24px 22px">
-    ${picker}
-    <p class="small muted" style="margin-top:6px"><b>Who sends this:</b> ${esc(usage)}</p>
-    ${unknown.length ? `<div class="flash err" style="position:static;margin:10px 0">Unknown placeholder${unknown.length === 1 ? "" : "s"} in this template: ${unknown.map(esc).join(", ")} — applicants will see it as literal text.</div>` : ""}
+    ${raw(picker)}
+    <p class="small muted" style="margin-top:6px"><b>Who sends this:</b> ${usage}</p>
+    ${raw(unknown.length ? flash("err", raw(`Unknown placeholder${unknown.length === 1 ? "" : "s"} in this template: ${unknown.map((u) => esc(u)).join(", ")} — applicants will see it as literal text.`), "position:static;margin:10px 0") : "")}
     <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:22px">
-      <div>${editor}</div>
+      <div>${raw(editor)}</div>
       <div>
         <h3 style="margin:0 0 6px;font-size:13px">Preview (sample contact)</h3>
-        <div id="tpl-preview" class="small" style="border:1px solid var(--line2);border-radius:8px;padding:12px;background:var(--card2);white-space:pre-wrap;line-height:1.6"><b>${esc(preview.subject)}</b>\n\n${esc(preview.body)}</div>
+        <div id="tpl-preview" class="small" style="border:1px solid var(--line2);border-radius:8px;padding:12px;background:var(--card2);white-space:pre-wrap;line-height:1.6"><b>${preview.subject}</b>\n\n${preview.body}</div>
         <h3 style="margin:16px 0 6px;font-size:13px">Placeholders</h3>
         <table><tr><th>Token</th><th>Filled with</th></tr>
-          ${placeholderDocsFor(c).map(([k, v]) => `<tr><td class="mono small">${esc(k)}</td><td class="small muted">${esc(v)}</td></tr>`).join("")}
+          ${raw(placeholderDocsFor(c).map(([k, v]) => html`<tr><td class="mono small">${k}</td><td class="small muted">${v}</td></tr>`).join(""))}
         </table>
       </div>
     </div>

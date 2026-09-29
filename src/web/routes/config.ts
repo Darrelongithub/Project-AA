@@ -9,6 +9,7 @@ import { autoAdmitPolicy, evaluateAdmission } from "../../admissions/evaluate";
 import { type RuleAction, type RuleCondition, type WorkflowRule, describeRule, firstMatchingRule, ruleMatches, rulesForCaseScope } from "../../rules/workflow";
 import { categorizeEmail } from "../../categorize";
 import { configPage } from "../pages";
+import { html, raw } from "../tpl";
 import { UNKNOWN_STAFF_MEMBER, csrfCheck, requireLogin, requireRole } from "../auth";
 import { PACK_DIR, PACK_SLOTS } from "../../pack";
 import { EXAM_SYSTEMS } from "../../config";
@@ -240,18 +241,18 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
       const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]!));
       let verdict: string;
       if (winner && winner.id === 0 && proposedMatches) {
-        verdict = `<b>MATCH</b> — this rule would fire for that message: ${esc(describeRule(proposed))}`;
+        verdict = html`<b>MATCH</b> — this rule would fire for that message: ${raw(esc(describeRule(proposed)))}`;
       } else if (winner && proposedMatches) {
-        verdict = `<b>MATCH, but an earlier rule wins</b> — “${esc(winner.name)}” fires first (${esc(describeRule(winner))}). Raise this rule's position to take over.`;
+        verdict = html`<b>MATCH, but an earlier rule wins</b> — “${raw(esc(winner.name))}” fires first (${raw(esc(describeRule(winner)))}). Raise this rule's position to take over.`;
       } else if (winner) {
-        verdict = `<b>NO MATCH</b> — this rule would not fire; “${esc(winner.name)}” would handle the message instead (${esc(describeRule(winner))}).`;
+        verdict = html`<b>NO MATCH</b> — this rule would not fire; “${raw(esc(winner.name))}” would handle the message instead (${raw(esc(describeRule(winner)))}).`;
       } else {
-        verdict = `<b>NO MATCH</b> — no rule in this scope would fire; the message routes to human review (nothing is ever dropped).`;
+        verdict = html`<b>NO MATCH</b> — no rule in this scope would fire; the message routes to human review (nothing is ever dropped).`;
       }
-      const details = `<div class="small muted" style="margin-top:6px">Sample from ${esc(sampleFrom || "(no sender)")}: category <span class="mono">${esc(input.category)}</span> · docs ${docsState} · sender ${input.senderState} · ${scopeRules.length} published rule(s) in scope.</div>`;
-      res.type("html").send(`<div class="small">${verdict}</div>${details}`);
+      const details = html`<div class="small muted" style="margin-top:6px">Sample from ${raw(esc(sampleFrom || "(no sender)"))}: category <span class="mono">${raw(esc(input.category))}</span> · docs ${docsState} · sender ${input.senderState} · ${scopeRules.length} published rule(s) in scope.</div>`;
+      res.type("html").send(html`<div class="small">${raw(verdict)}</div>${raw(details)}`);
     } catch (e) {
-      res.status(400).type("html").send(`<div class="small">Preview failed: ${String((e as Error).message).replace(/[&<>"]/g, "")}</div>`);
+      res.status(400).type("html").send(html`<div class="small">Preview failed: ${raw(String((e as Error).message).replace(/[&<>"]/g, ""))}</div>`);
     }
   });
 

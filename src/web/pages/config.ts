@@ -13,7 +13,7 @@ import { ADMISSION_SYSTEMS, AdmissionSystem, CaseType, LIFECYCLE_LABELS, RuleNod
 import { esc } from "../views";
 import { head } from "./shared";
 import type { Ctx } from "./shared";
-import { badge, csrfField, emptyState } from "../tpl";
+import { badge, csrfField, emptyState, flash as flashBanner } from "../tpl";
 
 type LegacyAcademicLevel = "degree" | "diploma" | "certificate" | "masters" | "phd";
 
@@ -902,7 +902,7 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
     `
 <h1>Configuration</h1>
 <div class="sub">Requirements, deadlines and reply behaviour — course configuration (courses, ownership, document checklists) lives in the <a href="/staff">Staff area</a>. Changes apply to newly processed email immediately.</div>
-${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+${flash ? flashBanner("ok", flash, "position:static;margin-bottom:16px") : ""}
 ${tabBar}
 ${tab === "rules" ? workflowRulesTab(c, editRuleId) : tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? attachmentSetsCard(c) + documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : replyHtml}
 `

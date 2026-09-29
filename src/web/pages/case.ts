@@ -10,7 +10,7 @@ import { ApplicantRow, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER 
 import { avatar, categoryBadge, esc, flagLabel, fmtDate, lifecycleBadge, lifecycleStepper, priorityBadge, readabilityScore, slaText, triageBadge } from "../views";
 import { DECISION_BADGES, capFirst, decisionBadge, head, resultBadge } from "./shared";
 import type { Ctx } from "./shared";
-import { badge, csrfField } from "../tpl";
+import { badge, csrfField, flash as flashBanner } from "../tpl";
 
 function reasoningFlags(reasoning: string): Set<string> {
   const out = new Set<string>();
@@ -367,7 +367,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
     `${a.ref_number} — case file`,
     "applicants",
     `
-${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
+${flash ? flashBanner("", flash) : ""}
 
 <!-- Level 1 — applicant identity -->
 <div class="case-head">
@@ -684,7 +684,7 @@ export function composePage(c: Ctx, a: ApplicantRow, tpl: { key: string; name: s
 </div>
 
 <div class="card" style="max-width:880px">
-  ${error ? `<div class="flash err" style="position:static;margin-bottom:16px">${esc(error)}</div>` : ""}
+  ${error ? flashBanner("err", error, "position:static;margin-bottom:16px") : ""}
   <p class="small muted" style="margin-top:0">Everything below is already filled in from the case file — the checklist, the missing documents, the reference number. Edit if you like; nothing is sent until you press Send.</p>
   <form method="post" action="/case/${a.id}/compose">
     ${csrfField(c.csrf)}
@@ -789,8 +789,8 @@ export function composeWindowPage(
 </div>
 
 <div class="card" style="max-width:880px">
-  ${opts.error ? `<div class="flash err" style="position:static;margin-bottom:16px">${esc(opts.error)}</div>` : ""}
-  ${opts.flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(opts.flash)}</div>` : ""}
+  ${opts.error ? flashBanner("err", opts.error, "position:static;margin-bottom:16px") : ""}
+  ${opts.flash ? flashBanner("ok", opts.flash, "position:static;margin-bottom:16px") : ""}
   <p class="small muted" style="margin-top:0">Everything below is editable — nothing is sent until you press Send. Pick a template to pre-fill the draft:</p>
   <p style="margin:0 0 14px;line-height:2.1">${chips}</p>
   <form method="post" action="/compose">
