@@ -219,7 +219,7 @@ function nodeInDraftSet(repo: Repo, nodeId: number, programme: string | null, le
 
 
 /** updateRuleNode, refused (false) unless the node is in the target's draft. */
-export function updateRuleNodeIfDraft(repo: Repo, 
+export function updateRuleNodeIfDraft(repo: Repo,
   nodeId: number,
   programme: string | null,
   level: CourseLevel,

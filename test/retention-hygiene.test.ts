@@ -69,6 +69,7 @@ describe("audit F — R9: purge clears demo staff children", () => {
     // Legacy-shaped data: a demo-attributed note surviving on a LIVE case.
     const live = repo.getOrCreateApplicant("live@example.test", "t-live");
     repo.db.prepare("INSERT INTO notes (applicant_id, staff_id, body) VALUES (?, ?, ?)").run(live.id, demo.id, "keep me");
+    repo.db.prepare("UPDATE applicants SET assigned_to = ? WHERE id = ?").run(demo.id, live.id);
 
     const removed = purgeMockData(repo, {});
     expect(removed.staff).toBe(1);
@@ -81,6 +82,9 @@ describe("audit F — R9: purge clears demo staff children", () => {
     expect(repo.db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE staff_id = ?").get(real.id)).toMatchObject({ n: 1 });
     const note = repo.db.prepare("SELECT staff_id, body FROM notes WHERE applicant_id = ?").get(live.id) as { staff_id: number | null; body: string };
     expect(note).toMatchObject({ staff_id: null, body: "keep me" });
+    // G6: the assignment NULLs instead of aborting the purge on the FK.
+    const assignee = repo.db.prepare("SELECT assigned_to AS a FROM applicants WHERE id = ?").get(live.id) as { a: number | null };
+    expect(assignee.a).toBeNull();
   });
 });
 

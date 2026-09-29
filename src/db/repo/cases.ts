@@ -50,7 +50,7 @@ export function findByRef(repo: Repo, ref: string): ApplicantRow | undefined {
 }
 
 
-export function getOrCreateApplicant(repo: Repo, 
+export function getOrCreateApplicant(repo: Repo,
   emailAddress: string,
   threadId: string,
   opts: { fullName?: string; refPrefix?: string; organizationId?: number; caseTypeCode?: string } = {}
@@ -142,7 +142,7 @@ export function requireApplicant(repo: Repo, id: number): ApplicantRow {
 }
 
 
-export function updateApplicant(repo: Repo, 
+export function updateApplicant(repo: Repo,
   id: number,
   patch: Partial<
     Pick<

@@ -69,6 +69,9 @@ export function purgeMockData(repo: Repo, opts: { backupPath?: string } = {}): P
     for (const t of ["tasks", "notes"]) {
       db.prepare(`UPDATE ${t} SET staff_id = NULL WHERE staff_id IN (${inList})`).run(...demoIds);
     }
+    // A demo staffer assigned to a surviving (live) case would abort the
+    // delete on applicants.assigned_to's FK the same way — unassign.
+    db.prepare(`UPDATE applicants SET assigned_to = NULL WHERE assigned_to IN (${inList})`).run(...demoIds);
   }
   const staffDeleted = db.prepare("DELETE FROM staff_users WHERE IFNULL(demo, 0) = 1").run().changes;
 

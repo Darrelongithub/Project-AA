@@ -1225,6 +1225,7 @@ export class Repo {
     subject: string;
     from_addr: string;
     error: string;
+    organization_id?: number | null;
   }): { attempts: number; dead: boolean; id: number } {
     return deadletters.recordDeadLetter(this, input);
   }
@@ -1238,6 +1239,7 @@ export class Repo {
     subject: string;
     from_addr: string;
     error: string;
+    organization_id?: number | null;
   }): DeadLetter {
     return deadletters.parkDeadLetter(this, input);
   }

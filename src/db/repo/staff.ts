@@ -30,7 +30,7 @@ export function createStaff(repo: Repo, username: string, displayName: string, p
 }
 
 
-export function createStaffAndReturn(repo: Repo, 
+export function createStaffAndReturn(repo: Repo,
   username: string,
   displayName: string,
   passwordHash: string,

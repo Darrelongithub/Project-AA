@@ -479,6 +479,10 @@ export interface DeadLetter {
   dead: number;
   created_at: string;
   updated_at: string;
+  /** Owning org when known (process failures); NULL for fetch failures,
+   * which happen before intake resolves an org. Same convention as
+   * error_events: NULL = unattributable = shown in no org's console. */
+  organization_id: number | null;
 }
 
 export interface DerivedFlag {

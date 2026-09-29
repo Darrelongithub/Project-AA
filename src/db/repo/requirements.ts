@@ -253,7 +253,7 @@ export function freezeRequirementsSnapshot(repo: Repo, a: ApplicantRow): void {
  * the official application-form checklist. The legacy requirement_rules
  * table is no longer read — requirements are not staff-configurable.
  */
-export function resolveRequirements(repo: Repo, 
+export function resolveRequirements(repo: Repo,
   programme: string | null,
   _intake: string | null,
   opts?: { transfer?: boolean; nationality?: string | null }

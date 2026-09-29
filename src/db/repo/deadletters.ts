@@ -21,6 +21,10 @@ export function recordDeadLetter(repo: Repo, input: {
   subject: string;
   from_addr: string;
   error: string;
+  /** Owning org when the caller knows it (process failures); NULL for
+   * fetch failures, which happen before intake resolves an org. First
+   * non-null attribution wins on repeat records. */
+  organization_id?: number | null;
 }): { attempts: number; dead: boolean; id: number } {
   // Atomic upsert: the old SELECT-then-INSERT raced when two syncs (web
   // timer + CLI ingest) recorded the same poison message concurrently —
@@ -30,15 +34,16 @@ export function recordDeadLetter(repo: Repo, input: {
   const max = repo.deadLetterMaxAttempts();
   repo.db
     .prepare(
-      `INSERT INTO dead_letters (message_id, subject, from_addr, error, attempts, dead)
-       VALUES (?, ?, ?, ?, 1, CASE WHEN 1 >= ? THEN 1 ELSE 0 END)
+      `INSERT INTO dead_letters (message_id, subject, from_addr, error, attempts, dead, organization_id)
+       VALUES (?, ?, ?, ?, 1, CASE WHEN 1 >= ? THEN 1 ELSE 0 END, ?)
        ON CONFLICT(message_id) DO UPDATE SET
          error = excluded.error,
          attempts = dead_letters.attempts + 1,
          dead = CASE WHEN dead_letters.attempts + 1 >= ? THEN 1 ELSE dead_letters.dead END,
+         organization_id = COALESCE(excluded.organization_id, dead_letters.organization_id),
          updated_at = datetime('now')`
     )
-    .run(input.message_id, input.subject, input.from_addr, input.error, max, max);
+    .run(input.message_id, input.subject, input.from_addr, input.error, max, input.organization_id ?? null, max);
   const row = repo.db
     .prepare("SELECT id, attempts, dead FROM dead_letters WHERE message_id = ?")
     .get(input.message_id) as { id: number; attempts: number; dead: number };
@@ -63,16 +68,19 @@ export function parkDeadLetter(repo: Repo, input: {
   subject: string;
   from_addr: string;
   error: string;
+  organization_id?: number | null;
 }): DeadLetter {
   const max = repo.deadLetterMaxAttempts();
   repo.db
     .prepare(
-      `INSERT INTO dead_letters (message_id, subject, from_addr, error, attempts, dead)
-       VALUES (?, ?, ?, ?, ?, 1)
+      `INSERT INTO dead_letters (message_id, subject, from_addr, error, attempts, dead, organization_id)
+       VALUES (?, ?, ?, ?, ?, 1, ?)
        ON CONFLICT(message_id) DO UPDATE SET
-         error = excluded.error, attempts = excluded.attempts, dead = 1, updated_at = datetime('now')`
+         error = excluded.error, attempts = excluded.attempts, dead = 1,
+         organization_id = COALESCE(excluded.organization_id, dead_letters.organization_id),
+         updated_at = datetime('now')`
     )
-    .run(input.message_id, input.subject, input.from_addr, input.error, max);
+    .run(input.message_id, input.subject, input.from_addr, input.error, max, input.organization_id ?? null);
   return repo.db
     .prepare("SELECT * FROM dead_letters WHERE message_id = ?")
     .get(input.message_id) as DeadLetter;

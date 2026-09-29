@@ -53,7 +53,7 @@ export function insertDocument(repo: Repo, d: {
  * Re-score a document after cross-document consistency checks (confidence
  * v2): the score, tier and the human-readable note travel together.
  */
-export function updateDocumentConfidence(repo: Repo, 
+export function updateDocumentConfidence(repo: Repo,
   docId: number,
   patch: { confidence?: Confidence; confidence_score?: number; extraction_note?: string }
 ): void {

@@ -215,6 +215,9 @@ export interface ConsoleTamperRow {
  *   without human_admission_decision, auto outcome without the auto trail).
  * - unpermitted_actor / unknown_actor: resolved in TypeScript (needs
  *   hasPermission), see consoleTamperActors.
+ * Only DECIDED cases are scanned: admission_decision defaults to
+ * 'undecided' (never NULL), so an IS NOT NULL filter alone filled the
+ * 500-row window with undecided cases and crowded out real signals.
  */
 export function consoleTamperOutcomes(repo: Repo, orgId: number): ConsoleTamperRow[] {
   const out: ConsoleTamperRow[] = [];
@@ -226,7 +229,7 @@ export function consoleTamperOutcomes(repo: Repo, orgId: number): ConsoleTamperR
               a.decision_by AS decision_by, a.decision_at AS decision_at,
               (SELECT COUNT(*) FROM audit_log l WHERE l.applicant_id = a.id AND l.event = 'human_admission_decision') AS human_n,
               (SELECT COUNT(*) FROM audit_log l WHERE l.applicant_id = a.id AND l.event IN ('auto_admission_triggered', 'admission_auto_qualified')) AS auto_n
-       FROM applicants a WHERE ${ORG_APPLICANT} AND a.admission_decision IS NOT NULL
+       FROM applicants a WHERE ${ORG_APPLICANT} AND a.admission_decision IS NOT NULL AND a.admission_decision <> 'undecided'
        ORDER BY a.id DESC LIMIT 500`
     )
     .all(orgId) as Array<{

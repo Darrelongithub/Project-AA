@@ -149,8 +149,14 @@ CREATE TABLE IF NOT EXISTS dead_letters (
   attempts    INTEGER NOT NULL DEFAULT 1,
   dead        INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  organization_id INTEGER
 );
+-- ST-P12: per-org dead-letter attribution (NULL = unattributable fetch
+-- failure). The console can filter by org once it surfaces this queue.
+-- The index lives in migrate(), NOT here: a static index on the new
+-- column would break opening pre-ST-P12 databases (no such column yet).
+-- Same convention as idx_error_events_org below.
 
 -- Round 19: Gemini results cached by content hash — the same bytes are never
 -- paid for twice, and the cache lets the circuit breaker replay last-known
@@ -264,6 +270,9 @@ CREATE TABLE IF NOT EXISTS notifications (
   read         INTEGER NOT NULL DEFAULT 0,
   at           TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Every page load counts/lists these per staffer (header badge): index the
+-- staff filter + unread + recency order or each probe scans the table.
+CREATE INDEX IF NOT EXISTS idx_notifications_staff ON notifications(staff_id, read, id);
 
 CREATE TABLE IF NOT EXISTS templates (
   key        TEXT PRIMARY KEY,
@@ -560,7 +569,16 @@ export function openDb(file: string): Database.Database {
   return db;
 }
 
-/** Pragmatic forward migration for databases created by older versions. */
+/**
+ * Pragmatic forward migration for databases created by older versions.
+ *
+ * Convention: a new column lands in the base SCHEMA above AND as an
+ * addColumn here (~40 calls duplicate SCHEMA today — that overlap is
+ * deliberate, not cruft). CREATE TABLE IF NOT EXISTS never touches an
+ * existing database, so the addColumn is the only thing that upgrades old
+ * files; the SCHEMA entry keeps fresh databases complete without depending
+ * on migration order. Never "clean up" either side alone.
+ */
 function migrate(db: Database.Database): void {
   const addColumn = (table: string, column: string, type: string) => {
     try {
@@ -846,6 +864,12 @@ function migrate(db: Database.Database): void {
     detail TEXT NOT NULL DEFAULT ''
   )`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_error_events_org ON error_events(organization_id, at)`);
+  // Audit G (C3): same index for databases created before it joined the
+  // base schema above — notifications had no index at all.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_notifications_staff ON notifications(staff_id, read, id)`);
+  // Audit G (ST-P12): per-org dead-letter attribution for older DBs.
+  addColumn("dead_letters", "organization_id", "INTEGER");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_dead_letters_org ON dead_letters(organization_id, dead)`);
   // Compatibility projection: old admissions callers still read applicants,
   // while generic callers can use cases/outcome/category without losing rows.
   db.exec(`CREATE VIEW IF NOT EXISTS cases AS
