@@ -16,6 +16,11 @@ import { createApp } from "../src/web/server";
 import { webLogin } from "./helpers";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
+import { metrics } from "../src/metrics";
+import { utcDay } from "../src/util/day";
+import { orgDurationMetric } from "../src/db/repo/console";
+import { processEmail } from "../src/pipeline";
+import type { IncomingEmail } from "../src/types";
 
 let repo: Repo;
 let a1: number; // org 1 applicant
@@ -221,5 +226,39 @@ describe("console health", () => {
     expect(repo.consoleRoutings(2).map((r) => r.routing)).toEqual(["auto_admit"]);
     expect(repo.consoleFallbackTriggers(1).map((r) => r.applicant_id)).toEqual([a1]);
     expect(repo.consoleFallbackTriggers(2).map((r) => r.applicant_id)).toEqual([b1]);
+  });
+});
+
+describe("org-scoped durations", () => {
+  it("averages per-org durations from metric_daily, split by org", () => {
+    const day = utcDay();
+    repo.upsertMetric(day, orgDurationMetric(1), 2, 100);
+    repo.upsertMetric(day, orgDurationMetric(1), 2, 300);
+    repo.upsertMetric(day, orgDurationMetric(2), 1, 9999);
+    repo.upsertMetric(day, "email.duration_ms", 9, 9000); // global row ignored
+    expect(repo.consoleOrgDuration(1, 14)).toEqual({ n: 4, avgMs: 100 });
+    expect(repo.consoleOrgDuration(2, 14)).toEqual({ n: 1, avgMs: 9999 });
+    expect(repo.consoleOrgDuration(3, 14)).toEqual({ n: 0, avgMs: 0 });
+  });
+
+  it("processEmail observes the applicant's org duration (additive-only)", async () => {
+    const prepo = new Repo(openDb(":memory:"));
+    seedDefaults(prepo);
+    const sender = new MockSender();
+    const ctx: PipelineContext = { repo: prepo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
+    metrics.drain(() => {});
+    const email: IncomingEmail = {
+      id: "dur-e1", threadId: "dur-t1", from: "dur@example.org", fromName: "Dur",
+      subject: "Hello", body: "I want to apply", receivedAt: new Date().toISOString(), attachments: [],
+    };
+    const res = await processEmail(email, ctx);
+    expect(res.applicantId).not.toBeNull();
+    const seen = new Map<string, { n: number; sum: number }>();
+    metrics.drain((name, n, sum) => seen.set(name, { n, sum }));
+    expect(seen.get("email.processed")).toMatchObject({ n: 1 });
+    const org = seen.get("email.duration_ms.org.1");
+    expect(org).toBeDefined();
+    expect(org!.n).toBe(1);
+    expect(org!.sum).toBeGreaterThanOrEqual(0);
   });
 });

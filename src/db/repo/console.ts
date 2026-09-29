@@ -24,6 +24,23 @@ function sinceSql(col: string, since: string | undefined, params: unknown[]): st
   return ` AND datetime(${col}) >= datetime(?)`;
 }
 
+// ── Per-org processing durations (Phase 6 metric, org-suffixed name) ─────
+/** Metric name carrying one org's email durations (fits the (day, name) PK). */
+export function orgDurationMetric(orgId: number): string {
+  return `email.duration_ms.org.${orgId}`;
+}
+
+/** Weighted run count + mean processing ms for the org over the last `days` days. */
+export function consoleOrgDuration(repo: Repo, orgId: number, days: number): { n: number; avgMs: number } {
+  const row = repo.db
+    .prepare(
+      `SELECT COALESCE(SUM(n), 0) AS n, COALESCE(SUM(sum), 0) AS sum FROM metric_daily
+       WHERE name = ? AND day >= date('now', ?)`
+    )
+    .get(orgDurationMetric(orgId), `-${days - 1} days`) as { n: number; sum: number };
+  return { n: row.n, avgMs: row.n > 0 ? row.sum / row.n : 0 };
+}
+
 // ── 1. Logins ────────────────────────────────────────────────────────────
 export interface ConsoleLoginRow {
   actor: string;

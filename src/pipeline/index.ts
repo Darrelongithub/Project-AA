@@ -93,6 +93,17 @@ export async function processEmail(
   try {
     const out = await processEmailInner(email, ctx, opts);
     metrics.incr("email.processed");
+    // Phase 12: per-org processing durations for the admin console (the
+    // global email.duration_ms can't be split by org). Failed runs stay
+    // global-only (no attributable applicant); recording never throws.
+    try {
+      if (out.applicantId != null) {
+        const org = repo.getApplicant(out.applicantId)?.organization_id ?? 1;
+        metrics.observe(`email.duration_ms.org.${org}`, Date.now() - start);
+      }
+    } catch {
+      /* metrics must never break the pipeline */
+    }
     return out;
   } catch (e) {
     // Release the claim: the ingest dead-letter machinery owns retries.

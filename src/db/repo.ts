@@ -421,6 +421,9 @@ export class Repo {
   consoleFallbackTriggers(orgId: number, since?: string): consoleq.ConsoleErrorRow[] {
     return consoleq.consoleFallbackTriggers(this, orgId, since);
   }
+  consoleOrgDuration(orgId: number, days: number): { n: number; avgMs: number } {
+    return consoleq.consoleOrgDuration(this, orgId, days);
+  }
 
   approverFor(applicantId: number): { actor: string; at: string } | undefined {
     return cases.approverFor(this, applicantId);

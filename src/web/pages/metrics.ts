@@ -17,7 +17,9 @@ function metricRow(r: MetricDayRow): string {
 
 export function metricsPage(c: Ctx): string {
   const { repo } = c;
-  const rows = repo.metricDaily(14);
+  // Phase 12: per-org duration rows stay out of the global metrics page —
+  // they belong to one org's console, not to every admin's screen.
+  const rows = repo.metricDaily(14).filter((r) => !r.name.includes(".org."));
   const today = utcDay();
   const todayRows = rows.filter((r) => r.day === today);
   const pastRows = rows.filter((r) => r.day !== today).reverse();
