@@ -279,12 +279,17 @@ from the original bughunt `BUGS.md` are rows BH-01…BH-42 below.
 | FIXED / ADOPTED | 203 | All rows except those below |
 | NOT A BUG | 6 | BH-27, FP-01 (=BH-27), FP-02, ST-L-5, ST-P3-OK, ST-F2-OK |
 | ACCEPTED residual risk | 2 | CR-06 (getApplicant `!` sites), CR-13 (restore-over-live refusal) |
-| OPEN guidance | 3 | CR-08 (archive encryption), AU-R2 (shared withTimeout when 3rd site appears), AU-R4 (theme CSRF if ever persisted) |
+| OPEN guidance | 2 | AU-R2 (shared withTimeout when 3rd site appears), AU-R4 (theme CSRF if ever persisted) |
 
 Unique confirmed defects fixed: **199** (200 FIXED rows minus FP-01 which duplicates BH-27).
 No open product bug: the 3 OPEN items are conditional/future guidance, and the
 2 ACCEPTED items are judged low-risk residuals. `MIGRATION.md` contains no
 defects (migration plan + rollback + verification) and contributes no rows.
+
+
+
+
+d contributes no rows.
 
 
 
