@@ -121,8 +121,12 @@ export function registerAuth(app: Express, rt: RouteCtx): void {
 
   app.post("/login", (req, res) => {
     const ip = req.ip ?? "?";
+    // Phase 12: brute-force attempts are audit-persisted (who tried, from
+    // where), not just counted — the admin console surfaces them per org.
+    const attempted = String(req.body.username ?? "").slice(0, 80) || "?";
     if (loginBlocked(ip)) {
       metrics.incr("login.blocked");
+      rt.repo.audit(null, attempted, "staff_login_blocked", `ip=${ip}`);
       res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, rt.authName(), newLoginCsrf(res)));
       return;
     }
@@ -138,12 +142,13 @@ export function registerAuth(app: Express, rt: RouteCtx): void {
     if (!staff) {
       loginRecordFail(ip);
       metrics.incr("login.fail");
+      rt.repo.audit(null, attempted, "staff_login_failed", `ip=${ip}`);
       res.status(401).send(loginPage("Invalid username or password.", req.theme, rt.authName(), newLoginCsrf(res)));
       return;
     }
     metrics.incr("login.success");
     const session = rt.repo.createSession(staff.id);
-    rt.repo.audit(null, staff.username, "staff_login", "");
+    rt.repo.audit(null, staff.username, "staff_login", `ip=${ip}`);
     res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies));
     res.redirect("/");
   });

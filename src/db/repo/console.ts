@@ -28,7 +28,7 @@ function sinceSql(col: string, since: string | undefined, params: unknown[]): st
 export interface ConsoleLoginRow {
   actor: string;
   display_name: string;
-  event: "staff_login" | "staff_login_failed";
+  event: "staff_login" | "staff_login_failed" | "staff_login_blocked";
   at: string;
   detail: string;
 }
@@ -46,7 +46,7 @@ export function consoleLogins(repo: Repo, orgId: number, since?: string): Consol
       `SELECT l.actor AS actor, u.display_name AS display_name, l.event AS event,
               l.at AS at, l.detail AS detail
        FROM audit_log l JOIN staff_users u ON u.username = l.actor
-       WHERE l.event IN ('staff_login', 'staff_login_failed') AND ${ORG_STAFF}
+       WHERE l.event IN ('staff_login', 'staff_login_failed', 'staff_login_blocked') AND ${ORG_STAFF}
        ${sinceSql("l.at", since, params)}
        ORDER BY l.id DESC LIMIT 500`
     )

@@ -6,11 +6,16 @@
  * property), plus per-section correctness. Route-level 403 tests live
  * further below (added with the route in Step D).
  */
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, beforeAll, afterAll } from "vitest";
+import type { Server } from "http";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
 import { hashPassword } from "../src/util/password";
+import { createApp } from "../src/web/server";
+import { webLogin } from "./helpers";
+import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
+import { makeHeuristicWatcher } from "../src/watcher";
 
 let repo: Repo;
 let a1: number; // org 1 applicant
@@ -146,6 +151,56 @@ describe("console tampering signals", () => {
     repo.setPermissions(ofs.id, ["record_outcome"]);
     repo.audit(a1, "user1", "human_admission_decision", "admit");
     expect(repo.consoleTamperActors(1)).toEqual([]);
+  });
+});
+
+describe("login auditing (HTTP)", () => {
+  let wrepo: Repo;
+  let server: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    wrepo = new Repo(openDb(":memory:"));
+    seedDefaults(wrepo);
+    wrepo.createStaff("cadmin", "Console Admin", hashPassword("adminpass99"), "admin", false, 1);
+    const sender = new MockSender();
+    const ctx: PipelineContext = { repo: wrepo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
+    const app = createApp({ repo: wrepo, ctx });
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, "127.0.0.1", () => resolve()) as unknown as Server;
+    });
+    const addr = server.address() as { port: number };
+    base = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterAll(() => {
+    server?.close();
+  });
+
+  function lastAudit(event: string): { actor: string; detail: string } {
+    return wrepo.db.prepare("SELECT actor, detail FROM audit_log WHERE event = ? ORDER BY id DESC LIMIT 1").get(event) as { actor: string; detail: string };
+  }
+
+  it("persists failed logins with who + IP", async () => {
+    const r = await webLogin(base, "cadmin", "wrong-password");
+    expect(r.status).toBe(401);
+    expect(lastAudit("staff_login_failed")).toMatchObject({ actor: "cadmin" });
+    expect(lastAudit("staff_login_failed").detail).toMatch(/^ip=.*127\.0\.0\.1/);
+    expect(wrepo.consoleLogins(1).some((l) => l.event === "staff_login_failed" && l.actor === "cadmin")).toBe(true);
+  });
+
+  it("records the IP on successful logins", async () => {
+    const r = await webLogin(base, "cadmin", "adminpass99");
+    expect(r.status).toBe(302);
+    expect(lastAudit("staff_login").detail).toMatch(/^ip=.*127\.0\.0\.1/);
+  });
+
+  it("persists throttle-blocked attempts", async () => {
+    let last = 0;
+    for (let i = 0; i < 12; i++) last = (await webLogin(base, "cadmin", "wrong-again")).status;
+    expect(last).toBe(429);
+    expect(lastAudit("staff_login_blocked")).toMatchObject({ actor: "cadmin" });
+    expect(wrepo.consoleLogins(1).some((l) => l.event === "staff_login_blocked")).toBe(true);
   });
 });
 
