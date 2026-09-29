@@ -236,6 +236,15 @@ export function purgeStaffSessions(repo: Repo, staffId: number): number {
 }
 
 
+/** End every session for the staffer EXCEPT the one holding `keepToken` —
+ * a self-service password change must kill a thief's sessions without
+ * signing the changer out mid-flow. */
+export function purgeStaffSessionsExcept(repo: Repo, staffId: number, keepToken: string): number {
+  const r = repo.db.prepare("DELETE FROM sessions WHERE staff_id = ? AND token <> ?").run(staffId, keepToken);
+  return Number(r.changes);
+}
+
+
 export function purgeExpiredSessions(repo: Repo): void {
   repo.db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(new Date().toISOString());
 }

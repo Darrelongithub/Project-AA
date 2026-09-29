@@ -162,6 +162,23 @@ describe("public reset", () => {
     expect(ok.status).toBe(302); // admin password untouched
   });
 
+  it("unknown and known usernames are indistinguishable (no enumeration oracle)", async () => {
+    await startServer();
+    // Strip the rotating per-request tokens, then the pages must be
+    // byte-identical: response shape may depend only on password shape.
+    const scrub = (html: string) => html.replace(/value="[A-Za-z0-9+/=_-]{8,}"/g, 'value="X"');
+    const weakKnown = await publicResetPost({ username: "jane", code: "AAAAAAAAAA", password: "abc", confirm: "abc" });
+    const weakUnknown = await publicResetPost({ username: "nosuchuser", code: "AAAAAAAAAA", password: "abc", confirm: "abc" });
+    expect(weakKnown.status).toBe(200);
+    expect(scrub(weakKnown.html)).toBe(scrub(weakUnknown.html));
+    expect(weakUnknown.html).toMatch(/8 characters/i);
+    const goodKnown = await publicResetPost({ username: "jane", code: "AAAAAAAAAA", password: "newpassword9", confirm: "newpassword9" });
+    const goodUnknown = await publicResetPost({ username: "nosuchuser", code: "AAAAAAAAAA", password: "newpassword9", confirm: "newpassword9" });
+    expect(goodKnown.status).toBe(200);
+    expect(scrub(goodKnown.html)).toBe(scrub(goodUnknown.html));
+    expect(goodUnknown.html).toMatch(GENERIC);
+  });
+
   it("a weak password does not burn the code", async () => {
     await startServer();
     const code = await issueCodeFor(await officerId());

@@ -76,7 +76,9 @@ export function registerAuth(app: Express, rt: RouteCtx): void {
   const secureCookies = process.env.COOKIE_SECURE === "1";
   const newLoginCsrf = (res: Response): string => {
     const t = crypto.randomBytes(16).toString("hex");
-    res.setHeader("Set-Cookie", `lcsrf=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`);
+    // Same COOKIE_SECURE rule as the session cookie: behind TLS the
+    // login-CSRF token must never travel over plain HTTP either.
+    res.setHeader("Set-Cookie", `lcsrf=${t}; Path=/; HttpOnly; SameSite=Lax;${secureCookies ? " Secure;" : ""} Max-Age=600`);
     return t;
   };
 
@@ -192,15 +194,19 @@ export function registerAuth(app: Express, rt: RouteCtx): void {
     const code = String(req.body.code ?? "").trim();
     const password = String(req.body.password ?? "");
     const confirm = String(req.body.confirm ?? "");
+    // Password shape is validated BEFORE the username is even looked up —
+    // and before the code is consumed, so a typo never burns it. If the
+    // shape errors only fired for real usernames, a weak-password probe
+    // would distinguish "no such account" (generic) from "account exists"
+    // (specific): an account-enumeration oracle. Every response below now
+    // depends only on password shape until the single generic refusal.
+    if (password.length < 8) return refuse("The new password must be at least 8 characters.");
+    if (password !== confirm) return refuse("The two new passwords do not match — nothing was changed.");
     const member = username ? rt.repo.getStaffByUsername(username) : undefined;
     if (!member || member.active !== 1) {
       resetThrottle.recordFail(ip); // credential guess — count it
       return refuse(GENERIC);
     }
-    // Validate the password BEFORE consuming the code — a typo must not
-    // burn the one-time code.
-    if (password.length < 8) return refuse("The new password must be at least 8 characters.");
-    if (password !== confirm) return refuse("The two new passwords do not match — nothing was changed.");
     // Atomic claim: racing redemptions can't both win.
     const ownerId = rt.repo.consumeResetCode(code);
     if (ownerId === null || ownerId !== member.id) {

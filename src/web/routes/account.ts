@@ -61,8 +61,12 @@ export function registerAccount(app: Express, rt: RouteCtx): void {
     if (next.length < 8) return res.redirect(accountMsg("New password must be at least 8 characters."));
     if (next !== confirm) return res.redirect(accountMsg("New passwords did not match."));
     rt.repo.setStaffPassword(me.id, hashPassword(next));
-    rt.repo.audit(null, me.username, "account_password_changed", "self-service password change");
-    res.redirect(accountMsg("Password changed."));
+    // A password change means "lock everyone else out" — end every OTHER
+    // session (a stolen cookie must not survive the change) but keep this
+    // one so the changer isn't signed out mid-flow.
+    const purged = req.sessionId ? rt.repo.purgeStaffSessionsExcept(me.id, req.sessionId) : 0;
+    rt.repo.audit(null, me.username, "account_password_changed", `self-service password change; ${purged} other session(s) ended`);
+    res.redirect(accountMsg(purged ? `Password changed — ${purged} other session(s) signed out.` : "Password changed."));
   });
 
   app.post("/account/theme", requireLogin, csrfCheck, (req, res) => {

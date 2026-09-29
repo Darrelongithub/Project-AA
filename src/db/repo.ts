@@ -777,6 +777,10 @@ export class Repo {
     return staff.purgeStaffSessions(this, staffId);
   }
 
+  purgeStaffSessionsExcept(staffId: number, keepToken: string): number {
+    return staff.purgeStaffSessionsExcept(this, staffId, keepToken);
+  }
+
   purgeExpiredSessions(): void {
     return staff.purgeExpiredSessions(this);
   }
