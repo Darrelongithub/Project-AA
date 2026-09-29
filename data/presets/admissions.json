@@ -1,0 +1,1518 @@
+{
+  "meta": {
+    "name": "admissions",
+    "version": 1
+  },
+  "intake": {
+    "defaultHotwords": "application, admission, admissions, apply, applicant, prospective, enrol, enroll, matric, intake, prospectus, readmission, upgrade, transfer, entry requirements",
+    "strongAppPhrases": [
+      "application form",
+      "submit my application",
+      "submitting my application",
+      "submitted my application",
+      "completed application",
+      "completed form",
+      "filled form",
+      "supporting documents",
+      "reference letter",
+      "recommendation letter",
+      "entrance test",
+      "entrance exam",
+      "conditional offer"
+    ],
+    "appKeywords": [
+      "application",
+      "apply",
+      "applied",
+      "applying",
+      "applicant",
+      "admission",
+      "admissions",
+      "admit",
+      "admitted",
+      "enrol",
+      "enroll",
+      "enrolment",
+      "enrollment",
+      "registration",
+      "register",
+      "submit",
+      "submission",
+      "submitted",
+      "transcript",
+      "transcripts",
+      "certificate",
+      "certificates",
+      "portfolio",
+      "interview",
+      "assessment",
+      "deadline",
+      "offer",
+      "acceptance"
+    ],
+    "enqPhrases": [
+      "how to apply",
+      "how do i apply",
+      "application process",
+      "application requirements",
+      "entry requirements",
+      "admission requirements",
+      "eligibility",
+      "open day",
+      "open evening",
+      "school visit",
+      "campus tour",
+      "places available",
+      "waiting list",
+      "interested in applying",
+      "looking to enrol",
+      "want to join"
+    ],
+    "enqKeywords": [
+      "enquiry",
+      "enquire",
+      "inquire",
+      "inquiry",
+      "prospectus",
+      "brochure",
+      "tuition",
+      "scholarship",
+      "bursary",
+      "fees",
+      "fee",
+      "availability"
+    ],
+    "negPhrases": [
+      "job application",
+      "staff vacancy",
+      "recruitment drive",
+      "parent evening",
+      "payment already made"
+    ],
+    "negKeywords": [
+      "cv",
+      "resume",
+      "recruitment",
+      "vacancy",
+      "complaint",
+      "refund",
+      "invoice"
+    ],
+    "alwaysNonAdmissions": [
+      "cv",
+      "resume",
+      "recruitment",
+      "vacancy"
+    ],
+    "attachmentPattern": "application|transcript|certificate|statement|result|form|national\\s?id|\\bid\\b",
+    "stopTokens": [
+      "of",
+      "the",
+      "and",
+      "for",
+      "with",
+      "bachelor",
+      "master",
+      "phd",
+      "mba",
+      "bba",
+      "bcse",
+      "bsc"
+    ],
+    "thresholds": {
+      "negGate": 4,
+      "appThreshold": 4,
+      "enqThreshold": 2
+    }
+  },
+  "documents": {
+    "programmeCases": {
+      "LLB": {
+        "document_type": "law_personal_statement",
+        "label": "Personal statement of not more than 500 words",
+        "required": true,
+        "blocking": true,
+        "conditional": "Required of LLB applicants by the application-form checklist.",
+        "source": "pack-pdf"
+      },
+      "BBA": {
+        "document_type": "business_statement_of_objective",
+        "label": "Statement of objective of not more than 300 words",
+        "required": true,
+        "blocking": true,
+        "conditional": "Required of BBA applicants by the application-form checklist.",
+        "source": "pack-pdf"
+      }
+    },
+    "resultSlip": {
+      "defaultSystem": "KCSE",
+      "defaultLabel": "Certified copy of the examination result slip (KCSE result slip or equivalent)",
+      "template": "Certified copy of the {SYS} examination result slip/statement of results"
+    },
+    "typeLabels": {
+      "application_form": "Application Form",
+      "exam_result_slip": "Examination Result Slip",
+      "leaving_certificate": "High School Leaving Certificate",
+      "passport_photo": "Passport-size Photograph",
+      "id": "National ID or Passport",
+      "birth_cert": "Birth Certificate",
+      "undergraduate_transcript": "Undergraduate Transcripts",
+      "undergraduate_degree_certificate": "Undergraduate Degree Certificate",
+      "masters_transcript": "Master's Transcripts",
+      "masters_degree_certificate": "Master's Degree Certificate",
+      "law_personal_statement": "Personal Statement (LLB, max 500 words)",
+      "business_statement_of_objective": "Statement of Objective (BBA, max 300 words)",
+      "credit_transfer_form": "Transfer Letter / Credit Transfer Form",
+      "student_pass_application": "Student Pass Application (post-admission)",
+      "foreign_qualification_equivalence": "Foreign Qualification Equivalence (post-admission)",
+      "academic_cert": "Academic document (type not yet identified)",
+      "kcpe_cert": "KCPE Certificate",
+      "unknown": "Unknown document"
+    },
+    "gradeCheckedTypes": [
+      "academic_cert",
+      "kcpe_cert"
+    ],
+    "primaryCertSpec": {
+      "document_type": "kcpe_cert",
+      "label": "KCPE certificate",
+      "required": true,
+      "blocking": true,
+      "source": "owner-prompt"
+    },
+    "nationalRequiresPrimaryCert": false,
+    "examDateAnomaly": "exam dates are inconsistent: KCPE dated {primaryYear} is not before KCSE dated {secondaryYear} — potential anomaly, verify authenticity",
+    "visionPromptTypes": [
+      "academic_cert",
+      "id",
+      "kcpe_cert",
+      "birth_cert",
+      "application_form",
+      "unknown"
+    ]
+  },
+  "scales": {
+    "grade": [
+      "A",
+      "A-",
+      "B+",
+      "B",
+      "B-",
+      "C+",
+      "C",
+      "C-",
+      "D+",
+      "D",
+      "D-",
+      "E"
+    ],
+    "alevel": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E"
+    ],
+    "ibSubject": [
+      "7",
+      "6",
+      "5",
+      "4",
+      "3",
+      "2",
+      "1"
+    ],
+    "diplomaClass": [
+      "pass",
+      "credit",
+      "distinction"
+    ],
+    "degreeClass": [
+      "pass",
+      "second class honours (lower division)",
+      "second class lower",
+      "second class honours (upper division)",
+      "second class upper",
+      "first class honours",
+      "first class"
+    ],
+    "oLevel": [
+      "A*",
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G"
+    ]
+  },
+  "admissionSystemLabels": {
+    "KCSE": "KCSE",
+    "IGCSE": "IGCSE / GCE O-Level",
+    "IB": "IB Diploma",
+    "ALEVEL": "GCE A-Level",
+    "KACE": "KACE (A-Level)",
+    "EACE": "EACE (O-Level)",
+    "DIPLOMA": "Diploma",
+    "PROFCERT": "Professional Certificate",
+    "DEGREE": "Degree",
+    "OTHER": "Other recognised qualification"
+  },
+  "examSystemLabels": {
+    "KCSE": "KCSE",
+    "IGCSE": "IGCSE/GCE O-Level",
+    "ALEVEL": "GCE A-Level/KACE",
+    "IB": "IB Diploma",
+    "DIPLOMA": "Diploma",
+    "PREUNI": "Pre-University",
+    "DEGREE": "Degree"
+  },
+  "defaultSystem": "KCSE",
+  "subjects": {
+    "generic": [
+      "English Language",
+      "Mathematics",
+      "Additional Mathematics",
+      "Physics",
+      "Chemistry",
+      "Biology",
+      "Computer Science",
+      "Business Studies",
+      "Economics",
+      "Geography",
+      "History",
+      "Literature in English",
+      "Agriculture",
+      "French",
+      "German",
+      "Arabic",
+      "Religious Studies",
+      "Physical Education",
+      "Art & Design",
+      "Music",
+      "Home Science",
+      "Physical Sciences"
+    ],
+    "genericSystems": [
+      "IGCSE",
+      "IB",
+      "ALEVEL",
+      "KACE",
+      "EACE"
+    ],
+    "tickMatrix": [
+      "English",
+      "Kiswahili",
+      "Mathematics",
+      "Physics",
+      "Chemistry",
+      "Biology",
+      "Physical Sciences",
+      "History",
+      "Geography",
+      "CRE",
+      "IRE",
+      "Agriculture",
+      "Business Studies",
+      "Computer Studies",
+      "Economics",
+      "French",
+      "German",
+      "Arabic",
+      "Literature",
+      "Music",
+      "Art & Design",
+      "Home Science",
+      "Building Construction",
+      "Electricity",
+      "Drawing & Design",
+      "Sign Language"
+    ],
+    "nationalSecondary": [
+      "English",
+      "Kiswahili",
+      "Mathematics",
+      "Biology",
+      "Chemistry",
+      "Physics",
+      "Physical Sciences",
+      "Geography",
+      "History & Government",
+      "CRE",
+      "IRE",
+      "Hindu Religious Education",
+      "Business Studies",
+      "Agriculture",
+      "Computer Studies",
+      "Home Science",
+      "Art & Design",
+      "Music",
+      "French",
+      "German",
+      "Arabic",
+      "Physical Education"
+    ],
+    "nationalSecondarySystem": "KCSE"
+  },
+  "programmes": [
+    {
+      "code": "LLB",
+      "name": "Bachelor of Laws",
+      "school": "School of Law",
+      "entry": "KCSE mean grade C+ (plus) with B (plain) in English or Kiswahili; or KACE with three principal passes; or a degree from a recognised university; or a CLE-accredited Diploma in Law (average B). An oral interview may be required.",
+      "level": "degree"
+    },
+    {
+      "code": "BBA",
+      "name": "Bachelor of Business Administration",
+      "school": "School of Business",
+      "entry": "KCSE C+ (plus) with C (plain) in English and Mathematics; or GCE A-Level with at least 2 principal passes; or other Senate-recognised certificates.",
+      "level": "degree"
+    },
+    {
+      "code": "DBM",
+      "name": "Diploma in Business Management",
+      "school": "School of Business",
+      "entry": "KCSE C- (minus) with C- or above in English or Mathematics; or 3 upper-level IGCSE/IB passes; or 3 GCE O/A-Level credits.",
+      "level": "diploma"
+    },
+    {
+      "code": "CBM",
+      "name": "Certificate in Business Management",
+      "school": "School of Business",
+      "entry": "KCSE D+ or equivalent (confirm current details).",
+      "level": "certificate"
+    },
+    {
+      "code": "MBA",
+      "name": "Master of Business Administration",
+      "school": "School of Business",
+      "entry": "Bachelor's with at least Second Class Honours (Upper Division); Lower Division with relevant experience; Pass holders need a postgraduate diploma or substantial experience.",
+      "level": "masters"
+    },
+    {
+      "code": "BCS",
+      "name": "BSc Computer Science",
+      "school": "School of Computing Sciences",
+      "entry": "KCSE C+ with minimum C+ in Mathematics or Physics or Physical Sciences; or a Diploma/Professional Certificate in computing; or a science-based degree.",
+      "level": "degree"
+    },
+    {
+      "code": "BBIT",
+      "name": "Bachelor of Business Information Technology",
+      "school": "School of Computing Sciences",
+      "entry": "KCSE C+ with minimum D+ in Mathematics or Physics or Physical Sciences; or a Diploma/Professional Certificate in computing; or a science-based degree.",
+      "level": "degree"
+    },
+    {
+      "code": "DCS",
+      "name": "Diploma in Computer Science",
+      "school": "School of Computing Sciences",
+      "entry": "Typically KCSE C- (minus) and above; also D+ in Mathematics or Physics.",
+      "level": "diploma"
+    },
+    {
+      "code": "DCY",
+      "name": "Diploma in Information & Cyber Security",
+      "school": "School of Computing Sciences",
+      "entry": "Typically KCSE C- (minus) and above.",
+      "level": "diploma"
+    },
+    {
+      "code": "CIT",
+      "name": "Certificate in Information Technology",
+      "school": "School of Computing Sciences",
+      "entry": "KCSE D+ or equivalent.",
+      "level": "certificate"
+    },
+    {
+      "code": "BIR",
+      "name": "BA International Relations and Diplomacy",
+      "school": "School of International Relations & Diplomacy",
+      "entry": "KCSE minimum C+ (plus); or a Diploma in IR & Diplomacy (GPA 2.00/C); or KACE with 2 principals + 1 subsidiary; or IGCSE with 5 credits.",
+      "level": "degree"
+    },
+    {
+      "code": "DIR",
+      "name": "Diploma in International Relations and Diplomacy",
+      "school": "School of International Relations & Diplomacy",
+      "entry": "KCSE C- (minus) or equivalent with C or above in English and C in any Science.",
+      "level": "diploma"
+    },
+    {
+      "code": "CCD",
+      "name": "Certificate in Corporate Diplomacy",
+      "school": "School of International Relations & Diplomacy",
+      "entry": "KCSE D+ or equivalent.",
+      "level": "certificate"
+    },
+    {
+      "code": "MIR",
+      "name": "MA International Relations and Diplomacy",
+      "school": "School of International Relations & Diplomacy",
+      "entry": "Bachelor's with Second Class Honours Upper Division; Lower Division plus relevant experience; or other Senate-accepted qualifications with experience.",
+      "level": "masters"
+    },
+    {
+      "code": "BCJ",
+      "name": "Bachelor of Communication and Multimedia Journalism",
+      "school": "School of Communication and Multimedia Journalism",
+      "entry": "KCSE mean C+ with C+ in English or Kiswahili and D+ in Mathematics; or a Diploma with Credit in a relevant discipline.",
+      "level": "degree"
+    },
+    {
+      "code": "DCJ",
+      "name": "Diploma in Communication and Multimedia Journalism",
+      "school": "School of Communication and Multimedia Journalism",
+      "entry": "KCSE C- (minus) or equivalent with C or above in English or any language.",
+      "level": "diploma"
+    },
+    {
+      "code": "DPR",
+      "name": "Diploma in Corporate Public Relations",
+      "school": "School of Communication and Multimedia Journalism",
+      "entry": "KCSE C- with C or above in English/Kiswahili; or D+ plus a recognised certificate.",
+      "level": "diploma"
+    },
+    {
+      "code": "CCM",
+      "name": "Certificate in Communication",
+      "school": "School of Communication and Multimedia Journalism",
+      "entry": "KCSE D+ or equivalent.",
+      "level": "certificate"
+    },
+    {
+      "code": "BNS",
+      "name": "BSc Nursing",
+      "school": "School of Nursing",
+      "entry": "KCSE mean grade C+ (plus) — the university-wide degree minimum. Programme-specific subject requirements were not in the published details provided; confirm with the Admissions Office before relying on automated checks.",
+      "level": "degree"
+    },
+    {
+      "code": "DNS",
+      "name": "Diploma in Nursing (Pre-Service)",
+      "school": "School of Nursing",
+      "entry": "KCSE mean grade C (plain) — the general diploma minimum. Programme-specific subject requirements were not in the published details provided; confirm with the Admissions Office.",
+      "level": "diploma"
+    },
+    {
+      "code": "KRCHN",
+      "name": "Certificate: Kenya Registered Community Health Nursing",
+      "school": "School of Nursing",
+      "entry": "KCSE mean grade D+ — the university-wide certificate minimum. Programme-specific requirements were not in the published details provided; confirm with the Admissions Office.",
+      "level": "certificate"
+    },
+    {
+      "code": "BED",
+      "name": "Bachelor of Education (Arts)",
+      "school": "School of Education",
+      "entry": "KCSE C+ (plus) or equivalent; or a Diploma in Education with credit; or A-Level with 2 principal passes; C+ in teaching subjects commonly expected.",
+      "level": "degree"
+    },
+    {
+      "code": "CTI",
+      "name": "Certificate in Teaching International Curricula",
+      "school": "School of Education",
+      "entry": "Aimed at practising teachers; specific academic thresholds vary.",
+      "level": "certificate"
+    }
+  ],
+  "intakes": [
+    "September 2026",
+    "January 2027"
+  ],
+  "baseRequirements": [
+    {
+      "document_type": "academic_cert",
+      "required": true
+    },
+    {
+      "document_type": "kcpe_cert",
+      "required": false
+    },
+    {
+      "document_type": "id",
+      "required": true
+    },
+    {
+      "document_type": "application_form",
+      "required": true
+    },
+    {
+      "document_type": "birth_cert",
+      "required": false
+    }
+  ],
+  "examSystems": [
+    {
+      "system": "KCSE",
+      "label": "KCSE (Kenya Certificate of Secondary Education)",
+      "fields": [
+        "overall"
+      ],
+      "scale": "grade"
+    },
+    {
+      "system": "IGCSE",
+      "label": "IGCSE / GCE O-Level",
+      "fields": [
+        "minCredits"
+      ],
+      "scale": "oLevel"
+    },
+    {
+      "system": "ALEVEL",
+      "label": "GCE A-Level / KACE / EAACE",
+      "fields": [
+        "minPrincipals",
+        "minSubsidiaries"
+      ],
+      "scale": "alevel"
+    },
+    {
+      "system": "IB",
+      "label": "International Baccalaureate",
+      "fields": [
+        "minPoints"
+      ],
+      "scale": "ibSubject"
+    },
+    {
+      "system": "DIPLOMA",
+      "label": "Diploma / Higher Diploma",
+      "fields": [
+        "minClass",
+        "minGpa"
+      ],
+      "scale": null
+    },
+    {
+      "system": "PREUNI",
+      "label": "Pre-University / Bridging",
+      "fields": [
+        "minGpa"
+      ],
+      "scale": null
+    },
+    {
+      "system": "DEGREE",
+      "label": "Existing degree (advanced entry)",
+      "fields": [
+        "minClass"
+      ],
+      "scale": null
+    }
+  ],
+  "structuredBase": [
+    {
+      "level": "degree",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C+"
+      }
+    },
+    {
+      "level": "degree",
+      "block": {
+        "system": "IGCSE",
+        "enabled": true,
+        "overall": null,
+        "minCredits": 5
+      }
+    },
+    {
+      "level": "degree",
+      "block": {
+        "system": "ALEVEL",
+        "enabled": true,
+        "overall": null,
+        "minPrincipals": 2
+      }
+    },
+    {
+      "level": "degree",
+      "block": {
+        "system": "IB",
+        "enabled": true,
+        "overall": null,
+        "minPoints": 24
+      }
+    },
+    {
+      "level": "degree",
+      "block": {
+        "system": "DIPLOMA",
+        "enabled": true,
+        "overall": null,
+        "minClass": "Credit"
+      }
+    },
+    {
+      "level": "degree",
+      "block": {
+        "system": "PREUNI",
+        "enabled": true,
+        "overall": null,
+        "minGpa": 2.5
+      }
+    },
+    {
+      "level": "degree",
+      "block": {
+        "system": "DEGREE",
+        "enabled": true,
+        "overall": null
+      }
+    },
+    {
+      "level": "diploma",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C"
+      }
+    },
+    {
+      "level": "diploma",
+      "block": {
+        "system": "IGCSE",
+        "enabled": true,
+        "overall": null,
+        "minCredits": 3
+      }
+    },
+    {
+      "level": "diploma",
+      "block": {
+        "system": "ALEVEL",
+        "enabled": true,
+        "overall": null,
+        "minPrincipals": 1
+      }
+    },
+    {
+      "level": "diploma",
+      "block": {
+        "system": "IB",
+        "enabled": true,
+        "overall": null,
+        "minGpa": 3
+      }
+    },
+    {
+      "level": "diploma",
+      "block": {
+        "system": "PREUNI",
+        "enabled": true,
+        "overall": null,
+        "minGpa": 2.5
+      }
+    },
+    {
+      "level": "certificate",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "D+"
+      }
+    },
+    {
+      "level": "certificate",
+      "block": {
+        "system": "IGCSE",
+        "enabled": true,
+        "overall": null,
+        "minCredits": 3
+      }
+    },
+    {
+      "level": "masters",
+      "block": {
+        "system": "DEGREE",
+        "enabled": true,
+        "overall": null,
+        "minClass": "Second Class Honours (Upper Division)"
+      }
+    }
+  ],
+  "structuredCourses": [
+    {
+      "programme": "LLB",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C+",
+        "subjects": [
+          {
+            "subject": "English",
+            "grade": "B",
+            "alts": [
+              "Kiswahili"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "programme": "LLB",
+      "block": {
+        "system": "ALEVEL",
+        "enabled": true,
+        "overall": null,
+        "minPrincipals": 3
+      }
+    },
+    {
+      "programme": "LLB",
+      "block": {
+        "system": "DIPLOMA",
+        "enabled": true,
+        "overall": null,
+        "minClass": "Credit"
+      }
+    },
+    {
+      "programme": "LLB",
+      "block": {
+        "system": "DEGREE",
+        "enabled": true,
+        "overall": null
+      }
+    },
+    {
+      "programme": "BBA",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C+",
+        "subjects": [
+          {
+            "subject": "English",
+            "grade": "C"
+          },
+          {
+            "subject": "Mathematics",
+            "grade": "C"
+          }
+        ]
+      }
+    },
+    {
+      "programme": "BBA",
+      "block": {
+        "system": "ALEVEL",
+        "enabled": true,
+        "overall": null,
+        "minPrincipals": 2
+      }
+    },
+    {
+      "programme": "BBA",
+      "block": {
+        "system": "IGCSE",
+        "enabled": true,
+        "overall": null,
+        "minCredits": 5
+      }
+    },
+    {
+      "programme": "BCS",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C+",
+        "subjects": [
+          {
+            "subject": "Mathematics",
+            "grade": "C+",
+            "alts": [
+              "Physics",
+              "Physical Sciences"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "programme": "BCS",
+      "block": {
+        "system": "ALEVEL",
+        "enabled": true,
+        "overall": null,
+        "minPrincipals": 2,
+        "subjects": [
+          {
+            "subject": "Mathematics",
+            "grade": "C",
+            "alts": [
+              "Physics"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "programme": "BCS",
+      "block": {
+        "system": "IGCSE",
+        "enabled": true,
+        "overall": null,
+        "minCredits": 5,
+        "subjects": [
+          {
+            "subject": "Mathematics",
+            "grade": "C",
+            "alts": [
+              "Physics"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "programme": "BCS",
+      "block": {
+        "system": "DIPLOMA",
+        "enabled": true,
+        "overall": null,
+        "minClass": "Credit"
+      }
+    },
+    {
+      "programme": "BBIT",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C+",
+        "subjects": [
+          {
+            "subject": "Mathematics",
+            "grade": "D+",
+            "alts": [
+              "Physics",
+              "Physical Sciences"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "programme": "BBIT",
+      "block": {
+        "system": "DIPLOMA",
+        "enabled": true,
+        "overall": null,
+        "minClass": "Credit"
+      }
+    },
+    {
+      "programme": "BIR",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C+",
+        "subjects": [
+          {
+            "subject": "English",
+            "grade": "C+",
+            "alts": [
+              "Kiswahili"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "programme": "BIR",
+      "block": {
+        "system": "ALEVEL",
+        "enabled": true,
+        "overall": null,
+        "minPrincipals": 2,
+        "minSubsidiaries": 1
+      }
+    },
+    {
+      "programme": "BIR",
+      "block": {
+        "system": "IGCSE",
+        "enabled": true,
+        "overall": null,
+        "minCredits": 5
+      }
+    },
+    {
+      "programme": "BIR",
+      "block": {
+        "system": "DIPLOMA",
+        "enabled": true,
+        "overall": null,
+        "minGpa": 2
+      }
+    },
+    {
+      "programme": "BCJ",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C+",
+        "subjects": [
+          {
+            "subject": "English",
+            "grade": "C+",
+            "alts": [
+              "Kiswahili"
+            ]
+          },
+          {
+            "subject": "Mathematics",
+            "grade": "D+"
+          }
+        ]
+      }
+    },
+    {
+      "programme": "BCJ",
+      "block": {
+        "system": "DIPLOMA",
+        "enabled": true,
+        "overall": null,
+        "minClass": "Credit"
+      }
+    },
+    {
+      "programme": "BED",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C+"
+      }
+    },
+    {
+      "programme": "BED",
+      "block": {
+        "system": "ALEVEL",
+        "enabled": true,
+        "overall": null,
+        "minPrincipals": 2,
+        "minSubsidiaries": 1
+      }
+    },
+    {
+      "programme": "BED",
+      "block": {
+        "system": "IB",
+        "enabled": true,
+        "overall": null,
+        "minPoints": 24
+      }
+    },
+    {
+      "programme": "BED",
+      "block": {
+        "system": "IGCSE",
+        "enabled": true,
+        "overall": null,
+        "minCredits": 5
+      }
+    },
+    {
+      "programme": "BED",
+      "block": {
+        "system": "DIPLOMA",
+        "enabled": true,
+        "overall": null,
+        "minClass": "Credit"
+      }
+    },
+    {
+      "programme": "DBM",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C-",
+        "subjects": [
+          {
+            "subject": "Mathematics",
+            "grade": "D"
+          }
+        ]
+      }
+    },
+    {
+      "programme": "DBM",
+      "block": {
+        "system": "IGCSE",
+        "enabled": true,
+        "overall": null,
+        "minCredits": 3
+      }
+    },
+    {
+      "programme": "DCS",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C-",
+        "subjects": [
+          {
+            "subject": "Mathematics",
+            "grade": "D+",
+            "alts": [
+              "Physics"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "programme": "DCY",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C-"
+      }
+    },
+    {
+      "programme": "DIR",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C-",
+        "subjects": [
+          {
+            "subject": "English",
+            "grade": "C"
+          }
+        ]
+      }
+    },
+    {
+      "programme": "DCJ",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C-",
+        "subjects": [
+          {
+            "subject": "English",
+            "grade": "C",
+            "alts": [
+              "Kiswahili",
+              "French",
+              "German",
+              "Arabic"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "programme": "DPR",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C-",
+        "subjects": [
+          {
+            "subject": "English",
+            "grade": "C",
+            "alts": [
+              "Kiswahili"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "programme": "DPR",
+      "block": {
+        "system": "IGCSE",
+        "enabled": true,
+        "overall": null,
+        "minCredits": 1
+      }
+    },
+    {
+      "programme": "DNS",
+      "block": {
+        "system": "KCSE",
+        "enabled": true,
+        "overall": "C"
+      }
+    },
+    {
+      "programme": "MBA",
+      "block": {
+        "system": "DEGREE",
+        "enabled": true,
+        "overall": null,
+        "minClass": "Second Class Honours (Upper Division)"
+      }
+    },
+    {
+      "programme": "MIR",
+      "block": {
+        "system": "DEGREE",
+        "enabled": true,
+        "overall": null,
+        "minClass": "Second Class Honours (Upper Division)"
+      }
+    }
+  ],
+  "packSlots": [
+    {
+      "key": "application-form",
+      "file": "application-form.pdf",
+      "pretty": "Application form.pdf",
+      "pack": "application",
+      "purpose": "Application form sent to enquirers"
+    },
+    {
+      "key": "brochure-2026",
+      "file": "brochure-2026.pdf",
+      "pretty": "Brochure.pdf",
+      "pack": "application",
+      "purpose": "Prospectus sent to enquirers"
+    },
+    {
+      "key": "student-medical-form",
+      "file": "student-medical-form.pdf",
+      "pretty": "Student medical form.pdf",
+      "pack": "admission",
+      "purpose": "Admission pack — medical form"
+    },
+    {
+      "key": "data-protection-form",
+      "file": "data-protection-form.pdf",
+      "pretty": "Data protection form.pdf",
+      "pack": "admission",
+      "purpose": "Admission pack — data protection"
+    },
+    {
+      "key": "next-of-kin-form",
+      "file": "next-of-kin-form.pdf",
+      "pretty": "Next of kin form.pdf",
+      "pack": "admission",
+      "purpose": "Admission pack — next of kin"
+    },
+    {
+      "key": "hostels-list",
+      "file": "hostels-list.pdf",
+      "pretty": "Accommodation list.pdf",
+      "pack": "admission",
+      "purpose": "Admission pack — accommodation"
+    },
+    {
+      "key": "fee-structure-2026",
+      "file": "fee-structure-2026.pdf",
+      "pretty": "Fee structure.pdf",
+      "pack": "admission",
+      "purpose": "Admission pack — fee structure"
+    },
+    {
+      "key": "sponsorship-form",
+      "file": "sponsorship-form.pdf",
+      "pretty": "Sponsorship form.pdf",
+      "pack": "admission",
+      "purpose": "Admission pack — sponsorship"
+    },
+    {
+      "key": "orientation-programme-2026",
+      "file": "orientation-programme-2026.pdf",
+      "pretty": "Orientation programme.pdf",
+      "pack": "admission",
+      "purpose": "Admission pack — orientation"
+    },
+    {
+      "key": "credit-transfer-form",
+      "file": "credit-transfer-form.pdf",
+      "pretty": "Credit transfer form.pdf",
+      "pack": "transfer",
+      "purpose": "For applicants transferring credit from another institution"
+    }
+  ],
+  "decisionCopy": {
+    "reverseTitle": "Reverse this decision",
+    "reverseBody": "Provisional admissions are provisional. If the applicant should not be admitted — the file was misread, a document does not hold up, a requirement is disputed — record it below: it is stored as a HUMAN decision with your name on the audit trail.",
+    "reverseButton": "Reverse — Not Admitted",
+    "formTitle": "Human decision",
+    "formBody": "The automated path stopped here. If the applicant should still be admitted — alternative qualification, approved exception, special consideration, documented pathway — record it below. It is stored as a HUMAN decision, separately from anything automated, with your name on the audit trail.",
+    "admitButton": "Admit after Human Review",
+    "declineButton": "Not Admitted",
+    "reasonPlaceholder": "Reason — recorded on the audit trail"
+  },
+  "decisionRoutes": [
+    {
+      "value": "alternative_qualification",
+      "label": "Alternative qualification"
+    },
+    {
+      "value": "approved_exception",
+      "label": "Approved exception"
+    },
+    {
+      "value": "special_consideration",
+      "label": "Special consideration"
+    },
+    {
+      "value": "documented_pathway",
+      "label": "Documented pathway"
+    },
+    {
+      "value": "standard_review",
+      "label": "Standard review"
+    }
+  ],
+  "templates": [
+    {
+      "key": "ack_received",
+      "name": "Documents received (complete file)",
+      "subject": "Your application documents have been received",
+      "body": "Dear {first_name},\n\nThank you for submitting your documents. Your application file {ref} is now COMPLETE:\n\n{checklist}\n\nYour file has been forwarded for verification. Current status: {status}.\n\nPlease note this acknowledgement confirms receipt only. The final decision on your application will be made by the admissions committee and communicated to you in due course.\n\nKind regards,\n{institution} — Admissions Office"
+    },
+    {
+      "key": "missing_documents",
+      "name": "Missing documents notice",
+      "subject": "We have received some of your documents — action needed",
+      "body": "Dear {first_name},\n\nWe've received your application ({ref}). Thank you. The following documents have been logged so far:\n\n{checklist}\n\nWe are still missing:\n\n{missing_docs}\n\nPlease send the outstanding item(s) as PDF attachments in reply to this thread. Your file will proceed once it is complete.\n\n{document_issues}\n\nKind regards,\n{institution} — Admissions Office"
+    },
+    {
+      "key": "docs_request",
+      "name": "Document request (new enquiry)",
+      "subject": "Your application: the documents we need from you",
+      "body": "Dear {first_name},\n\nThank you for your interest in {institution}. To open your application file ({ref}) we need the following documents as PDF attachments:\n\n{missing_docs}\n\nOnce received, we will confirm within this thread.\n\nKind regards,\n{institution} — Admissions Office"
+    },
+    {
+      "key": "status_answer",
+      "name": "Status answer (have you received my documents?)",
+      "subject": "The status of your application documents",
+      "body": "Dear {first_name},\n\nThank you for your message. Here is the current status of your application file {ref}:\n\nStatus: {status}\n\nYour document checklist:\n\n{checklist}\n\n{missing_docs_section}\n\n{read_back}\n\nKind regards,\n{institution} — Admissions Office"
+    },
+    {
+      "key": "under_review",
+      "name": "Under review",
+      "subject": "Your application is under review",
+      "body": "Dear {first_name},\n\nYour application ({ref}) is currently under review. Current status: {status}.\n\nWe will contact you if we need anything further.\n\nKind regards,\n{institution} — Admissions Office"
+    },
+    {
+      "key": "verification",
+      "name": "Verification stage",
+      "subject": "Your application has moved to verification",
+      "body": "Dear {first_name},\n\nYour application ({ref}) has moved to the verification stage. We are verifying the documents you submitted and will update you once complete.\n\nKind regards,\n{institution} — Admissions Office"
+    },
+    {
+      "key": "generic_enquiry",
+      "name": "Generic enquiry",
+      "subject": "Thank you for contacting Admissions",
+      "body": "Dear {first_name},\n\nThank you for contacting the {institution} Admissions Office. We have received your message regarding application {ref} and will respond as soon as possible.\n\nKind regards,\n{institution} — Admissions Office"
+    }
+  ],
+  "admissionLetter": {
+    "name": "Admission letter (with full admission pack)",
+    "subject": "Welcome to {institution} — Your Admission to {programme}",
+    "body": "Dear {name},\n\nWelcome to {institution}!\n\nCongratulations on your admission to the {programme} programme. We are delighted to extend our warmest greetings as you embark on an exciting academic journey with us. Your admission to {institution} signifies the beginning of an enriching and transformative experience, and we are thrilled to have you as part of our vibrant community.\n\nIn preparation for the upcoming semester, please note the following important information and deadlines:\n\nRegistration Date: registration and verification of your original documents is scheduled on or before {reg_date}. Please ensure your timely arrival to facilitate a smooth transition into university life.\n\nOrientation: the orientation programme is set for {orientation_dates}, where you will receive valuable information about our academic policies, support services and campus resources. Attendance is essential for all new students.\n\nDocuments for Verification: bring the following (originals and copies): i) certificates (high school, certificate, diploma and/or degree), ii) one passport-size photograph, iii) ID card or passport (or a waiting card / parent or guardian ID where applicable), and iv) birth certificate.\n\nLaptop Requirement: it is mandatory for all students to own a personal laptop upon admission.\n\nEnclosed with this letter you will find the student medical form, data protection form, next of kin form, hostels list, fee structure, sponsorship form and the orientation programme — complete them and bring them for verification.\n\nYour reference number: {ref}.\n\nKind regards,\n{institution} — Admissions Office",
+    "include_banner": true,
+    "attach_pack": "admission"
+  },
+  "admissionDates": {
+    "regDate": "Monday 31st August, 2026",
+    "orientationDates": "Thursday 3rd and Friday 4th September, 2026"
+  },
+  "noAutomatedRuleRoute": [
+    "PREUNI"
+  ],
+  "admissionSystems": [
+    "KCSE",
+    "IGCSE",
+    "IB",
+    "ALEVEL",
+    "KACE",
+    "EACE",
+    "DIPLOMA",
+    "PROFCERT",
+    "DEGREE",
+    "OTHER"
+  ],
+  "scaleRoutes": {
+    "letter": {
+      "KCSE": "grade",
+      "IGCSE": "oLevel",
+      "IB": "ibSubject",
+      "ALEVEL": "alevel",
+      "KACE": "alevel",
+      "EACE": "oLevel"
+    },
+    "class": {
+      "DIPLOMA": "diplomaClass",
+      "PROFCERT": "diplomaClass",
+      "DEGREE": "degreeClass"
+    }
+  },
+  "evaluation": {
+    "systemRoutes": {
+      "KCSE": [
+        "KCSE"
+      ],
+      "IGCSE": [
+        "IGCSE"
+      ],
+      "IB": [
+        "IB"
+      ],
+      "ALEVEL": [
+        "ALEVEL",
+        "KACE"
+      ],
+      "DIPLOMA": [
+        "DIPLOMA"
+      ],
+      "DEGREE": [
+        "DEGREE"
+      ]
+    }
+  },
+  "classification": [
+    {
+      "type": "credit_transfer_form",
+      "pattern": "credit\\s+transfer|transfer\\s+(?:of\\s+)?credit|transfer\\s+(?:application|admission)\\s+form|request\\s+for\\s+transfer",
+      "flags": "i"
+    },
+    {
+      "type": "application_form",
+      "pattern": "application\\s+form|application\\s+for\\s+admission|admission\\s+application",
+      "flags": "i"
+    },
+    {
+      "type": "kcpe_cert",
+      "pattern": "kenya\\s+certificate\\s+of\\s+primary\\s+education|\\bkcpe\\b",
+      "flags": "i"
+    },
+    {
+      "type": "birth_cert",
+      "pattern": "certificate\\s+of\\s+birth|birth\\s+certificate|birth\\s+registration|certificate\\s+of\\s+live\\s+birth|live\\s+birth\\s+certificate|extract\\s+from\\s+the\\s+register\\s+of\\s+births|registration\\s+of\\s+birth|register\\s+of\\s+births|birth\\s+entry|births?\\s+and\\s+deaths\\s+registration",
+      "flags": "i"
+    },
+    {
+      "type": "law_personal_statement",
+      "pattern": "personal\\s+statement",
+      "flags": "i"
+    },
+    {
+      "type": "business_statement_of_objective",
+      "pattern": "statement\\s+of\\s+objective",
+      "flags": "i"
+    },
+    {
+      "type": "passport_photo",
+      "pattern": "passport[\\s-]?size\\s+photo|passport\\s+photograph|passport\\s+photo\\b",
+      "flags": "i"
+    },
+    {
+      "type": "masters_degree_certificate",
+      "pattern": "master'?s\\s+degree\\s+certificate|master'?s?\\s+(?:degree|graduation)\\s+certificate",
+      "flags": "i"
+    },
+    {
+      "type": "masters_transcript",
+      "pattern": "master'?s\\s+(?:academic\\s+)?transcript",
+      "flags": "i"
+    },
+    {
+      "type": "undergraduate_degree_certificate",
+      "pattern": "undergraduate\\s+degree\\s+certificate|(?:bachelor|bachelors|b\\.?sc|b\\.?a|bba|llb)\\s+(?:degree\\s+)?certificate",
+      "flags": "i"
+    },
+    {
+      "type": "undergraduate_transcript",
+      "pattern": "undergraduate\\s+(?:academic\\s+)?transcript",
+      "flags": "i"
+    },
+    {
+      "type": "leaving_certificate",
+      "pattern": "leaving\\s+certificate|school\\s+leaving",
+      "flags": "i"
+    },
+    {
+      "type": "exam_result_slip",
+      "pattern": "\\bresult\\s+slip\\b|examination\\s+result\\s+slip",
+      "flags": "i"
+    },
+    {
+      "type": "student_pass_application",
+      "pattern": "student\\s+pass(?!port)|study\\s+permit",
+      "flags": "i"
+    },
+    {
+      "type": "foreign_qualification_equivalence",
+      "pattern": "equivalence\\s+certificate|certificate\\s+of\\s+equivalence",
+      "flags": "i"
+    },
+    {
+      "type": "academic_cert",
+      "pattern": "kenya\\s+certificate\\s+of\\s+secondary\\s+education|\\bkcse\\b|academic\\s+transcript|secondary\\s+(?:school\\s+)?education|secondary\\s+school\\s+certificate|high\\s+school\\s+certificate|\\bigcse\\b|cambridge\\s+international|cambridge\\s+(?:assessment|o\\s?level|a\\s?level)|general\\s+certificate\\s+of\\s+(?:secondary\\s+education|education)|\\bgcse\\b|\\bgce\\b|ordinary\\s+levels?(?!\\s+of\\b)|\\badvanced\\s+levels?(?!\\s+of\\b)|\\ba-levels?\\b|\\ba\\s+levels?\\s+(?:results?|certificates?|exams?|examinations?|qualifications?|grades?|awards?|passes?)\\b|statement\\s+of\\s+results?|statement\\s+of\\s+grades?|\\bkace\\b|\\beaace\\b|west\\s+african\\s+(?:examinations?\\s+council|senior\\s+school\\s+certificate)|\\bwaec\\b|international\\s+baccalaureate|\\bib\\s+diploma\\b|\\bib\\s+(?:results?|certificate)\\b|diploma\\s+programme\\s+results?|(?:academic|university|official|college)\\s+transcript|diploma\\s+(?:results?|transcript)|degree\\s+(?:certificate|transcript|classification)|university\\s+transcript|professional\\s+certificate\\s+(?:results?|examination)",
+      "flags": "i"
+    },
+    {
+      "type": "id",
+      "pattern": "national\\s+identity\\s+card|national\\s+id|national\\s+identification|identity\\s+card|identification\\s+card|id\\s+card|passport",
+      "flags": "i"
+    }
+  ],
+  "extraction": {
+    "pointsPatterns": [
+      {
+        "pattern": "(?:KCPE|KCSE)\\s*(?:TOTAL\\s*)?(?:POINTS|MARKS)?\\s*[:\\-]?\\s*(\\d{2,3})\\b(?!\\d)",
+        "flags": "i"
+      },
+      {
+        "pattern": "(\\d{3})\\s*(?:KCPE\\s*)?(?:POINTS|MARKS)",
+        "flags": "i"
+      }
+    ],
+    "systemDetectors": [
+      {
+        "system": "KCSE",
+        "pattern": "KENYA\\s+CERTIFICATE\\s+OF\\s+SECONDARY|\\bKCSE\\b",
+        "flags": ""
+      },
+      {
+        "system": "IB",
+        "pattern": "INTERNATIONAL\\s+BACCALAUREATE|\\bIB\\s+DIPLOMA\\b",
+        "flags": ""
+      },
+      {
+        "system": "ALEVEL",
+        "pattern": "GCE\\s+ADVANCED\\s+LEVEL|ADVANCED\\s+LEVEL\\s+(?:EXAMINATION|RESULTS?|CERTIFICATE)|ADVANCED\\s+LEVELS?(?!\\s+OF\\b)|\\bKACE\\b|\\bEAACE\\b|\\bA[\\s-]LEVELS?(?!\\s+OF\\b)",
+        "flags": ""
+      },
+      {
+        "system": "IGCSE",
+        "pattern": "\\bIGCSE\\b|CAMBRIDGE\\s+INTERNATIONAL|GCE\\s+ORDINARY\\s+LEVEL|INTERNATIONAL\\s+GCSE",
+        "flags": ""
+      },
+      {
+        "system": "PREUNI",
+        "pattern": "PRE-?UNIVERSITY|BRIDGING\\s+(?:PROGRAMME|CERTIFICATE)",
+        "flags": ""
+      },
+      {
+        "system": "DIPLOMA",
+        "pattern": "\\bDIPLOMA\\b",
+        "flags": "",
+        "andPattern": "TRANSCRIPT|RESULT|GRADE|CERTIFICATE"
+      },
+      {
+        "system": "DEGREE",
+        "pattern": "\\bDEGREE\\b|BACHELOR|MASTER\\s+OF|POSTGRADUATE",
+        "flags": ""
+      }
+    ]
+  },
+  "pageSamples": {
+    "requirementExample": "A <b>requirement</b> is one check, e.g. “Mean grade ≥ C+”. An <b>either/or group</b> bundles checks where any single pass counts — e.g. “KCSE A in Mathematics <i>or</i> A-Level A in Mathematics”.",
+    "readBackSample": "We read your KCSE mean grade as B (plain)."
+  }
+}

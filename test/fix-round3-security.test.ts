@@ -129,7 +129,8 @@ describe("B3+B5 — retention: archive dir locked, live realm by default", () =>
 
     const run = spawnSync("./node_modules/.bin/tsx", ["src/cli/retain.ts"], {
       cwd: path.resolve(__dirname, ".."),
-      env: { ...process.env, DB_PATH: dbPath, DISABLE_OCR: "1" },
+      // CR-08: retain refuses without a key — clearly-fake test vector, never real data.
+      env: { ...process.env, DB_PATH: dbPath, DISABLE_OCR: "1", ARCHIVE_KEY: "0123456789abcdef".repeat(4) },
       timeout: 60_000,
     });
     expect(run.status).toBe(0);

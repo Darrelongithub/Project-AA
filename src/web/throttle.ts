@@ -56,6 +56,17 @@ export class LoginThrottle {
     this.evictOldest();
   }
 
+  /**
+   * Claim a dedup key once per window (double-submit guards): true on the
+   * first claim, false on repeats inside the window. One call — the
+   * check and the record cannot interleave.
+   */
+  claim(key: string, now: number = Date.now()): boolean {
+    if (!this.allowed(key, now)) return false;
+    this.recordFail(key, now);
+    return true;
+  }
+
   /** Number of IPs currently tracked (for tests / observability). */
   get size(): number {
     return this.fails.size;
@@ -66,10 +77,16 @@ export class LoginThrottle {
    * under `maxEntries`. Deliberately NOT a clear(): entries whose failures
    * are still inside the window — including an IP currently being blocked —
    * survive as long as they are not among the oldest.
+   *
+   * Amortized: one pass evicts down to 90% of the cap instead of a single
+   * entry. Evicting exactly the excess re-sorted the whole map on EVERY
+   * insert under flood (O(n log n) per failure with n = 10k) — attacker-
+   * paced CPU. The batch keeps the same oldest-first semantics.
    */
   private evictOldest(): void {
     if (this.fails.size <= this.maxEntries) return;
-    const excess = this.fails.size - this.maxEntries;
+    const target = Math.max(1, Math.floor(this.maxEntries * 0.9));
+    const excess = this.fails.size - target;
     const order = [...this.fails.entries()]
       .sort((x, y) => x[1][x[1].length - 1] - y[1][y[1].length - 1]) // oldest last-failure first
       .slice(0, excess)

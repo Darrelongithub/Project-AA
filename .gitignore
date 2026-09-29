@@ -8,6 +8,9 @@ dist/
 !/data/branding/
 !/data/migrated/
 !/data/migrated/organization-1.json
+# Organization presets + simulation corpus are versioned data, not runtime state.
+!/data/presets/
+!/data/simulation/
 /logs/
 /backups/
 .env

@@ -2,7 +2,9 @@
 
 Scope: every HTTP route registered in `src/web/server.ts` (express app built
 by `createApp`), verified against the real server (`tsx src/cli/serve.ts`)
-and the vitest suite (393 tests, 29 files — all pass at time of writing).
+and the vitest suite (767 tests — 764 pass, 3 environment-gated skips —
+93 files — all pass at time of writing). §9 lists surfaces added after the
+original scan; each was verified the same way (real server + tests).
 
 Legend: **auth** = middleware chain · **verdict** = what the scan found.
 
@@ -22,9 +24,10 @@ Legend: **auth** = middleware chain · **verdict** = what the scan found.
 ## 2. Case work (the scoped surface)
 
 All `/case/:id…` routes sit behind the **OR-8 guard** (`app.use("/case/:id")`,
-runs first): unknown ids and out-of-scope ids get the **same 403**, so scoped
-staff cannot probe which cases exist. Realm separation (live vs demo) applies
-on top.
+runs first): out-of-scope ids get a 403, while cross-**realm** (live vs demo)
+and cross-**organisation** ids get a 404 — so scoped staff cannot probe which
+cases exist, and one org's cases are invisible to another org entirely.
+Realm separation applies on top of school scoping.
 
 | Route | Auth | Verdict |
 |---|---|---|
@@ -59,7 +62,7 @@ on top.
 
 | Route | Auth | Verdict |
 |---|---|---|
-| `GET /config` (tabs: requirements / courses / replies) | **admin** | ✓ deterministic document matrix, generated grade builder, courses + schools, packs + branding. |
+| `GET /config` (tabs: CaseTypes / Workflow rules / Legacy requirements / Reply configuration / Document library; schools & course docs moved to `/staff`) | **admin** | ✓ deterministic document matrix, generated grade builder, courses + schools, packs + branding. |
 | `POST /config/course-owner` | admin + CSRF | ✓ unknown owner handled. |
 | `POST /config/programme/edit` | admin + CSRF | ✓ name/school/reference notes; enforced rules are NOT free text (OR-6). |
 | `POST /config/entry-requirements` | admin + CSRF | **refusal** (OR-6): legacy block editor wrote to a table the engine doesn't enforce; stale POSTs get an explicit redirect, nothing saved. |
@@ -89,21 +92,24 @@ on top.
 | Route | Auth | Verdict |
 |---|---|---|
 | `GET /templates`, `POST /templates/save`, `POST /templates/reset` | **admin** (+ CSRF) | ✓ OR-7: every outgoing type, placeholders documented, live preview, unknown-placeholder warning, reset to official defaults, pack flags. |
-| `GET /staff`, `POST /staff/add`, `/staff/toggle`, `/staff/password` | **admin** (+ CSRF) | ✓ accounts + performance; password resets generate one-time setup links. |
+| `GET /staff`, `POST /staff/add`, `/staff/toggle`, `/staff/password` | **admin** (+ CSRF) | ✓ accounts + performance; password resets issue single-use 10-character codes, shown once to the admin and verified constant-time. |
 | `POST /staff/scopes` | admin + CSRF | ✓ OR-8: one action replaces a member's entire school set; unknown school names refused. |
+| `POST /staff/reset-code`, `POST /staff/permissions`, `GET /staff/course-docs`, `POST /staff/course-docs/reset` | admin + CSRF | ✓ code issue/revoke, per-member grants incl. `record_outcome` (tamper signals honour it), school course-doc overrides. |
 
 ## 7. Account & exports
 
 | Route | Auth | Verdict |
 |---|---|---|
 | `GET /account`, `POST /account/username` / `password` / `theme` | login (+ CSRF) | ✓ self-service; current password required. |
-| `GET /export/applicants.csv`, `/export/queue.csv`, `/export/audit.csv` | **admin** | ✓ admins cannot be scoped (OR-8), so exports stay complete for the one role allowed to take data out. |
+| `GET /export/applicants.csv`, `/export/queue.csv`, `/export/audit.csv` | **admin** | ✓ realm + school scoped like every other admin list — an admin in one realm/org cannot pull another's PII to CSV. |
 
 ## 8. Cross-cutting findings
 
-1. **CSRF** — every state-changing POST carries `csrfCheck` except the four
-   public flows that cannot (setup uses a one-time token; login/logout/theme
-   carry no privileged state; OAuth callback uses its `state` as the token).
+1. **CSRF** — every state-changing POST carries `csrfCheck`, including
+   `/logout` (it burns the session row). The two public flows that cannot
+   use the session token use equivalents instead: `/setup` a one-time token,
+   `/login` a double-submit `lcsrf` cookie+field pair; `/theme` sets a cookie
+   only; the OAuth callback uses its `state` as the token.
 2. **No silent failures found** — sends, pack builds, uploads, OAuth and
    template saves all end in an explicit success or an explicit, audited
    error message.
@@ -116,6 +122,21 @@ on top.
    bookmarks keep working.
 6. **Error handling** — branded 404 for unknown paths (JSON for `/api/*`)
    and a last-resort handler that logs detail but never leaks a stack trace.
+
+## 9. Surfaces added after the original scan
+
+| Route | Auth | Verdict |
+|---|---|---|
+| `GET /reset-password`, `POST /reset-password` | public (single-use code) | ✓ code redemption; wrong codes rejected without revealing which half failed. |
+| `GET /compose`, `POST /compose` | login (+ CSRF) | ✓ free composer; recipient case resolved server-side, duplicate-send guard shared with `/case/:id/send`. |
+| `GET /mail`, `GET /mail/thread/:tkey`, `POST /mail/thread/:tkey/action` | login | ✓ all-mail window; scoped to the reader's cases. |
+| `GET /console` | **admin** | ✓ ops console (logins, runs, errors, alerts, tamper signals); strictly own-org, 403 cross-org; unknown-username logins excluded. |
+| `GET /intake/test`, `POST /intake/test` | admin (+ CSRF) | ✓ dry-run intake self-test; no writes. |
+| `POST /org/switch` | admin + CSRF | ✓ switches the admin's active organisation; single-org accounts get 403, unknown targets rejected. |
+| `GET /metrics` | **admin** | ✓ Prometheus counters; no PII. |
+| `POST /settings/organization`, `POST /settings/gmail/backfill` | admin + CSRF | ✓ org profile/branding; bounded historical Gmail import with progress. |
+| `POST /templates/create` | admin + CSRF | ✓ new template keys; duplicates refused. |
+| `POST /config/case-types/*`, `/config/attachment-sets/*`, `/config/workflow-rules/*`, `/config/organizations/create` | admin + CSRF | ✓ case-type axes/vocabulary/documents/profile/rules, attachment sets, workflow rules (preview + toggle), extra organisations. |
 
 **Open items:** none blocking. (Low nit: `/queue` and `/team` aliases can be
 retired once no external links rely on them.)

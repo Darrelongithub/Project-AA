@@ -18,9 +18,11 @@
  *     stops hammering a dead API.
  */
 import * as crypto from "crypto";
+import { withTimeout } from "../util/timeout";
 import { envInt } from "../util/envnum";
 import type { Attachment, DocType, VisionExtraction } from "../types";
 import { DOC_TYPES } from "../types";
+import { admissionsPreset } from "../presets/loader";
 
 export interface VisionAdapter {
   extractDocument(att: Attachment): Promise<VisionExtraction | null>;
@@ -93,11 +95,12 @@ export function parseVisionJson(raw: string): VisionExtraction | null {
   }
 }
 
+const VISION_TYPE_LIST = admissionsPreset().documents.visionPromptTypes.map((t) => `"${t}"`).join(" | ");
 const VISION_PROMPT = `You are a document reader for an admissions intake system.
 Examine the attached document and report what you can read.
 Respond with ONLY a JSON object, no markdown, in exactly this shape:
 {
-  "document_type": one of "academic_cert" | "id" | "kcpe_cert" | "birth_cert" | "application_form" | "unknown",
+  "document_type": one of ${VISION_TYPE_LIST},
   "text": "the text visible on the document, as faithfully as you can read it",
   "fields": {
     "name": "full name on the document or null",
@@ -113,31 +116,21 @@ Respond with ONLY a JSON object, no markdown, in exactly this shape:
 /** A hung vision call must never stall the pipeline forever. */
 const VISION_TIMEOUT_MS = envInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      }
-    );
-  });
-}
-
 /**
- * The default Gemini model, in ONE place. The old default (gemini-1.5-flash)
- * no longer exists in the v1beta API — probes and live reading 404'd with
+ * Known-good Gemini models — the ONE checked-in record of which model names
+ * are expected to work. The old default (gemini-1.5-flash) no longer exists
+ * in the v1beta API — probes and live reading 404'd with
  * "models/gemini-1.5-flash is not found". And since 2026-09-18 access to the
  * 2.5 generation is limited to users who actively used it in the past, so a
  * new key/project can't lean on it either. Current GA Flash: gemini-3.8-flash
- * (GA 2026-09-02, per the Gemini API changelog).
+ * (GA 2026-09-02, per the Gemini API changelog). When the default moves,
+ * update this list, keep the default as entry [0], and move the retired
+ * name to DEAD_GEMINI_MODELS so the settings card warns about it.
  */
-export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+export const KNOWN_GOOD_GEMINI_MODELS = ["gemini-3.8-flash"] as const;
+
+/** The default Gemini model — always KNOWN_GOOD_GEMINI_MODELS[0]. */
+export const DEFAULT_GEMINI_MODEL: string = KNOWN_GOOD_GEMINI_MODELS[0];
 
 /** Model names Google has removed from the API — the settings card calls them out. */
 export const DEAD_GEMINI_MODELS = new Set([

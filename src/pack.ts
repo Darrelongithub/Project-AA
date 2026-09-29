@@ -8,6 +8,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { log } from "./util/log";
 import type { Repo } from "./db/repo";
+import { admissionsPreset, bundledDataDir } from "./presets/loader";
 
 export interface PackFile { filename: string; mimeType: string; content: Buffer; }
 export interface PackSlot {
@@ -18,57 +19,38 @@ export interface PackSlot {
   purpose: string;
 }
 
-/** Generic slot catalogue. Names and files are organization data, not defaults. */
-export const PACK_SLOTS: PackSlot[] = [
-  { key: "application-form", file: "application-form.pdf", pretty: "Application form.pdf", pack: "application", purpose: "Application form sent to enquirers" },
-  { key: "brochure-2026", file: "brochure-2026.pdf", pretty: "Brochure.pdf", pack: "application", purpose: "Prospectus sent to enquirers" },
-  { key: "student-medical-form", file: "student-medical-form.pdf", pretty: "Student medical form.pdf", pack: "admission", purpose: "Admission pack — medical form" },
-  { key: "data-protection-form", file: "data-protection-form.pdf", pretty: "Data protection form.pdf", pack: "admission", purpose: "Admission pack — data protection" },
-  { key: "next-of-kin-form", file: "next-of-kin-form.pdf", pretty: "Next of kin form.pdf", pack: "admission", purpose: "Admission pack — next of kin" },
-  { key: "hostels-list", file: "hostels-list.pdf", pretty: "Accommodation list.pdf", pack: "admission", purpose: "Admission pack — accommodation" },
-  { key: "fee-structure-2026", file: "fee-structure-2026.pdf", pretty: "Fee structure.pdf", pack: "admission", purpose: "Admission pack — fee structure" },
-  { key: "sponsorship-form", file: "sponsorship-form.pdf", pretty: "Sponsorship form.pdf", pack: "admission", purpose: "Admission pack — sponsorship" },
-  { key: "orientation-programme-2026", file: "orientation-programme-2026.pdf", pretty: "Orientation programme.pdf", pack: "admission", purpose: "Admission pack — orientation" },
-  { key: "credit-transfer-form", file: "credit-transfer-form.pdf", pretty: "Credit transfer form.pdf", pack: "transfer", purpose: "For applicants transferring credit from another institution" },
-];
+/** Slot catalogue — admissions-preset data (same slots as shipped). */
+export const PACK_SLOTS: PackSlot[] = admissionsPreset().packSlots;
 
 /**
  * Where the BUNDLED data lives (migration JSON + pack PDFs).
  *
- * C-1: this is resolved from THIS module's own location — never from the
- * process CWD and never from DB_PATH. A deployment may keep its database
- * anywhere (a temp directory, a mounted volume); that must not change where
- * the compiled/source module looks for its own bundled files. Booting with
- * DB_PATH outside the checkout used to derive DATA_DIR from the database
- * path, find no migration data, and crash in seedDefaults() before listen().
- *
- * A deployment that genuinely needs to relocate the bundled directory (e.g.
- * a packaged build that ships the files elsewhere) sets BUNDLED_DATA_DIR.
+ * C-1: resolved from the module's own location via the shared helper — never
+ * from the process CWD and never from DB_PATH. A deployment may keep its
+ * database anywhere; that must not change where the code looks for its own
+ * bundled files. A deployment that genuinely needs to relocate the bundled
+ * directory sets BUNDLED_DATA_DIR.
  */
-function bundledDataDir(): string {
-  const override = (process.env.BUNDLED_DATA_DIR || "").trim();
-  if (override) return path.resolve(override);
-  // Walk up from this file to the package root (the directory holding
-  // package.json). Works for src/pack.ts (tsx) and dist/src/pack.js (tsc).
-  let dir = __dirname;
-  for (let i = 0; i < 6; i++) {
-    if (fs.existsSync(path.join(dir, "package.json"))) return path.join(dir, "data");
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  // Last resort: the conventional layout (src/ or dist/src/ under the root).
-  return path.resolve(__dirname, "..", "..", "data");
-}
-
 export const DATA_DIR = bundledDataDir();
 export const PACK_DIR = path.join(DATA_DIR, "pack");
-const MIGRATED_ORG_ONE = path.join(DATA_DIR, "migrated", "organization-1.json");
-type MigratedPack = { name: string; from_name: string; tagline?: string; pack: Record<string, Array<{ file: string; filename: string; mime: string }>> };
+type MigratedSlot = { key?: string; file: string; filename?: string; mime: string };
+type MigratedPack = { name: string; from_name: string; tagline?: string; pack: Record<string, MigratedSlot[]> };
 
-function migratedData(): MigratedPack | null {
-  try { return JSON.parse(fs.readFileSync(MIGRATED_ORG_ONE, "utf8")) as MigratedPack; }
+/** Migration data for one organization (`organization-{id}.json`, if shipped). */
+function migratedData(organizationId = 1): MigratedPack | null {
+  const file = path.join(DATA_DIR, "migrated", `organization-${organizationId}.json`);
+  try { return JSON.parse(fs.readFileSync(file, "utf8")) as MigratedPack; }
   catch { return null; }
+}
+
+/**
+ * The ONE display-name mapping for migration slots: the JSON's own filename
+ * wins (it is the migrated record); a slot without one falls back to the
+ * catalogue's display name by key, then to the bare file name.
+ */
+function resolveSlot(slot: MigratedSlot): { file: string; filename: string } {
+  const pretty = slot.key ? PACK_SLOTS.find((s) => s.key === slot.key)?.pretty : undefined;
+  return { file: slot.file, filename: slot.filename ?? pretty ?? slot.file };
 }
 export function migratedOrganizationOne(): { name: string; fromName: string; tagline?: string } | null {
   const data = migratedData();
@@ -111,7 +93,10 @@ function migratedPack(kind: "application" | "admission"): PackBuild {
   const issues: string[] = [];
   const data = migratedData();
   if (!data) return { files: [], issues: ["Organization #1 migration data is unavailable"] };
-  return build(issues, (data.pack[kind] ?? []).map((slot) => read(slot.file, slot.filename, issues)));
+  return build(issues, (data.pack[kind] ?? []).map((slot) => {
+    const resolved = resolveSlot(slot);
+    return read(resolved.file, resolved.filename, issues);
+  }));
 }
 export function applicationPack(): PackBuild { return migratedPack("application"); }
 export function admissionPack(): PackBuild { return migratedPack("admission"); }
@@ -127,13 +112,11 @@ export function migratedAttachmentSets(): Array<{ name: string; files: PackFile[
   const out: Array<{ name: string; files: PackFile[]; issues: string[] }> = [];
   for (const name of ["application", "admission", "transfer"] as const) {
     const issues: string[] = [];
-    let slots = data.pack[name] ?? [];
-    // The credit-transfer form lives in the labeled profile's file store even
-    // though the JSON's pack groups predate it — same owner, same migration.
-    if (!slots.length && name === "transfer") {
-      slots = PACK_SLOTS.filter((s) => s.pack === "transfer").map((s) => ({ file: s.file, filename: s.pretty, mime: "application/pdf" }));
-    }
-    const files = build(issues, slots.map((slot) => read(slot.file, slot.filename, issues))).files;
+    const slots = data.pack[name] ?? [];
+    const files = build(issues, slots.map((slot) => {
+      const resolved = resolveSlot(slot);
+      return read(resolved.file, resolved.filename, issues);
+    })).files;
     out.push({ name, files, issues });
   }
   return out;

@@ -1,6 +1,11 @@
 /**
- * Smart intake engine (round 11) — which mail becomes an admissions case.
+ * Smart intake engine (round 11) — which mail becomes an intake case.
  *
+ * The engine itself is generic scoring machinery; the VOCABULARY it scores
+ * with comes from the active preset (the admissions preset by default — see
+ * data/presets/admissions.json, read through src/presets/loader.ts). Pass
+ * `vocabulary` explicitly to score with a different word set.
+
  * Replaces the blunt flat-hotword gate with a scored classifier, designed
  * from the operator's own spec: weighted keywords + exact phrases, the
  * subject line weighted higher, "2+ strong signals or 1 strong phrase",
@@ -14,7 +19,7 @@
  *   1. known applicant — quoted reference number or known sender
  *      (conversation continuity; always wins)
  *   2. strong negatives — job/vacancy/recruitment/CV/resume/refund/invoice/
- *      complaint vocabulary (penalty ≥ 4)
+ *      complaint vocabulary (penalty ≥ the configured gate)
  *   3. a configured hotword (Settings → "Which emails become cases" — the
  *      defaults AND the operator's own words)
  *   4. net application score ≥ 4  (each strong phrase +3, each keyword +1,
@@ -25,115 +30,17 @@
  *      general questions without admissions signal stay parked
  */
 
-/** Strong exact phrases — one of these is a "strong signal". */
-const STRONG_APP_PHRASES = [
-  "application form",
-  "submit my application",
-  "submitting my application",
-  "submitted my application",
-  "completed application",
-  "completed form",
-  "filled form",
-  "supporting documents",
-  "reference letter",
-  "recommendation letter",
-  "entrance test",
-  "entrance exam",
-  "conditional offer",
-];
+import type { IntakeVocabulary } from "../presets/loader";
+import { admissionsPreset } from "../presets/loader";
 
-/** Single-word application vocabulary (+1 each). */
-const APP_KEYWORDS = [
-  "application",
-  "apply",
-  "applied",
-  "applying",
-  "applicant",
-  "admission",
-  "admissions",
-  "admit",
-  "admitted",
-  "enrol",
-  "enroll",
-  "enrolment",
-  "enrollment",
-  "registration",
-  "register",
-  "submit",
-  "submission",
-  "submitted",
-  "transcript",
-  "transcripts",
-  "certificate",
-  "certificates",
-  "portfolio",
-  "interview",
-  "assessment",
-  "deadline",
-  "offer",
-  "acceptance",
-];
-
-/** Enquiry phrasing — questions about applying (+2 phrases, +1 words). */
-const ENQ_PHRASES = [
-  "how to apply",
-  "how do i apply",
-  "application process",
-  "application requirements",
-  "entry requirements",
-  "admission requirements",
-  "eligibility",
-  "open day",
-  "open evening",
-  "school visit",
-  "campus tour",
-  "places available",
-  "waiting list",
-  "interested in applying",
-  "looking to enrol",
-  "want to join",
-];
-const ENQ_KEYWORDS = [
-  "enquiry",
-  "enquire",
-  "inquire",
-  "inquiry",
-  "prospectus",
-  "brochure",
-  "tuition",
-  "scholarship",
-  "bursary",
-  "fees",
-  "fee",
-  "availability",
-];
-
-/**
- * Negative vocabulary. Phrases are heavy (−6): they are unambiguous
- * "this is not admissions mail". Words are −4 each and the PENALTY GATE is
- * ≥ 4 — one clear negative (CV, refund, …) is enough to park, so a single
- * stray word in an otherwise admissions email still opens a case (a human
- * closes it in minutes; a missed application costs the applicant).
- */
-const NEG_PHRASES = [
-  "job application",
-  "staff vacancy",
-  "recruitment drive",
-  "parent evening",
-  "payment already made",
-];
-const NEG_KEYWORDS = ["cv", "resume", "recruitment", "vacancy", "complaint", "refund", "invoice"];
-const ALWAYS_NON_ADMISSIONS = new Set(["cv", "resume", "recruitment", "vacancy"]);
-
-/** Filenames that look like admissions documents boost the score (+2 once). */
-const ATTACHMENT_RE = /application|transcript|certificate|statement|result|form|national\s?id|\bid\b/i;
-
-const STOP_TOKENS = new Set(["of", "the", "and", "for", "with", "bachelor", "master", "phd", "mba", "bba", "bcse", "bsc"]);
-const NEG_GATE = 4;
-const APP_THRESHOLD = 4;
-const ENQ_THRESHOLD = 2;
+/** The default scoring vocabulary: the admissions preset's intake word set. */
+export function defaultIntakeVocabulary(): IntakeVocabulary {
+  return admissionsPreset().intake;
+}
 
 export interface IntakeInput {
+  /** Scoring vocabulary — defaults to the admissions preset's word set. */
+  vocabulary?: IntakeVocabulary;
   subject: string;
   body: string;
   attachmentFilenames: string[];
@@ -164,17 +71,17 @@ const has = (text: string, term: string) => new RegExp(`\\b${esc(term)}\\b`).tes
  * body ×1). Returns { added, hits } — a signal found in the subject is not
  * counted again in the body (per-signal max, never double-dipped).
  */
-function scan(text: string, weight: number, seen: Set<string>, positives: string[], add: (n: number) => number): number {
+function scan(text: string, weight: number, seen: Set<string>, positives: string[], add: (n: number) => number, phrases: readonly string[], keywords: readonly string[]): number {
   if (!text) return 0;
   let added = 0;
-  for (const phrase of STRONG_APP_PHRASES) {
+  for (const phrase of phrases) {
     if (!seen.has(phrase) && has(text, phrase)) {
       seen.add(phrase);
       positives.push(`"${phrase}"`);
       added += add(3 * weight);
     }
   }
-  for (const kw of APP_KEYWORDS) {
+  for (const kw of keywords) {
     if (!seen.has(kw) && has(text, kw)) {
       seen.add(kw);
       positives.push(kw);
@@ -185,6 +92,10 @@ function scan(text: string, weight: number, seen: Set<string>, positives: string
 }
 
 export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
+  const V = input.vocabulary ?? defaultIntakeVocabulary();
+  const stopTokens = new Set(V.stopTokens);
+  const alwaysNonIntake = new Set(V.alwaysNonAdmissions);
+  const attachmentRe = new RegExp(V.attachmentPattern, "i");
   const subject = (input.subject || "").toLowerCase();
   const body = (input.body || "").toLowerCase();
 
@@ -198,8 +109,8 @@ export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
     score += n;
     return n;
   };
-  scan(subject, 2, seen, positives, bump);
-  scan(body, 1, seen, positives, bump);
+  scan(subject, 2, seen, positives, bump, V.strongAppPhrases, V.appKeywords);
+  scan(body, 1, seen, positives, bump, V.strongAppPhrases, V.appKeywords);
 
   // Course names: the full name anywhere is a strong signal (+4); otherwise
   // each distinctive token (≥4 chars, not a stopword) is +1, capped at +3.
@@ -212,7 +123,7 @@ export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
     } else {
       let tokenScore = 0;
       for (const tok of name.split(/[^a-z0-9]+/)) {
-        if (tok.length < 4 || STOP_TOKENS.has(tok) || seen.has(tok)) continue;
+        if (tok.length < 4 || stopTokens.has(tok) || seen.has(tok)) continue;
         if (has(`${subject}\n${body}`, tok)) {
           seen.add(tok);
           tokenScore += 1;
@@ -228,7 +139,7 @@ export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
 
   // Attachment-name boost (+2 once): "ApplicationForm.pdf", "transcript.pdf"…
   for (const f of input.attachmentFilenames) {
-    if (f && ATTACHMENT_RE.test(f)) {
+    if (f && attachmentRe.test(f)) {
       score += 2;
       positives.push(`attachment: ${f}`);
       break;
@@ -251,12 +162,12 @@ export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
   // human. The old flat penalty parked those legitimate cases.
   const corpus = `${subject}\n${body}`;
   const admissionsContext =
-    APP_KEYWORDS.some((kw) => has(corpus, kw)) ||
-    ENQ_PHRASES.some((phrase) => has(corpus, phrase)) ||
-    ENQ_KEYWORDS.some((kw) => has(corpus, kw)) ||
+    V.appKeywords.some((kw) => has(corpus, kw)) ||
+    V.enqPhrases.some((phrase) => has(corpus, phrase)) ||
+    V.enqKeywords.some((kw) => has(corpus, kw)) ||
     input.courseNames.some((course) => course && has(corpus, course.toLowerCase()));
   let penalty = 0;
-  for (const phrase of NEG_PHRASES) {
+  for (const phrase of V.negPhrases) {
     if (!has(corpus, phrase)) continue;
     const tiedToAdmissions = admissionsContext && phrase === "parent evening";
     if (!tiedToAdmissions) {
@@ -264,9 +175,9 @@ export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
       negatives.push(`"${phrase}"`);
     }
   }
-  for (const kw of NEG_KEYWORDS) {
+  for (const kw of V.negKeywords) {
     if (!has(corpus, kw)) continue;
-    if (!ALWAYS_NON_ADMISSIONS.has(kw) && admissionsContext) continue;
+    if (!alwaysNonIntake.has(kw) && admissionsContext) continue;
     penalty += 4;
     negatives.push(kw);
   }
@@ -274,11 +185,11 @@ export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
 
   // ── Enquiry bucket (separate vocabulary) ───────────────────────────────
   let enq = 0;
-  for (const phrase of ENQ_PHRASES) {
+  for (const phrase of V.enqPhrases) {
     if (has(subject, phrase)) enq += 4;
     else if (has(body, phrase)) enq += 2;
   }
-  for (const kw of ENQ_KEYWORDS) {
+  for (const kw of V.enqKeywords) {
     if (has(subject, kw)) enq += 2;
     else if (has(body, kw)) enq += 1;
   }
@@ -298,7 +209,7 @@ export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
     verdict.via = "known_applicant";
     return verdict;
   }
-  if (penalty >= NEG_GATE) return verdict; // parked: strong negatives win
+  if (penalty >= V.thresholds.negGate) return verdict; // parked: strong negatives win
   if (hotwordHit) {
     verdict.category = "application";
     verdict.via = "hotword";
@@ -308,16 +219,16 @@ export function classifyIntakeEmail(input: IntakeInput): IntakeVerdict {
     admissionsContext && negatives.length === 0 &&
     ["complaint", "refund", "invoice"].some((kw) => has(corpus, kw));
   if (studentRelatedIssue && score >= 1) {
-    verdict.category = enq >= ENQ_THRESHOLD ? "enquiry" : "application";
+    verdict.category = enq >= V.thresholds.enqThreshold ? "enquiry" : "application";
     verdict.via = "score";
     return verdict;
   }
-  if (net >= APP_THRESHOLD) {
+  if (net >= V.thresholds.appThreshold) {
     verdict.category = "application";
     verdict.via = "score";
     return verdict;
   }
-  if (enq >= ENQ_THRESHOLD && net >= 1) {
+  if (enq >= V.thresholds.enqThreshold && net >= 1) {
     verdict.category = "enquiry";
     verdict.via = "enquiry";
     return verdict;

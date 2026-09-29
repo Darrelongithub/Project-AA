@@ -4,6 +4,7 @@
  * Pure functions; used by the seeder and tests.
  */
 import type { RuleNode, SystemBlock } from "../types";
+import { admissionsPreset } from "../presets/loader";
 
 /** One SystemBlock → a flat list of root-level rule nodes (AND semantics). */
 export function blockToNodes(block: SystemBlock): RuleNode[] {
@@ -37,27 +38,17 @@ export function blockToNodes(block: SystemBlock): RuleNode[] {
   return nodes;
 }
 
-/** The KCSE subject catalogue, centrally managed (never duplicated per course). */
-export const KCSE_SUBJECTS = [
-  "English", "Kiswahili", "Mathematics", "Biology", "Chemistry", "Physics",
-  "Physical Sciences", "Geography", "History & Government", "CRE", "IRE",
-  "Hindu Religious Education", "Business Studies", "Agriculture",
-  "Computer Studies", "Home Science", "Art & Design", "Music", "French",
-  "German", "Arabic", "Physical Education",
-];
+/** Subject catalogues — admissions-preset data (same lists as shipped). */
+export const NATIONAL_SECONDARY_SUBJECTS: string[] = admissionsPreset().subjects.nationalSecondary;
 
 /** Generic catalogues for the international/tertiary routes. */
-export const GENERIC_SUBJECTS = [
-  "English Language", "Mathematics", "Additional Mathematics", "Physics",
-  "Chemistry", "Biology", "Computer Science", "Business Studies", "Economics",
-  "Geography", "History", "Literature in English", "Agriculture", "French",
-  "German", "Arabic", "Religious Studies", "Physical Education", "Art & Design",
-  "Music", "Home Science", "Physical Sciences",
-];
+export const GENERIC_SUBJECTS: string[] = admissionsPreset().subjects.generic;
+
+const GENERIC_SYSTEMS: string[] = admissionsPreset().subjects.genericSystems;
 
 export const CATALOGUE_SEED: Array<{ system: string; name: string }> = [
-  ...KCSE_SUBJECTS.map((name) => ({ system: "KCSE", name })),
-  ...["IGCSE", "IB", "ALEVEL", "KACE", "EACE"].flatMap((system) =>
+  ...NATIONAL_SECONDARY_SUBJECTS.map((name) => ({ system: admissionsPreset().subjects.nationalSecondarySystem, name })),
+  ...GENERIC_SYSTEMS.flatMap((system) =>
     GENERIC_SUBJECTS.map((name) => ({ system, name }))
   ),
 ];

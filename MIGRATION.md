@@ -1,4 +1,5 @@
 > **Historical document — superseded by [STATUS.md](./STATUS.md).** Kept for the audit trail; figures and statements may be stale. Do not update.
+> **Bug index:** every defect in this document is consolidated and verified in [BUGS.md](./BUGS.md) (Phase 7, 2026-09-28).
 
 # MIGRATION.md — Production migration plan (PPR P0-7)
 
@@ -64,4 +65,4 @@ binary.
 
 `npx vitest test/ppr-p07-migration.test.ts` — 6 tests, each named after the
 invariant it evidences, running against the production-shaped copy described
-above. The Section 3 report (`PPR-REPORT.md`) cites this evidence per finding.
+above. The defect index (`BUGS.md`) cites this evidence where findings depend on it.

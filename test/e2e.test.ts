@@ -131,7 +131,7 @@ describe("pipeline v2 end-to-end", () => {
   it("ambiguous (grade below floor) → queued for a human, nothing auto-sent", async () => {
     const name = "BRIAN KIPROTICH RUTO";
     const email = mkEmail("e2e-brian", "brian@example.org", [
-      await mkAtt("a.pdf", "academic_cert", name, { kcseMeanGrade: "C-" }),
+      await mkAtt("a.pdf", "academic_cert", name, { secondaryMeanGrade: "C-" }),
       await mkAtt("l.pdf", "leaving_certificate", name),
       await mkAtt("p.pdf", "passport_photo", name),
       await mkAtt("b.pdf", "birth_cert", name),
@@ -208,7 +208,7 @@ describe("pipeline v2 end-to-end", () => {
 
   it("scanned PDF falls through to the mock Gemini tier → medium confidence → Orange", async () => {
     const name = "GRACE AKINYI OTIENO";
-    const kcpeLines = docLines("kcpe_cert", { name, kcpePoints: 289, year: "2019" });
+    const kcpeLines = docLines("kcpe_cert", { name, primaryPoints: 289, year: "2019" });
     const email = mkEmail("e2e-grace", "grace@example.org", [
       await mkAtt("a.pdf", "academic_cert", name),
       {

@@ -1,0 +1,30 @@
+# Audit G (C9): the gates this repo actually lives by — typecheck, the full
+# suite, and a compile check — run on every push and pull request.
+# better-sqlite3 ships prebuilds for ubuntu-latest; if one is missing the
+# toolchain below still lets the source build succeed.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Toolchain for native-module source builds
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Tests
+        run: npm test
+      - name: Build
+        run: npm run build

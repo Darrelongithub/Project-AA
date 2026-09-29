@@ -9,6 +9,7 @@
  * results keep the strict gate because half-read grade tables are dangerous.
  */
 import type { DocType } from "../types";
+import { PRIMARY_CERT_TYPE } from "../documents/matrix";
 
 export interface QualityReport {
   ok: boolean;
@@ -38,7 +39,7 @@ export function thresholdsFor(docType?: DocType | null): QualityThresholds {
     case "id":
       // Short by nature: a clean ID page may be ~15 words.
       return { minLength: 15, minLetterRatio: 0.55, minDistinctWords: 3, minAvgWordLength: 3.0, maxRepeatRun: 20 };
-    case "kcpe_cert":
+    case PRIMARY_CERT_TYPE:
       return { minLength: 25, minLetterRatio: 0.55, minDistinctWords: 4, minAvgWordLength: 3.5, maxRepeatRun: 20 };
     case "application_form":
       return { minLength: 30, minLetterRatio: 0.55, minDistinctWords: 5, minAvgWordLength: 3.5, maxRepeatRun: 20 };

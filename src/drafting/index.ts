@@ -26,7 +26,7 @@ export interface DraftContext {
   programme?: string;
   regDate?: string;
   orientationDates?: string;
-  /** "We read your KCSE as mean grade B+…" — applicant-friendly read-back. */
+  /** "We read your certificate as mean grade B+…" — applicant-friendly read-back. */
   readBack?: string;
   /** "We couldn't read page 2 — please re-scan…" — per-document issues. */
   documentIssues?: string;

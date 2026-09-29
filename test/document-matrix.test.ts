@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Server } from "http";
 import { webLogin } from "./helpers";
 import {
-  KENYAN_REQUIRES_KCPE,
+  NATIONAL_REQUIRES_PRIMARY_CERT,
   documentRequirementsFor,
   fillSlots,
   BANNED_GENERIC_TERMS,
@@ -46,7 +46,7 @@ const CORE_FRESH: DocType[] = [
 
 describe("OR-5: deterministic document matrix", () => {
   it("KENYAN_REQUIRES_KCPE is the owner constant (false) and kcpe_cert is never a required slot", () => {
-    expect(KENYAN_REQUIRES_KCPE).toBe(false);
+    expect(NATIONAL_REQUIRES_PRIMARY_CERT).toBe(false);
     const levels = ["certificate", "diploma", "degree", "masters", "phd"] as const;
     const routes = ["fresh", "transfer"] as const;
     const nats = ["kenyan", "international", "unknown"] as const;

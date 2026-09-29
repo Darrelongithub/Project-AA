@@ -9,7 +9,30 @@
  *   - Anything borderline (e.g. grades below the stated minimum) produces a
  *     Flag — never an auto-pass, never an auto-fail.
  */
-import { fillSlots } from "../documents/matrix";
+import { fillSlots, PRIMARY_CERT_TYPE } from "../documents/matrix";
+import { NATIONAL_SECONDARY_SYSTEM, O_LEVEL_SYSTEM } from "../admissions/systems";
+import { admissionsPreset } from "../presets/loader";
+import {
+  ALEVEL_LADDER,
+  DEGREE_CLASS_LADDER,
+  DIPLOMA_CLASS_LADDER,
+  GRADE_LADDER,
+  IB_SUBJECT_LADDER,
+  O_LEVEL_LADDER,
+  canonClass,
+  normalizeGrade,
+} from "./ladders";
+// Grade ladders live in ./ladders.ts (single source of truth, shared with
+// src/admissions/systems.ts); the historical names stay re-exported here.
+export {
+  ALEVEL_LADDER,
+  DEGREE_CLASS_LADDER,
+  DIPLOMA_CLASS_LADDER,
+  GRADE_LADDER,
+  IB_SUBJECT_LADDER,
+  O_LEVEL_LADDER,
+  normalizeGrade,
+} from "./ladders";
 import type {
   Classification,
   DerivedFlag,
@@ -82,26 +105,14 @@ export function namesAreSimilar(a: string, b: string): boolean {
   return levenshtein(a, b) <= 2;
 }
 
-const GRADE_CHECKED_TYPES: DocType[] = ["academic_cert", "kcpe_cert"];
-
-/** The KCSE/KCPE mean-grade ladder, best (A) → worst (E). */
-export const GRADE_LADDER = ["A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "E"] as const;
+const GRADE_CHECKED_TYPES: DocType[] = admissionsPreset().documents.gradeCheckedTypes as DocType[];
 
 /**
  * Pure mean-grade comparison: true when `actual` is STRICTLY below `required`.
  * Unknown grades never compare false-positive — callers treat them as
  * unreadable and flag for a human instead.
+ * (GRADE_LADDER + normalizeGrade come from ./ladders.ts — see top of file.)
  */
-/** "C (plus)" / "B (PLAIN)" → the ladder letter ("C+" / "B"). */
-export function normalizeGrade(raw: string): string {
-  return raw
-    .trim()
-    .toUpperCase()
-    .replace(/\s*\(PLUS\)\s*/i, "+")
-    .replace(/\s*\(MINUS\)\s*/i, "-")
-    .replace(/\s*\(PLAIN\)\s*/i, "");
-}
-
 export function gradeBelow(actual: string | null | undefined, required: string | null | undefined): boolean {
   if (!actual || !required) return false;
   const a = GRADE_LADDER.indexOf(normalizeGrade(actual) as never);
@@ -111,8 +122,9 @@ export function gradeBelow(actual: string | null | undefined, required: string |
 }
 
 /**
- * KCSE/KCPE points → the grade ladder (same thresholds the legacy migration
- * in db.ts uses). Lets a grade rule be checked against a points document.
+ * Secondary/primary points → the grade ladder (same thresholds the legacy
+ * migration in db.ts uses). Lets a grade rule be checked against a points
+ * document.
  */
 export function ptsToGrade(p: number): string {
   return p >= 400 ? "A" : p >= 381 ? "A-" : p >= 353 ? "B+" : p >= 325 ? "B" : p >= 295 ? "B-"
@@ -169,10 +181,10 @@ export function deriveFlags(
     const doc = docs.find((d) => d.document_type === req.document_type);
     if (!doc) continue; // missing documents are handled by the verdict logic
     let mean = typeof doc.extracted_fields?.meanGrade === "string" ? (doc.extracted_fields.meanGrade as string) : null;
-    // KCPE slips carry POINTS, not a letter grade. A readable points total is
-    // converted to its grade equivalent so grade rules still apply — only a
-    // genuinely unreadable document is flagged for a human.
-    if (!mean && req.document_type === "kcpe_cert") {
+    // Primary-certificate slips carry POINTS, not a letter grade. A readable
+    // points total is converted to its grade equivalent so grade rules still
+    // apply — only a genuinely unreadable document is flagged for a human.
+    if (!mean && req.document_type === PRIMARY_CERT_TYPE) {
       const pts = doc.extracted_fields?.gradePoints;
       if (typeof pts === "number" && Number.isFinite(pts)) mean = ptsToGrade(pts);
     }
@@ -264,14 +276,16 @@ export function deriveFlags(
 
   // 5. Cross-document consistency anomalies (v3 feature 7). These are
   //    "flag → human verification", never an automatic authenticity verdict.
-  const kcpe = docs.find((d) => d.document_type === "kcpe_cert");
-  const kcse = docs.find((d) => d.document_type === "academic_cert");
-  const kcpeYear = Number(kcpe?.extracted_fields?.examYear ?? NaN);
-  const kcseYear = Number(kcse?.extracted_fields?.examYear ?? NaN);
-  if (Number.isFinite(kcpeYear) && Number.isFinite(kcseYear) && kcpeYear >= kcseYear) {
+  const primaryCert = docs.find((d) => d.document_type === PRIMARY_CERT_TYPE);
+  const secondaryCert = docs.find((d) => d.document_type === "academic_cert");
+  const primaryYear = Number(primaryCert?.extracted_fields?.examYear ?? NaN);
+  const secondaryYear = Number(secondaryCert?.extracted_fields?.examYear ?? NaN);
+  if (Number.isFinite(primaryYear) && Number.isFinite(secondaryYear) && primaryYear >= secondaryYear) {
     flags.push({
       type: "anomaly",
-      detail: `exam dates are inconsistent: KCPE dated ${kcpeYear} is not before KCSE dated ${kcseYear} — potential anomaly, verify authenticity`,
+      detail: admissionsPreset().documents.examDateAnomaly
+        .replace("{primaryYear}", String(primaryYear))
+        .replace("{secondaryYear}", String(secondaryYear)),
     });
   }
 
@@ -291,27 +305,8 @@ export function dedupeFlags(flags: DerivedFlag[]): DerivedFlag[] {
   return out;
 }
 
-const DOC_LABELS: Record<DocType, string> = {
-  // OR-5: concrete labels only — vague umbrella names are banned.
-  application_form: "Application Form",
-  exam_result_slip: "Examination Result Slip",
-  leaving_certificate: "High School Leaving Certificate",
-  passport_photo: "Passport-size Photograph",
-  id: "National ID or Passport",
-  birth_cert: "Birth Certificate",
-  undergraduate_transcript: "Undergraduate Transcripts",
-  undergraduate_degree_certificate: "Undergraduate Degree Certificate",
-  masters_transcript: "Master's Transcripts",
-  masters_degree_certificate: "Master's Degree Certificate",
-  law_personal_statement: "Personal Statement (LLB, max 500 words)",
-  business_statement_of_objective: "Statement of Objective (BBA, max 300 words)",
-  credit_transfer_form: "Transfer Letter / Credit Transfer Form",
-  student_pass_application: "Student Pass Application (post-admission)",
-  foreign_qualification_equivalence: "Foreign Qualification Equivalence (post-admission)",
-  academic_cert: "Academic document (type not yet identified)",
-  kcpe_cert: "KCPE Certificate",
-  unknown: "Unknown document",
-};
+const DOC_LABELS: Record<DocType, string> =
+  admissionsPreset().documents.typeLabels as Record<DocType, string>;
 
 export function docLabel(t: DocType): string {
   return DOC_LABELS[t] ?? t;
@@ -372,11 +367,11 @@ export function decide(input: RulesInput): RulesOutput {
   const listedTypes = new Set(requirements.map((r) => r.document_type));
   // Documented routine extras that are never "wrong": `academic_cert` is
   // the generic fallback fillSlots lets stand in for ANY academic slot, and
-  // `kcpe_cert` is the "KCPE is never required" companion file — not on the
-  // checklist, yet carried routinely by Kenyan school-leaver files and fully
+  // The primary certificate is the "never required" companion file — not on
+  // the checklist, yet carried routinely by school-leaver files and fully
   // read by the pipeline. Flagging either would turn clean files Orange.
   listedTypes.add("academic_cert");
-  listedTypes.add("kcpe_cert");
+  listedTypes.add(PRIMARY_CERT_TYPE);
   const unlistedExtras = extras.filter((d) => !listedTypes.has(d.document_type));
   if (unlistedExtras.length > 0) {
     const types = [...new Set(unlistedExtras.map((d) => d.document_type))];
@@ -431,29 +426,13 @@ export function decide(input: RulesInput): RulesOutput {
 
 // ── Structured qualification checks (per exam system) ─────────────────────
 // Requirement blocks speak the language each system is actually marked in:
-// KCSE letter grades, IGCSE credits + A*–G, A-Level principal passes, IB
-// points, diploma/degree classes, GPAs. Every check below DETERMINISTICALLY
+// national-secondary letter grades, O-Level credits + A*–G, A-Level principal
+// passes, IB points, diploma/degree classes, GPAs. Every check below
+// DETERMINISTICALLY
 // compares a read value against the configured minimum; anything unreadable
 // becomes a flag for a human — never a guess.
-
-export const IGCSE_LADDER = ["A*", "A", "B", "C", "D", "E", "F", "G"] as const;
-export const ALEVEL_LADDER = ["A", "B", "C", "D", "E"] as const;
-export const IB_SUBJECT_LADDER = ["7", "6", "5", "4", "3", "2", "1"] as const;
-/** Worst → best. */
-export const DIPLOMA_CLASS_LADDER = ["pass", "credit", "distinction"];
-export const DEGREE_CLASS_LADDER = [
-  "pass",
-  "second class honours (lower division)",
-  "second class lower",
-  "second class honours (upper division)",
-  "second class upper",
-  "first class honours",
-  "first class",
-];
-
-function canonClass(raw: string): string {
-  return raw.toLowerCase().replace(/[^a-z0-9 ()]+/g, " ").replace(/\s+/g, " ").trim();
-}
+// (Grade ladders + canonClass are imported from ./ladders.ts at the top of
+// this file; the historical export names are re-exported from there.)
 
 /** Generic ladder comparison: true when `actual` is STRICTLY below `required`. */
 export function ladderBelow(actual: string | null | undefined, required: string | null | undefined, ladder: readonly string[]): boolean {
@@ -472,10 +451,9 @@ function classBelow(actual: string | null | undefined, required: string | null |
   return a < r; // class ladders are ordered worst → best
 }
 
-const SYSTEM_LABEL: Record<ExamSystem, string> = {
-  KCSE: "KCSE", IGCSE: "IGCSE/GCE O-Level", ALEVEL: "GCE A-Level/KACE",
-  IB: "IB Diploma", DIPLOMA: "Diploma", PREUNI: "Pre-University", DEGREE: "Degree",
-};
+/** Legacy exam-system display labels — admissions-preset data (same mapping as shipped). */
+const SYSTEM_LABEL: Record<ExamSystem, string> =
+  admissionsPreset().examSystemLabels as Record<ExamSystem, string>;
 
 /**
  * Check one subject requirement ({subject, grade, alts}) against the subject
@@ -516,28 +494,28 @@ export function checkSystemBlock(block: SystemBlock, fields: ExtractedFields): D
   const subs = (fields.subjectGrades ?? null) as Record<string, string> | null;
 
   switch (block.system) {
-    case "KCSE": {
+    case NATIONAL_SECONDARY_SYSTEM: {
       if (block.overall) {
         const mean = typeof fields.meanGrade === "string" ? fields.meanGrade : null;
         if (mean && gradeBelow(mean, block.overall)) {
-          flags.push({ type: "grade_below_requirement", detail: `KCSE: mean grade ${mean} is below the required ${block.overall} — human must review` });
+          flags.push({ type: "grade_below_requirement", detail: `${block.system}: mean grade ${mean} is below the required ${block.overall} — human must review` });
         } else if (!mean) {
-          flags.push({ type: "low_confidence", detail: `KCSE: mean grade could not be read (rule expects ${block.overall}) — human must verify` });
+          flags.push({ type: "low_confidence", detail: `${block.system}: mean grade could not be read (rule expects ${block.overall}) — human must verify` });
         }
       }
-      for (const r of block.subjects ?? []) flags.push(...checkSubjectRule(r, subs, null, "KCSE"));
+      for (const r of block.subjects ?? []) flags.push(...checkSubjectRule(r, subs, null, block.system));
       break;
     }
-    case "IGCSE": {
+    case O_LEVEL_SYSTEM: {
       if (block.minCredits != null) {
         const credits = typeof fields.credits === "number" ? fields.credits : null;
         if (credits == null) {
-          flags.push({ type: "low_confidence", detail: `IGCSE: credit count could not be read (rule expects ${block.minCredits} passes at C or better) — human must verify` });
+          flags.push({ type: "low_confidence", detail: `${block.system}: credit count could not be read (rule expects ${block.minCredits} passes at C or better) — human must verify` });
         } else if (credits < block.minCredits) {
-          flags.push({ type: "grade_below_requirement", detail: `IGCSE: ${credits} pass(es) at C or better, below the required ${block.minCredits} — human must review` });
+          flags.push({ type: "grade_below_requirement", detail: `${block.system}: ${credits} pass(es) at C or better, below the required ${block.minCredits} — human must review` });
         }
       }
-      for (const r of block.subjects ?? []) flags.push(...checkSubjectRule(r, subs, [...IGCSE_LADDER], "IGCSE"));
+      for (const r of block.subjects ?? []) flags.push(...checkSubjectRule(r, subs, [...O_LEVEL_LADDER], block.system));
       break;
     }
     case "ALEVEL": {

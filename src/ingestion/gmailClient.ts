@@ -15,11 +15,22 @@
  */
 import type { IncomingEmail } from "../types";
 import { envInt } from "../util/envnum";
+import { withTimeout } from "../util/timeout";
 import { MAX_ATTACHMENT_BYTES } from "../extraction/extract";
 import { log } from "../util/log";
 
 /** Whole-message cap; above this the mail is parked, never downloaded. */
 export const MAX_EMAIL_BYTES = envInt(process.env.GMAIL_MAX_EMAIL_BYTES, 40 * 1024 * 1024);
+
+/**
+ * Per-call bound on every Gmail API round-trip. The googleapis SDK has no
+ * usable per-request timeout, so a wedged connection used to hang the sync
+ * loop (and the OAuth callback's sibling calls) forever. Same race pattern
+ * as the Gemini tier: the caller proceeds; the socket finishes whenever it
+ * finishes. A timeout rejects into the sync error path (audited + retried
+ * next pass), never a stuck worker.
+ */
+export const GMAIL_TIMEOUT_MS = envInt(process.env.GMAIL_TIMEOUT_MS, 60_000);
 
 /** A message too big to process — park it permanently, tell a human. */
 export class EmailTooLargeError extends Error {
@@ -83,6 +94,10 @@ export class GmailClient {
     return this.label ? `label:${this.label}` : "all mail (excluding sent, spam and trash)";
   }
 
+  private call(label: string, p: Promise<any>): Promise<any> {
+    return withTimeout(p, GMAIL_TIMEOUT_MS, `gmail ${label}`);
+  }
+
   async listRecentMessageIds(
     lookbackDays: number,
     opts: { perPage?: number; maxPages?: number } = {}
@@ -100,12 +115,12 @@ export class GmailClient {
     const ids: string[] = [];
     let pageToken: string | undefined;
     for (let page = 0; page < maxPages; page++) {
-      const res = await this.gmail.users.messages.list({
+      const res = await this.call("list", this.gmail.users.messages.list({
         userId: "me",
         q,
         maxResults: perPage,
         ...(pageToken ? { pageToken } : {}),
-      });
+      }));
       for (const m of (res.data.messages || []) as Array<{ id: string }>) ids.push(m.id);
       pageToken = res.data.nextPageToken || undefined;
       if (!pageToken) break;
@@ -117,11 +132,11 @@ export class GmailClient {
     // Size guard BEFORE downloading: a 40 MB scan used to be base64-buffered
     // into memory before anything noticed. Metadata is tiny and carries the
     // server's own size estimate.
-    const meta = await this.gmail.users.messages.get({ userId: "me", id, format: "metadata" });
+    const meta = await this.call("metadata", this.gmail.users.messages.get({ userId: "me", id, format: "metadata" }));
     const sizeEstimate = Number(meta.data.sizeEstimate || 0);
     if (sizeEstimate > MAX_EMAIL_BYTES) throw new EmailTooLargeError(id, sizeEstimate);
 
-    const res = await this.gmail.users.messages.get({ userId: "me", id, format: "full" });
+    const res = await this.call("fetch", this.gmail.users.messages.get({ userId: "me", id, format: "full" }));
     const msg = res.data;
     const headers: Record<string, string> = {};
     for (const h of msg.payload.headers || []) headers[h.name.toLowerCase()] = h.value;
@@ -213,11 +228,11 @@ export class GmailClient {
             // Inline image already carried its bytes in the MIME part.
             return { filename: a.filename, mimeType: a.mimeType, content: a.data };
           }
-          const attRes = await this.gmail.users.messages.attachments.get({
+          const attRes = await this.call("attachment", this.gmail.users.messages.attachments.get({
             userId: "me",
             messageId: id,
             id: a.attachmentId!,
-          });
+          }));
           return {
             filename: a.filename,
             mimeType: a.mimeType,
@@ -323,17 +338,17 @@ export class GmailClient {
       .replace(/\//g, "_")
       .replace(/=+$/, "");
     try {
-      await this.gmail.users.messages.send({
+      await this.call("send", this.gmail.users.messages.send({
         userId: "me",
         requestBody: { raw: encoded, threadId },
-      });
+      }));
     } catch (e) {
       const reason = String((e as { errors?: Array<{ reason?: string }>; message?: string })?.errors?.[0]?.reason ?? (e as Error)?.message ?? "");
       // A stale/unknown thread id (conversation deleted, case created outside
       // Gmail) used to kill the send entirely. Retry as a fresh message —
       // the applicant still gets the reply, just as a new thread.
       if (/thread|not found|invalid/i.test(reason)) {
-        await this.gmail.users.messages.send({ userId: "me", requestBody: { raw: encoded } });
+        await this.call("send-retry", this.gmail.users.messages.send({ userId: "me", requestBody: { raw: encoded } }));
         return;
       }
       throw e;

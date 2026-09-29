@@ -30,22 +30,20 @@ import type {
   ExtractedFields,
   RequirementResult,
 } from "../types";
+import { autoDecisionsAllowed } from "../decisions";
 import { fillSlots } from "../documents/matrix";
 import { docLabel } from "../rules";
 import { MIN_AUTO_PASS_SCORE } from "../extraction/extract";
 import { evaluateTree, readerFromFields, describeRuleTree } from "./engine";
 import { SYSTEM_LABELS } from "./systems";
+import { PRIMARY_CERT_TYPE } from "../documents/matrix";
+import { admissionsPreset } from "../presets/loader";
 import type { TreeResult } from "./engine";
 
-/** Extraction detected on a document → the admission systems it may satisfy. */
-const SYSTEM_ROUTE_MAP: Record<string, AdmissionSystem[]> = {
-  KCSE: ["KCSE"],
-  IGCSE: ["IGCSE"],
-  IB: ["IB"],
-  ALEVEL: ["ALEVEL", "KACE"],
-  DIPLOMA: ["DIPLOMA"],
-  DEGREE: ["DEGREE"],
-};
+/** Extraction detected on a document → the admission systems it may satisfy.
+ * Preset data (same mapping as shipped). */
+const SYSTEM_ROUTE_MAP: Record<string, AdmissionSystem[]> =
+  admissionsPreset().evaluation.systemRoutes as Record<string, AdmissionSystem[]>;
 
 export interface AdmissionEvaluation {
   report: EvaluationReport;
@@ -125,7 +123,7 @@ const ACADEMIC_FAMILY = new Set([
   "undergraduate_degree_certificate",
   "masters_transcript",
   "masters_degree_certificate",
-  "kcpe_cert",
+  PRIMARY_CERT_TYPE,
 ]);
 
 function docReliable(d: DocumentRecord): boolean {
@@ -149,13 +147,9 @@ function flattenNodes(set: AdmissionRuleSet): { nodes: AdmissionRuleSet["nodes"]
  * admission.
  */
 export function autoAdmitPolicy(repo: Repo, applicantId: number, category?: string): boolean {
-  const a = repo.getApplicant(applicantId);
-  if (!a) return false;
-  const profile = repo.caseTypeForCase(applicantId);
-  if (!profile || profile.education_module !== 1 || profile.auto_admit !== 1) return false;
-  const reply = profile.default_reply_action ?? "draft";
-  if (reply === "draft" || reply === "hold") return false;
-  return repo.automationMode(category ?? a.category ?? "normal") === "auto";
+  // Routing pre-check — delegates to the single enforcement point in
+  // src/decisions.ts (Repo.recordDecision re-checks it before landing).
+  return autoDecisionsAllowed(repo, applicantId, category);
 }
 
 /**
@@ -176,7 +170,7 @@ export function evaluateAdmission(
   extraFlags: Array<{ type: string; detail: string }> = [],
   options: { autoAdmit?: boolean } = {}
 ): AdmissionEvaluation {
-  const a = repo.getApplicant(applicantId)!;
+  const a = repo.requireApplicant(applicantId);
   const docs = repo.listDocuments(applicantId, { activeOnly: true });
   const derivedFlags: DerivedFlag[] = [];
 
@@ -276,7 +270,7 @@ export function evaluateAdmission(
   // academic_cert fallback. Grades ride on whichever of them carries fields.
   // E5: only the GENERIC academic_cert is "could be anything" — an
   // unidentified generic certificate is a potential conflicting route, so it
-  // withholds auto-admission. Specifically-typed companions (the KCPE
+  // withholds auto-admission. Specifically-typed companions (the primary
   // certificate, a degree certificate, a transcript…) are checklist items,
   // not entry routes, and their unreadability surfaces through the
   // document-level confidence machinery instead.
@@ -313,10 +307,10 @@ export function evaluateAdmission(
   }
 
   // ── Step 3 — the frozen requirement sets (goalposts never move). ──────────
-  const frozen = repo.freezeAdmissionSets(repo.getApplicant(applicantId)!);
+  const frozen = repo.freezeAdmissionSets(repo.requireApplicant(applicantId));
   // E1: the real freeze time, recorded on the applicant row at first freeze
   // (COALESCE keeps the FIRST freeze if the snapshot is ever re-written).
-  base.frozenAt = repo.getApplicant(applicantId)!.admission_rules_frozen_at ?? null;
+  base.frozenAt = repo.requireApplicant(applicantId).admission_rules_frozen_at ?? null;
   const candidateSets: AdmissionRuleSet[] = [];
   for (const { systems } of identified) {
     for (const s of systems) {

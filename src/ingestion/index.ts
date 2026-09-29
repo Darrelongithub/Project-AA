@@ -13,8 +13,22 @@
 import type { ProcessResult } from "../types";
 import { processEmail, type PipelineOptions } from "../pipeline";
 import type { PipelineContext } from "../pipeline/adapters";
+import type { Repo } from "../db/repo";
 import { log } from "../util/log";
 import { EmailTooLargeError, type GmailClient } from "./gmailClient";
+
+/**
+ * ST-P12: org attribution for a failed message — the sender's case org when
+ * the lookup found a case, else NULL (fetch failures, unknown senders,
+ * deleted cases). The lookup itself stays at the call site (its result is
+ * shared with the error event); this helper only resolves org from it so
+ * the NULL convention is pinned in one place. NULL = unattributable = shown
+ * in no org's console (same convention as error_events).
+ */
+export function resolveFailureOrg(repo: Repo, senderCaseId: number | undefined): number | null {
+  if (senderCaseId === undefined) return null;
+  return repo.getApplicant(senderCaseId)?.organization_id ?? null;
+}
 
 export async function ingestNewEmails(
   gmail: GmailClient,
@@ -57,6 +71,9 @@ export async function ingestNewEmails(
         continue;
       }
       const dl = repo.recordDeadLetter({ message_id: id, subject: "", from_addr: "", error: msg });
+      // Phase 12: persist for the console (org unknown at fetch time — the
+      // row stays unattributable until a case exists for the sender).
+      repo.recordErrorEvent({ source: "ingest", request: id, message: msg, detail: `fetch failed (attempt ${dl.attempts})` });
       if (dl.dead) {
         repo.notify("review_needed", `Message ${id} failed ${dl.attempts} times and was parked: ${msg.slice(0, 200)}`, null);
         log(`ingestion: ${id} dead-lettered after ${dl.attempts} attempts — ${msg}`, "error");
@@ -75,11 +92,25 @@ export async function ingestNewEmails(
       // One poison email (constraint race, pathological PDF, DB hiccup) must
       // not kill the rest of the batch — and it must not vanish either.
       const msg = (e as Error).message || String(e);
+      // ST-P12: attribute to the sender's org when a case exists (same
+      // lookup-only rule as the error event below — failure paths never
+      // create cases). Fetch failures stay NULL: org is unknowable there.
+      const senderCaseId = repo.findApplicantId(email.from, email.threadId);
       const dl = repo.recordDeadLetter({
         message_id: email.id,
         subject: email.subject,
         from_addr: email.from,
         error: msg,
+        organization_id: resolveFailureOrg(repo, senderCaseId),
+      });
+      // Phase 12: attribute to the sender's case when one exists (lookup
+      // only — error paths never create cases).
+      repo.recordErrorEvent({
+        source: "ingest",
+        applicant_id: senderCaseId ?? null,
+        request: email.id,
+        message: msg,
+        detail: `processing failed (attempt ${dl.attempts}): ${email.subject}`,
       });
       if (dl.dead) {
         repo.notify(

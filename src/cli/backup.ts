@@ -16,7 +16,10 @@ if (!fs.existsSync(dbFile)) {
 
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const outDir = path.resolve(process.env.BACKUP_DIR || "./backups");
-fs.mkdirSync(outDir, { recursive: true });
+// A backup is a full PII copy: same 0700/0600 rule as the retention
+// archive (mkdir mode applies at creation only, so enforce every run).
+fs.mkdirSync(outDir, { recursive: true, mode: 0o700 });
+fs.chmodSync(outDir, 0o700);
 const outFile = path.join(outDir, `email-sorter-${stamp}.sqlite`);
 
 // SQLite's online backup API — an atomic, consistent copy even while the
@@ -26,6 +29,7 @@ async function main(): Promise<void> {
   const db = openDb(cfg.dbPath);
   try {
     await db.backup(outFile);
+    fs.chmodSync(outFile, 0o600);
   } finally {
     db.close();
   }

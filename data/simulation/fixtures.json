@@ -1,0 +1,1852 @@
+[
+  {
+    "description": "Complete clean set in one email → Green, auto acknowledgement.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "alice-academic.pdf",
+            "name": "ALICE WANJIKU KAMAU",
+            "spec": {
+              "secondaryMeanGrade": "B-"
+            }
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "alice-kcpe.pdf",
+            "name": "ALICE WANJIKU KAMAU",
+            "spec": {
+              "meanGrade": "B",
+              "primaryPoints": 312,
+              "year": "2017"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "alice-id.pdf",
+            "name": "ALICE WANJIKU KAMAU",
+            "spec": {
+              "idNumber": "23456789"
+            }
+          },
+          {
+            "docType": "birth_cert",
+            "filename": "alice-birth.pdf",
+            "name": "ALICE WANJIKU KAMAU"
+          },
+          {
+            "docType": "application_form",
+            "filename": "alice-form.pdf",
+            "name": "ALICE WANJIKU KAMAU",
+            "spec": {
+              "programme": "BSC COMPUTER SCIENCE"
+            }
+          },
+          {
+            "checklist": {
+              "birth": false,
+              "name": "ALICE WANJIKU KAMAU",
+              "prefix": "alice"
+            }
+          }
+        ],
+        "body": "Hello, please find attached all my application documents for BSc Computer Science, September 2026 intake. Thank you.",
+        "from": "alice.kamau@student.example.org",
+        "fromName": "Alice Kamau",
+        "id": "email-alice-1",
+        "receivedAt": "2026-09-14T09:00:00Z",
+        "subject": "Application documents — Alice Kamau",
+        "threadId": "thread-alice"
+      }
+    ],
+    "expected": {
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "alice-clean"
+  },
+  {
+    "description": "Applying for BSc Computer Science with a C in Mathematics — below the published C+ in Mathematics/Physics → flag + human review (never auto-rejected).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "brian-academic.pdf",
+            "name": "BRIAN KIPROTICH RUTO",
+            "spec": {
+              "secondaryMeanGrade": "C",
+              "subjects": {
+                "ENGLISH": "B",
+                "KISWAHILI": "B",
+                "MATHEMATICS": "C",
+                "PHYSICS": "C",
+                "CHEMISTRY": "C-",
+                "BIOLOGY": "C"
+              }
+            }
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "brian-kcpe.pdf",
+            "name": "BRIAN KIPROTICH RUTO",
+            "spec": {
+              "meanGrade": "C",
+              "primaryPoints": 240,
+              "year": "2016"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "brian-id.pdf",
+            "name": "BRIAN KIPROTICH RUTO",
+            "spec": {
+              "idNumber": "30112233"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "brian-form.pdf",
+            "name": "BRIAN KIPROTICH RUTO",
+            "spec": {
+              "programme": "BSC COMPUTER SCIENCE"
+            }
+          },
+          {
+            "checklist": {
+              "name": "BRIAN KIPROTICH RUTO",
+              "prefix": "brian"
+            }
+          }
+        ],
+        "body": "Attached are my documents for the September intake.",
+        "from": "brian.ruto@student.example.org",
+        "fromName": "Brian Ruto",
+        "id": "email-brian-1",
+        "receivedAt": "2026-09-14T10:00:00Z",
+        "subject": "My application documents",
+        "threadId": "thread-brian"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Orange",
+      "flagTypes": [
+        "grade_below_requirement"
+      ],
+      "lifecycle": "awaiting_review",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "brian-grades-below"
+  },
+  {
+    "description": "Missing National ID → factual auto notice listing exactly what's missing.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "carol-academic.pdf",
+            "name": "CAROL NJERI MAINA"
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "carol-kcpe.pdf",
+            "name": "CAROL NJERI MAINA",
+            "spec": {
+              "primaryPoints": 298,
+              "year": "2015"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "carol-form.pdf",
+            "name": "CAROL NJERI MAINA"
+          },
+          {
+            "checklist": {
+              "name": "CAROL NJERI MAINA",
+              "prefix": "carol"
+            }
+          }
+        ],
+        "body": "Please find my attached application documents.",
+        "from": "carol.maina@student.example.org",
+        "fromName": "Carol Maina",
+        "id": "email-carol-1",
+        "receivedAt": "2026-09-14T11:00:00Z",
+        "subject": "Application documents",
+        "threadId": "thread-carol"
+      }
+    ],
+    "expected": {
+      "autoKind": "missing_docs",
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Red",
+      "flagTypes": [],
+      "lifecycle": "documents_received",
+      "missing": [
+        "id"
+      ],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "carol-missing-id"
+  },
+  {
+    "description": "Incomplete first email (auto missing-docs notice), ID arrives later → Green auto-ack.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "daniel-academic.pdf",
+            "name": "DANIEL OTIENO AYIERO"
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "daniel-kcpe.pdf",
+            "name": "DANIEL OTIENO AYIERO",
+            "spec": {
+              "primaryPoints": 355,
+              "year": "2014"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "daniel-form.pdf",
+            "name": "DANIEL OTIENO AYIERO"
+          },
+          {
+            "checklist": {
+              "name": "DANIEL OTIENO AYIERO",
+              "prefix": "daniel"
+            }
+          }
+        ],
+        "body": "Sending my certificates now; my ID copy will follow shortly.",
+        "from": "daniel.ayiero@student.example.org",
+        "fromName": "Daniel Ayiero",
+        "id": "email-daniel-1",
+        "receivedAt": "2026-09-14T12:00:00Z",
+        "subject": "Application documents (part 1)",
+        "threadId": "thread-daniel"
+      },
+      {
+        "attachments": [
+          {
+            "docType": "id",
+            "filename": "daniel-id.pdf",
+            "name": "DANIEL OTIENO AYIERO",
+            "spec": {
+              "idNumber": "28776655"
+            }
+          }
+        ],
+        "body": "As promised, here is my national ID.",
+        "from": "daniel.ayiero@student.example.org",
+        "fromName": "Daniel Ayiero",
+        "id": "email-daniel-2",
+        "receivedAt": "2026-09-15T08:30:00Z",
+        "subject": "Re: Application documents (part 1)",
+        "threadId": "thread-daniel"
+      }
+    ],
+    "expected": {
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "daniel-two-emails"
+  },
+  {
+    "description": "Name mismatch → Orange; corrected form supersedes the old one → Green.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "esther-academic.pdf",
+            "name": "ESTHER WAIRIMU MUTUA"
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "esther-kcpe.pdf",
+            "name": "ESTHER WAIRIMU MUTUA",
+            "spec": {
+              "primaryPoints": 330,
+              "year": "2016"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "esther-id.pdf",
+            "name": "ESTHER WAIRIMU MUTUA",
+            "spec": {
+              "idNumber": "31224466"
+            }
+          },
+          {
+            "docType": "birth_cert",
+            "filename": "esther-birth.pdf",
+            "name": "ESTHER WAIRIMU MUTUA"
+          },
+          {
+            "docType": "application_form",
+            "filename": "esther-form.pdf",
+            "name": "ESTHER MUTUA"
+          },
+          {
+            "checklist": {
+              "birth": false,
+              "name": "ESTHER WAIRIMU MUTUA",
+              "prefix": "esther"
+            }
+          }
+        ],
+        "body": "All my documents are attached.",
+        "from": "esther.mutua@student.example.org",
+        "fromName": "Esther Mutua",
+        "id": "email-esther-1",
+        "receivedAt": "2026-09-14T13:00:00Z",
+        "subject": "Application documents",
+        "threadId": "thread-esther"
+      },
+      {
+        "attachments": [
+          {
+            "docType": "application_form",
+            "filename": "esther-form-v2.pdf",
+            "name": "ESTHER WAIRIMU MUTUA"
+          }
+        ],
+        "body": "So sorry — I noticed my middle name was missing on the form. Please use this corrected version instead.",
+        "from": "esther.mutua@student.example.org",
+        "fromName": "Esther Mutua",
+        "id": "email-esther-2",
+        "receivedAt": "2026-09-15T09:15:00Z",
+        "subject": "Re: Application documents",
+        "threadId": "thread-esther"
+      }
+    ],
+    "expected": {
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 1
+    },
+    "name": "esther-correction"
+  },
+  {
+    "description": "Names disagree across documents → Orange + name_mismatch flag; the contradicting document is capped below the auto-pass line (low_confidence reason code).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "frank-academic.pdf",
+            "name": "FRANK OCHIENG"
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "frank-kcpe.pdf",
+            "name": "FRANK OCHIENG",
+            "spec": {
+              "primaryPoints": 276,
+              "year": "2015"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "frank-id.pdf",
+            "name": "FRANK ODHIAMBO",
+            "spec": {
+              "idNumber": "27654321"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "frank-form.pdf",
+            "name": "FRANK OCHIENG"
+          },
+          {
+            "checklist": {
+              "name": "FRANK OCHIENG",
+              "prefix": "frank"
+            }
+          }
+        ],
+        "body": "Attached please.",
+        "from": "frank.ochieng@student.example.org",
+        "fromName": "Frank Ochieng",
+        "id": "email-frank-1",
+        "receivedAt": "2026-09-14T14:00:00Z",
+        "subject": "Documents for admission",
+        "threadId": "thread-frank"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Orange",
+      "flagTypes": [
+        "low_confidence",
+        "name_mismatch"
+      ],
+      "lifecycle": "awaiting_review",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "frank-name-mismatch"
+  },
+  {
+    "description": "Scanned (image-only) KCPE certificate → OCR reads every critical field; confidence v2 (good fields + consistent names + mechanical read) trusts it → auto-admitted.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "grace-academic.pdf",
+            "name": "GRACE AKINYI OTIENO"
+          },
+          {
+            "customLinesFrom": {
+              "docType": "kcpe_cert",
+              "name": "GRACE AKINYI OTIENO",
+              "spec": {
+                "primaryPoints": 289,
+                "year": "2019"
+              }
+            },
+            "filename": "grace-kcpe.pdf",
+            "mockVision": {
+              "confidence": "medium",
+              "document_type": "kcpe_cert",
+              "fields": {
+                "gradePoints": 289,
+                "meanGrade": "B",
+                "name": "GRACE AKINYI OTIENO"
+              },
+              "textFrom": "customLines"
+            },
+            "scanned": true
+          },
+          {
+            "docType": "id",
+            "filename": "grace-id.pdf",
+            "name": "GRACE AKINYI OTIENO",
+            "spec": {
+              "idNumber": "33445566"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "grace-form.pdf",
+            "name": "GRACE AKINYI OTIENO"
+          },
+          {
+            "checklist": {
+              "name": "GRACE AKINYI OTIENO",
+              "prefix": "grace"
+            }
+          }
+        ],
+        "body": "My documents are attached. The KCPE certificate is a scan, apologies for the quality.",
+        "from": "grace.otieno@student.example.org",
+        "fromName": "Grace Otieno",
+        "id": "email-grace-1",
+        "receivedAt": "2026-09-14T15:00:00Z",
+        "subject": "Application attachments",
+        "threadId": "thread-grace"
+      }
+    ],
+    "expected": {
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "grace-scanned-kcpe"
+  },
+  {
+    "description": "Inquiry with no attachments → education triage holds it for a human reply (rule_enquiry_triage) — a question never triggers an automated send or a decision.",
+    "emails": [
+      {
+        "attachments": [],
+        "body": "Hi, I would like to apply for the September intake. What documents do you need from me?",
+        "from": "henry.kalu@student.example.org",
+        "fromName": "Henry Kalu",
+        "id": "email-henry-1",
+        "receivedAt": "2026-09-14T16:00:00Z",
+        "subject": "Admission enquiry",
+        "threadId": "thread-henry"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "admission_enquiry",
+      "duplicates": 0,
+      "finalStatus": "Red",
+      "flagTypes": [],
+      "lifecycle": "application_received",
+      "missing": [
+        "application_form",
+        "birth_cert",
+        "exam_result_slip",
+        "id",
+        "leaving_certificate",
+        "passport_photo"
+      ],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "henry-inquiry"
+  },
+  {
+    "description": "Passes the rules engine, but a document is a specimen → watcher downgrades to Red.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "ivy-academic.pdf",
+            "name": "IVY CHEBET KOSGEI",
+            "spec": {
+              "extraLines": [
+                "SPECIMEN - SAMPLE COPY NOT VALID"
+              ]
+            }
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "ivy-kcpe.pdf",
+            "name": "IVY CHEBET KOSGEI",
+            "spec": {
+              "primaryPoints": 342,
+              "year": "2018"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "ivy-id.pdf",
+            "name": "IVY CHEBET KOSGEI",
+            "spec": {
+              "idNumber": "35566778"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "ivy-form.pdf",
+            "name": "IVY CHEBET KOSGEI"
+          },
+          {
+            "checklist": {
+              "name": "IVY CHEBET KOSGEI",
+              "prefix": "ivy"
+            }
+          }
+        ],
+        "body": "Please find attached my complete set of documents.",
+        "from": "ivy.kosgei@student.example.org",
+        "fromName": "Ivy Kosgei",
+        "id": "email-ivy-1",
+        "receivedAt": "2026-09-14T17:00:00Z",
+        "subject": "Application documents",
+        "threadId": "thread-ivy"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Red",
+      "flagTypes": [
+        "watcher_flag"
+      ],
+      "lifecycle": "awaiting_review",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "ivy-specimen"
+  },
+  {
+    "description": "Complete set plus an unrecognized PDF (a shopping list) → Orange with a wrong_document flag, a human looks at the odd file.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "judy-academic.pdf",
+            "name": "JUDY WAMBUI NYAGA"
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "judy-kcpe.pdf",
+            "name": "JUDY WAMBUI NYAGA",
+            "spec": {
+              "primaryPoints": 301,
+              "year": "2017"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "judy-id.pdf",
+            "name": "JUDY WAMBUI NYAGA",
+            "spec": {
+              "idNumber": "29887766"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "judy-form.pdf",
+            "name": "JUDY WAMBUI NYAGA"
+          },
+          {
+            "customLines": [
+              "WEEKLY MARKET LIST",
+              "TOMATOES, ONIONS, SUKUMA WIKI",
+              "MILK, BREAD, EGGS",
+              "COOKING OIL, RICE FLOUR"
+            ],
+            "filename": "judy-shopping-list.pdf"
+          },
+          {
+            "checklist": {
+              "name": "JUDY WAMBUI NYAGA",
+              "prefix": "judy"
+            }
+          }
+        ],
+        "body": "Documents attached. Oops, I think I also attached my shopping list by mistake.",
+        "from": "judy.nyaga@student.example.org",
+        "fromName": "Judy Nyaga",
+        "id": "email-judy-1",
+        "receivedAt": "2026-09-14T18:00:00Z",
+        "subject": "Application documents + oops",
+        "threadId": "thread-judy"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Orange",
+      "flagTypes": [
+        "low_confidence",
+        "wrong_document"
+      ],
+      "lifecycle": "awaiting_review",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "judy-unknown-attachment"
+  },
+  {
+    "description": "Same ID file sent twice → recognised as a duplicate, file stays Green → auto-admitted like any clean file (admission letter sent).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "kevin-academic.pdf",
+            "name": "KEVIN MWANGI NJOROGE"
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "kevin-kcpe.pdf",
+            "name": "KEVIN MWANGI NJOROGE",
+            "spec": {
+              "primaryPoints": 298,
+              "year": "2016"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "kevin-id.pdf",
+            "name": "KEVIN MWANGI NJOROGE",
+            "spec": {
+              "idNumber": "26677889"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "kevin-form.pdf",
+            "name": "KEVIN MWANGI NJOROGE"
+          },
+          {
+            "checklist": {
+              "name": "KEVIN MWANGI NJOROGE",
+              "prefix": "kevin"
+            }
+          }
+        ],
+        "body": "All documents attached.",
+        "from": "kevin.njoroge@student.example.org",
+        "fromName": "Kevin Njoroge",
+        "id": "email-kevin-1",
+        "receivedAt": "2026-09-14T19:00:00Z",
+        "subject": "Application documents",
+        "threadId": "thread-kevin"
+      },
+      {
+        "attachments": [
+          {
+            "contentFrom": "kevin-id.pdf",
+            "docType": "id",
+            "filename": "kevin-id-again.pdf",
+            "name": "KEVIN MWANGI NJOROGE"
+          }
+        ],
+        "body": "Sorry, sending my ID again in case it did not go through the first time.",
+        "from": "kevin.njoroge@student.example.org",
+        "fromName": "Kevin Njoroge",
+        "id": "email-kevin-2",
+        "receivedAt": "2026-09-15T07:45:00Z",
+        "subject": "Re: Application documents",
+        "threadId": "thread-kevin"
+      }
+    ],
+    "expected": {
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "document_submission",
+      "duplicates": 1,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "kevin-duplicate"
+  },
+  {
+    "description": "OCHIMI vs OCHIEMI — a one-letter typo variant → fuzzy name_mismatch → human confirms.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "lucy-academic.pdf",
+            "name": "LUCY OCHIMI"
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "lucy-kcpe.pdf",
+            "name": "LUCY OCHIMI",
+            "spec": {
+              "primaryPoints": 305,
+              "year": "2017"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "lucy-id.pdf",
+            "name": "LUCY OCHIEMI",
+            "spec": {
+              "idNumber": "30998877"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "lucy-form.pdf",
+            "name": "LUCY OCHIMI"
+          },
+          {
+            "checklist": {
+              "name": "LUCY OCHIMI",
+              "prefix": "lucy"
+            }
+          }
+        ],
+        "body": "Please see my attached application documents.",
+        "from": "lucy.ochimi@student.example.org",
+        "fromName": "Lucy Ochimi",
+        "id": "email-lucy-1",
+        "receivedAt": "2026-09-14T20:00:00Z",
+        "subject": "Application documents attached",
+        "threadId": "thread-lucy"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Orange",
+      "flagTypes": [
+        "low_confidence",
+        "name_mismatch"
+      ],
+      "lifecycle": "awaiting_review",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "lucy-fuzzy-name"
+  },
+  {
+    "description": "Complaint email → categorised, priority raised to high, held for a human (rule_complaint) — never an automated reply or decision.",
+    "emails": [
+      {
+        "attachments": [],
+        "body": "I have been trying to reach your office for weeks and nobody responds. This is unacceptable. I want to apply for BCS in the September 2026 intake. My phone is 0712 345 678.",
+        "from": "mary.adhiambo@student.example.org",
+        "fromName": "Mary Adhiambo",
+        "id": "email-mary-1",
+        "receivedAt": "2026-09-15T10:00:00Z",
+        "subject": "Nobody is responding to me",
+        "threadId": "thread-mary"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "complaint",
+      "duplicates": 0,
+      "finalStatus": "Red",
+      "flagTypes": [],
+      "lifecycle": "application_received",
+      "missing": [
+        "application_form",
+        "birth_cert",
+        "exam_result_slip",
+        "id",
+        "leaving_certificate",
+        "passport_photo"
+      ],
+      "priority": "high",
+      "superseded": 0
+    },
+    "name": "mary-complaint"
+  },
+  {
+    "description": "Same sender starts a NEW thread with the remaining document → attaches to the same case, Green.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "peter-academic.pdf",
+            "name": "PETER MWANGI NJOROGE",
+            "spec": {
+              "secondaryMeanGrade": "B"
+            }
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "peter-kcpe.pdf",
+            "name": "PETER MWANGI NJOROGE",
+            "spec": {
+              "meanGrade": "B+",
+              "primaryPoints": 330,
+              "year": "2016"
+            }
+          },
+          {
+            "docType": "birth_cert",
+            "filename": "peter-birth.pdf",
+            "name": "PETER MWANGI NJOROGE"
+          },
+          {
+            "docType": "application_form",
+            "filename": "peter-form.pdf",
+            "name": "PETER MWANGI NJOROGE"
+          },
+          {
+            "checklist": {
+              "birth": false,
+              "name": "PETER MWANGI NJOROGE",
+              "prefix": "peter"
+            }
+          }
+        ],
+        "body": "Please find attached my documents for the September 2026 intake.",
+        "from": "peter.njoroge@student.example.org",
+        "fromName": "Peter Njoroge",
+        "id": "email-peter-1",
+        "receivedAt": "2026-09-15T11:00:00Z",
+        "subject": "My application documents",
+        "threadId": "thread-peter-a"
+      },
+      {
+        "attachments": [
+          {
+            "docType": "id",
+            "filename": "peter-id.pdf",
+            "name": "PETER MWANGI NJOROGE",
+            "spec": {
+              "idNumber": "28811334"
+            }
+          }
+        ],
+        "body": "So sorry, I forgot to attach my national ID yesterday. It is attached here.",
+        "from": "peter.njoroge@student.example.org",
+        "fromName": "Peter Njoroge",
+        "id": "email-peter-2",
+        "receivedAt": "2026-09-16T08:00:00Z",
+        "subject": "Forgot my ID — here it is",
+        "threadId": "thread-peter-b"
+      }
+    ],
+    "expected": {
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "peter-crossthread"
+  },
+  {
+    "before": [
+      {
+        "email": "quinn.otieno@student.example.org",
+        "fullName": "Quinn Otieno",
+        "op": "getOrCreateApplicant",
+        "threadId": "thread-quinn-1"
+      }
+    ],
+    "description": "A third party quotes the ref number → attached to the right case, but flagged for identity verification.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "quinn-academic.pdf",
+            "name": "QUINN ACHIENG OTIENO",
+            "spec": {
+              "secondaryMeanGrade": "B"
+            }
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "quinn-kcpe.pdf",
+            "name": "QUINN ACHIENG OTIENO",
+            "spec": {
+              "meanGrade": "A-",
+              "primaryPoints": 340,
+              "year": "2016"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "quinn-id.pdf",
+            "name": "QUINN ACHIENG OTIENO",
+            "spec": {
+              "idNumber": "31002244"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "quinn-form.pdf",
+            "name": "QUINN ACHIENG OTIENO"
+          },
+          {
+            "checklist": {
+              "birth": false,
+              "name": "QUINN ACHIENG OTIENO",
+              "prefix": "quinn"
+            }
+          }
+        ],
+        "body": "Please find attached my application documents.",
+        "from": "quinn.otieno@student.example.org",
+        "fromName": "Quinn Otieno",
+        "id": "email-quinn-1",
+        "receivedAt": "2026-09-15T12:00:00Z",
+        "subject": "Application documents",
+        "threadId": "thread-quinn-1"
+      },
+      {
+        "attachments": [
+          {
+            "docType": "birth_cert",
+            "filename": "quinn-birth.pdf",
+            "name": "QUINN ACHIENG OTIENO"
+          }
+        ],
+        "body": "I am sending the remaining certificate on behalf of my niece, reference {ref}.",
+        "from": "quinn.aunt@example.org",
+        "fromName": "Quinn's Aunt",
+        "id": "email-quinn-2",
+        "receivedAt": "2026-09-15T15:00:00Z",
+        "subject": "Documents for {ref}",
+        "threadId": "thread-quinn-aunt"
+      }
+    ],
+    "expected": {
+      "audited": [
+        "identity_concern",
+        "identity_matched"
+      ],
+      "autoKind": null,
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Orange",
+      "flagTypes": [
+        "identity_check"
+      ],
+      "lifecycle": "awaiting_review",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "quinn-ref-crosssender",
+    "refLookup": {
+      "email": "quinn.otieno@student.example.org"
+    }
+  },
+  {
+    "after": [
+      {
+        "deadline": null,
+        "intake": "September 2026",
+        "op": "setIntakeDeadline"
+      }
+    ],
+    "before": [
+      {
+        "deadline": "2026-08-31",
+        "intake": "September 2026",
+        "op": "setIntakeDeadline"
+      }
+    ],
+    "description": "Complete set arrives AFTER the intake deadline → late_submission flag, human decides.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "rosa-academic.pdf",
+            "name": "ROSA WAMBUI GITHINJI",
+            "spec": {
+              "secondaryMeanGrade": "B+"
+            }
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "rosa-kcpe.pdf",
+            "name": "ROSA WAMBUI GITHINJI",
+            "spec": {
+              "meanGrade": "A-",
+              "primaryPoints": 355,
+              "year": "2016"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "rosa-id.pdf",
+            "name": "ROSA WAMBUI GITHINJI",
+            "spec": {
+              "idNumber": "29775511"
+            }
+          },
+          {
+            "docType": "birth_cert",
+            "filename": "rosa-birth.pdf",
+            "name": "ROSA WAMBUI GITHINJI"
+          },
+          {
+            "docType": "application_form",
+            "filename": "rosa-form.pdf",
+            "name": "ROSA WAMBUI GITHINJI"
+          },
+          {
+            "checklist": {
+              "birth": false,
+              "name": "ROSA WAMBUI GITHINJI",
+              "prefix": "rosa"
+            }
+          }
+        ],
+        "body": "Please accept my documents for the September 2026 intake. I know the deadline has passed — I beg you to consider me.",
+        "from": "rosa.githinji@student.example.org",
+        "fromName": "Rosa Githinji",
+        "id": "email-rosa-1",
+        "receivedAt": "2026-09-15T13:00:00Z",
+        "subject": "Application documents",
+        "threadId": "thread-rosa"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Orange",
+      "flagTypes": [
+        "late_submission"
+      ],
+      "lifecycle": "awaiting_review",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "rosa-late-deadline"
+  },
+  {
+    "description": "KCPE certificate dated after the KCSE certificate → anomaly flag, human verification (never an auto-verdict).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "sam-academic.pdf",
+            "name": "SAM KIPKOECH CHERUIYOT",
+            "spec": {
+              "secondaryMeanGrade": "B",
+              "year": "2021"
+            }
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "sam-kcpe.pdf",
+            "name": "SAM KIPKOECH CHERUIYOT",
+            "spec": {
+              "meanGrade": "B+",
+              "primaryPoints": 320,
+              "year": "2022"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "sam-id.pdf",
+            "name": "SAM KIPKOECH CHERUIYOT",
+            "spec": {
+              "idNumber": "30554421"
+            }
+          },
+          {
+            "docType": "birth_cert",
+            "filename": "sam-birth.pdf",
+            "name": "SAM KIPKOECH CHERUIYOT"
+          },
+          {
+            "docType": "application_form",
+            "filename": "sam-form.pdf",
+            "name": "SAM KIPKOECH CHERUIYOT"
+          },
+          {
+            "checklist": {
+              "birth": false,
+              "name": "SAM KIPKOECH CHERUIYOT",
+              "prefix": "sam"
+            }
+          }
+        ],
+        "body": "Please find attached all my documents.",
+        "from": "sam.cheruiyot@student.example.org",
+        "fromName": "Sam Cheruiyot",
+        "id": "email-sam-1",
+        "receivedAt": "2026-09-15T14:00:00Z",
+        "subject": "Application documents",
+        "threadId": "thread-sam"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Orange",
+      "flagTypes": [
+        "anomaly"
+      ],
+      "lifecycle": "awaiting_review",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "sam-date-anomaly"
+  },
+  {
+    "after": [
+      {
+        "category": "document_submission",
+        "mode": "auto",
+        "op": "setAutomationMode"
+      }
+    ],
+    "before": [
+      {
+        "category": "document_submission",
+        "mode": "draft",
+        "op": "setAutomationMode"
+      }
+    ],
+    "description": "Draft-for-approval mode on document_submission → Green verdict but the reply is held for staff approval.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "tina-academic.pdf",
+            "name": "TINA NYAMBURA KARIUKI",
+            "spec": {
+              "secondaryMeanGrade": "A-"
+            }
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "tina-kcpe.pdf",
+            "name": "TINA NYAMBURA KARIUKI",
+            "spec": {
+              "meanGrade": "A",
+              "primaryPoints": 380,
+              "year": "2016"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "tina-id.pdf",
+            "name": "TINA NYAMBURA KARIUKI",
+            "spec": {
+              "idNumber": "31220099"
+            }
+          },
+          {
+            "docType": "birth_cert",
+            "filename": "tina-birth.pdf",
+            "name": "TINA NYAMBURA KARIUKI"
+          },
+          {
+            "docType": "application_form",
+            "filename": "tina-form.pdf",
+            "name": "TINA NYAMBURA KARIUKI"
+          },
+          {
+            "checklist": {
+              "birth": false,
+              "name": "TINA NYAMBURA KARIUKI",
+              "prefix": "tina"
+            }
+          }
+        ],
+        "body": "Please find attached my complete application documents.",
+        "from": "tina.kariuki@student.example.org",
+        "fromName": "Tina Kariuki",
+        "id": "email-tina-1",
+        "receivedAt": "2026-09-15T15:00:00Z",
+        "subject": "Application documents",
+        "threadId": "thread-tina"
+      }
+    ],
+    "expected": {
+      "audited": [
+        "automation_held"
+      ],
+      "autoKind": "ack",
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "documents_received",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "tina-draft-first"
+  },
+  {
+    "beforeEmail": {
+      "at": 1,
+      "ops": [
+        {
+          "by": "manager",
+          "email": "uma.wanjiru@student.example.org",
+          "note": "simulation: staff completed the case",
+          "op": "completeCaseByEmail"
+        }
+      ]
+    },
+    "description": "Completed applicant submits a corrected certificate from a new thread → existing case reopens (no duplicate applicant); the corrected file re-verifies and the case auto-admits again.",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "uma-academic.pdf",
+            "name": "UMA WANJIRU MUTURI",
+            "spec": {
+              "secondaryMeanGrade": "B+"
+            }
+          },
+          {
+            "docType": "kcpe_cert",
+            "filename": "uma-kcpe.pdf",
+            "name": "UMA WANJIRU MUTURI",
+            "spec": {
+              "meanGrade": "A-",
+              "primaryPoints": 345,
+              "year": "2016"
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "uma-id.pdf",
+            "name": "UMA WANJIRU MUTURI",
+            "spec": {
+              "idNumber": "27664455"
+            }
+          },
+          {
+            "docType": "birth_cert",
+            "filename": "uma-birth.pdf",
+            "name": "UMA WANJIRU MUTURI"
+          },
+          {
+            "docType": "application_form",
+            "filename": "uma-form.pdf",
+            "name": "UMA WANJIRU MUTURI"
+          },
+          {
+            "checklist": {
+              "birth": false,
+              "name": "UMA WANJIRU MUTURI",
+              "prefix": "uma"
+            }
+          }
+        ],
+        "body": "Please find attached my complete application documents.",
+        "from": "uma.wanjiru@student.example.org",
+        "fromName": "Uma Wanjiru",
+        "id": "email-uma-1",
+        "receivedAt": "2026-09-15T16:00:00Z",
+        "subject": "Application documents",
+        "threadId": "thread-uma-a"
+      },
+      {
+        "attachments": [
+          {
+            "docType": "kcpe_cert",
+            "filename": "uma-kcpe-corrected.pdf",
+            "name": "UMA WANJIRU MUTURI",
+            "spec": {
+              "meanGrade": "A-",
+              "primaryPoints": 349,
+              "year": "2016"
+            }
+          }
+        ],
+        "body": "I just received a corrected copy of my KCPE certificate. Please replace the old one with this.",
+        "from": "uma.wanjiru@student.example.org",
+        "fromName": "Uma Wanjiru",
+        "id": "email-uma-2",
+        "receivedAt": "2026-09-16T09:00:00Z",
+        "subject": "Correction to my certificate",
+        "threadId": "thread-uma-b"
+      }
+    ],
+    "expected": {
+      "audited": [
+        "case_reopened"
+      ],
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 1
+    },
+    "name": "uma-reopen"
+  },
+  {
+    "description": "IGCSE applicant for BBA with 6 passes at C or better → meets the 5-credit route → auto-admitted (admission letter sent).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "igcse-ok-results.pdf",
+            "name": "WANJIRU IGCS APPLICANT",
+            "spec": {
+              "examSystem": "IGCSE",
+              "subjects": {
+                "ENGLISH": "C",
+                "MATHEMATICS": "B",
+                "BIOLOGY": "C",
+                "CHEMISTRY": "C",
+                "HISTORY": "C",
+                "ECONOMICS": "B"
+              }
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "igcse-ok-id.pdf",
+            "name": "WANJIRU IGCS APPLICANT",
+            "spec": {
+              "idNumber": "33110022"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "igcse-ok-form.pdf",
+            "name": "WANJIRU IGCS APPLICANT",
+            "spec": {
+              "programme": "BACHELOR OF BUSINESS ADMINISTRATION"
+            }
+          },
+          {
+            "docType": "business_statement_of_objective",
+            "filename": "igcse-ok-soo.pdf",
+            "name": "WANJIRU IGCS APPLICANT"
+          },
+          {
+            "checklist": {
+              "name": "WANJIRU IGCS APPLICANT",
+              "prefix": "igcse-ok"
+            }
+          }
+        ],
+        "body": "Please find attached my IGCSE results and application form.",
+        "from": "wanjiru.igcse@student.example.org",
+        "fromName": "Wanjiru Igcse",
+        "id": "email-igcse-ok-1",
+        "receivedAt": "2026-09-15T09:00:00Z",
+        "subject": "Application documents",
+        "threadId": "thread-igcse-ok"
+      }
+    ],
+    "expected": {
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "igcse-qualified-bba"
+  },
+  {
+    "description": "IGCSE with only 4 passes at C or better — fails the 5-credit route, but the KCSE-tagged leaving certificate is unreadable → E4: an unread route beats a confirmed failure, so the case goes to verification (low-confidence flags) rather than 'does not meet requirements' (held).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "igcse-low-results.pdf",
+            "name": "OTIENO FEW CREDITS",
+            "spec": {
+              "examSystem": "IGCSE",
+              "subjects": {
+                "ENGLISH": "C",
+                "MATHEMATICS": "C",
+                "BIOLOGY": "C",
+                "HISTORY": "C",
+                "PHYSICS": "F",
+                "CHEMISTRY": "F"
+              }
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "igcse-low-id.pdf",
+            "name": "OTIENO FEW CREDITS",
+            "spec": {
+              "idNumber": "33445566"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "igcse-low-form.pdf",
+            "name": "OTIENO FEW CREDITS"
+          },
+          {
+            "checklist": {
+              "name": "OTIENO FEW CREDITS",
+              "prefix": "igcse-low"
+            }
+          }
+        ],
+        "body": "Attached are my IGCSE statement of results and documents for my application.",
+        "from": "otieno.credits@student.example.org",
+        "fromName": "Otieno Credits",
+        "id": "email-igcse-low-1",
+        "receivedAt": "2026-09-15T10:00:00Z",
+        "subject": "My results for my application",
+        "threadId": "thread-igcse-low"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Orange",
+      "flagTypes": [
+        "low_confidence"
+      ],
+      "lifecycle": "awaiting_review",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "igcse-short-credits"
+  },
+  {
+    "description": "IB Diploma with 27 points (≥ 24) for BBIT → qualifies through the university-wide IB route → auto-admitted (admission letter sent).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "ib-results.pdf",
+            "name": "KAMAU IB TWENTYSEVEN",
+            "spec": {
+              "examSystem": "IB",
+              "ibPoints": 27
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "ib-id.pdf",
+            "name": "KAMAU IB TWENTYSEVEN",
+            "spec": {
+              "idNumber": "33778899"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "ib-form.pdf",
+            "name": "KAMAU IB TWENTYSEVEN",
+            "spec": {
+              "programme": "BACHELOR OF BUSINESS INFORMATION TECHNOLOGY"
+            }
+          },
+          {
+            "checklist": {
+              "name": "KAMAU IB TWENTYSEVEN",
+              "prefix": "ib"
+            }
+          }
+        ],
+        "body": "I completed the IB Diploma and would like to apply.",
+        "from": "kamau.ib@student.example.org",
+        "fromName": "Kamau Ib",
+        "id": "email-ib-1",
+        "receivedAt": "2026-09-15T11:00:00Z",
+        "subject": "IB results attached",
+        "threadId": "thread-ib"
+      }
+    ],
+    "expected": {
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "application",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "ib-degree-route"
+  },
+  {
+    "description": "KACE/A-Level with only 1 principal pass — fails the 2-principal route, but the KCSE-tagged leaving certificate is unreadable → E4: an unread route beats a confirmed failure, so the case goes to verification (low-confidence flags) rather than 'does not meet requirements' (held).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "al-results.pdf",
+            "name": "KIPROP ONE PRINCIPAL",
+            "spec": {
+              "examSystem": "ALEVEL",
+              "subjects": {
+                "MATHEMATICS": "B"
+              },
+              "subsidiaries": 1
+            }
+          },
+          {
+            "docType": "id",
+            "filename": "al-id.pdf",
+            "name": "KIPROP ONE PRINCIPAL",
+            "spec": {
+              "idNumber": "33990011"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "al-form.pdf",
+            "name": "KIPROP ONE PRINCIPAL"
+          },
+          {
+            "checklist": {
+              "name": "KIPROP ONE PRINCIPAL",
+              "prefix": "al"
+            }
+          }
+        ],
+        "body": "Please find my advanced level results attached, for my application.",
+        "from": "kiprop.principal@student.example.org",
+        "fromName": "Kiprop Principal",
+        "id": "email-al-1",
+        "receivedAt": "2026-09-15T12:00:00Z",
+        "subject": "A level results — my application",
+        "threadId": "thread-al"
+      }
+    ],
+    "expected": {
+      "autoKind": null,
+      "autoSent": false,
+      "category": "application",
+      "duplicates": 0,
+      "finalStatus": "Orange",
+      "flagTypes": [
+        "low_confidence"
+      ],
+      "lifecycle": "awaiting_review",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "alevel-one-principal"
+  },
+  {
+    "description": "MBA applicant with a Second Class Honours (Upper Division) degree → recognised degree route → auto-admitted (admission letter sent).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "mba-transcript.pdf",
+            "name": "MWANGI SECOND UPPER",
+            "spec": {
+              "classAwarded": "SECOND CLASS HONOURS (UPPER DIVISION)",
+              "degreeTitle": "BACHELOR OF COMMERCE",
+              "examSystem": "DEGREE"
+            }
+          },
+          {
+            "docType": "undergraduate_degree_certificate",
+            "filename": "mba-ug-cert.pdf",
+            "name": "MWANGI SECOND UPPER"
+          },
+          {
+            "docType": "id",
+            "filename": "mba-id.pdf",
+            "name": "MWANGI SECOND UPPER",
+            "spec": {
+              "idNumber": "34101112"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "mba-form.pdf",
+            "name": "MWANGI SECOND UPPER",
+            "spec": {
+              "programme": "MASTER OF BUSINESS ADMINISTRATION"
+            }
+          },
+          {
+            "checklist": {
+              "name": "MWANGI SECOND UPPER",
+              "prefix": "mba",
+              "school": false
+            }
+          }
+        ],
+        "body": "Attached are my degree transcript and application documents for the MBA.",
+        "from": "mwangi.mba@student.example.org",
+        "fromName": "Mwangi Mba",
+        "id": "email-mba-1",
+        "receivedAt": "2026-09-15T13:00:00Z",
+        "subject": "MBA application",
+        "threadId": "thread-mba"
+      }
+    ],
+    "expected": {
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "degree-mba-route"
+  },
+  {
+    "description": "Applicant transferring credit includes the credit transfer form → complete file → auto-admitted (admission letter sent).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "tr-ok-academic.pdf",
+            "name": "NAOMI TRANSFER OKONKWO"
+          },
+          {
+            "docType": "id",
+            "filename": "tr-ok-id.pdf",
+            "name": "NAOMI TRANSFER OKONKWO",
+            "spec": {
+              "idNumber": "35221144"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "tr-ok-form.pdf",
+            "name": "NAOMI TRANSFER OKONKWO"
+          },
+          {
+            "docType": "credit_transfer_form",
+            "filename": "tr-ok-ctf.pdf",
+            "name": "NAOMI TRANSFER OKONKWO",
+            "spec": {
+              "previousInstitution": "STRATHMORE UNIVERSITY",
+              "programme": "BSC COMPUTER SCIENCE"
+            }
+          },
+          {
+            "checklist": {
+              "name": "NAOMI TRANSFER OKONKWO",
+              "prefix": "tr-ok"
+            }
+          }
+        ],
+        "body": "I am applying for credit transfer from my previous university. Attached are my documents and the completed credit transfer form.",
+        "from": "naomi.transfer@student.example.org",
+        "fromName": "Naomi Okonkwo",
+        "id": "email-tr-ok-1",
+        "receivedAt": "2026-09-16T09:00:00Z",
+        "subject": "Credit transfer application",
+        "threadId": "thread-tr-ok"
+      }
+    ],
+    "expected": {
+      "autoKind": "ack",
+      "autoSent": true,
+      "category": "document_submission",
+      "duplicates": 0,
+      "finalStatus": "Green",
+      "flagTypes": [],
+      "lifecycle": "completed",
+      "missing": [],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "transfer-complete"
+  },
+  {
+    "description": "Transfer applicant who forgot the credit transfer form → it appears on the missing list (held request).",
+    "emails": [
+      {
+        "attachments": [
+          {
+            "docType": "academic_cert",
+            "filename": "tr-miss-academic.pdf",
+            "name": "PETER TRANSFER MWANGI"
+          },
+          {
+            "docType": "id",
+            "filename": "tr-miss-id.pdf",
+            "name": "PETER TRANSFER MWANGI",
+            "spec": {
+              "idNumber": "35332255"
+            }
+          },
+          {
+            "docType": "application_form",
+            "filename": "tr-miss-form.pdf",
+            "name": "PETER TRANSFER MWANGI"
+          },
+          {
+            "checklist": {
+              "name": "PETER TRANSFER MWANGI",
+              "prefix": "tr-miss"
+            }
+          }
+        ],
+        "body": "Please consider my application. I am transferring from another institution and would like my credits considered.",
+        "from": "peter.transfer@student.example.org",
+        "fromName": "Peter Mwangi",
+        "id": "email-tr-miss-1",
+        "receivedAt": "2026-09-16T10:00:00Z",
+        "subject": "Application for admission — transferring credits",
+        "threadId": "thread-tr-miss"
+      }
+    ],
+    "expected": {
+      "autoKind": "missing_docs",
+      "autoSent": false,
+      "category": "application",
+      "duplicates": 0,
+      "finalStatus": "Red",
+      "flagTypes": [],
+      "lifecycle": "documents_received",
+      "missing": [
+        "credit_transfer_form"
+      ],
+      "priority": "normal",
+      "superseded": 0
+    },
+    "name": "transfer-missing-form"
+  }
+]

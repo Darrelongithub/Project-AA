@@ -16,6 +16,8 @@
     "retain": "tsx src/cli/retain.ts",
     "backup": "tsx src/cli/backup.ts",
     "restore": "tsx src/cli/restore.ts",
+    "archive:encrypt": "tsx src/cli/archiveEncrypt.ts",
+    "archive:read": "tsx src/cli/archiveRead.ts",
     "start": "node dist/src/cli/serve.js",
     "purge-mock": "tsx src/cli/purgeMock.ts",
     "seed:demo-org": "tsx src/cli/seedDemoOrg.ts",

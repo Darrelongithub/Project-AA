@@ -62,10 +62,10 @@ CREATE TABLE IF NOT EXISTS course_requirements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   programme TEXT,                     -- NULL = university-wide defaults
   level TEXT NOT NULL,                -- degree|diploma|certificate|masters|phd
-  system TEXT NOT NULL,               -- KCSE|IGCSE|ALEVEL|IB|DIPLOMA|PREUNI|DEGREE
+  system TEXT NOT NULL,               -- national-secondary|o-level|alevel|ib|diploma|preuni|degree
   enabled INTEGER NOT NULL DEFAULT 1,
-  overall TEXT,                       -- KCSE mean grade (grade ladder)
-  min_credits INTEGER,                -- IGCSE subjects at C or better
+  overall TEXT,                       -- national-secondary mean grade (grade ladder)
+  min_credits INTEGER,                -- o-level subjects at C or better
   min_principals INTEGER,             -- GCE A-Level / KACE principal passes
   min_subsidiaries INTEGER,
   min_points INTEGER,                 -- IB total points
@@ -149,8 +149,14 @@ CREATE TABLE IF NOT EXISTS dead_letters (
   attempts    INTEGER NOT NULL DEFAULT 1,
   dead        INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  organization_id INTEGER
 );
+-- ST-P12: per-org dead-letter attribution (NULL = unattributable fetch
+-- failure). The console can filter by org once it surfaces this queue.
+-- The index lives in migrate(), NOT here: a static index on the new
+-- column would break opening pre-ST-P12 databases (no such column yet).
+-- Same convention as idx_error_events_org below.
 
 -- Round 19: Gemini results cached by content hash — the same bytes are never
 -- paid for twice, and the cache lets the circuit breaker replay last-known
@@ -264,6 +270,9 @@ CREATE TABLE IF NOT EXISTS notifications (
   read         INTEGER NOT NULL DEFAULT 0,
   at           TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Every page load counts/lists these per staffer (header badge): index the
+-- staff filter + unread + recency order or each probe scans the table.
+CREATE INDEX IF NOT EXISTS idx_notifications_staff ON notifications(staff_id, read, id);
 
 CREATE TABLE IF NOT EXISTS templates (
   key        TEXT PRIMARY KEY,
@@ -347,7 +356,7 @@ CREATE TABLE IF NOT EXISTS admission_rules (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   programme  TEXT,                    -- NULL = university-wide default
   level      TEXT NOT NULL DEFAULT 'degree',
-  system     TEXT NOT NULL,           -- KCSE|IGCSE|IB|ALEVEL|KACE|EACE|DIPLOMA|PROFCERT|DEGREE|OTHER
+  system     TEXT NOT NULL,           -- secondary|o-level|ib|alevel|kace|eace|diploma|profcert|degree|other
   version    INTEGER NOT NULL DEFAULT 1,
   status     TEXT NOT NULL DEFAULT 'draft',   -- draft|active|retired
   created_by TEXT NOT NULL DEFAULT 'system',
@@ -560,7 +569,16 @@ export function openDb(file: string): Database.Database {
   return db;
 }
 
-/** Pragmatic forward migration for databases created by older versions. */
+/**
+ * Pragmatic forward migration for databases created by older versions.
+ *
+ * Convention: a new column lands in the base SCHEMA above AND as an
+ * addColumn here (~40 calls duplicate SCHEMA today — that overlap is
+ * deliberate, not cruft). CREATE TABLE IF NOT EXISTS never touches an
+ * existing database, so the addColumn is the only thing that upgrades old
+ * files; the SCHEMA entry keeps fresh databases complete without depending
+ * on migration order. Never "clean up" either side alone.
+ */
 function migrate(db: Database.Database): void {
   const addColumn = (table: string, column: string, type: string) => {
     try {
@@ -748,7 +766,7 @@ function migrate(db: Database.Database): void {
   // 'user' (they keep their accounts; permissions are re-derived from role).
   db.exec("UPDATE staff_users SET role = 'user' WHERE role NOT IN ('admin','user')");
   // Migrate any legacy min-points rules into a best-effort grade equivalent
-  // so old databases keep meaningful rules (points → the KCSE grade ladder).
+  // so old databases keep meaningful rules (points → the national grade ladder).
   try {
     const legacy = db
       .prepare("SELECT id, min_grade_points FROM requirement_rules WHERE min_grade_points IS NOT NULL AND mean_grade IS NULL")
@@ -821,6 +839,37 @@ function migrate(db: Database.Database): void {
     name TEXT NOT NULL UNIQUE
   )`);
   db.exec(`INSERT OR IGNORE INTO schools (name) SELECT DISTINCT school FROM programmes WHERE school <> ''`);
+  // Phase 6: operational metrics — additive daily counters, no existing
+  // table is touched. Day buckets are UTC (see flushMetrics).
+  db.exec(`CREATE TABLE IF NOT EXISTS metric_daily (
+    day TEXT NOT NULL,
+    name TEXT NOT NULL,
+    n INTEGER NOT NULL DEFAULT 0,
+    sum REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, name)
+  )`);
+  // Phase 12: persisted unhandled exceptions for the admin security
+  // console. Purely additive (new table + index, nothing existing
+  // touched). organization_id NULL = unattributable — never shown in
+  // any org's console (same isolation rule as the other console data).
+  db.exec(`CREATE TABLE IF NOT EXISTS error_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL DEFAULT (datetime('now')),
+    source TEXT NOT NULL,
+    applicant_id INTEGER REFERENCES applicants(id),
+    organization_id INTEGER,
+    actor TEXT NOT NULL DEFAULT '',
+    request TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT ''
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_error_events_org ON error_events(organization_id, at)`);
+  // Audit G (C3): same index for databases created before it joined the
+  // base schema above — notifications had no index at all.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_notifications_staff ON notifications(staff_id, read, id)`);
+  // Audit G (ST-P12): per-org dead-letter attribution for older DBs.
+  addColumn("dead_letters", "organization_id", "INTEGER");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_dead_letters_org ON dead_letters(organization_id, dead)`);
   // Compatibility projection: old admissions callers still read applicants,
   // while generic callers can use cases/outcome/category without losing rows.
   db.exec(`CREATE VIEW IF NOT EXISTS cases AS
