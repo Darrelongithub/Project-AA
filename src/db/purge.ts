@@ -43,6 +43,9 @@ export function purgeMockData(repo: Repo, opts: { backupPath?: string } = {}): P
     db.pragma("wal_checkpoint(TRUNCATE)");
     backupPath = opts.backupPath ?? `${dbFile}.pre-purge-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     fs.copyFileSync(dbFile, backupPath);
+    // The backup is a full PII copy — copyFileSync inherits the live DB's
+    // (typically world-readable) mode, so lock it down explicitly.
+    fs.chmodSync(backupPath, 0o600);
     log(`purge-mock: backup written to ${backupPath}`);
   }
 
@@ -51,7 +54,22 @@ export function purgeMockData(repo: Repo, opts: { backupPath?: string } = {}): P
     repo.deleteApplicantFull(id);
   }
 
-  // 4 — demo staff accounts.
+  // 4 — demo staff accounts. FKs are enforced, so their child rows go
+  // first: a demo account that ever logged in owns sessions (and possibly
+  // reset codes, notifications, permission/scope rows) that would abort
+  // the staff delete with SQLITE_CONSTRAINT. Surviving task/note
+  // attributions are nulled, not deleted — the content (usually on demo
+  // cases, already gone in step 3) is never the purge's business.
+  const demoIds = (db.prepare("SELECT id FROM staff_users WHERE IFNULL(demo, 0) = 1").all() as Array<{ id: number }>).map((r) => r.id);
+  if (demoIds.length) {
+    const inList = demoIds.map(() => "?").join(",");
+    for (const t of ["sessions", "password_reset_codes", "notifications", "staff_permissions", "staff_scopes", "staff_case_type_scopes"]) {
+      db.prepare(`DELETE FROM ${t} WHERE staff_id IN (${inList})`).run(...demoIds);
+    }
+    for (const t of ["tasks", "notes"]) {
+      db.prepare(`UPDATE ${t} SET staff_id = NULL WHERE staff_id IN (${inList})`).run(...demoIds);
+    }
+  }
   const staffDeleted = db.prepare("DELETE FROM staff_users WHERE IFNULL(demo, 0) = 1").run().changes;
 
   // 5 — demo markers in settings.

@@ -434,6 +434,9 @@ export class Repo {
   consoleErrorEvents(orgId: number, since?: string, until?: string): consoleq.ConsoleErrorEventRow[] {
     return consoleq.consoleErrorEvents(this, orgId, since, until);
   }
+  errorEventsForApplicant(applicantId: number): consoleq.ConsoleErrorEventRow[] {
+    return consoleq.errorEventsForApplicant(this, applicantId);
+  }
 
   approverFor(applicantId: number): { actor: string; at: string } | undefined {
     return cases.approverFor(this, applicantId);

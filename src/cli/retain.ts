@@ -43,7 +43,11 @@ const cutoff = new Date(Date.now() - retentionDays * 24 * 3600_000).toISOString(
 const archiveDir = path.resolve(path.dirname(path.resolve(cfg.dbPath)), "archive");
 // The archive holds full PII in encrypted JSON envelopes — lock the
 // DIRECTORY to the owning user too (files are written 0o600 just below).
+// mkdir's mode applies at CREATION only: a directory left 0755 by an older
+// release (or created by hand) stays open without the explicit chmod, so
+// enforce on every run — fail closed if the OS refuses.
 fs.mkdirSync(archiveDir, { recursive: true, mode: 0o700 });
+fs.chmodSync(archiveDir, 0o700);
 
 // Realm: retention defaults to the LIVE realm (demo=0). Seeded demo data is
 // mock — sweeping it silently would destroy the demo environment. Pass
@@ -70,6 +74,7 @@ for (const a of candidates) {
     status_history: repo.statusHistory(a.id),
     decision_logs: repo.decisionLogs(a.id),
     audit: repo.auditForApplicant(a.id),
+    error_events: repo.errorEventsForApplicant(a.id),
   };
     const file = path.join(archiveDir, `${a.ref_number}${ARCHIVE_ENC_SUFFIX}`);
     // The archive contains full PII (email bodies, ID numbers): encrypted

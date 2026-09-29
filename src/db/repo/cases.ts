@@ -430,7 +430,10 @@ export function updateLatestEmailCategory(repo: Repo, applicantId: number, categ
 /** Fully remove an applicant's data (used after archiving). */
 export function deleteApplicantFull(repo: Repo, applicantId: number): void {
   const tx = repo.db.transaction(() => {
-    for (const t of ["documents", "flags", "emails", "notes", "tasks", "decision_logs", "status_history", "audit_log", "outbox", "applicant_threads", "notifications", "evaluations"]) {
+    // error_events included: the FK is enforced, so a case with recorded
+    // errors threw SQLITE_CONSTRAINT here (13 applicant-child tables; this
+    // list is all of them — keep it so).
+    for (const t of ["documents", "flags", "emails", "notes", "tasks", "decision_logs", "status_history", "audit_log", "outbox", "applicant_threads", "notifications", "evaluations", "error_events"]) {
       repo.db.prepare(`DELETE FROM ${t} WHERE applicant_id = ?`).run(applicantId);
     }
     repo.db.prepare("DELETE FROM applicants WHERE id = ?").run(applicantId);

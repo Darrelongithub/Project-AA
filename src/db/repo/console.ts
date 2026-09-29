@@ -427,6 +427,24 @@ export interface ConsoleErrorEventRow {
   detail: string;
 }
 
+/** Every error event for one case, oldest first — the retention archive's
+ * error trail. Kept separate from the org-scoped console reader: the
+ * archive needs the case's full history, unfiltered and unlimited. */
+export function errorEventsForApplicant(repo: Repo, applicantId: number): ConsoleErrorEventRow[] {
+  return repo.db
+    .prepare(
+      `SELECT e.id AS id, e.at AS at, e.source AS source,
+              e.applicant_id AS applicant_id, a.ref_number AS ref_number,
+              e.actor AS actor, e.request AS request,
+              e.message AS message, e.detail AS detail
+       FROM error_events e LEFT JOIN applicants a ON a.id = e.applicant_id
+       WHERE e.applicant_id = ?
+       ORDER BY e.id ASC`
+    )
+    .all(applicantId) as ConsoleErrorEventRow[];
+}
+
+
 /** Unhandled exceptions attributed to the org, newest first. */
 export function consoleErrorEvents(repo: Repo, orgId: number, since?: string, until?: string): ConsoleErrorEventRow[] {
   const params: unknown[] = [orgId];
