@@ -424,6 +424,12 @@ export class Repo {
   consoleOrgDuration(orgId: number, days: number): { n: number; avgMs: number } {
     return consoleq.consoleOrgDuration(this, orgId, days);
   }
+  recordErrorEvent(e: consoleq.ErrorEventInput): void {
+    return consoleq.recordErrorEvent(this, e);
+  }
+  consoleErrorEvents(orgId: number, since?: string, until?: string): consoleq.ConsoleErrorEventRow[] {
+    return consoleq.consoleErrorEvents(this, orgId, since, until);
+  }
 
   approverFor(applicantId: number): { actor: string; at: string } | undefined {
     return cases.approverFor(this, applicantId);

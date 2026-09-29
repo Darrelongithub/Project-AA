@@ -12,6 +12,7 @@
  * an inclusive lower bound; undefined = all time.
  */
 import type { Repo } from "../repo";
+import { log } from "../../util/log";
 
 /** Org predicate for applicant-joined rows (applicants aliased `a`). */
 const ORG_APPLICANT = "COALESCE(a.organization_id, 1) = ?";
@@ -354,4 +355,80 @@ export function consoleFallbackTriggers(repo: Repo, orgId: number, since?: strin
        ORDER BY l.id DESC LIMIT 500`
     )
     .all(...params) as ConsoleErrorRow[];
+}
+
+// ── Persisted unhandled exceptions (error_events) ────────────────────────
+export interface ErrorEventInput {
+  source: "http" | "ingest" | "intake_test";
+  /** Applicant when known — its org becomes authoritative below. */
+  applicant_id?: number | null;
+  /** Org when known without an applicant (e.g. staff context). */
+  organization_id?: number | null;
+  actor?: string;
+  /** "METHOD path" for http, message id for ingest. */
+  request?: string;
+  message: string;
+  /** Truncated stack / extra context. */
+  detail?: string;
+}
+
+/**
+ * Persist one unhandled exception. NEVER throws — error recording must
+ * not break error handling (falls back to console logging). Org rule:
+ * the applicant's org wins when an applicant is attached, else the
+ * passed org, else NULL = unattributable = shown nowhere.
+ */
+export function recordErrorEvent(repo: Repo, e: ErrorEventInput): void {
+  try {
+    let org: number | null = e.organization_id ?? null;
+    const applicantId = e.applicant_id ?? null;
+    if (applicantId !== null) {
+      org = (repo.getApplicant(applicantId)?.organization_id ?? 1) as number;
+    }
+    repo.db
+      .prepare(
+        `INSERT INTO error_events (source, applicant_id, organization_id, actor, request, message, detail)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        e.source,
+        applicantId,
+        org,
+        (e.actor ?? "").slice(0, 80),
+        (e.request ?? "").slice(0, 200),
+        e.message.slice(0, 500),
+        (e.detail ?? "").slice(0, 2000)
+      );
+  } catch (err) {
+    log(`recordErrorEvent failed (${(err as Error).message}); original: ${e.source} ${e.message.slice(0, 200)}`, "error");
+  }
+}
+
+export interface ConsoleErrorEventRow {
+  id: number;
+  at: string;
+  source: string;
+  applicant_id: number | null;
+  ref_number: string | null;
+  actor: string;
+  request: string;
+  message: string;
+  detail: string;
+}
+
+/** Unhandled exceptions attributed to the org, newest first. */
+export function consoleErrorEvents(repo: Repo, orgId: number, since?: string, until?: string): ConsoleErrorEventRow[] {
+  const params: unknown[] = [orgId];
+  return repo.db
+    .prepare(
+      `SELECT e.id AS id, e.at AS at, e.source AS source,
+              e.applicant_id AS applicant_id, a.ref_number AS ref_number,
+              e.actor AS actor, e.request AS request,
+              e.message AS message, e.detail AS detail
+       FROM error_events e LEFT JOIN applicants a ON a.id = e.applicant_id
+       WHERE e.organization_id = ?
+       ${boundsSql("e.at", since, until, params)}
+       ORDER BY e.id DESC LIMIT 200`
+    )
+    .all(...params) as ConsoleErrorEventRow[];
 }

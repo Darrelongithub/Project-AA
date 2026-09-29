@@ -830,6 +830,22 @@ function migrate(db: Database.Database): void {
     sum REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (day, name)
   )`);
+  // Phase 12: persisted unhandled exceptions for the admin security
+  // console. Purely additive (new table + index, nothing existing
+  // touched). organization_id NULL = unattributable — never shown in
+  // any org's console (same isolation rule as the other console data).
+  db.exec(`CREATE TABLE IF NOT EXISTS error_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL DEFAULT (datetime('now')),
+    source TEXT NOT NULL,
+    applicant_id INTEGER REFERENCES applicants(id),
+    organization_id INTEGER,
+    actor TEXT NOT NULL DEFAULT '',
+    request TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT ''
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_error_events_org ON error_events(organization_id, at)`);
   // Compatibility projection: old admissions callers still read applicants,
   // while generic callers can use cases/outcome/category without losing rows.
   db.exec(`CREATE VIEW IF NOT EXISTS cases AS

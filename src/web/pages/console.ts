@@ -151,7 +151,7 @@ export function consolePage(c: Ctx, orgId: number, orgName: string, q: ConsoleQu
     ${raw(failCallout)}
     ${raw(logins.length ? `<table><tr><th>When</th><th>Who</th><th>Result</th><th>IP</th></tr>${loginRows}</table>`
       : emptyState(`<p>No sign-in events in this range.</p>`))}
-    <p class="small muted">Attempts under unknown usernames can't be attributed to an org and are excluded — see the global login counters on Metrics.</p>
+    <p class="small muted">Attempts under unknown usernames can't be attributed to an org and are excluded entirely — there is deliberately no global attack-traffic signal here.</p>
   </div>
 
   <div class="card" id="runs"><h2>Runs</h2>
