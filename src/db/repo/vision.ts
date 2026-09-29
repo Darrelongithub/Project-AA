@@ -6,6 +6,7 @@
 import { VisionCacheStore, isValidCachedVision } from "../../extraction/gemini";
 import { VisionExtraction } from "../../types";
 import type { Repo } from "../repo";
+import { utcDay } from "../../util/day";
 
 // ── Vision cache (round 19) ──────────────────────────────────────────────
 // Gemini results cached by content SHA-256 so the same bytes are never paid
@@ -41,7 +42,7 @@ export function visionCacheSet(repo: Repo, sha256: string, result: VisionExtract
 
 
 export function visionCallsToday(repo: Repo): number {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = utcDay();
   const key = `gemini_calls_${today}`;
   const val = repo.getSetting(key, "0");
   const n = Number(val);
@@ -50,7 +51,7 @@ export function visionCallsToday(repo: Repo): number {
 
 
 export function noteVisionCall(repo: Repo): void {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = utcDay();
   const key = `gemini_calls_${today}`;
   repo.setSetting(key, String(repo.visionCallsToday() + 1));
   // One counter row per day accumulates forever otherwise; drop the rest.

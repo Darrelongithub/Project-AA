@@ -8,6 +8,7 @@ import { esc } from "../views";
 import { head } from "./shared";
 import type { Ctx } from "./shared";
 import { emptyState } from "../tpl";
+import { utcDay } from "../../util/day";
 
 function metricRow(r: MetricDayRow): string {
   const avg = r.sum !== 0 ? (r.sum / r.n).toFixed(1) : "—";
@@ -17,7 +18,7 @@ function metricRow(r: MetricDayRow): string {
 export function metricsPage(c: Ctx): string {
   const { repo } = c;
   const rows = repo.metricDaily(14);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = utcDay();
   const todayRows = rows.filter((r) => r.day === today);
   const pastRows = rows.filter((r) => r.day !== today).reverse();
   return head(

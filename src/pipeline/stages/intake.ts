@@ -324,7 +324,7 @@ export function runStoreStage(input: StoreStageInput): StoreStageResult {
   }
 
   // Enrich phone from the email body.
-  const freshApplicant = repo.getApplicant(applicant.id)!;
+  const freshApplicant = repo.requireApplicant(applicant.id);
   if (!freshApplicant.phone) {
     const phone = extractPhone(email.body);
     if (phone) {

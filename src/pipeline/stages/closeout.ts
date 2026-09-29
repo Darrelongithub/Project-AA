@@ -38,7 +38,7 @@ export function runProvisionalStage(input: ProvisionalStageInput): ProvisionalSt
     // The trail must show the step the file actually passed through before it
     // was admitted: every required document was read and checked. Auto-admit
     // would otherwise jump straight from documents_received to completed.
-    const stageNow = repo.getApplicant(applicant.id)!.lifecycle;
+    const stageNow = repo.requireApplicant(applicant.id).lifecycle;
     if (LIFECYCLE_ORDER.indexOf(stageNow) < LIFECYCLE_ORDER.indexOf("documents_checked")) {
       repo.setLifecycle(applicant.id, "documents_checked", "system", "all required documents verified automatically");
     }
@@ -104,7 +104,7 @@ export function runReviewQueueStage(input: ReviewQueueStageInput): void {
     // A corrupt setting must not crash intake (NaN → Invalid Date → throw).
     const slaHours = replyAction?.sla_hours ?? envInt(repo.getSetting("sla_target_hours", "4"), 4);
     const due = new Date(Date.now() + slaHours * 3600_000).toISOString();
-    const cur = repo.getApplicant(applicant.id)!;
+    const cur = repo.requireApplicant(applicant.id);
     if (!cur.sla_handled_at) repo.updateApplicant(applicant.id, { sla_due_at: due });
     const reason = humanTriageOnly
       ? `${enquiryOnly ? "admission enquiry" : category.replace(/_/g, " ")} — staff response required`
@@ -133,7 +133,7 @@ export function runLifecycleStage(input: LifecycleStageTransitionInput): void {
   // admission never completed (send failed, letter template missing), the
   // file waits for a person — it is never presented as closed.
   if (admitNow && !autoAdmitted) lifecycleAfter = "awaiting_review";
-  const lifecycleNow = repo.getApplicant(applicant.id)!.lifecycle;
+  const lifecycleNow = repo.requireApplicant(applicant.id).lifecycle;
   if (lifecycleNow !== lifecycleAfter) {
     const why = autoAdmitted
         ? "provisional admission recorded — the admission letter was sent; a registrar may reverse it"

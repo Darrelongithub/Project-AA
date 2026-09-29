@@ -173,7 +173,9 @@ export function caseConfigFrozen(_repo: Repo, a: ApplicantRow): CaseConfigFrozen
 export function reFreezeCaseConfig(repo: Repo, a: ApplicantRow): CaseConfigFrozen {
   repo.db.prepare("UPDATE applicants SET case_config_frozen = NULL WHERE id = ?").run(a.id);
   repo.freezeCaseConfig({ ...a, case_config_frozen: null } as ApplicantRow);
-  return repo.caseConfigFrozen(repo.getApplicant(a.id)!)!;
+  const refrozen = repo.caseConfigFrozen(repo.requireApplicant(a.id));
+  if (!refrozen) throw new Error(`reFreezeCaseConfig: frozen config missing for case ${a.id} immediately after freeze`);
+  return refrozen;
 }
 
 

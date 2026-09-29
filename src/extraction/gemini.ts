@@ -18,6 +18,7 @@
  *     stops hammering a dead API.
  */
 import * as crypto from "crypto";
+import { withTimeout } from "../util/timeout";
 import { envInt } from "../util/envnum";
 import type { Attachment, DocType, VisionExtraction } from "../types";
 import { DOC_TYPES } from "../types";
@@ -114,22 +115,6 @@ Respond with ONLY a JSON object, no markdown, in exactly this shape:
 
 /** A hung vision call must never stall the pipeline forever. */
 const VISION_TIMEOUT_MS = envInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
-
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      }
-    );
-  });
-}
 
 /**
  * Known-good Gemini models — the ONE checked-in record of which model names

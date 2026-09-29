@@ -171,7 +171,7 @@ export function runEnrichStage(input: EnrichStageInput): void {
   const { repo } = ctx;
   // ── Enrich programme/intake from email + document text (feature 2) ──────
   {
-    const current = repo.getApplicant(applicant.id)!;
+    const current = repo.requireApplicant(applicant.id);
     const patch: { programme?: string; intake?: string; full_name?: string; transfer?: number } = {};
 
     // Prefer the name printed on official documents over the email From name.
@@ -241,11 +241,11 @@ export function runRequirementsStage(input: RequirementsStageInput): Requirement
   // First triage freezes a snapshot of the requirement set; later rule
   // changes never retroactively move an applicant's goalposts. PPR P0-3
   // adds the exact profile configuration version to that freeze.
-  const applicantNow = repo.getApplicant(applicant.id)!;
+  const applicantNow = repo.requireApplicant(applicant.id);
   repo.freezeRequirementsSnapshot(applicantNow);
   repo.freezeCaseConfig(applicantNow);
   if (educationCase) repo.freezeStructuredSnapshot(applicantNow);
-  const requirements = repo.effectiveRequirements(repo.getApplicant(applicant.id)!);
+  const requirements = repo.effectiveRequirements(repo.requireApplicant(applicant.id));
   return {
     applicantNow,
     requirements,

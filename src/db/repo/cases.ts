@@ -88,7 +88,7 @@ export function getOrCreateApplicant(repo: Repo,
   if (caseType && (!applicant.organization_id || !applicant.case_type_id)) {
     repo.db.prepare("UPDATE applicants SET organization_id = ?, case_type_id = ? WHERE id = ?")
       .run(organizationId, caseType.id, applicant.id);
-    applicant = repo.getApplicant(applicant.id)!;
+    applicant = repo.requireApplicant(applicant.id);
   }
   if (created) {
     repo.audit(applicant.id, "system", "applicant_created", `Case ${applicant.ref_number} opened for ${addr}`);
@@ -106,6 +106,23 @@ export function createCase(repo: Repo, input: { emailAddress: string; threadId: 
 
 export function getApplicant(repo: Repo, id: number): ApplicantRow | undefined {
   return repo.db.prepare("SELECT * FROM applicants WHERE id = ?").get(id) as ApplicantRow | undefined;
+}
+
+/** Typed error: a caller needed an applicant row that is not in the store. */
+export class ApplicantNotFoundError extends Error {
+  readonly applicantId: number;
+  constructor(applicantId: number) {
+    super(`applicant ${applicantId} not found (it may have been deleted mid-operation)`);
+    this.name = "ApplicantNotFoundError";
+    this.applicantId = applicantId;
+  }
+}
+
+/** getApplicant that throws ApplicantNotFoundError instead of returning undefined. */
+export function requireApplicant(repo: Repo, id: number): ApplicantRow {
+  const row = getApplicant(repo, id);
+  if (!row) throw new ApplicantNotFoundError(id);
+  return row;
 }
 
 

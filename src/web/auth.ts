@@ -91,6 +91,13 @@ export function requireRole(...roles: Array<StaffUser["role"]>) {
   };
 }
 
+/**
+ * Shared prefix for "that staff id is unknown or outside your org" refusals
+ * (Phase 11 dedupe — was the same literal in 5 route handlers). Callers add
+ * their own suffix so the exact flashed strings stay unchanged.
+ */
+export const UNKNOWN_STAFF_MEMBER = "Unknown staff member";
+
 /** CSRF check for all state-changing POSTs from authenticated staff. */
 export function csrfCheck(req: Request, res: Response, next: NextFunction): void {
   if (req.method !== "POST") return next();

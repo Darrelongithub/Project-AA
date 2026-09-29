@@ -306,7 +306,7 @@ export function runAdmitSafetyStage(input: AdmitSafetyStageInput): AdmitSafetySt
   // passing evaluation stays human review, exactly as it always has.
   const organizationId = applicantNow.organization_id ?? applicant.organization_id ?? 1;
   const caseTypeId = genericCaseType?.id;
-  const freshRouting = repo.getApplicant(applicant.id)!.routing;
+  const freshRouting = repo.requireApplicant(applicant.id).routing;
   const admitNow = Boolean(
     autoAdmitEligible &&
       freshRouting === "auto_admit" &&

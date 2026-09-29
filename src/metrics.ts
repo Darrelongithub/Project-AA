@@ -39,11 +39,13 @@ export class Metrics {
 }
 
 /** Process-wide registry. Serve mode persists it every 60s. */
+import { utcDay } from "./util/day";
+
 export const metrics = new Metrics();
 
 /** Flush pending samples via `upsert` (UTC day bucket). Never throws. */
 export function flushMetrics(upsert: (day: string, name: string, n: number, sum: number) => void): void {
-  const day = new Date().toISOString().slice(0, 10);
+  const day = utcDay();
   try {
     metrics.drain((name, n, sum) => upsert(day, name, n, sum));
   } catch {

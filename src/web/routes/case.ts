@@ -11,7 +11,7 @@ import { fillSlots } from "../../documents/matrix";
 import { autoAdmitPolicy, evaluateAdmission, evaluateCaseTypeRules } from "../../admissions/evaluate";
 import { casePage, replayPage } from "../pages";
 import { layout } from "../views";
-import { csrfCheck, requireLogin, requireRole } from "../auth";
+import { UNKNOWN_STAFF_MEMBER, csrfCheck, requireLogin, requireRole } from "../auth";
 import { emailBanner } from "../../branding";
 import { admissionsPreset } from "../../presets/loader";
 import type { RouteCtx } from "./ctx";
@@ -334,13 +334,14 @@ export function registerCase(app: Express, rt: RouteCtx): void {
     // An unknown staff id violates the assigned_to FK and would 500 —
     // validate before writing.
     if (staffId !== null && !rt.repo.getStaff(staffId)) {
-      return res.redirect(rt.backToCase(id, "Unknown staff member — not assigned."));
+      return res.redirect(rt.backToCase(id, `${UNKNOWN_STAFF_MEMBER} — not assigned.`));
     }
     rt.repo.updateApplicant(id, { assigned_to: staffId });
     const who = staffId ? rt.repo.getStaff(staffId)?.display_name : "nobody";
     rt.staffAction(req, id, "case_assigned", `assigned to ${who}`);
     if (staffId) {
-      const a = rt.repo.getApplicant(id)!;
+      const a = rt.repo.getApplicant(id);
+      if (!a) return res.status(404).send("Case not found.");
       rt.repo.notify("assignment", `${a.ref_number} assigned to you`, id, staffId);
     }
     res.redirect(rt.backToCase(id, `Assigned to ${who ?? "nobody"}.`));
@@ -438,8 +439,10 @@ export function registerCase(app: Express, rt: RouteCtx): void {
       rt.repo.audit(id, req.staff!.username, "config_version_upgraded", `case explicitly re-applied on CURRENT profile configuration version ${upgraded.config_version} by staff request`);
       versionNote = ` — explicitly re-applied on CURRENT configuration version ${upgraded.config_version}`;
     }
-    const frozen = rt.repo.caseConfigFrozen(rt.repo.getApplicant(id)!);
-    const version = frozen?.config_version ?? rt.repo.getApplicant(id)!.config_version_frozen ?? 1;
+    const fresh = rt.repo.getApplicant(id);
+    if (!fresh) return res.status(404).send("Case not found.");
+    const frozen = rt.repo.caseConfigFrozen(fresh);
+    const version = frozen?.config_version ?? fresh.config_version_frozen ?? 1;
     if (!rt.repo.educationCaseFor(a)) {
       // Generic profile: re-run the configured rule tree from the FROZEN
       // rules — outcome stays undecided, human review always.

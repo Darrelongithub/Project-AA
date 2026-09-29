@@ -429,7 +429,7 @@ async function processEmailInner(
   const category = triage.category;
   const reasoning = watch.reasoning;
   const rulesOut = rules.rulesOut;
-  const finalRow = repo.getApplicant(applicant.id)!;
+  const finalRow = repo.requireApplicant(applicant.id);
   return {
     applicantId: applicant.id,
     refNumber: applicantNow.ref_number,

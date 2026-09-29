@@ -298,6 +298,11 @@ export class Repo {
     return cases.getApplicant(this, id);
   }
 
+  /** getApplicant that throws ApplicantNotFoundError instead of returning undefined. */
+  requireApplicant(id: number): ApplicantRow {
+    return cases.requireApplicant(this, id);
+  }
+
   updateApplicant(
     id: number,
     patch: Partial<

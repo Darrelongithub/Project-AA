@@ -5,7 +5,7 @@
 import type { Express } from "express";
 import { type DocType, type Permission, DOC_TYPES, PERMISSIONS } from "../../types";
 import { staffPage } from "../pages";
-import { csrfCheck, requireLogin, requireRole } from "../auth";
+import { UNKNOWN_STAFF_MEMBER, csrfCheck, requireLogin, requireRole } from "../auth";
 import { hashPassword } from "../../util/password";
 import { USERNAME_RE, normalizeUsername } from "../../util/username";
 import type { RouteCtx } from "./ctx";
@@ -20,7 +20,7 @@ export function registerStaff(app: Express, rt: RouteCtx): void {
   app.post("/staff/scopes", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const staffId = Number(req.body.staff_id);
     const member = rt.repo.staffInOrganization(staffId, rt.organizationId(req));
-    if (!member) return res.redirect("/staff?msg=" + encodeURIComponent("Unknown staff member — nothing saved."));
+    if (!member) return res.redirect("/staff?msg=" + encodeURIComponent(`${UNKNOWN_STAFF_MEMBER} — nothing saved.`));
     const raw = req.body.schools;
     const schools = (Array.isArray(raw) ? raw : raw ? [raw] : []).map((x) => String(x).trim()).filter(Boolean);
     // Only real schools can be scoped — a typo'd school name would silently
@@ -95,7 +95,7 @@ export function registerStaff(app: Express, rt: RouteCtx): void {
     const password = String(req.body.password ?? "");
     const confirm = String(req.body.confirm ?? "");
     const target = rt.repo.staffInOrganization(id, rt.organizationId(req));
-    if (!target) return res.redirect(staffMsg("Unknown staff member."));
+    if (!target) return res.redirect(staffMsg(`${UNKNOWN_STAFF_MEMBER}.`));
     // Same rules as first-run setup — one rulebook for every password write.
     if (password.length < 8) return res.redirect(staffMsg(`Password for “${target.username}” must be at least 8 characters.`));
     if (password !== confirm) return res.redirect(staffMsg(`The passwords do not match — nothing changed.`));
@@ -113,7 +113,7 @@ export function registerStaff(app: Express, rt: RouteCtx): void {
   // response body, and must never appear in a URL (history/Referer).
   app.post("/staff/reset-code", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const target = rt.repo.staffInOrganization(Number(req.body.id), rt.organizationId(req));
-    if (!target) return res.send(staffPage(rt.c(req), "Unknown staff member — no code issued."));
+    if (!target) return res.send(staffPage(rt.c(req), `${UNKNOWN_STAFF_MEMBER} — no code issued.`));
     const code = rt.repo.issueResetCode(target.id, req.staff!.username);
     rt.repo.audit(null, req.staff!.username, "password_reset_code_issued", `for ${target.username}`);
     res.send(staffPage(rt.c(req), `Reset code issued for “${target.username}”.`, code));

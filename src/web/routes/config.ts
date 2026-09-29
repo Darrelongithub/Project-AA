@@ -9,7 +9,7 @@ import { autoAdmitPolicy, evaluateAdmission } from "../../admissions/evaluate";
 import { type RuleAction, type RuleCondition, type WorkflowRule, describeRule, firstMatchingRule, ruleMatches, rulesForCaseScope } from "../../rules/workflow";
 import { categorizeEmail } from "../../categorize";
 import { configPage } from "../pages";
-import { csrfCheck, requireLogin, requireRole } from "../auth";
+import { UNKNOWN_STAFF_MEMBER, csrfCheck, requireLogin, requireRole } from "../auth";
 import { PACK_DIR, PACK_SLOTS } from "../../pack";
 import { EXAM_SYSTEMS } from "../../config";
 import * as fs from "fs";
@@ -399,7 +399,7 @@ export function registerConfig(app: Express, rt: RouteCtx): void {
     if (!programme) return res.redirect(back("No course selected."));
     const ownerId = ownerRaw ? Number(ownerRaw) : null;
     if (ownerId !== null && (!Number.isInteger(ownerId) || !rt.repo.getStaff(ownerId))) {
-      return res.redirect(back("Unknown staff member."));
+      return res.redirect(back(`${UNKNOWN_STAFF_MEMBER}.`));
     }
     rt.repo.assignProgrammeOwner(programme, ownerId);
     const who = ownerId !== null ? rt.repo.getStaff(ownerId)?.display_name ?? `#${ownerId}` : "nobody (unassigned)";

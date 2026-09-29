@@ -170,7 +170,7 @@ export function evaluateAdmission(
   extraFlags: Array<{ type: string; detail: string }> = [],
   options: { autoAdmit?: boolean } = {}
 ): AdmissionEvaluation {
-  const a = repo.getApplicant(applicantId)!;
+  const a = repo.requireApplicant(applicantId);
   const docs = repo.listDocuments(applicantId, { activeOnly: true });
   const derivedFlags: DerivedFlag[] = [];
 
@@ -307,10 +307,10 @@ export function evaluateAdmission(
   }
 
   // ── Step 3 — the frozen requirement sets (goalposts never move). ──────────
-  const frozen = repo.freezeAdmissionSets(repo.getApplicant(applicantId)!);
+  const frozen = repo.freezeAdmissionSets(repo.requireApplicant(applicantId));
   // E1: the real freeze time, recorded on the applicant row at first freeze
   // (COALESCE keeps the FIRST freeze if the snapshot is ever re-written).
-  base.frozenAt = repo.getApplicant(applicantId)!.admission_rules_frozen_at ?? null;
+  base.frozenAt = repo.requireApplicant(applicantId).admission_rules_frozen_at ?? null;
   const candidateSets: AdmissionRuleSet[] = [];
   for (const { systems } of identified) {
     for (const s of systems) {
