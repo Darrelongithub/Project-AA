@@ -23,6 +23,9 @@ key. Read it before generating, moving, or rotating anything.
    unrecoverable without it — a backup of `./data` without the key is a
    backup of noise. Store one copy with your other deployment secrets
    (password manager / sealed envelope, whichever you already trust).
+   Production escrow: a secure note in 1Password/Bitwarden (manual copy,
+   separate from the deployed `.env`); the note must link back to this
+   doc's Rotation section. No automated escrow — the manual copy is enough.
 4. **Need-to-know:** the retain runner and whoever performs audits
    (`npm run archive:read`). Nobody else.
 5. **Losing the key = losing the archives.** There is no recovery path and
