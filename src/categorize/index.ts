@@ -4,6 +4,14 @@
  */
 import type { EmailCategory } from "../types";
 import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
+import { withTimeout } from "../util/timeout";
+import { envInt } from "../util/envnum";
+
+// The vision tier and the watcher both bound their Gemini round-trips;
+// the category label is the same kind of call and must not hang the
+// intake path forever. A timeout rejects into the deterministic fallback
+// below (confidence 0, source "fallback") — never a stuck worker.
+const CATEGORIZE_TIMEOUT_MS = envInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
 
 const COMPLAINT_RE = /\b(complain(?:t|ts|ing)?|grievance|dissatisf\w*|unacceptable|appall\w*|rude|escalat\w*|ombuds\w*)\b/i;
 const FEE_RE = /\b(fee(?:s)?|tuition|payment|invoice|deposit|hesb|helb|billing|arrears)\b/i;
@@ -90,14 +98,15 @@ function deterministicConfiguredLabel(input: { subject: string; body: string }, 
 export async function classifyWithConfiguredCategories(
   input: { subject: string; body: string },
   categories: string[],
-  labeler?: CategoryLabeler
+  labeler?: CategoryLabeler,
+  apiKey?: string
 ): Promise<ConfiguredCategoryLabel> {
   const allowed = [...new Set(categories.map((x) => x.trim()).filter(Boolean))];
   if (allowed.length === 0) return { label: "other", confidence: 0, source: "fallback" };
   try {
     const result = labeler
       ? await labeler(input, allowed)
-      : await geminiCategoryLabel(input, allowed);
+      : await geminiCategoryLabel(input, allowed, apiKey);
     const label = allowed.find((x) => x.toLowerCase() === String(result.label).trim().toLowerCase());
     if (!label || !Number.isFinite(result.confidence) || result.confidence < 0) throw new Error("invalid category label");
     return { label, confidence: Math.min(1, result.confidence), source: "gemini" };
@@ -110,8 +119,12 @@ export async function classifyWithConfiguredCategories(
   }
 }
 
-async function geminiCategoryLabel(input: { subject: string; body: string }, categories: string[]): Promise<ConfiguredCategoryLabel> {
-  const key = process.env.GEMINI_API_KEY;
+async function geminiCategoryLabel(input: { subject: string; body: string }, categories: string[], apiKey?: string): Promise<ConfiguredCategoryLabel> {
+  // The caller passes the effective key (stored secret, else environment —
+  // the same precedence as the vision tier). Falling back to env here keeps
+  // direct callers working; a missing key throws into the deterministic
+  // fallback above, never into the intake path.
+  const key = (apiKey ?? "").trim() || process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY is not configured");
   // Keep the SDK lazy and optional in mock/test mode, as with document vision.
   // Gemini receives categories as data and can only return one of them.
@@ -119,7 +132,7 @@ async function geminiCategoryLabel(input: { subject: string; body: string }, cat
   const { GoogleGenerativeAI } = require("@google/generative-ai");
   const model = new GoogleGenerativeAI(key).getGenerativeModel({ model: process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL });
   const prompt = `Classify this message using exactly one category from ${JSON.stringify(categories)}. Return JSON only: {"label":"...","confidence":0}. The label is routing metadata only and must not make an approval or rejection decision.\nSubject: ${input.subject}\nBody: ${input.body}`;
-  const response = await model.generateContent(prompt);
+  const response: any = await withTimeout(model.generateContent(prompt), CATEGORIZE_TIMEOUT_MS, "gemini category label");
   const raw = String(response?.response?.text?.() ?? "");
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("Gemini returned no category JSON");

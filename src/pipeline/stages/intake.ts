@@ -164,9 +164,13 @@ export async function runCategorizeStage(input: CategorizeStageInput): Promise<C
   // rule match above — same input, same result.)
   const configuredKeys = repo.listEmailCategories(intakeOrganizationId).map((x) => x.key);
   let category: EmailCategory = fallbackCategory;
-  if (process.env.GEMINI_API_KEY && configuredKeys.length > 0) {
+  // Same key precedence as the vision tier: the stored secret first, then
+  // the environment. Env-only here meant a /settings-configured key never
+  // labelled anything while vision and watcher used it.
+  const geminiKey = repo.getSecret("gemini_api_key").trim() || (process.env.GEMINI_API_KEY ?? "").trim();
+  if (geminiKey && configuredKeys.length > 0) {
     const label = await classifyWithConfiguredCategories(
-      { subject: email.subject, body: email.body }, configuredKeys
+      { subject: email.subject, body: email.body }, configuredKeys, undefined, geminiKey
     );
     const normalized = label.label.toLowerCase();
     const mapped: Record<string, EmailCategory> = {

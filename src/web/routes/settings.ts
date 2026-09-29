@@ -8,7 +8,7 @@ import { BudgetedVisionAdapter, DEFAULT_GEMINI_MODEL, GeminiVisionAdapter, MockV
 import type { Adapters } from "../../pipeline/adapters";
 import { settingsPage } from "../pages";
 import { csrfCheck, requireLogin, requireRole } from "../auth";
-import { GmailClient } from "../../ingestion/gmailClient";
+import { GMAIL_TIMEOUT_MS, GmailClient } from "../../ingestion/gmailClient";
 import { GeminiWatcher, makeHeuristicWatcher } from "../../watcher";
 import { gmailRedirectUri } from "../oauth";
 import { metrics } from "../../metrics";
@@ -88,8 +88,11 @@ export function registerSettings(app: Express, rt: RouteCtx): void {
     const clientSecret = rt.repo.getSecret("gmail_client_secret");
     const redirectUri = gmailRedirectUri(rt.repo, req.protocol, req.get("host") ?? "localhost");
     try {
+      // Bounded like every other Google round-trip: a wedged connection
+      // used to hang the admin's callback request forever.
       const resp = await fetch("https://oauth2.googleapis.com/token", {
         method: "POST",
+        signal: AbortSignal.timeout(GMAIL_TIMEOUT_MS),
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           code, client_id: clientId, client_secret: clientSecret,
@@ -214,8 +217,13 @@ export function registerSettings(app: Express, rt: RouteCtx): void {
   // The key is stored in the secret store (PPR P0-1), used by the extraction
   // pipeline AT ONCE (no restart, no env file). "Test key" performs a real
   // round-trip and reports exactly what happened.
-  const rebuildAdapters = () => {
-    const key = rt.repo.getSecret("gemini_api_key").trim();
+  const rebuildAdapters = (): "secret" | "env" | "none" => {
+    // Key precedence: stored secret first, then the environment. The old
+    // code read the secret store ONLY — so a deployment that set
+    // GEMINI_API_KEY in .env booted live (buildAdapters honours env) and
+    // then this boot call silently rebuilt everything back to mock.
+    const stored = rt.repo.getSecret("gemini_api_key").trim();
+    const key = stored || (process.env.GEMINI_API_KEY ?? "").trim();
     if (!key) {
       // N1: no key means MOCK reading — say so by actually rebuilding. The
       // old early-return left stale live Gemini adapters in place after a
@@ -228,9 +236,9 @@ export function registerSettings(app: Express, rt: RouteCtx): void {
         vision: new MockVisionAdapter(),
         watcher: makeHeuristicWatcher(),
       };
-      return;
+      return "none";
     }
-    const model = rt.repo.getSetting("gemini_model", DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
+    const model = rt.repo.getSetting("gemini_model", process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
     try {
       const next: Adapters = {
         ...rt.ctx.adapters,
@@ -239,9 +247,10 @@ export function registerSettings(app: Express, rt: RouteCtx): void {
       };
       rt.ctx.adapters = next;
       rt.repo.setSetting("gemini_last_error", "");
-      return;
+      return stored ? "secret" : "env";
     } catch (e) {
       rt.repo.setSetting("gemini_last_error", (e as Error).message.slice(0, 300));
+      return "none";
     }
   };
   // Boot with a key that was saved earlier (server restarts keep it working).
@@ -255,19 +264,27 @@ export function registerSettings(app: Express, rt: RouteCtx): void {
       rt.repo.deleteSecret("gemini_api_key");
       rt.repo.setSetting("gemini_last_error", "");
       // N1: the message below is only true if the adapters actually go
-      // back to mock — rebuild before claiming it.
-      rebuildAdapters();
+      // back to mock — rebuild before claiming it. But an env key keeps
+      // live reading on: say so instead of lying about "mock".
+      const source = rebuildAdapters();
+      if (source === "env") {
+        rt.repo.audit(null, req.staff!.username, "gemini_disabled", "Stored key removed — GEMINI_API_KEY in the environment keeps live reading on");
+        return res.redirect(back("Stored key removed — but GEMINI_API_KEY is still set in the environment, so live reading stays on. Unset it there and restart to go back to text/OCR only."));
+      }
       rt.repo.audit(null, req.staff!.username, "gemini_disabled", "API key removed — back to mock reading");
       return res.redirect(back("Gemini key removed. Document reading falls back to text/OCR only."));
     }
-    if (!key && !rt.repo.hasSecret("gemini_api_key")) {
+    // Same precedence as rebuildAdapters: a pasted key wins, then the
+    // stored secret, then the environment.
+    const effectiveKey = key || rt.repo.getSecret("gemini_api_key").trim() || (process.env.GEMINI_API_KEY ?? "").trim();
+    if (!effectiveKey) {
       return res.redirect(back("Paste a Gemini API key first (get one free at aistudio.google.com/apikey)."));
     }
     if (key) rt.repo.setSecret("gemini_api_key", key);
     rt.repo.setSetting("gemini_model", model);
     // Prove the key with ONE real API call before claiming it works.
     try {
-      const probe = new GeminiVisionAdapter(rt.repo.getSecret("gemini_api_key"), model);
+      const probe = new GeminiVisionAdapter(effectiveKey, model);
       await probe.probeKey();
       rebuildAdapters();
       rt.repo.audit(null, req.staff!.username, "gemini_enabled", `live document reading on (${model})`);
