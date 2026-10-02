@@ -1,6 +1,6 @@
 /**
  * Review-round hardening fixes — RED-first acceptance:
- *  one-shot pack-defaults migration · retention date boundary · shared
+ *  persistent attachment choices · retention date boundary · shared
  *  Gmail sender forwarding extras · non-overlapping inbox poll ·
  *  regex-safe programme codes · transfer wording · export aggregates.
  */
@@ -15,26 +15,35 @@ import { GmailSender } from "../src/ingestion/sender";
 import { retentionDue } from "../src/db/retention";
 import { onceAtATime } from "../src/util/once";
 import { inferProgramme, inferTransfer } from "../src/enrich";
+import { configureTestOrganization } from "./helpers";
 
-describe("pack-defaults migration is one-shot", () => {
+describe("attachment choices persist and are never resurrected", () => {
   it("a staff choice of 'none' survives a database re-open", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ru-mig-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "attach-"));
     const file = path.join(dir, "mig.sqlite");
     try {
       const repo = new Repo(openDb(file));
       seedDefaults(repo);
-      expect(repo.getTemplate("docs_request")?.attach_pack).toBe("application");
-      // staff deliberately turns the pack OFF for the document request
-      const t = repo.getTemplate("docs_request")!;
-      repo.upsertTemplate(t.key, t.name, t.subject, t.body, t.include_banner === 1, "none");
-      expect(repo.getTemplate("docs_request")?.attach_pack).toBe("none");
+      configureTestOrganization(repo);
+      // Nothing ships bundled: the files that ride along are the
+      // organization's OWN set, and a template starts with no attachments.
+      const set = repo.createAttachmentSet(1, "Welcome pack");
+      repo.addAttachmentSetFile(set.id, { filename: "welcome-pack.pdf", content: Buffer.from("%PDF-1.4\nwelcome\n") });
+      const t = repo.getTemplate("docs_request", 1)!;
+      expect(t.attach_pack).toBe("none");
+      // staff attaches the organization's set…
+      repo.upsertTemplate(t.key, t.name, t.subject, t.body, t.include_banner === 1, "Welcome pack", 1);
+      expect(repo.getTemplate("docs_request", 1)?.attach_pack).toBe("Welcome pack");
+      // …then deliberately turns attachments OFF again
+      repo.upsertTemplate(t.key, t.name, t.subject, t.body, t.include_banner === 1, "none", 1);
+      expect(repo.getTemplate("docs_request", 1)?.attach_pack).toBe("none");
       // re-open the same database (server restart) — the choice must stand
       const repo2 = new Repo(openDb(file));
-      expect(repo2.getTemplate("docs_request")?.attach_pack).toBe("none");
-      const a = repo2.getTemplate("admission_letter")!;
-      repo2.upsertTemplate(a.key, a.name, a.subject, a.body, a.include_banner === 1, "none");
+      expect(repo2.getTemplate("docs_request", 1)?.attach_pack).toBe("none");
+      const ack = repo2.getTemplate("ack_received", 1)!;
+      repo2.upsertTemplate(ack.key, ack.name, ack.subject, ack.body, ack.include_banner === 1, "none", 1);
       const repo3 = new Repo(openDb(file));
-      expect(repo3.getTemplate("admission_letter")?.attach_pack).toBe("none");
+      expect(repo3.getTemplate("ack_received", 1)?.attach_pack).toBe("none");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -116,6 +125,7 @@ describe("export aggregates", () => {
   it("document counts and flag types come back in one query each", () => {
     const repo = new Repo(openDb(":memory:"));
     seedDefaults(repo);
+    configureTestOrganization(repo);
     const a = repo.getOrCreateApplicant("agg@example.org", "t-agg");
     const b = repo.getOrCreateApplicant("agg2@example.org", "t-agg2");
     repo.insertDocument({

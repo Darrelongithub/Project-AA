@@ -18,10 +18,9 @@ import { spawnSync } from "node:child_process";
 import { Repo } from "../src/db/repo";
 import { openDb } from "../src/db/db";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { createApp } from "../src/web/server";
 import { hashPassword, verifyPassword } from "../src/util/password";
-import { webLogin } from "./helpers";
+import {webLogin, configureTestOrganization } from "./helpers";
 import type { PipelineContext } from "../src/pipeline/adapters";
 import type { Server } from "http";
 
@@ -31,7 +30,7 @@ let server: Server | undefined;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  configureTestOrganization(repo);
 });
 afterEach(() => { server?.close(); server = undefined; });
 
@@ -119,7 +118,7 @@ describe("B3+B5 — retention: archive dir locked, live realm by default", () =>
     const dbPath = path.join(dir, "t.sqlite");
     const r = new Repo(openDb(dbPath));
     seedDefaults(r);
-    r.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+    configureTestOrganization(r);
     const raw = r as unknown as { db: { prepare: (q: string) => { run: (...x: unknown[]) => unknown; get: (...x: unknown[]) => { n: number } } } };
     const old = new Date(Date.now() - 1000 * 24 * 3600_000).toISOString();
     const live = r.getOrCreateApplicant("old-live@example.ke", "t1");

@@ -22,11 +22,8 @@ export interface DraftContext {
   missingLabels: string[];
   checklist: string;
   statusLabel: string;
-  /** Admission-letter extras. */
-  programme?: string;
-  regDate?: string;
-  orientationDates?: string;
-  /** "We read your KCSE as mean grade B+…" — applicant-friendly read-back. */
+  caseType?: string;
+  /** Contact-friendly document receipt information. */
   readBack?: string;
   /** "We couldn't read page 2 — please re-scan…" — per-document issues. */
   documentIssues?: string;
@@ -49,7 +46,7 @@ export function renderTemplate(
   body: string,
   ctx: DraftContext
 ): { subject: string; body: string } {
-  const name = ctx.name?.trim() ? ctx.name.trim() : "Applicant";
+  const name = ctx.name?.trim() ? ctx.name.trim() : "Contact";
   const first = name.split(/\s+/)[0];
   const missingSection = ctx.missingLabels.length
     ? `We are still missing:\n\n${ctx.missingLabels.map((m) => `  • ${m}`).join("\n")}\n\nPlease send these as PDF attachments in reply to this thread.`
@@ -65,9 +62,8 @@ export function renderTemplate(
     "{checklist}": ctx.checklist,
     "{status}": ctx.statusLabel,
     "{institution}": ctx.institution,
-    "{programme}": ctx.programme?.trim() || "your programme",
-    "{reg_date}": ctx.regDate?.trim() || "the announced registration date",
-    "{orientation_dates}": ctx.orientationDates?.trim() || "the announced orientation dates",
+    "{case_type}": ctx.caseType?.trim() || "your case",
+    "{category}": ctx.caseType?.trim() || "your case",
     "{read_back}": ctx.readBack?.trim() || "",
     "{document_issues}": ctx.documentIssues?.trim() || "",
   };
@@ -81,13 +77,13 @@ export function renderTemplate(
 }
 
 export function checklistText(args: {
-  requirements: Array<{ document_type: DocType; required: boolean }>;
+  requirements: Array<{ document_type: DocType; required: boolean; blocking?: boolean; label?: string }>;
   presentTypes: DocType[];
 }): string {
   const { filled } = fillSlots(args.requirements, args.presentTypes);
   return args.requirements
     .filter((r) => r.required)
-    .map((r) => `${filled.includes(r.document_type) ? "✓" : "✗"} ${docLabel(r.document_type)}`)
+    .map((r) => `${filled.includes(r.document_type) ? "✓" : "✗"} ${r.label ?? docLabel(r.document_type)}`)
     .join("\n");
 }
 
@@ -95,7 +91,7 @@ export function checklistText(args: {
 export function orangeDraft(flags: DerivedFlag[], applicantName?: string, ref = ""): Draft {
   const list = flags.map((f) => `  • [${f.type}] ${f.detail}`).join("\n");
   return {
-    subject: subjectWithRef(ref, "SUGGESTED REPLY (human review required) — application documents"),
+    subject: subjectWithRef(ref, "SUGGESTED REPLY (human review required) — case documents"),
     audience: "human",
     body: `INTERNAL — DO NOT AUTO-SEND.
 All required documents are present, but this file needs human review before any reply goes out.
@@ -103,7 +99,7 @@ All required documents are present, but this file needs human review before any 
 Flags:
 ${list || "  • none recorded"}
 
-Suggested starting point for the reply to ${applicantName || "the applicant"}:
+Suggested starting point for the reply to ${applicantName || "the contact"}:
 
 "Thank you for your documents. We are verifying the details you provided and will come back to you shortly if we need anything further."`,
   };
@@ -118,7 +114,7 @@ export function watcherRedDraft(applicantName?: string, ref = ""): Draft {
 The rules engine marked this file complete, but the final sanity check raised concerns.
 A human must inspect the attachments before replying.
 
-Suggested starting point for the reply to ${applicantName || "the applicant"}:
+Suggested starting point for the reply to ${applicantName || "the contact"}:
 
 "Thank you for your documents. Some items require additional verification on our side; we will contact you if we need anything further."`,
   };

@@ -4,7 +4,7 @@
  *
  * Roles (round 18 onward there are exactly TWO):
  *   admin — everything incl. staff management, settings, templates, exports
- *   user  — case work within their assigned schools (OR-8 scoping)
+ *   user  — case work within their assigned case types (OR-8 scoping)
  */
 import type { NextFunction, Request, Response } from "express";
 import type { Repo } from "../db/repo";

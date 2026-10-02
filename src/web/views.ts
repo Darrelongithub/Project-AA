@@ -91,7 +91,7 @@ export function lifecycleStepper(current: LifecycleStage, labels?: Record<string
 }
 
 /** NOIR gauge: a 280° arc ring, the count centre-stage. Clicking it
- * opens that pipeline level in Admissions — the number is always a door. */
+ * opens that pipeline level in Cases — the number is always a door. */
 export function gauge(opts: { n: number; label: string; href: string; tone?: "purple" | "green" | "orange" | "blue" | "red"; caption?: string }): string {
   const tone = opts.tone ?? "purple";
   const n = Math.max(0, opts.n);
@@ -327,7 +327,6 @@ h2 .small { font-weight: 600; text-transform: none; letter-spacing: 0; }
 .herostat .n { font-family: var(--display); font-size: 46px; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
 .herostat .l { color: var(--muted); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; font-weight: 700; margin-top: 6px; }
 .flowline { color: var(--wine-mid); display: block; margin: 14px 0 26px; }
-.schoolrow td { background: var(--wine-wash); color: var(--wine); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; padding: 7px 12px; border-bottom: 1px solid var(--wine-line); border-top: 1px solid var(--wine-line); }
 .flowline path { stroke-dasharray: 6 0; }
 @media (max-width: 760px) { .hero { flex-direction: column; align-items: flex-start; } .herostat { border-left: none; padding-left: 0; text-align: left; } }
 
@@ -404,7 +403,7 @@ h2 .small { font-weight: 600; text-transform: none; letter-spacing: 0; }
 .attn-row .l { font-size: 13.5px; font-weight: 600; }
 .attn-row .arrow { margin-left: auto; color: var(--muted); transition: transform .15s, color .15s; }
 .attn-row:hover .arrow { transform: translateX(3px); color: var(--wine); }
-/* legacy attention grid (kept for compatibility) */
+/* attention grid — the dashboard tiles */
 .attn-banner { border-left: 2px solid var(--wine-mid); }
 .attn-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 10px; }
 .attn { display: flex; gap: 10px; align-items: center; text-decoration: none; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; font-size: 12.5px; font-weight: 600; transition: border-color .15s; }
@@ -718,7 +717,7 @@ select, input[type="text"], input[type="password"], input[type="email"], textare
   html { scroll-behavior: auto; }
   #splash { display: none !important; }
 }
-/* ── Case file: premium admissions operations dashboard ─────────────────── */
+/* ── Case file: premium intake operations dashboard ─────────────────── */
 /* Identity header — the applicant is unmistakable in two seconds. */
 .case-head { display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap; padding: 26px 30px; margin: 8px 0 16px; border: 1px solid var(--wine-line); border-radius: 14px; background: var(--card); box-shadow: var(--shadow); }
 .case-head .who { display: flex; gap: 18px; align-items: center; min-width: 0; flex: 1; }
@@ -758,7 +757,7 @@ select, input[type="text"], input[type="password"], input[type="email"], textare
 .op-strip .op .lbl { display: block; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .13em; color: var(--muted); margin-bottom: 4px; }
 .op-strip .op .val { font-size: 13.5px; font-weight: 600; }
 
-/* Admission requirements summary. */
+/* Case requirements summary. */
 .req-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
 @media (max-width: 700px) { .req-cols { grid-template-columns: 1fr; } }
 .req-list { margin: 0; padding: 0; list-style: none; }
@@ -1205,11 +1204,11 @@ export function layout(opts: {
   /** Organization-owned identity and colors. */
   institution?: string;
   brand?: { primary: string; accent: string; logo?: string | null; tagline?: string };
-  /** PPR P0-2: the Admissions entry appears only when the education module is on. */
-  educationNav?: boolean;
   /** DEMO: organizations the signed-in admin can switch between. */
   organizations?: Array<{ id: number; name: string }>;
   activeOrganizationId?: number;
+  /** Persistent, non-dismissable operating warning shown above every page. */
+  notice?: string;
 }): string {
   const brand = opts.brand;
   const brandStyle = brand && /^#[0-9a-f]{6}$/i.test(brand.primary) && /^#[0-9a-f]{6}$/i.test(brand.accent)
@@ -1225,10 +1224,9 @@ export function layout(opts: {
 
   // Ctrl+K palette links follow the same role separation as the navigation.
   const paletteLinks: Array<{ label: string; hint: string; href: string; keys: string }> = [];
-  const educationNav = opts.educationNav !== false;
   if (opts.user) {
     paletteLinks.push({ label: "Overview", hint: "home", href: "/", keys: "dashboard home overview" });
-    if (educationNav) paletteLinks.push({ label: "Admissions", hint: "pipeline stages", href: "/admissions", keys: "admissions applications pipeline levels received checked review completed" });
+    paletteLinks.push({ label: "Cases", hint: "pipeline stages", href: "/cases", keys: "intake applications pipeline levels received checked review completed" });
     paletteLinks.push({ label: "Queues", hint: "queues", href: "/applicants", keys: "queues cases review waiting documents human decision enquiries applicants" });
     if (opts.user.role === "admin") {
       paletteLinks.push(
@@ -1251,7 +1249,7 @@ export function layout(opts: {
     // a new browser window (owner requirement).
     const nav: Array<{ href: string; label: string; active: string }> = [
       { href: "/", label: "Overview", active: "dashboard" },
-      ...(educationNav ? [{ href: "/admissions", label: "Admissions", active: "admissions" }] : []),
+      { href: "/cases", label: "Cases", active: "cases" },
       { href: "/applicants", label: "Queues", active: "applicants" },
       { href: "/mail", label: "Mail", active: "mail" },
       { href: "/compose", label: "Compose", active: "compose" },
@@ -1266,7 +1264,7 @@ export function layout(opts: {
       { href: "/account", label: "Account", active: "account" },
     ];
     const navIcons: Record<string, keyof typeof ICONS> = {
-      "Overview": "grid", "Admissions": "chart", "Queues": "inbox", "Mail": "archive",
+      "Overview": "grid", "Cases": "chart", "Queues": "inbox", "Mail": "archive",
       "Compose": "send", "Staff Configuration": "users", "Configuration": "gear",
       "Templates": "clip", "Settings": "gear", "Account": "users",
     };
@@ -1311,6 +1309,7 @@ export function layout(opts: {
   </aside>
   <main class="wrap">
     <div class="workspacebar"><div><span class="workspace-eyebrow">${esc(inst)} <i>/</i> WORKSPACE</span><span class="workspace-caption">Private operations</span></div><button class="searchbtn" id="searchbtn">${icon("search", 16)}<span>Search cases and pages</span><span class="kbd">⌘ K</span></button></div>
+${opts.notice ? `<div class="flash" role="status" id="mail-notice" style="border-left:3px solid var(--orange);margin:0 0 14px">${opts.notice}</div>` : ""}
 ${opts.content}
   </main>
 </div>
@@ -1324,7 +1323,7 @@ ${opts.content}
   } else {
     shell = `
 <div class="publicbar">
-  <div class="brand">${crest(30)}<span class="sr-only">${esc(inst)} — automated admissions</span></div>
+  <div class="brand">${crest(30)}<span class="sr-only">${esc(inst)} — automated intake</span></div>
   <nav>
     ${themeBtn}
   </nav>

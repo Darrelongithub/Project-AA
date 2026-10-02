@@ -7,7 +7,7 @@
  *
  * Requires MODE=live plus GMAIL_* and GEMINI_API_KEY in .env
  */
-import { DEFAULT_REQUIREMENTS, loadConfig } from "../config";
+import { loadConfig } from "../config";
 import { openDb } from "../db/db";
 import { Repo } from "../db/repo";
 import { seedDefaults } from "../db/seed";
@@ -37,9 +37,7 @@ async function main(): Promise<void> {
 
   const repo = new Repo(openDb(cfg.dbPath));
   seedDefaults(repo, { live: true });
-  // Idempotent now (IS-matched upsert) — older versions duplicated every
-  // base rule on each ingest run.
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  if (!repo.listOrganizations().length) throw new Error("Complete first-run setup and configure an organization before ingestion.");
 
   const gmail = new GmailClient(cfg.gmail);
   const adapters = buildAdapters(cfg, new GmailSender(gmail), repo);

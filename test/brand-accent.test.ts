@@ -25,6 +25,7 @@ describe("brand accent: antique gold, not pink", () => {
   it("organizations still on the pink default migrate to the gold accent", () => {
     const repo = new Repo(openDb(":memory:"));
     seedDefaults(repo);
+    repo.createOrganization({ name: "Example Service Cooperative", refPrefix: "ORG" });
     // A database created before the change stores the pink default pair.
     repo.db.prepare("UPDATE organizations SET theme = ? WHERE id = 1")
       .run(JSON.stringify({ primary: "#650019", accent: "#e18b9a" }));
@@ -36,6 +37,7 @@ describe("brand accent: antique gold, not pink", () => {
   it("a deliberately customized theme is never overwritten", () => {
     const repo = new Repo(openDb(":memory:"));
     seedDefaults(repo);
+    repo.createOrganization({ name: "Example Service Cooperative", refPrefix: "ORG" });
     repo.db.prepare("UPDATE organizations SET theme = ? WHERE id = 1")
       .run(JSON.stringify({ primary: "#123456", accent: "#654321" }));
     const theme = organizationTheme(repo, 1);
@@ -46,6 +48,7 @@ describe("brand accent: antique gold, not pink", () => {
   it("new organizations default to gold, and the light theme deepens it for paper", async () => {
     const repo = new Repo(openDb(":memory:"));
     seedDefaults(repo);
+    repo.createOrganization({ name: "Example Service Cooperative", refPrefix: "ORG" });
     expect(organizationTheme(repo, 1).accent.toLowerCase()).toBe("#c89a4a");
 
     repo.createStaff("admin", "Administrator", hashPassword("admin123"), "admin");

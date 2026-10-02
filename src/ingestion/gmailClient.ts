@@ -68,12 +68,34 @@ export class GmailClient {
     refreshToken: string;
     /** Gmail label to watch (default: the inbox). */
     label?: string;
+    /**
+     * Override the Gmail API root URL. Real uses: a corporate proxy or a
+     * sandbox that speaks the same wire format — including the tests, which
+     * run the actual client (MIME building, base64url, thread retry, MIME
+     * parsing) against a local server instead of a hand-written stub.
+     */
+    apiUrl?: string;
+    /**
+     * A live access token. When present and unexpired, no round-trip to
+     * Google's token endpoint is made — which is what lets a sandbox (or a
+     * deployment that manages its own tokens) work without the refresh hop.
+     */
+    accessToken?: string;
+    accessTokenExpiry?: number;
   }) {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { google } = require("googleapis");
     const oauth2 = new google.auth.OAuth2(cfg.clientId, cfg.clientSecret);
-    oauth2.setCredentials({ refresh_token: cfg.refreshToken });
-    this.gmail = google.gmail({ version: "v1", auth: oauth2 });
+    oauth2.setCredentials({
+      refresh_token: cfg.refreshToken,
+      ...(cfg.accessToken
+        ? { access_token: cfg.accessToken, expiry_date: cfg.accessTokenExpiry ?? Date.now() + 3600_000 }
+        : {}),
+    });
+    // `rootUrl` is the googleapis override for the API root: every request path
+    // is resolved against it (new URL(path, rootUrl)), so it must end in "/".
+    const rootUrl = cfg.apiUrl ? (cfg.apiUrl.endsWith("/") ? cfg.apiUrl : `${cfg.apiUrl}/`) : undefined;
+    this.gmail = google.gmail({ version: "v1", auth: oauth2, ...(rootUrl ? { rootUrl } : {}) });
     this.address = cfg.address;
     this.label = cfg.label?.trim() || undefined;
   }
@@ -91,7 +113,7 @@ export class GmailClient {
     const maxPages = opts.maxPages ?? 10;
     // `in:inbox` misses archived mail — a common reason an applicant appears
     // in Gmail but never reaches the console. Read the mailbox-wide region by
-    // default, while excluding messages the admissions app should never
+    // default, while excluding messages the intake app should never
     // triage: sent mail, spam and trash. A configured label remains an
     // intentional narrower watch target.
     const scope = this.label ? `label:${this.label}` : "in:anywhere -in:spam -in:trash -from:me";
@@ -231,6 +253,10 @@ export class GmailClient {
       threadId: msg.threadId,
       from,
       fromName: nameMatch ? nameMatch[1].trim() : undefined,
+      // Which of our mailboxes received it — the tenant attribution signal.
+      // Delivered-To is the envelope recipient when the provider supplies it;
+      // To (and Cc) cover aliases and shared mailboxes.
+      to: [headers["delivered-to"], headers["to"], headers["cc"]].filter(Boolean).join(", "),
       subject: headers["subject"] || "(no subject)",
       body,
       // Some messages (drafts, imported mail) carry no internalDate — a NaN
@@ -328,11 +354,16 @@ export class GmailClient {
         requestBody: { raw: encoded, threadId },
       });
     } catch (e) {
-      const reason = String((e as { errors?: Array<{ reason?: string }>; message?: string })?.errors?.[0]?.reason ?? (e as Error)?.message ?? "");
+      const apiError = e as { errors?: Array<{ reason?: string; message?: string }>; message?: string };
+      // Gmail reports a bad thread as reason "notFound" (no space) with a
+      // human message alongside it. Matching only the message meant the retry
+      // below never fired in production: a deleted or moved conversation made
+      // the reply fail outright instead of going out as a new message.
+      const reason = [apiError?.errors?.[0]?.reason, apiError?.errors?.[0]?.message, apiError?.message].filter(Boolean).join(" ");
       // A stale/unknown thread id (conversation deleted, case created outside
-      // Gmail) used to kill the send entirely. Retry as a fresh message —
-      // the applicant still gets the reply, just as a new thread.
-      if (/thread|not found|invalid/i.test(reason)) {
+      // Gmail) must not kill the send. Retry as a fresh message — the contact
+      // still gets the reply, just as a new thread.
+      if (/thread|not ?found|invalid/i.test(reason)) {
         await this.gmail.users.messages.send({ userId: "me", requestBody: { raw: encoded } });
         return;
       }

@@ -10,8 +10,8 @@
  *      rule decides reply mode (send/draft/hold/none), the template (a fixed
  *      key or a state map), attachment set, follow-up, SLA and audit code.
  *
- * The built-in education scorer can be referenced as a named signal source
- * (`signals: "education_intake"`) — it is the education preset's trigger,
+ * The built-in configured scorer can be referenced as a named signal source
+ * (`signals: "configured_intake"`) — it is the configured preset's trigger,
  * not a hidden boost for every profile. Profiles without rules keep the
  * legacy pipeline behaviour; profiles with rules are fully rule-driven.
  */
@@ -26,7 +26,7 @@ export type RuleCondition =
   | { field: "category"; op: "in" | "not_in"; values: string[] }
   | { field: "body_is_ref"; value: true }
   | { field: "docs_state"; value?: RuleDocsState | RuleDocsState[]; values?: RuleDocsState[] }
-  | { field: "signals"; value: "education_intake" };
+  | { field: "signals"; value: "configured_intake" };
 
 /**
  * Document posture of the case at match time:
@@ -103,8 +103,8 @@ export interface RuleMatchInput {
   category: string;
   /** The body is just this case's own reference number. */
   bodyIsRef: boolean;
-  /** Result of the built-in education scorer: "open" | "parked". */
-  educationSignals: "open" | "parked";
+  /** Result of the built-in configured scorer: "open" | "parked". */
+  intakeSignals: "open" | "parked";
   /** Current document posture of the case (see RuleDocsState). */
   docsState: "complete" | "empty" | "missing" | "dirty";
   /** How many documents are on file (for `docs_state: any`). */
@@ -148,7 +148,7 @@ export function conditionMatches(cond: RuleCondition, input: RuleMatchInput): bo
       );
     }
     case "signals":
-      return cond.value === "education_intake" && input.educationSignals === "open";
+      return cond.value === "configured_intake" && input.intakeSignals === "open";
     default:
       return false;
   }
@@ -162,7 +162,7 @@ export function ruleMatches(rule: WorkflowRule, input: RuleMatchInput): boolean 
 
 /** First matching rule in position order (then id for stability). */
 export function firstMatchingRule(rules: WorkflowRule[], input: RuleMatchInput): WorkflowRule | null {
-  const ordered = [...rules].sort((a, b) => a.position - b.position || a.id - b.id);
+  const ordered = [...rules].sort((a, b) => Number(a.case_type_id === null) - Number(b.case_type_id === null) || a.position - b.position || a.id - b.id);
   for (const rule of ordered) {
     if (ruleMatches(rule, input)) return rule;
   }
@@ -170,10 +170,10 @@ export function firstMatchingRule(rules: WorkflowRule[], input: RuleMatchInput):
 }
 
 /** Rules that may apply to a case: its own type's rules first, then org-wide
- *  legacy-scope rules (case_type_id NULL — migrated/education profiles). */
-export function rulesForCaseScope(rules: WorkflowRule[], caseTypeId: number | null, educationCase: boolean): WorkflowRule[] {
+ *  legacy-scope rules (case_type_id NULL — migrated/configured profiles). */
+export function rulesForCaseScope(rules: WorkflowRule[], caseTypeId: number | null, _legacyScope?: boolean): WorkflowRule[] {
   return rules.filter((r) =>
-    r.case_type_id === caseTypeId || (r.case_type_id === null && (caseTypeId === null || educationCase))
+    r.case_type_id === caseTypeId || r.case_type_id === null
   );
 }
 
@@ -203,7 +203,7 @@ export function describeRule(rule: WorkflowRule): string {
     else if (c.field === "category") bits.push(`category ${c.op.replace(/_/g, " ")} ${(c.values ?? []).join(", ")}`);
     else if (c.field === "body_is_ref") bits.push("body is just the case reference");
     else if (c.field === "docs_state") bits.push(`documents ${((c.values ?? (c.value ? [c.value] : [])) as string[]).join("|")}`);
-    else if (c.field === "signals") bits.push("built-in education intake signals");
+    else if (c.field === "signals") bits.push("built-in configured intake signals");
   }
   const a = rule.action;
   const acts: string[] = [];

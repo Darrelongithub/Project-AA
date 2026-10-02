@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # Project-AA — one-shot Linux setup (Ubuntu/Debian).
 # Other distros: install the equivalents with your package manager
-# (node >= 20, a C/C++ toolchain + python3 for the native modules' fallback
+# (node >= 22.13, a C/C++ toolchain + python3 for the native modules' fallback
 # builds, optionally Chromium for the UI layout probes).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "── Project-AA Linux setup ──────────────────────────────────"
 
-# 1. Node.js 20+ (skip if a suitable node is already on PATH)
+# 1. Node.js 22.13+ (pdf.js 6 requires it; skip if a suitable node is on PATH)
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-if [ "${NODE_MAJOR:-0}" -ge 20 ]; then
+if [ "${NODE_MAJOR:-0}" -ge 22 ]; then
   echo "node $(node -v) found — ok"
 else
   echo "Installing Node.js 20 (NodeSource)…"
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
   sudo apt-get install -y nodejs
 fi
 

@@ -1,67 +1,47 @@
-> **Historical document — superseded by [STATUS.md](./STATUS.md).** Kept for the audit trail; figures and statements may be stale. Do not update.
+# MIGRATION.md — the generic storage migration (v2)
 
-# MIGRATION.md — Production migration plan (PPR P0-7)
+**Scope:** open a database written by an older release of this product and bring its
+*storage* up to the generic, tenant-scoped model — in one transaction, without
+rewriting history and without loading any domain data. Everything below is pinned by
+`test/ppr-p07-migration.test.ts`, which builds a production-shaped legacy copy
+(old table and column names, school-scoped staff, frozen snapshots, audit and decision
+logs, secrets in the settings bag) and opens it exactly like a boot would.
 
-**Scope:** take a live, pre-PPR Riara University database (education-only,
-round-18 shape) to the production-platform schema WITHOUT rewriting a single
-historical row. The migration is the code in `src/db/db.ts` (`openDb` →
-`SCHEMA` + `migrate()`), is idempotent, and is **tested on a production-shaped
-copy** in `test/ppr-p07-migration.test.ts` (real reference numbers, frozen
-requirement snapshots, admission decisions, audit/decision logs, education
-template wording, pack defaults, legacy secrets in the settings bag).
+`openDb()` refuses a database whose `user_version` is **higher** than the code knows
+("created by a newer version") rather than downgrading it, and aborts the whole
+migration if it would introduce a single new foreign-key violation.
 
-## Principles (non-negotiable)
+## Order of operations (`migrate()` in `src/db/db.ts`)
 
-1. **Names stay.** No table or column is renamed or dropped. Everything new is
-   an *extension*: new columns (nullable or defaulted) and new tables.
-2. **History is immutable.** `requirements_snapshot`, `audit_log`,
-   `decision_logs`, `ref_number`, `admission_decision` and every rendered text
-   survive byte-identical. No migration step re-evaluates a case, regenerates a
-   frozen snapshot, or renumbers anything.
-3. **Everything is one-shot or only-NULL.** Marker-guarded steps run once ever
-   (`settings` markers); backfills only touch rows where the new column is
-   still NULL. A re-open (every production restart) is a no-op for anything a
-   human has since changed.
-4. **New tenants are safe.** A brand-new organization starts with draft
-   automation, auto-admit OFF, and the neutral `ORG` prefix. Only the migrated
-   Riara tenant keeps its preserved legacy posture — explicitly.
+| # | Step | Detail |
+|---|---|---|
+| 1 | **Declared renames** | `migrations/legacy-storage.json` maps historical table and column names onto generic ones (`admission_rules → legacy_rule_sets`, `admission_rule_nodes → legacy_rule_nodes`, `admission_decision → legacy_outcome`, `admission_route → outcome_route`, `admission_rules_frozen(_at) → legacy_rule_snapshot/_frozen_at`, `education_module → legacy_module`, `auto_admit → legacy_auto_decision`, `qualification_gate → evidence_gate`). A rename is applied only when the old name exists and the new one does not — never twice. **Storage names only:** no preset, catalogue, identity, grade or decision data is loaded from anywhere. |
+| 2 | **Tables** | `SCHEMA_TABLES` — `CREATE TABLE IF NOT EXISTS` for every table, so existing tables keep their rows and their own shapes. |
+| 3 | **Columns** | `ADDITIONS` — `ALTER TABLE … ADD COLUMN` for each column the running code reads that this database lacks (tenant ids, frozen-configuration columns, follow-up ladder, outbox `needs_approval` **and `claimed_at`**, template snapshots, `case_type_scope_mode`, `active` flags, `emails.read/labels`, `documents.sha256/is_duplicate`, `status_history.reason`, …). An older release's database otherwise opens fine and then fails on the first query, which is how a missing column shipped once already. |
+| 4 | **Indexes** | `SCHEMA_INDEXES` — created **after** the columns, because an index may reference a column step 3 only just added (`idx_documents_hash` on `documents.sha256`). Running the whole schema string in one go used to kill the migration transaction on an upgraded database. |
+| 5 | **Tenant backfill** | `emails.organization_id` is filled from the case each message belongs to. |
+| 6 | **Drop the school dimension** | `staff_users.scope_mode` is dropped, and `staff_scopes` + `schools` tables are removed. Visibility scope is the **case type** now, so anyone who was school-scoped (`scope_mode` `scoped` or `none`) is set to `case_type_scope_mode='none'` — deliberately **narrowed to no access**, never widened. An administrator re-assigns case types on the Team page; `staff_case_type_scopes` starts empty. Accounts that were never scoped keep `unscoped` (full visibility). |
+| 7 | **Rebuild legacy uniqueness** | `applicants UNIQUE(email_address, thread_id)` → `UNIQUE(organization_id, email_address, thread_id)` and `processed_emails PRIMARY KEY(email_id)` → `PRIMARY KEY(organization_id, email_id)`, preserving custom columns, indexes, triggers, row ids and the AUTOINCREMENT high-water mark. Two organizations may now hold the same contact email; a duplicate inside one organization is still refused. |
+| 8 | **One-shot stamps** (marker `generic_storage_v2`) | Historical decision vocabulary is mapped **once** into the generic `outcome` column (`auto_admitted → auto_approved`, `admitted_after_review → approved_after_review`, `not_admitted → not_approved`) and only where `outcome` was still `undecided`; the original text stays readable in `legacy_outcome`. Case types carrying `legacy_module` are set draft-first. If data exists but no organization row does, organization 1 is created from the stored `institution_name` (an installation with no data still boots **empty**). Rows with no tenant are stamped into organization 1. |
+| 9 | **Identity and secrets** | `from_name` moves from the settings bag onto the organization row; `gemini_api_key`, `gmail_client_secret` and `gmail_refresh_token` move into `secrets` (organization-scoped, never rendered or exported) — each exactly once, never overwriting a value already stored. |
+| 10 | **Finish** | Operational indexes, the `cases` view, `user_version = 2`. |
 
-## Steps (in run order, inside `migrate()`)
+## What is never touched
 
-| # | Step | Guard | Evidence |
-|---|------|-------|----------|
-| 1 | `ALTER TABLE … ADD COLUMN` extension columns (`applicants.case_config_frozen`, `config_version_frozen(_at)`, `queue`, `followup_action`, `case_type_id`, `organization_id`, `category`, …; `case_types.education_module/terminology/stages/queues/config_version/default_reply_action/qualification_gate/auto_admit`; `outbox.needs_approval`; `templates.default_snapshot`; `organizations.ref_prefix/from_name/reply_to/locale/timezone`; …) | `duplicate column name` no-op | test 1 |
-| 2 | New tables: `secrets`, `workflow_rules`, `attachment_sets`, `attachment_set_files`, `organization_templates`, `staff_permissions`, `staff_scopes`, `schools` | `CREATE TABLE IF NOT EXISTS` | test 1 |
-| 3 | **Education profile stamp**: `case_types` rows of Organization #1 whose code is `GENERAL` or matches a programme become `education_module=1, qualification_gate=1, default_reply_action='send'` (preserved legacy automation), `auto_admit=0`, `config_version=1` | `education_profiles_stampled` → **`education_profiles_stamped`** marker, once ever | test 2 |
-| 4 | **Profile-id stamp on cases**: legacy `applicants` rows get `case_type_id` (programme-derived type, else `GENERAL`), `organization_id=1`, `category=programme` | only-NULL / only-NULL-org | test 2 |
-| 5 | **Config freeze**: every case is stamped `config_version_frozen=1` (opened under the configuration that shipped with this database) | only-NULL | test 2 |
-| 6 | **Secrets extraction**: `gemini_api_key`, `gmail_client_secret`, `gmail_refresh_token` move from `settings` to `secrets`, then the settings rows are deleted | value exists in `secrets` before delete; re-run finds nothing | test 3 |
-| 7 | **`from_name` → `organizations.from_name`**, settings key dropped only after the org row carries the value | `UPDATE … WHERE from_name IS NULL` | test 3 |
-| 8 | **Ref prefixes**: `organizations.ref_prefix` takes the legacy `settings.ref_prefix` (`RU`) once; `ref_counters` untouched — reference numbers continue their sequence | `WHERE ref_prefix IS NULL OR ref_prefix = 'ORG'` | test 3 |
-| 9 | **Pack defaults**: `templates.docs_request → attach_pack='application'`, `admission_letter → 'admission'` | `pack_defaults_migrated` marker, once ever — a later `'none'` (a deliberate staff choice) is never resurrected | test 5 |
-| 10 | Best-effort conversions: `min_grade_points → mean_grade` (KCSE ladder), `postgrad → masters` | only rows with `min_grade_points IS NOT NULL AND mean_grade IS NULL` / `WHERE level='postgrad'` | test 6 |
+Reference numbers, frozen requirement/configuration snapshots, audit and decision logs,
+status history, held drafts, processed-mail claims and recorded outcomes survive
+byte-identical (the outcome *mapping* in step 8 is the single declared exception, and it
+keeps the original wording beside it). Re-opening a migrated database changes nothing:
+the marker makes steps 8–9 one-shot, so a deliberate setting — an automation mode, a
+renamed tenant, a case type opted into sending, an outcome cleared by hand — is never
+re-stamped.
 
-## What the migration NEVER does
+## Historical note
 
-- never re-runs `pack_defaults_migrated` or `education_profiles_stamped`
-  (proven by re-opening the copy after a deliberate post-migration change —
-  test 5);
-- never re-evaluates an application or regenerates `requirements_snapshot`;
-- never edits audit text, decision-log reasoning, or reference numbers;
-- never applies the education matrix to a non-education profile.
-
-## Rollback
-
-The migration is additive; a rollback is a code rollback plus the previous
-binary reading the same columns (old code ignores extension columns and the
-new tables). The only destructive steps are the two settings-key deletions
-(secrets + `from_name`), whose values are safely copied first; rolling back the
-code without restoring those keys leaves secrets unread — restore from backup
-in that case. Take the usual file-level SQLite backup before booting the new
-binary.
-
-## Verification
-
-`npx vitest test/ppr-p07-migration.test.ts` — 6 tests, each named after the
-invariant it evidences, running against the production-shaped copy described
-above. The Section 3 report (`PPR-REPORT.md`) cites this evidence per finding.
+Earlier releases of this product were an admissions console, and their migration also
+stamped an education profile, converted grade-point ladders and seeded bundled document
+packs. That domain migration is **gone**: no preset, catalogue, points ladder, bundled
+PDF or education profile option remains in the codebase, and a fresh installation boots
+empty. What survives is the storage-name mapping in step 1, so a database written by
+those releases can still be opened and upgraded — its historical rows keep their meaning
+under generic names, and its staff must be re-assigned case types.

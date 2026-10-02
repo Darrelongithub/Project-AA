@@ -15,7 +15,7 @@ export function extractPhone(text: string): string | null {
   return `+254${m[1]}`;
 }
 
-/** Words that appear in everyday admissions correspondence — they must never
+/** Words that appear in everyday intake correspondence — they must never
  * count as programme keywords on their own. ("COMMUNICATION" appears in every
  * contact footer, so letting it match alone sent whole batches of unrelated
  * applicants to Certificate in Communication.) */
@@ -85,7 +85,7 @@ export function inferProgramme(
  * institution. Conservative on purpose — a stray "transfer" (bank transfer,
  * fee transfer) must not flip an applicant into the transfer track. But the
  * checklist's own wording ("transfer letter") and the plain "transfer INTO a
- * course" are unambiguous admissions language and must be recognised: missing
+ * course" are unambiguous intake language and must be recognised: missing
  * them means a real transfer applicant is never asked for the transfer form. */
 export function inferTransfer(text: string): boolean {
   if (!text) return false;

@@ -22,10 +22,9 @@ import * as http from "node:http";
 import { Repo } from "../src/db/repo";
 import { openDb } from "../src/db/db";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { createApp } from "../src/web/server";
 import { hashPassword } from "../src/util/password";
-import { webLogin } from "./helpers";
+import {webLogin, configureTestOrganization } from "./helpers";
 import type { PipelineContext } from "../src/pipeline/adapters";
 import type { Server } from "http";
 
@@ -35,7 +34,7 @@ let server: Server | undefined;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  configureTestOrganization(repo);
   repo.createStaff("admin", "OAuth Admin", hashPassword("admin123"), "admin");
 });
 afterEach(() => { server?.close(); server = undefined; });
@@ -60,12 +59,12 @@ describe("D1 — OAuth redirect_uri is never a bare bind address", () => {
     expect(await redirectUri("http", "[::]:8080")).toBe("http://localhost:8080/settings/gmail/callback");
     expect(await redirectUri("http", "localhost:8080")).toBe("http://localhost:8080/settings/gmail/callback");
     expect(await redirectUri("http", "127.0.0.1:8080")).toBe("http://127.0.0.1:8080/settings/gmail/callback");
-    expect(await redirectUri("https", "admissions.example.ke")).toBe("https://admissions.example.ke/settings/gmail/callback");
+    expect(await redirectUri("https", "intake.example.org")).toBe("https://intake.example.org/settings/gmail/callback");
   });
 
   it("helper: a configured public base URL wins (reverse proxy / HTTPS), trailing slashes trimmed", async () => {
-    repo.setSetting("gmail_public_base_url", "https://admissions.riara.ac.ke/");
-    expect(await redirectUri("http", "0.0.0.0:8080")).toBe("https://admissions.riara.ac.ke/settings/gmail/callback");
+    repo.setSetting("gmail_public_base_url", "https://intake.example.org/");
+    expect(await redirectUri("http", "0.0.0.0:8080")).toBe("https://intake.example.org/settings/gmail/callback");
   });
 
   it("route: connecting from a 0.0.0.0 visit hands Google a localhost redirect_uri", async () => {

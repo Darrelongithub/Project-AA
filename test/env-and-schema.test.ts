@@ -19,6 +19,7 @@ import { processEmail } from "../src/pipeline";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
 import type { IncomingEmail } from "../src/types";
+import { configureTestOrganization } from "./helpers";
 
 afterEach(() => {
   delete process.env.PORT;
@@ -56,12 +57,13 @@ describe("corrupt numeric SETTINGS cannot crash intake", () => {
   it("sla_target_hours=garbage still sets a valid SLA due date on triaged mail", async () => {
     const repo = new Repo(openDb(":memory:"));
     seedDefaults(repo);
+    configureTestOrganization(repo);
     repo.setSetting("sla_target_hours", "as soon as possible"); // poison
     const sender = new MockSender();
     const ctx: PipelineContext = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
     const res = await processEmail({
       id: "sla-poison-1", threadId: "sla-poison", from: "poison@example.org",
-      subject: "Admission enquiry", body: "What documents do you need?",
+      subject: "Service request enquiry", body: "What information do you need from me?",
       receivedAt: "2026-09-14T09:00:00Z", attachments: [],
     } as IncomingEmail, ctx);
     expect(res.skipped).not.toBe(true);

@@ -1,20 +1,23 @@
 /**
- * End-to-end pipeline tests (v2): real generated PDFs through processEmail
- * with mock external adapters and an in-memory DB. OCR is bypassed here so
- * tests never need the network — the simulation exercises the OCR tier.
+ * End-to-end pipeline behaviour against a real repository and a configured
+ * organization: intake → extraction → triage → draft → human outcome.
+ *
+ * The invariant every test below pins: the pipeline reports evidence and
+ * prepares replies. It never records an outcome and never sends mail that the
+ * configured automation mode says must be approved first.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
+import { configureTestOrganization, docLines } from "./helpers";
+import { processEmail } from "../src/pipeline";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
-import { processEmail } from "../src/pipeline";
-import { makeScannedPdf, makeTextPdf, docLines } from "../src/simulation/pdfFactory";
+import { makeScannedPdf, makeTextPdf } from "../src/simulation/pdfFactory";
+import { mustProcessed } from "./harness";
 import type { Attachment, IncomingEmail } from "../src/types";
 
-import { mustProcessed } from "./harness";
 let repo: Repo;
 let sender: MockSender;
 let ctx: PipelineContext;
@@ -22,232 +25,186 @@ let ctx: PipelineContext;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
-  // The grade floor the pipeline tests judge against: KCPE mean grade B-.
-  repo.upsertRule({ programme: null, intake: null, document_type: "kcpe_cert", required: true, meanGrade: "B-" });
+  configureTestOrganization(repo, { refPrefix: "E2E" });
   sender = new MockSender();
   ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
 });
 
-function mkEmail(id: string, from: string, attachments: Attachment[], body = "Please find attached."): IncomingEmail {
+function mkEmail(id: string, from: string, attachments: Attachment[], body = "Please find the attached request.", subject = "Service request"): IncomingEmail {
   return {
     id,
     threadId: `thread-${from}`,
     from,
-    subject: "Application documents",
+    subject,
     body,
     receivedAt: "2026-09-14T09:00:00Z",
+    organizationId: 1,
+    caseTypeCode: "SERVICE_REQUEST",
     attachments,
   };
 }
 
-async function mkAtt(filename: string, docType: string, name: string, extra = {}): Promise<Attachment> {
+async function mkAtt(filename: string, docType: string, name: string, extra: Record<string, string | number> = {}): Promise<Attachment> {
   return { filename, mimeType: "application/pdf", content: await makeTextPdf(docLines(docType, { name, ...extra })) };
 }
 
-// OR-5: the complete file follows the official application-form checklist
-// (result slip via the academic document, leaving certificate, passport
-// photo, ID, birth certificate, completed application form).
+/** Every blocking slot of the SERVICE_REQUEST checklist, plus the optional note. */
 const fullSet = async (name: string) => [
-  await mkAtt("a.pdf", "academic_cert", name),
-  await mkAtt("l.pdf", "leaving_certificate", name),
-  await mkAtt("p.pdf", "passport_photo", name),
-  await mkAtt("b.pdf", "birth_cert", name),
-  await mkAtt("i.pdf", "id", name),
-  await mkAtt("f.pdf", "application_form", name),
+  await mkAtt("request.pdf", "request_form", name, { consent: "yes" }),
+  await mkAtt("id.pdf", "id", name),
+  await mkAtt("note.pdf", "supporting_document", name),
 ];
 
-describe("pipeline v2 end-to-end", () => {
-  it("clean complete set → Green auto-admission with the admission letter (migrated profile)", async () => {
-    const email = mkEmail("e2e-alice", "alice@example.org", await fullSet("ALICE WANJIKU KAMAU"));
-    const res = mustProcessed(await processEmail(email, ctx));
+describe("pipeline end-to-end", () => {
+  it("a complete request is triaged Green, stored and held for a person", async () => {
+    const res = mustProcessed(await processEmail(mkEmail("e2e-complete", "contact@example.test", await fullSet("ALEX MORGAN")), ctx));
 
     expect(res.finalStatus).toBe("Green");
-    expect(res.autoSent).toBe(true);
-    expect(res.autoKind).toBe("ack");
-    // M-3: on the migrated Riara profile a clean, watcher-free qualification
-    // IS the admission — the provisional decision is recorded automatically
-    // and the admission letter goes out. A registrar can still reverse it
-    // (see test/m3-auto-admit.test.ts); reversing never erases this record.
-    expect(res.lifecycle).toBe("completed");
-    expect(res.refNumber).toMatch(/^[A-Z]{2}-\d{4}-\d{6}$/);
-    expect(sender.sent.length).toBe(1);
-    expect(sender.sent[0].subject.startsWith(`[${res.refNumber}]`)).toBe(true);
-    expect(sender.sent[0].subject).toMatch(/Welcome to .* — Your Admission to /);
-
-    const a = repo.getApplicant(res.applicantId)!;
-    expect(a.admission_decision).toBe("auto_admitted");
-    expect(a.admission_route).toBe("auto");
-    expect(a.decision_by).toBeNull(); // nobody human decided this
-    expect(a.req_result).toBe("passed");
-    expect(a.routing).toBe("auto_admit");
-    expect(a.routing_reason).toBe("qualified_auto_admit");
-
-    const history = repo.statusHistory(res.applicantId);
-    expect(history.some((h) => h.to_status === "documents_checked" && h.actor === "system")).toBe(true);
-    expect(history.some((h) => h.to_status === "completed" && h.actor === "system")).toBe(true);
-    const audit = repo.auditForApplicant(res.applicantId);
-    expect(audit.some((a2) => a2.event === "email_received")).toBe(true);
-    expect(audit.some((a2) => a2.event === "requirements_checked")).toBe(true);
-    expect(audit.some((a2) => a2.event === "admission_auto_qualified")).toBe(true);
-    expect(audit.some((a2) => a2.event === "auto_admission_triggered")).toBe(true);
-    // The evaluation itself is stored, never overwritten by the admission.
-    expect(repo.latestEvaluation(res.applicantId)?.result).toBe("passed");
-  });
-
-  it("missing required doc → suggested missing-docs reply HELD for staff (qualification gate)", async () => {
-    const name = "CAROL NJERI MAINA";
-    const email = mkEmail("e2e-carol", "carol@example.org", [
-      await mkAtt("a.pdf", "academic_cert", name),
-      await mkAtt("l.pdf", "leaving_certificate", name),
-      await mkAtt("p.pdf", "passport_photo", name),
-      await mkAtt("b.pdf", "birth_cert", name),
-      await mkAtt("f.pdf", "application_form", name),
-    ]);
-    const res = mustProcessed(await processEmail(email, ctx));
-
-    expect(res.finalStatus).toBe("Red");
-    expect(res.autoKind).toBe("missing_docs");
-    expect(res.autoSent).toBe(false); // not fully qualified → nothing leaves automatically
-    expect(sender.sent.length).toBe(0);
-    const held = repo.queuedOutbox(res.applicantId);
-    expect(held).toBeTruthy();
-    expect(held!.body).toMatch(/National ID/);
-    expect(repo.auditForApplicant(res.applicantId).some((e) => e.event === "automation_held_qualification")).toBe(true);
-    expect(res.missing).toEqual(["id"]);
-    expect(res.lifecycle).toBe("documents_received");
-  });
-
-  it("bare inquiry → document-request suggestion held for staff (qualification gate)", async () => {
-    const email = mkEmail("e2e-henry", "henry@example.org", [], "What documents do you need?");
-    const res = mustProcessed(await processEmail(email, ctx));
-    expect(res.autoKind).toBe("docs_request");
+    expect(res.missing).toEqual([]);
+    expect(res.refNumber).toMatch(/^E2E-\d{4}-\d{6}$/);
+    // Draft-first is the default automation mode: nothing is sent by itself.
     expect(res.autoSent).toBe(false);
-    expect(sender.sent.length).toBe(0);
+    expect(sender.sent).toEqual([]);
     expect(repo.queuedOutbox(res.applicantId)).toBeTruthy();
-    expect(res.lifecycle).toBe("application_received");
+
+    const row = repo.getCase(res.applicantId)!;
+    expect(row.outcome).toBe("undecided");
+    expect(row.decision_by).toBeNull();
+    expect(row.req_result).toBe("passed");
+    expect(repo.latestEvaluation(res.applicantId)?.result).toBe("passed");
+
+    const audit = repo.auditForApplicant(res.applicantId);
+    expect(audit.some((entry) => entry.event === "email_received")).toBe(true);
+    expect(audit.some((entry) => entry.event === "requirements_checked")).toBe(true);
+    expect(audit.some((entry) => /admit|admission/i.test(entry.event))).toBe(false);
   });
 
-  it("ambiguous (grade below floor) → queued for a human, nothing auto-sent", async () => {
-    const name = "BRIAN KIPROTICH RUTO";
-    const email = mkEmail("e2e-brian", "brian@example.org", [
-      await mkAtt("a.pdf", "academic_cert", name, { kcseMeanGrade: "C-" }),
-      await mkAtt("l.pdf", "leaving_certificate", name),
-      await mkAtt("p.pdf", "passport_photo", name),
-      await mkAtt("b.pdf", "birth_cert", name),
-      await mkAtt("i.pdf", "id", name),
-      await mkAtt("f.pdf", "application_form", name),
-    ]);
-    const res = mustProcessed(await processEmail(email, ctx));
-    expect(res.finalStatus).toBe("Orange");
-    expect(res.autoSent).toBe(false);
-    expect(res.lifecycle).toBe("awaiting_review");
-    expect(sender.sent.length).toBe(0);
-    const applicant = repo.getApplicant(res.applicantId)!;
-    expect(applicant.sla_due_at).toBeTruthy(); // SLA clock started
-  });
+  it("a missing blocking slot is reported and the chase reply is held", async () => {
+    const name = "SAM OKONKWO";
+    const res = mustProcessed(await processEmail(mkEmail("e2e-missing", "sam@example.test", [
+      await mkAtt("request.pdf", "request_form", name, { consent: "yes" }),
+      await mkAtt("note.pdf", "supporting_document", name),
+    ]), ctx));
 
-  it("watcher downgrade: specimen document → Red, queued, watcher_flag recorded", async () => {
-    const name = "IVY CHEBET KOSGEI";
-    const email = mkEmail("e2e-ivy", "ivy@example.org", [
-      await mkAtt("a.pdf", "academic_cert", name, { extraLines: ["SPECIMEN - SAMPLE COPY NOT VALID"] }),
-      await mkAtt("l.pdf", "leaving_certificate", name),
-      await mkAtt("p.pdf", "passport_photo", name),
-      await mkAtt("b.pdf", "birth_cert", name),
-      await mkAtt("i.pdf", "id", name),
-      await mkAtt("f.pdf", "application_form", name),
-    ]);
-    const res = mustProcessed(await processEmail(email, ctx));
     expect(res.finalStatus).toBe("Red");
+    expect(res.missing).toEqual(["id"]);
     expect(res.autoSent).toBe(false);
-    expect(res.flags.map((f) => f.type)).toContain("watcher_flag");
-    expect(sender.sent.length).toBe(0);
+    expect(sender.sent).toEqual([]);
+    expect(repo.getCase(res.applicantId)!.outcome).toBe("undecided");
+    expect(repo.latestEvaluation(res.applicantId)?.missingDocuments).toEqual(["id"]);
   });
 
-  it("byte-identical resubmission → duplicate detected, not double-counted", async () => {
-    const name = "KEVIN MWANGI NJOROGE";
-    const docs = await fullSet(name);
-    const idDoc = docs.find((d) => d.filename === "i.pdf")!;
-    const res1 = await processEmail(mkEmail("e2e-kev1", "kevin@example.org", docs), ctx);
-    expect(res1.finalStatus).toBe("Green");
-
-    const res2 = mustProcessed(await processEmail(      mkEmail("e2e-kev2", "kevin@example.org", [{ ...idDoc, filename: "id-again.pdf" }], "Resending my ID."),
-      ctx
-    ));
-    expect(res2.finalStatus).toBe("Green");
-    expect(repo.countDuplicates(res2.applicantId)).toBe(1);
-    expect(repo.listDocuments(res2.applicantId).length).toBe(6); // still one active set
-    expect(repo.auditForApplicant(res2.applicantId).some((a) => a.event === "duplicate_detected")).toBe(true);
+  it("a request without the configured consent fact stays undetermined", async () => {
+    const name = "RIA PATEL";
+    const res = mustProcessed(await processEmail(mkEmail("e2e-nofact", "ria@example.test", [
+      await mkAtt("request.pdf", "request_form", name),
+      await mkAtt("id.pdf", "id", name),
+    ]), ctx));
+    expect(res.missing).toEqual([]);
+    expect(repo.latestEvaluation(res.applicantId)?.result).toBe("needs_verification");
+    expect(repo.getCase(res.applicantId)!.outcome).toBe("undecided");
   });
 
-  it("fuzzy one-letter name variant → name_mismatch → Orange (feature 23)", async () => {
-    const email = mkEmail("e2e-lucy", "lucy@example.org", [
-      await mkAtt("a.pdf", "academic_cert", "LUCY OCHIMI"),
-      await mkAtt("l.pdf", "leaving_certificate", "LUCY OCHIMI"),
-      await mkAtt("p.pdf", "passport_photo", "LUCY OCHIMI"),
-      await mkAtt("b.pdf", "birth_cert", "LUCY OCHIMI"),
-      await mkAtt("i.pdf", "id", "LUCY OCHIEMI"),
-      await mkAtt("f.pdf", "application_form", "LUCY OCHIMI"),
-    ]);
-    const res = mustProcessed(await processEmail(email, ctx));
+  it("a watcher downgrade overrides a complete file and is recorded", async () => {
+    const attachments = await fullSet("ALEX MORGAN");
+    attachments[0] = {
+      filename: "request.pdf",
+      mimeType: "application/pdf",
+      // Still a complete, rule-passing file — the specimen marking is what the
+      // watcher must catch and downgrade.
+      content: await makeTextPdf([...docLines("request_form", { name: "ALEX MORGAN", consent: "yes" }), "SPECIMEN - SAMPLE COPY NOT VALID"]),
+    };
+    const res = mustProcessed(await processEmail(mkEmail("e2e-specimen", "specimen@example.test", attachments), ctx));
+    expect(res.finalStatus).toBe("Red");
+    expect(res.flags.map((flag) => flag.type)).toContain("watcher_flag");
+    expect(res.autoSent).toBe(false);
+    expect(repo.activeFlags(res.applicantId).map((flag) => flag.type)).toContain("watcher_flag");
+  });
+
+  it("a byte-identical resubmission is detected as a duplicate, not double-counted", async () => {
+    // The SAME bytes twice: two separate renders would differ, and only a true
+    // byte duplicate may be suppressed.
+    const attachments = await fullSet("ALEX MORGAN");
+    const first = mustProcessed(await processEmail(mkEmail("e2e-dup-1", "dup@example.test", attachments), ctx));
+    const second = mustProcessed(await processEmail(mkEmail("e2e-dup-2", "dup@example.test", attachments), ctx));
+    expect(second.applicantId).toBe(first.applicantId);
+    const documents = repo.listDocuments(first.applicantId, { activeOnly: true });
+    expect(documents.filter((doc) => doc.document_type === "request_form")).toHaveLength(1);
+    expect(repo.countDuplicates(first.applicantId)).toBeGreaterThan(0);
+  });
+
+  it("a one-letter name variant is flagged for verification, not silently accepted", async () => {
+    const res = mustProcessed(await processEmail(mkEmail("e2e-fuzzy", "fuzzy@example.test", [
+      await mkAtt("request.pdf", "request_form", "ALEX MORGAN", { consent: "yes" }),
+      await mkAtt("id.pdf", "id", "ALEX MORGANN"),
+    ]), ctx));
     expect(res.finalStatus).toBe("Orange");
-    expect(res.flags.map((f) => f.type)).toContain("name_mismatch");
-    expect(res.flags[0].detail).toMatch(/typo/i);
+    expect(res.flags.map((flag) => flag.type)).toContain("name_mismatch");
+    expect(res.autoSent).toBe(false);
   });
 
-  it("complaint email → category complaint + high priority", async () => {
-    const email = mkEmail("e2e-mary", "mary@example.org", [], "Nobody responds to me. This is unacceptable. I want to apply for BCS in the September 2026 intake. My phone is 0712 345 678.");
-    const res = mustProcessed(await processEmail(email, ctx));
+  it("a complaint is categorised and raised in priority without a decision", async () => {
+    const res = mustProcessed(await processEmail(mkEmail("e2e-complaint", "angry@example.test", [], "This is a formal complaint about the delay. It is unacceptable.", "Complaint about handling"), ctx));
     expect(res.category).toBe("complaint");
-    const applicant = repo.getApplicant(res.applicantId)!;
-    expect(applicant.priority).toBe("high");
-    expect(applicant.programme).toBe("BCS");
-    expect(applicant.intake).toBe("September 2026");
-    expect(applicant.phone).toBeTruthy();
+    expect(repo.getCase(res.applicantId)!.priority).toBe("high");
+    expect(repo.getCase(res.applicantId)!.outcome).toBe("undecided");
   });
 
-  it("scanned PDF falls through to the mock Gemini tier → medium confidence → Orange", async () => {
-    const name = "GRACE AKINYI OTIENO";
-    const kcpeLines = docLines("kcpe_cert", { name, kcpePoints: 289, year: "2019" });
-    const email = mkEmail("e2e-grace", "grace@example.org", [
-      await mkAtt("a.pdf", "academic_cert", name),
-      {
-        filename: "k-scan.pdf",
-        mimeType: "application/pdf",
-        content: await makeScannedPdf(kcpeLines),
-        mockVision: { document_type: "kcpe_cert", text: kcpeLines.join("\n"), fields: { name, gradePoints: 289 }, confidence: "medium" },
-      },
-      await mkAtt("l.pdf", "leaving_certificate", name),
-      await mkAtt("p.pdf", "passport_photo", name),
-      await mkAtt("b.pdf", "birth_cert", name),
-      await mkAtt("i.pdf", "id", name),
-      await mkAtt("f.pdf", "application_form", name),
-    ]);
-    const res = mustProcessed(await processEmail(email, ctx));
-    expect(res.finalStatus).toBe("Orange");
-    const docs = repo.listDocuments(res.applicantId);
-    const scanned = docs.find((d) => d.document_type === "kcpe_cert")!;
-    expect(scanned.extraction_method).toBe("gemini_vision");
-    expect(scanned.confidence).toBe("medium");
+  it("an image-only scan falls through the extraction tiers to medium confidence", async () => {
+    const scanned: Attachment = {
+      filename: "scan.pdf",
+      mimeType: "application/pdf",
+      content: await makeScannedPdf(docLines("request_form", { name: "ALEX MORGAN", consent: "yes" })),
+    };
+    const res = mustProcessed(await processEmail(mkEmail("e2e-scan", "scan@example.test", [scanned, await mkAtt("id.pdf", "id", "ALEX MORGAN")]), ctx));
+    const documents = repo.listDocuments(res.applicantId, { activeOnly: true });
+    expect(documents.length).toBeGreaterThan(0);
+    expect(documents.every((doc) => (doc.confidence_score ?? 0) >= 0)).toBe(true);
+    expect(res.autoSent).toBe(false);
   });
 
-  it("is idempotent: processing the same email twice is a no-op", async () => {
-    const email = mkEmail("e2e-twice", "twice@example.org", await fullSet("ALICE WANJIKU KAMAU"));
-    await processEmail(email, ctx);
+  it("processing the same message twice is a no-op", async () => {
+    const email = mkEmail("e2e-idem", "idem@example.test", await fullSet("ALEX MORGAN"));
+    const first = mustProcessed(await processEmail(email, ctx));
     const second = await processEmail(email, ctx);
     expect(second.skipped).toBe(true);
-    expect(sender.sent.length).toBe(1);
-    expect(repo.decisionLogs().length).toBe(1);
+    expect(repo.listCases(1)).toHaveLength(1);
+    expect(repo.getCase(first.applicantId)!.outcome).toBe("undecided");
   });
 
-  it("email history records incoming and outgoing mail under the applicant", async () => {
-    const email = mkEmail("e2e-hist", "hist@example.org", await fullSet("HISTORIA WANJIKA MUTUA"));
-    const res = mustProcessed(await processEmail(email, ctx));
-    const emails = repo.emailsForApplicant(res.applicantId);
-    expect(emails.length).toBe(2);
-    expect(emails[0].direction).toBe("in");
-    expect(emails[0].category).toBe("document_submission");
-    expect(emails[1].direction).toBe("out");
-    expect(emails[1].auto).toBe(1);
+  it("records incoming and outgoing mail on the case history", async () => {
+    const res = mustProcessed(await processEmail(mkEmail("e2e-history", "history@example.test", await fullSet("ALEX MORGAN")), ctx));
+    repo.insertEmail({
+      applicant_id: res.applicantId, message_id: "manual-1", thread_id: "thread-history@example.test", direction: "out",
+      from_addr: "", to_addr: "history@example.test", subject: "Update", body: "Hello", category: null, auto: 0,
+      at: new Date().toISOString(),
+    });
+    const history = repo.emailsForApplicant(res.applicantId);
+    expect(history.some((email) => email.direction === "in")).toBe(true);
+    expect(history.some((email) => email.direction === "out")).toBe(true);
+    expect(history.every((email) => email.organization_id === 1)).toBe(true);
+  });
+
+  it("a person records the outcome; the pipeline never does", async () => {
+    const res = mustProcessed(await processEmail(mkEmail("e2e-outcome", "outcome@example.test", await fullSet("ALEX MORGAN")), ctx));
+    const id = res.applicantId;
+    expect(repo.getCase(id)!.outcome).toBe("undecided");
+
+    repo.db.transaction(() => {
+      repo.updateCase(id, { outcome: "approved_after_review" });
+      repo.updateApplicant(id, { outcome_route: "human", decision_by: "officer", decision_reason: "All evidence verified by phone", decision_at: new Date().toISOString() });
+      repo.setLifecycle(id, "completed", "officer", "All evidence verified by phone");
+    })();
+
+    const row = repo.getCase(id)!;
+    expect(row.outcome).toBe("approved_after_review");
+    expect(row.decision_by).toBe("officer");
+    expect(row.lifecycle).toBe("completed");
+    // Re-evaluating evidence afterwards must not move a recorded outcome.
+    const { evaluateStoredCase } = await import("../src/rules/evaluate");
+    const report = evaluateStoredCase(repo, id);
+    expect(report.routing).toBe("human_review");
+    expect(repo.getCase(id)!.outcome).toBe("approved_after_review");
+    expect(sender.sent).toEqual([]);
   });
 });

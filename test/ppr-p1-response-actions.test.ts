@@ -19,7 +19,7 @@ import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
 import { createApp } from "../src/web/server";
 import { hashPassword } from "../src/util/password";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization, releaseAutomation } from "./helpers";
 import { processEmail } from "../src/pipeline";
 import { runFollowUpSweep } from "../src/followups";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
@@ -29,6 +29,7 @@ import type { IncomingEmail } from "../src/types";
 function fresh(): Repo {
   const repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  configureTestOrganization(repo);
   return repo;
 }
 
@@ -89,14 +90,15 @@ describe("PPR P1-3: explicit response actions — approve gate + follow-up rung 
     const approverLogin = await webLogin(base, "approver", "approver1");
     approverAuth = { cookie: approverLogin.cookie, csrf: approverLogin.csrf };
 
-    // Non-academic profile via the real admin route (invariant f: draft default).
+    // A new case type via the real admin route (invariant f: draft-first, and
+    // the evidence gate ON — automation is opt-in twice over).
     expect((await post("/config/case-types/create", {
       organization_id: "1", code: "RES", name: "Resident services", category: "general",
     })).status).toBe(302);
     resId = repo.getCaseType("RES", 1)!.id;
     expect(repo.getCaseType("RES", 1)!.default_reply_action).toBe("draft");
-    expect(repo.getCaseType("RES", 1)!.qualification_gate).toBe(0);
-    // The profile owns its document slots (P1-4 territory): give it real
+    expect(repo.getCaseType("RES", 1)!.evidence_gate).toBe(1);
+    // The case type owns its document slots (P1-4 territory): give it real
     // required documents so follow-up ladders have something to chase.
     for (const [i, doc] of [["proof_of_address", "Proof of address"], ["id_photo", "Identity photo"]].entries()) {
       expect((await post("/config/case-types/document", {
@@ -237,14 +239,16 @@ describe("PPR P1-3: explicit response actions — approve gate + follow-up rung 
     expect(repo.auditForApplicant(aid).some((a) => a.event === "followup_awaiting_approval")).toBe(true);
   });
 
-  it("\"send\" rungs obey the qualification gate: education keeps holding, un-gated sends", async () => {
-    // Gate-ON (education scope, legacy rules): explicit "send" still holds.
-    // A response rule at position -1 wins the reply decision over the seeded
-    // catch-all; the seeded intake signals open the case ("apply").
+  it("\"send\" rungs obey the evidence gate: a gated case type keeps holding, an un-gated one sends", async () => {
+    // Gate-ON (the fixture's service requests): an explicit "send" still holds.
+    // A case type's OWN rules are evaluated before organization-wide ones, and
+    // within a scope the lowest position wins — so this rule at position -1
+    // takes the reply decision from the fixture's catch-all draft rule.
+    const gated = repo.getCaseType("SERVICE_REQUEST", 1)!;
     expect((await post("/config/workflow-rules/save", {
       name: "Gate-on ladder sends",
       kind: "response",
-      case_type_id: "",
+      case_type_id: String(gated.id),
       position: "-1",
       cond_field_0: "text",
       cond_value_0: "needsendgate",
@@ -256,17 +260,24 @@ describe("PPR P1-3: explicit response actions — approve gate + follow-up rung 
     })).status).toBe(302);
     sender.sent.length = 0;
     const edu = await processEmail(mail({
-      id: "ra-gate-1", from: "gate@example.test", subject: "apply needsendgate", body: "apply — needsendgate", organizationId: 1, caseTypeCode: "education",
+      id: "ra-gate-1", from: "gate@example.test", subject: "service request needsendgate", body: "a service request — needsendgate", organizationId: 1, caseTypeCode: "SERVICE_REQUEST",
     }), ctx);
     const gid = edu.applicantId!;
     expect((repo.getApplicant(gid) as { followup_action?: string }).followup_action).toBe("send");
     repo.setFollowup(gid, 0, pastIso(), pastIso());
     await runFollowUpSweep(repo, ctx);
-    expect(sender.sent.length).toBe(0); // gate-on profile keeps holding
+    expect(sender.sent.length).toBe(0); // a gated case type keeps holding
     expect(repo.queuedOutbox(gid)).toBeTruthy();
     expect(repo.auditForApplicant(gid).some((a) => a.event === "followup_held_qualification")).toBe(true);
 
-    // Gate-OFF (Resident services): explicit "send" actually sends.
+    // Gate-OFF (Resident services): the case type switches the evidence gate
+    // off explicitly, and the global draft-first switch is released (it governs
+    // reminder rungs too) — only then does an explicit "send" rung send.
+    releaseAutomation(repo);
+    expect((await post("/config/case-types/profile", {
+      id: String(resId), evidence_gate: "0",
+    })).status).toBe(302);
+    expect(repo.getCaseType("RES", 1)!.evidence_gate).toBe(0);
     expect((await post("/config/workflow-rules/save", {
       name: "Gate-off ladder sends",
       kind: "intake",
@@ -288,7 +299,7 @@ describe("PPR P1-3: explicit response actions — approve gate + follow-up rung 
     repo.setFollowup(fid, 0, pastIso(), pastIso());
     sender.sent.length = 0;
     await runFollowUpSweep(repo, ctx);
-    expect(sender.sent.length).toBe(1); // explicit action, un-gated profile
+    expect(sender.sent.length).toBe(1); // explicit action, un-gated case type
     expect(repo.auditForApplicant(fid).some((a) => a.event === "followup_sent")).toBe(true);
     expect(repo.auditForApplicant(fid).some((a) => a.event === "followup_held_qualification")).toBe(false);
   });

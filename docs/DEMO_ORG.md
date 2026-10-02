@@ -1,9 +1,10 @@
 # Demo organization — Aperture People Ops
 
 A real, persistent second organization that proves the CaseType engine is
-general. It is seeded **alongside** Organization #1 and never reads, copies or
-edits Organization #1's rows (programmes, document matrix, admission rule
-sets, templates, settings or branding).
+general. It is **optional and off by default**: nothing seeds it on a normal
+boot. When seeded it is created **alongside** the other tenants and never reads,
+copies or edits their rows (case types, document definitions, rule trees,
+templates, settings or branding).
 
 ## Seeding
 
@@ -23,7 +24,7 @@ pieces are added — staff edits are never overwritten. Source:
 | Theme | primary `#1f4e79` (navy), accent `#5fb3a1` (teal) |
 | Logo | inline SVG placeholder (teal aperture ring on navy) |
 | Sender name | Aperture People Ops Team |
-| Education module | off for all CaseTypes (no academic engine, no admissions nav) |
+| Automation | every CaseType is draft-first with the evidence gate on |
 
 ## CaseTypes
 
@@ -95,12 +96,14 @@ never fall back to Organization #1's copy.
   **active** organization; parked (caseless) mail belongs to Organization #1.
 - Mail explicitly addressed to an organization only continues cases in that
   organization (a shared contact email never joins another tenant's case).
-- Organization #1 rows are byte-for-byte identical before and after seeding.
+- The other tenants' rows are byte-for-byte identical before and after seeding.
 - A grep over every seeded demo row, its outbox drafts and sent mail finds no
-  `riara|kcse|kcpe|igcse|programme|school|admission|applicant|university`.
+  domain vocabulary the tenant did not choose. The leak detector in
+  `test/demo-org.test.ts` spells the banned words out (including the retired
+  product's own name) precisely so that they can never reappear.
 - Screens on the walkthrough path are free of those words too; every other
   page is free of `riara|kcse|programme|school|university`. The only
   exception is the organization pickers, which list every organization by
   name on purpose.
-- Tenant admins whose home organization is not #1 never see the switcher and
-  get 403 from `/org/switch`.
+- Administrators whose home organization is not the head office never see the
+  switcher and get 403 from `/org/switch`.

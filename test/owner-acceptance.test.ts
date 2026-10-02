@@ -4,7 +4,7 @@
  * pass (GREEN). See OWNER_ISSUES.md for the evidence log.
  */
 import { describe, expect, it } from "vitest";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization } from "./helpers";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -78,6 +78,7 @@ describe("OR-1: the product contains no mock data", () => {
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           _setup: token,
+          organization_name: "Example Service Cooperative",
           display_name: "Darrel",
           username: "darrel",
           password: "owner-chosen-passphrase",
@@ -100,6 +101,12 @@ describe("OR-1: the product contains no mock data", () => {
       const created = repo.getStaffByUsername("darrel");
       expect(created?.role).toBe("admin");
       expect(verifyPassword("owner-chosen-passphrase", created!.password_hash)).toBe(true);
+      // The same one-time flow created the owner's ORGANIZATION: a fresh
+      // install has no tenants until the owner names one.
+      const org = repo.getOrganization(1)!;
+      expect(org.name).toBe("Example Service Cooperative");
+      expect(created?.organization_id).toBe(org.id);
+      expect(repo.listCaseTypes(org.id)).toEqual([]); // blank until configured
     } finally {
       server.close();
     }
@@ -114,7 +121,7 @@ describe("OR-1: the product contains no mock data", () => {
       const res = await fetch(`${base}/setup`, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ _setup: token, display_name: "X", username: "x", password: "short", confirm: "other" }).toString(),
+        body: new URLSearchParams({ _setup: token, organization_name: "Example Service Cooperative", display_name: "X", username: "x", password: "short", confirm: "other" }).toString(),
         redirect: "manual",
       });
       expect(res.status).toBe(200); // re-renders with the error, nothing created
@@ -128,11 +135,23 @@ describe("OR-1: the product contains no mock data", () => {
     const { repo, ctx } = freshCtx();
     const { base, server } = await startServer(repo, ctx);
     try {
-      // First-run admin via the repo (same path the setup form takes).
-      repo.createStaff("boss", "Owner", hashPassword("first-run-password-1"), "admin");
-      const r = await webLogin(base, "boss", "first-run-password-1");
-      const cookie = r.cookie;
-      const pages = ["/", "/applicants", "/admissions", "/settings", "/staff", "/account", "/login"];
+      // First-run setup over HTTP: the owner account AND its organization.
+      const setupHtml = await (await fetch(`${base}/setup`)).text();
+      const token = (setupHtml.match(/name="_setup" value="([a-f0-9]+)"/) || [])[1] || "";
+      const done = await fetch(`${base}/setup`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          _setup: token, organization_name: "Example Service Cooperative",
+          display_name: "Owner", username: "boss",
+          password: "first-run-password-1", confirm: "first-run-password-1",
+        }).toString(),
+        redirect: "manual",
+      });
+      expect(done.status).toBe(302);
+      const cookie = (done.headers.get("set-cookie") || "").split(";")[0];
+      expect(cookie).toContain("sid=");
+      const pages = ["/", "/applicants", "/mail", "/config", "/templates", "/settings", "/staff", "/account", "/login"];
       for (const p of pages) {
         const res = await fetch(`${base}${p}`, { headers: { cookie }, redirect: "manual" });
         expect(res.status, p).toBe(200);
@@ -161,14 +180,15 @@ describe("OR-1: the product contains no mock data", () => {
     const dbPath = path.join(tmpDir, "contaminated.sqlite");
     const repo = new Repo(openDb(dbPath));
     seedDefaults(repo);
+    configureTestOrganization(repo);
     repo.createStaff("realadmin", "Real Admin", hashPassword("real-password-99"), "admin");
     // Contamination exactly like an old `npm run demo` left behind:
     repo.createStaff("demo_admin", "Demo Admin", hashPassword("demo123"), "admin", true);
     repo.createStaff("demo_user", "Demo User", hashPassword("demo123"), "user", true);
-    const real = repo.getOrCreateApplicant("real.student@gmail.com", "t-real");
+    const real = repo.getOrCreateApplicant("real.contact@example.org", "t-real");
     const mock1 = repo.getOrCreateApplicant("fixture-one@simulation.example", "t-mock1");
     const mock2 = repo.getOrCreateApplicant("fixture-two@simulation.example", "t-mock2");
-    for (const a of [mock1, mock2]) repo.updateApplicant(a.id, { programme: "BBIT" });
+    for (const a of [mock1, mock2]) repo.updateApplicant(a.id, { case_type_code: "SERVICE_REQUEST" });
     // The old demo tool flagged every applicant as mock — simulate exactly that…
     repo.db.prepare("UPDATE applicants SET demo = 1").run();
     // …then keep the genuinely-real row clean, as a live DB would have it.
@@ -180,7 +200,7 @@ describe("OR-1: the product contains no mock data", () => {
     expect(removed.applicants).toBe(2);
     expect(removed.staff).toBe(2);
     // Real data survived
-    expect(repo.getApplicant(real.id)?.email_address).toBe("real.student@gmail.com");
+    expect(repo.getApplicant(real.id)?.email_address).toBe("real.contact@example.org");
     expect(repo.getStaffByUsername("realadmin")).toBeDefined();
     expect(repo.getStaffByUsername("demo_admin")).toBeUndefined();
     expect(repo.getSetting("demo_dataset", "")).toBe("");
@@ -198,17 +218,17 @@ describe("OR-1: the product contains no mock data", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // OR-2 — the status/queue model must follow the pipeline
 // ─────────────────────────────────────────────────────────────────────────────
-import { queueOf } from "../src/admissions/queues";
+import { queueOf } from "../src/rules/queues";
 import type { ApplicantRow } from "../src/types";
 
 function rowFor(over: Partial<ApplicantRow>): ApplicantRow {
   return {
-    id: 1, ref_number: "RU-1", email_address: "x@example.com", thread_id: "t",
-    full_name: null, phone: null, programme: null, intake: null, priority: "normal",
+    id: 1, ref_number: "ORG-2026-000001", email_address: "x@example.org", thread_id: "t",
+    full_name: null, phone: null, case_type_code: null, intake: null, priority: "normal",
     lifecycle: "application_received", assigned_to: null, escalated: 0,
     sla_due_at: null, sla_handled_at: null, routing: null, routing_reason: null,
-    admission_decision: "undecided", followup_next_at: null, created_at: "", updated_at: "",
-    demo: 0, nationality: null, applicant_type: null,
+    outcome: "undecided", followup_next_at: null, created_at: "", updated_at: "",
+    demo: 0, organization_id: 1,
     ...over,
   } as unknown as ApplicantRow;
 }
@@ -218,7 +238,7 @@ describe("OR-2: queue placement follows the pipeline", () => {
     const a = rowFor({ lifecycle: "documents_received" });
     expect(queueOf(a, { hasDocuments: true, lastDirection: null })).toEqual({
       queue: "human_review",
-      sub: "manual_decision_required",
+      sub: "verification_required",
     });
   });
 
@@ -226,15 +246,15 @@ describe("OR-2: queue placement follows the pipeline", () => {
     const a = rowFor({ lifecycle: "awaiting_review" });
     expect(queueOf(a, { hasDocuments: true, lastDirection: "in" })).toEqual({
       queue: "human_review",
-      sub: "manual_decision_required",
+      sub: "verification_required",
     });
   });
 
-  it("missing documents with a follow-up out => waiting on the applicant, plainly worded", () => {
+  it("missing documents with a follow-up out => waiting on the contact, plainly worded", () => {
     const a = rowFor({ routing: "waiting_documents", routing_reason: "missing_documents", followup_next_at: "2026-09-30T00:00:00Z" });
     const p = queueOf(a, { hasDocuments: false, lastDirection: "out" });
     expect(p.queue).toBe("waiting_documents");
-    expect(p.sub).toBe("awaiting_applicant_response");
+    expect(p.sub).toBe("awaiting_contact_response");
   });
 
   it("an escalated case with documents never drops to enquiries", () => {
@@ -320,7 +340,7 @@ describe("OR-4: connections live in Settings, nowhere else", () => {
         headers: { "content-type": "application/x-www-form-urlencoded", cookie },
         body: new URLSearchParams({
           _csrf: csrf,
-          gmail_address: "admissions@riara.example",
+          gmail_address: "intake@example.org",
           gmail_client_id: "12345-abc.apps.googleusercontent.com",
           gmail_client_secret: "GOCSPX-fake-secret",
           gmail_label: "",
@@ -347,7 +367,7 @@ describe("OR-4: connections live in Settings, nowhere else", () => {
         headers: { "content-type": "application/x-www-form-urlencoded", cookie },
         body: new URLSearchParams({
           _csrf: csrf,
-          gmail_address: "admissions@riara.example",
+          gmail_address: "intake@example.org",
           gmail_client_id: "12345-abc.apps.googleusercontent.com",
           gmail_client_secret: "GOCSPX-fake-secret",
           gmail_label: "",

@@ -16,3 +16,10 @@ dist/
 *.sqlite-wal
 *.sqlite-shm
 eng.traineddata
+
+# Phase C bundle backups (local safety copies, never committed)
+backups/
+
+# Labelled message sets contain real mail text: never commit them (docs/LABELLING-GUIDE.md)
+labels/
+*.labels.csv

@@ -60,12 +60,12 @@ export function heuristicWatcher(input: WatcherInput): WatcherResult {
   return { flagged: concerns.length > 0, concerns, source: "heuristic" };
 }
 
-const WATCHER_PROMPT = `You are a final sanity-checker in an admissions document-intake system.
-The deterministic rules engine has marked this applicant file GREEN (complete).
+const WATCHER_PROMPT = `You are a final sanity-checker in an general document-intake system.
+The deterministic rules engine has marked this case file GREEN (complete).
 Your ONLY job: look for reasons a human should double-check before an automatic acknowledgement is sent.
 Look for: names that don't match across documents, a file that seems to be the wrong document type,
 illegible or partial scans, specimen/sample/void markings, duplicate files, or anything else that looks off.
-You never decide admissions outcomes. Respond with ONLY a JSON object:
+You never decide general outcomes. Respond with ONLY a JSON object:
 {"looks_off": true|false, "concerns": ["short concern", ...]}`;
 
 /**
@@ -112,7 +112,6 @@ export class GeminiWatcher {
           extraction_method: d.extraction_method,
           confidence: d.confidence,
           name_on_document: d.name ?? null,
-          grade_points: d.gradePoints ?? null,
           text_excerpt: d.textExcerpt,
         })),
       };

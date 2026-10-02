@@ -1,10 +1,9 @@
 /**
- * PPR P1-9 acceptance: the CORE pipeline works with education fully off and
- * ZERO academic vocabulary — a complete life of a case (intake → documents →
- * checklist → held replies → follow-up ladder → stage movement) inside a
- * brand-new, non-academic ORGANIZATION. Every surface that touches this case
- * is swept for academic words. The full education/KCSE suite remains a
- * separate, untouched suite elsewhere.
+ * PPR P1-9 acceptance: the CORE pipeline carries a complete case life
+ * (intake → documents → checklist → held replies → follow-up ladder → stage
+ * movement) inside a brand-new ORGANIZATION that configured itself through
+ * the real admin routes. Every surface that touches the case — pages, audit
+ * trail, drafts — is swept for domain vocabulary the tenant never chose.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Server } from "http";
@@ -106,16 +105,14 @@ describe("PPR P1-9: core pipeline with education fully off — zero academic voc
     server?.close();
   });
 
-  it("runs a whole case life with education off and no academic words anywhere", async () => {
-    // ── 1. A purely non-academic profile, configured through the UI routes ──
+  it("runs a whole case life on a self-configured profile with no domain words anywhere", async () => {
+    // ── 1. A profile configured through the real admin routes ──
     expect((await post("/config/case-types/create", {
       organization_id: String(orgId), code: "NHS", name: "Neighbourhood help", category: "general",
     })).status).toBe(302);
     const nhs = repo.getCaseType("NHS", orgId)!;
-    expect(nhs.education_module).toBe(0); // education fully OFF
     expect(nhs.default_reply_action).toBe("draft"); // invariant (f)
-    expect(nhs.qualification_gate).toBe(0);
-    expect(nhs.auto_admit).toBe(0); // invariant (f): auto-admit OFF
+    expect(nhs.evidence_gate).toBe(1); // evidence gate ON for a new profile
     svcId = nhs.id;
 
     for (const [i, doc] of [["proof_of_address", "Proof of address"], ["id_photo", "Identity photo"]].entries()) {
@@ -186,7 +183,7 @@ describe("PPR P1-9: core pipeline with education fully off — zero academic voc
     const id = first.applicantId!;
     const row = repo.getApplicant(id)!;
     expect(repo.caseTypeForCase(id)?.code).toBe("NHS");
-    expect(String(row.admission_decision ?? "undecided")).not.toMatch(/admitted|declined/); // nothing ever decided
+    expect(String(row.outcome ?? "undecided")).not.toMatch(/admitted|declined/); // nothing ever decided
     expect(row.requirements_snapshot ?? "").not.toMatch(ACADEMIC);
 
     // The reply is DRAFTED, not sent (invariant f — new profiles draft):
@@ -211,7 +208,7 @@ describe("PPR P1-9: core pipeline with education fully off — zero academic voc
     expect(second.applicantId).toBe(id); // same requester, same case
     const pageAfterDocs = await get(`/case/${id}`);
     expect(pageAfterDocs).toContain("Identity photo");
-    expect(pageAfterDocs).toContain("on file");
+    expect(pageAfterDocs).toMatch(/\d+ received/);
 
     // ── 4. The follow-up ladder fires rungs — drafted for staff ────────────
     expect((repo.getApplicant(id) as { followup_action?: string }).followup_action).toBe("draft");
@@ -250,7 +247,7 @@ describe("PPR P1-9: core pipeline with education fully off — zero academic voc
 
     // And the profile never grew academic fields:
     const finalRow = repo.getApplicant(id)!;
-    expect(String(finalRow.admission_decision ?? "undecided")).not.toMatch(/admitted|declined/);
+    expect(String(finalRow.outcome ?? "undecided")).not.toMatch(/admitted|declined/);
     expect((finalRow as { decision_by?: string | null }).decision_by ?? null).toBeNull();
   });
 });

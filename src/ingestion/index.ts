@@ -66,7 +66,24 @@ export async function ingestNewEmails(
       continue;
     }
 
-    log(`ingestion: processing "${email.subject}" from ${email.from}`);
+    // WHICH tenant owns this message? One mailbox may serve several
+    // organizations, so attribution comes from the address it was delivered
+    // to. Unmatched mail falls back (the only tenant, else the head office)
+    // and SAYS SO: silently filing it under organization 1 is how cases end up
+    // in the wrong workspace with the wrong templates and reference prefix.
+    if (email.organizationId === undefined) {
+      const attribution = repo.organizationForInboundAddress(email.to);
+      if (attribution) {
+        email.organizationId = attribution.organizationId;
+        if (!attribution.matched && repo.listOrganizations().length > 1) {
+          repo.audit(null, "system", "tenant_attribution_fallback",
+            `"${email.subject}" to ${email.to || "(no recipient header)"} named no organization — filed under #${attribution.organizationId}; set each tenant's inbound address under Settings`);
+          log(`ingestion: "${email.subject}" matched no tenant address — filed under organization #${attribution.organizationId}`, "warn");
+        }
+      }
+    }
+
+    log(`ingestion: processing "${email.subject}" from ${email.from} → organization #${email.organizationId ?? 1}`);
     try {
       results.push(await processEmail(email, ctx, opts));
       // Successful processing clears any earlier failure record.

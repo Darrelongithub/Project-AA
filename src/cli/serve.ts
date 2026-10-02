@@ -3,7 +3,7 @@
  *
  * In mock mode it runs fully offline (no Gmail/Gemini needed).
  * In live mode with Gmail configured it ALSO polls Gmail All Mail every 60s,
- * so archived and new admissions emails flow into the dashboard automatically.
+ * so archived and new intake emails flow into the dashboard automatically.
  */
 import { loadConfig } from "../config";
 import { envInt } from "../util/envnum";
@@ -26,6 +26,8 @@ class DelegatingSender implements EmailSender {
   async send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void> {
     await this.inner.send(to, subject, body, threadId, extras);
   }
+  /** Follows the inner sender: connecting Gmail from Settings flips this. */
+  get delivers(): boolean { return this.inner.delivers === true; }
 }
 
 /** Credentials entered in Settings, when a complete DB-managed connection exists. */
@@ -150,8 +152,15 @@ async function main(): Promise<void> {
   const port = cfg.port;
   app.listen(port, "0.0.0.0", () => {
     log(`serve: listening on http://0.0.0.0:${port}`);
-    log(`serve: staff console → /login — on a fresh install you create the administrator account on first visit`);
-    log(`serve: applicants who email just their reference number receive a status reply`);
+    if (sender.delivers !== true) {
+      log(
+        "serve: MAIL IS NOT CONNECTED — automated replies are recorded in the console but NOT delivered. " +
+        "Connect Gmail under Settings → Connections (or set MODE=live with GMAIL_* credentials).",
+        "warn"
+      );
+    }
+    log(`serve: staff console → /login — on a fresh install you name your organization and create the administrator account on first visit`);
+    log(`serve: a fresh workspace is empty — configure case types, checklists and rules before connecting mail`);
   });
 
   // Escalation sweep every 5 minutes (feature 29). The window is re-read

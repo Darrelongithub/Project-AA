@@ -93,22 +93,10 @@ export function parseVisionJson(raw: string): VisionExtraction | null {
   }
 }
 
-const VISION_PROMPT = `You are a document reader for an admissions intake system.
-Examine the attached document and report what you can read.
-Respond with ONLY a JSON object, no markdown, in exactly this shape:
-{
-  "document_type": one of "academic_cert" | "id" | "kcpe_cert" | "birth_cert" | "application_form" | "unknown",
-  "text": "the text visible on the document, as faithfully as you can read it",
-  "fields": {
-    "name": "full name on the document or null",
-    "gradePoints": <number 100-500 if an exam score/points total is shown, else null>,
-    "meanGrade": "letter mean grade e.g. B- or null",
-    "subjectGrades": {"English": "B-", "Mathematics": "C+"},
-    "idNumber": "national ID number or null"
-  },
-  "confidence": "high" | "medium" | "low"
-}
-"subjectGrades" lists every subject grade visible on the document; use {} when none are shown.`;
+const VISION_PROMPT = `You are a document reader for a general intake system.
+Transcribe the visible text faithfully; do not invent unread values or make decisions.
+Return only JSON: {"document_type":"request_form|id|birth_cert|passport_photo|unknown","text":"visible text","fields":{"name":null,"idNumber":null,"dateOfBirth":null},"confidence":"high|medium|low"}.
+If you cannot read a field, use null. The local deterministic pipeline verifies all output.`;
 
 /** A hung vision call must never stall the pipeline forever. */
 const VISION_TIMEOUT_MS = envInt(process.env.GEMINI_TIMEOUT_MS, 60_000);

@@ -15,7 +15,7 @@ import { seedDefaults } from "../src/db/seed";
 import { hashPassword } from "../src/util/password";
 import { createApp } from "../src/web/server";
 import { MockSender, type PipelineContext } from "../src/pipeline/adapters";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization } from "./helpers";
 
 let repo: Repo;
 let server: ReturnType<ReturnType<typeof createApp>["listen"]>;
@@ -26,6 +26,7 @@ let officer: { cookie: string; csrf: string };
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  configureTestOrganization(repo);
   repo.createStaff("admin", "Triage Admin", hashPassword("admin123"), "admin");
   repo.createStaff("off1", "Triage Officer", hashPassword("officer123"), "user");
   const sender = new MockSender();

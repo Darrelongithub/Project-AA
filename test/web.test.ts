@@ -4,18 +4,17 @@
  * case actions, and the public self-service status page.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization, docLines, releaseAutomation } from "./helpers";
 import { mustProcessed } from "./harness";
 import type { Server } from "http";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
 import { processEmail } from "../src/pipeline";
 import { createApp } from "../src/web/server";
-import { makeTextPdf, docLines } from "../src/simulation/pdfFactory";
+import {makeTextPdf } from "../src/simulation/pdfFactory";
 import { hashPassword } from "../src/util/password";
 import type { IncomingEmail } from "../src/types";
 
@@ -30,13 +29,14 @@ let ctx: PipelineContext;
 beforeAll(async () => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  // OR-1: seedDefaults no longer creates accounts — the test provisions its
-  // own admin exactly like the first-run setup screen would.
+  // OR-1: seedDefaults no longer creates tenants or accounts — the test builds
+  // its own configured organization first, then provisions its staff exactly
+  // like the first-run setup screen would.
+  configureTestOrganization(repo);
   repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
   // Test fixtures: a real officer and manager (production-style, not demo).
   repo.createStaff("manager", "Mary Mwangi (User)", hashPassword("manager123"), "user");
   repo.createStaff("jane", "Jane Wairimu (User)", hashPassword("jane123"), "user");
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
 
   sender = new MockSender();
   ctx = {
@@ -44,28 +44,27 @@ beforeAll(async () => {
     adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender },
   };
 
-  // One complete applicant (Green) and one queued (Orange) for the pages to show.
-  const name = "WEB TEST APPLICANT";
+  // One complete case (Green) and one queued (Orange) for the pages to show.
+  const name = "WEB TEST CONTACT";
   const atts = await Promise.all(
     [
-      // OR-5: the complete file follows the official application-form checklist.
-      ["w-academic.pdf", "academic_cert", {}],
-      ["w-leaving.pdf", "leaving_certificate", {}],
-      ["w-photo.pdf", "passport_photo", {}],
-      ["w-birth.pdf", "birth_cert", {}],
-      ["w-id.pdf", "id", {}],
-      ["w-form.pdf", "application_form", {}],
-    ].map(async ([fn, dt, spec]) => ({
-      filename: fn as string,
+      // OR-5: the complete file follows THIS case type's own checklist.
+      ["w-form.pdf", "request_form"],
+      ["w-id.pdf", "id"],
+    ].map(async ([fn, dt]) => ({
+      filename: fn,
       mimeType: "application/pdf",
-      content: await makeTextPdf(docLines(dt as string, { name, ...(spec as object) })),
+      content: await makeTextPdf(docLines(dt, { name })),
     }))
   );
   applicantEmail = "webtest@example.org";
   const email: IncomingEmail = {
     id: "web-e1", threadId: "web-t1", from: applicantEmail, fromName: "Web Test",
-    subject: "Application documents", body: "Attached.", receivedAt: new Date().toISOString(), attachments: atts,
-  };
+    subject: "Service request documents",
+    body: "Please find my request form and identity document attached.\nConsent: yes",
+    organizationId: 1, caseTypeCode: "SERVICE_REQUEST",
+    receivedAt: new Date().toISOString(), attachments: atts,
+  } as IncomingEmail;
   const res = mustProcessed(await processEmail(email, ctx));
   ref = res.refNumber!;
 
@@ -144,13 +143,13 @@ describe("web console", () => {
     expect(html).toContain("Where applicants get stuck");
   });
 
-  it("search finds the applicant by reference number", async () => {
+  it("search finds the case by reference number", async () => {
     const { cookie } = await loginAs("jane", "jane123");
     const res = await fetch(`${base}/applicants?q=${encodeURIComponent(ref)}`, { headers: { cookie } });
     const html = await res.text();
     expect(html).toContain(ref);
-    // full_name is taken from the official documents (title-cased by the pipeline)
-    expect(html).toContain("Web Test Applicant");
+    // full_name is read from the documents themselves (title-cased by the pipeline)
+    expect(html).toContain("Web Test Contact");
   });
 
   it("case page shows checklist, documents, email history and audit trail", async () => {
@@ -160,9 +159,10 @@ describe("web console", () => {
     const html = await res.text();
     expect(html).toContain(ref);
     expect(html).toContain("✓");
-    // OR-5: the complete file follows the official checklist — an uploaded
-    // checklist document is shown on the case page.
-    expect(html).toContain("Birth Certificate");
+    // OR-5: the complete file follows THIS case type's checklist — every
+    // received document is shown on the case page.
+    expect(html).toContain("Request form");
+    expect(html).toContain("Identity document");
     expect(html).toContain("Email history");
     expect(html).toContain("Audit log");
     expect(html).toContain("Status history");
@@ -213,8 +213,8 @@ describe("web console", () => {
     expect(home).toContain('id="splash"');
     expect(home).toContain('class="sitehead sidebar"');
     expect(home).toContain('id="palette"');
-    expect(home).toContain("Riara University");
-    expect(home).toContain("Nurturing Innovations");
+    expect(home).toContain("Example Service Cooperative");
+    expect(home).toContain("Your workspace"); // the default tagline
     expect(home).toContain('data-theme="light"');
     // The bundled Manrope variable font now handles both display and interface text.
     expect(home).toContain("/assets/fonts/manrope.woff2");
@@ -287,30 +287,29 @@ describe("web console v3", () => {
   async function fullSetAtts(name: string) {
     return Promise.all(
       [
-        // OR-5: complete file per the official application-form checklist.
-        ["v3-academic.pdf", "academic_cert", {}],
-        ["v3-leaving.pdf", "leaving_certificate", {}],
-        ["v3-photo.pdf", "passport_photo", {}],
-        ["v3-birth.pdf", "birth_cert", {}],
-        ["v3-id.pdf", "id", {}],
-        ["v3-form.pdf", "application_form", {}],
-      ].map(async ([fn, dt, spec]) => ({
-        filename: fn as string,
+        // OR-5: a complete file per THIS case type's own checklist.
+        ["v3-form.pdf", "request_form"],
+        ["v3-id.pdf", "id"],
+      ].map(async ([fn, dt]) => ({
+        filename: fn,
         mimeType: "application/pdf",
-        content: await makeTextPdf(docLines(dt as string, { name, ...(spec as object) })),
+        content: await makeTextPdf(docLines(dt, { name })),
       }))
     );
   }
 
-  it("decision replay page renders the step chain (feature 32)", async () => {
+  it("evaluation history page renders the frozen configuration and every run (feature 32)", async () => {
     const { cookie } = await login();
     const a = repo.findByRef(ref)!;
     const res = await fetch(`${base}/case/${a.id}/replay`, { headers: { cookie } });
     const html = await res.text();
     expect(res.status).toBe(200);
-    expect(html).toContain("Decision replay");
-    expect(html).toContain("Email received");
-    expect(html).toContain("Rules engine ran");
+    expect(html).toContain("Evaluation history");
+    expect(html).toContain("Frozen configuration");
+    expect(html).toContain("Evaluation runs");
+    // The run's own reasoning is quoted verbatim, so any verdict is explainable.
+    expect(html).toContain("Requirement check");
+    expect(html).toMatch(/Verdict: (Green|Orange|Red)/);
   });
 
   it("staff can add and toggle tasks on a case (feature 25)", async () => {
@@ -319,12 +318,12 @@ describe("web console v3", () => {
     const add = await fetch(`${base}/case/${a.id}/task/add`, {
       method: "POST",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${csrf}&title=${encodeURIComponent("Verify certificate with KNEC")}`,
+      body: `_csrf=${csrf}&title=${encodeURIComponent("Verify the identity document with its issuer")}`,
       redirect: "manual",
     });
     expect(add.status).toBe(302);
     const page = await (await fetch(`${base}/case/${a.id}`, { headers: { cookie } })).text();
-    expect(page).toContain("Verify certificate with KNEC");
+    expect(page).toContain("Verify the identity document with its issuer");
     const task = repo.listTasks(a.id)[0];
     const toggle = await fetch(`${base}/case/${a.id}/task/toggle`, {
       method: "POST",
@@ -342,9 +341,10 @@ describe("web console v3", () => {
     const res = mustProcessed(await processEmail(
       {
         id: "web-held-1", threadId: "web-held-t", from: "held@example.org", fromName: "Held One",
-        subject: "Application documents", body: "Attached.",
+        subject: "Service request documents", body: "Please find my papers attached.\nConsent: yes",
+        organizationId: 1, caseTypeCode: "SERVICE_REQUEST",
         receivedAt: new Date().toISOString(), attachments: await fullSetAtts("HELD FOR APPROVAL"),
-      },
+      } as IncomingEmail,
       ctx
     ));
     expect(res.finalStatus).toBe("Green");
@@ -388,6 +388,12 @@ describe("web console v3", () => {
     });
     expect(dl.status).toBe(302);
     expect(repo.intakeDeadline("January 2027")).toContain("2027-01-15");
+    // The window is visible AND editable — a deadline saved here is not a
+    // write-only setting.
+    const config = await (await fetch(`${base}/config?tab=requirements`, { headers: { cookie } })).text();
+    expect(config).toContain("Submission windows");
+    expect(config).toContain("January 2027");
+    expect(config).toContain('value="2027-01-15"');
   });
 });
 
@@ -400,16 +406,16 @@ describe("production-readiness pass", () => {
       "Completed / Verification",
       "Waiting for Documents",
       "Human Review Required",
-      "Admissions / Decision",
+      "Outcomes",
       "Enquiries &amp; Communication",
     ]) {
       expect(page).toContain(label);
     }
     // The Human Review queue is the default landing; subchips say "why".
     expect(page).toContain("/applicants?queue=human_review");
-    expect(page).toContain("Entry requirements not met — decide manually");
+    expect(page).toMatch(/Evidence requires verification|Ready for review|Escalated/);
     const filtered = await (await fetch(`${base}/applicants?queue=waiting_documents`, { headers: { cookie } })).text();
-    expect(filtered).toContain("Missing documents");
+    expect(filtered).toContain("Missing information");
   });
 
   it("case draft UI hides INTERNAL boilerplate and refuses to send it", async () => {
@@ -421,6 +427,8 @@ describe("production-readiness pass", () => {
       body: "INTERNAL — DO NOT AUTO-SEND.\nThis case requires human review before any reply goes out. See flags and reasoning.",
       mode: "queued",
     });
+    // The pipeline may hold its own draft on this case; track THIS row by id.
+    const mine = (repo.db.prepare("SELECT id FROM outbox WHERE applicant_id = ? ORDER BY id DESC LIMIT 1").get(a.id) as { id: number }).id;
     const page = await (await fetch(`${base}/case/${a.id}`, { headers: { cookie } })).text();
     expect(page).toContain("Draft held for approval");
     expect(page).not.toContain("INTERNAL — DO NOT AUTO-SEND");
@@ -444,7 +452,7 @@ describe("production-readiness pass", () => {
       redirect: "manual",
     });
     expect(ok.status).toBe(302);
-    expect(repo.queuedOutbox(a.id)).toBeUndefined();
+    expect(repo.db.prepare("SELECT id FROM outbox WHERE id = ?").get(mine)).toBeUndefined();
   });
 
   it("case page offers a Responses card with template preview", async () => {
@@ -518,16 +526,20 @@ describe("production-readiness pass", () => {
     repo.syncFlags(a.id, []);
   });
 
-  it("workspace branding is configurable and defaults to Riara University", async () => {
+  it("workspace branding is configurable and defaults to the organization's own name", async () => {
     const { cookie } = await login();
-    repo.setSetting("institution_name", "Test College");
+    repo.setSetting("institution_name", "Test Cooperative");
     const home = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-    expect(home).toContain("Test College");
+    expect(home).toContain("Test Cooperative");
     const settings = await (await fetch(`${base}/settings`, { headers: { cookie } })).text();
-    expect(settings).toContain("Organisation / school name");
+    expect(settings).toContain("Letters &amp; identity");
+    expect(settings).toContain('name="organization_name"');
     expect(settings).toContain('name="institution_name"');
+    // The sign-in screen names the organization row, not a bundled brand.
     const loginHtml = await (await fetch(`${base}/login`)).text();
-    expect(loginHtml).toContain("Riara University");
+    expect(loginHtml).toContain("Example Service Cooperative");
+    expect(loginHtml).not.toMatch(/riara/i);
+    repo.setSetting("institution_name", "Example Service Cooperative");
   });
 
   it("settings page offers the Gmail connection card (moved out of Configuration)", async () => {
@@ -544,21 +556,38 @@ describe("production-readiness pass", () => {
     expect(cfg).not.toContain("Gmail connection");
   });
 
-  it("courses show who handles them, and owners can be assigned", async () => {
+  it("the legacy course catalogue is gone — assignment is rule data on a case type", async () => {
     const { cookie, csrf } = await login();
-    // Round 3: course configuration (incl. ownership) lives on the staff page.
-    const page = await (await fetch(`${base}/staff#courses`, { headers: { cookie } })).text();
-    expect(page).toContain("Courses &amp; ownership");
-    expect(page).toContain('action="/config/course-owner"');
-    const member = repo.listStaff().find((m) => m.username === "jane")!;
-    const res = await fetch(`${base}/config/course-owner`, {
+    // Round 3 kept course configuration on the staff page; the catalogue itself
+    // is gone, and so is its owner-assignment form.
+    const staff = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
+    expect(staff).not.toContain("Courses &amp; ownership");
+    expect(staff).not.toContain('action="/config/course-owner"');
+    const gone = await fetch(`${base}/config/course-owner`, {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${csrf}&programme=BBIT&owner=${member.id}`, redirect: "manual",
+      body: `_csrf=${csrf}&programme=BBIT&owner=1`, redirect: "manual",
     });
-    expect(res.status).toBe(302);
-    expect(decodeURIComponent(res.headers.get("location") || "")).toContain("now handled by");
-    const overview = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-    expect(overview).toContain("Jane Wairimu");
+    expect(gone.status).toBe(404);
+    // Who handles what is a workflow rule on a case type, editable in the rules tab…
+    const rules = await (await fetch(`${base}/config?tab=rules`, { headers: { cookie } })).text();
+    expect(rules).toContain("Workflow rules");
+    const type = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    const member = repo.listStaff().find((m) => m.username === "jane")!;
+    expect((await fetch(`${base}/config/workflow-rules/save`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        _csrf: csrf, name: "Jane handles service requests", kind: "response",
+        case_type_id: String(type.id), position: "8",
+        cond_field_0: "always", cond_value_0: "true",
+        reply_action: "draft", template_key: "status_answer",
+        [`assign`]: String(member.id), audit_code: "rule_assigned_jane", fallback: "human_draft",
+      }).toString(),
+      redirect: "manual",
+    })).status).toBe(302);
+    const saved = repo.listWorkflowRules(1, { caseTypeId: type.id, kind: "response" }).find((r) => r.name === "Jane handles service requests")!;
+    expect(saved.action.assign).toBe(member.id);
+    // …and the person is visible on the team page.
+    expect(staff).toContain("Jane Wairimu");
   });
 });
 
@@ -644,29 +673,75 @@ describe("QA audit regressions", () => {
     repo.setSetting("gmail_address", ""); repo.setSetting("gmail_client_id", ""); repo.setSetting("gmail_client_secret", "");
   });
 
-  it("an email containing only the applicant's reference number gets a factual status reply", async () => {
-    const a = repo.findByRef(ref)!;
+  it("an email containing only the case reference gets a factual status reply — drafted unless the tenant opted in", async () => {
+    // A case type of its own, so this test controls the rule tree and the
+    // reply rule: no rule constraints (nothing to satisfy from a bare
+    // reference) and one always-true status rule.
+    const type = repo.createCaseType(1, { code: "STATUS_ONLY", name: "status only", category: "general" });
+    repo.saveWorkflowRule({
+      organizationId: 1, caseTypeId: type.id, kind: "intake", name: "Open a status case", position: 0,
+      conditions: [{ field: "always", value: true }], action: { decision: "create", audit_code: "rule_status_open" },
+    });
+    const statusRule = repo.saveWorkflowRule({
+      organizationId: 1, caseTypeId: type.id, kind: "response", name: "Factual status answer", position: 0,
+      conditions: [{ field: "always", value: true }],
+      action: { reply_action: "draft", template_key: "status_answer", audit_code: "rule_status_draft" },
+    });
+    const opened = mustProcessed(await processEmail({
+      id: "status-case-1", threadId: "status-t", from: "status@example.org", fromName: "Status Contact",
+      subject: "status only request", body: "Please open a status only case for me.",
+      organizationId: 1, caseTypeCode: "STATUS_ONLY",
+      receivedAt: new Date().toISOString(), attachments: [],
+    } as IncomingEmail, ctx));
+    const a = repo.getApplicant(opened.applicantId)!;
+    const refOnly = (id: string): IncomingEmail => ({
+      id, threadId: "status-only-t", from: "status@example.org", fromName: "Status Contact",
+      subject: "status", body: a.ref_number, organizationId: 1, caseTypeCode: "STATUS_ONLY",
+      receivedAt: new Date().toISOString(), attachments: [],
+    } as IncomingEmail);
+
     const outBefore = repo.emailsForApplicant(a.id).filter((e) => e.direction === "out").length;
-    const res = await processEmail(
-      {
-        id: "ref-only-1", threadId: "ref-only-t", from: applicantEmail, fromName: "Web Test",
-        subject: "status", body: ref, receivedAt: new Date().toISOString(), attachments: [],
-      },
-      ctx
-    );
-    expect(res.autoSent).toBe(true);
+    const res = await processEmail(refOnly("ref-only-1"), ctx);
+    // Draft-first is the default: the factual status answer is prepared, quotes
+    // the reference, and waits for a person — nothing goes out by itself.
+    expect(res.applicantId).toBe(a.id); // a bare reference still finds the case
     expect(res.autoKind).toBe("status_answer");
-    const outs = repo.emailsForApplicant(a.id).filter((e) => e.direction === "out");
-    expect(outs.length).toBe(outBefore + 1);
-    expect(outs[0].body.toLowerCase()).toContain(ref.toLowerCase());
+    expect(res.autoSent).toBe(false);
+    expect(repo.emailsForApplicant(a.id).filter((e) => e.direction === "out").length).toBe(outBefore);
+    expect(repo.queuedOutbox(a.id)!.subject).toContain(a.ref_number);
+
+    // An explicit opt-in — global automation, this case type, and the rule
+    // itself — makes the same reply send. The global settings are restored
+    // afterwards so the rest of the suite keeps its draft-first tenant.
+    releaseAutomation(repo);
+    repo.updateCaseTypeProfile(type.id, { default_reply_action: "auto", evidence_gate: 0 });
+    repo.saveWorkflowRule({
+      id: statusRule.id, organizationId: 1, caseTypeId: type.id, kind: "response",
+      name: statusRule.name, position: statusRule.position, conditions: statusRule.conditions,
+      action: { ...statusRule.action, reply_action: "send" },
+    });
+    try {
+      const sent = await processEmail(refOnly("ref-only-1b"), ctx);
+      expect(sent.autoSent).toBe(true);
+      expect(sent.autoKind).toBe("status_answer");
+      const outs = repo.emailsForApplicant(a.id).filter((e) => e.direction === "out");
+      expect(outs.length).toBe(outBefore + 1);
+      // The reply quotes the case reference in its subject and states the
+      // stage in plain language — factual, and traceable to this case.
+      expect(outs[outs.length - 1].subject).toContain(a.ref_number);
+      expect(outs[outs.length - 1].body).toContain("Current stage");
+    } finally {
+      repo.setSetting("automation_mode", "draft");
+    }
   });
 
   it("a stranger quoting someone else's reference number gets NO automatic status", async () => {
     const res = await processEmail(
       {
         id: "ref-only-2", threadId: "ref-only-t2", from: "stranger@example.org", fromName: "Stranger",
-        subject: "status please", body: ref, receivedAt: new Date().toISOString(), attachments: [],
-      },
+        subject: "status please", body: ref, organizationId: 1, caseTypeCode: "SERVICE_REQUEST",
+        receivedAt: new Date().toISOString(), attachments: [],
+      } as IncomingEmail,
       ctx
     );
     expect(res.autoSent).toBe(false);
@@ -723,20 +798,27 @@ describe("QA audit regressions", () => {
   });
 
   describe("configuration split, account settings & realm separation", () => {
-    it("configuration keeps Requirements and Reply tabs; course config moved to the staff area", async () => {
+    it("configuration keeps its own tabs; the legacy course and intake cards are gone", async () => {
       const { cookie } = await login();
-      const courses = await (await fetch(`${base}/config`, { headers: { cookie } })).text();
-      expect(courses).toContain("Reply configuration");
-      // Round 3: course configuration has ONE home — the staff area.
-      expect(courses).not.toContain("Course configuration");
-      expect(courses).not.toContain('id="courses"');
-      expect(courses).not.toContain('id="intakes"');
-      expect(courses).not.toContain("Add a course or intake");
-      expect(courses).not.toContain('id="gmail"');
+      const config = await (await fetch(`${base}/config`, { headers: { cookie } })).text();
+      expect(config).toContain("Reply configuration");
+      expect(config).toContain("Requirements &amp; repairs");
+      expect(config).toContain("Document library");
+      // The legacy course catalogue has no home anywhere in the console.
+      expect(config).not.toContain("Course configuration");
+      expect(config).not.toContain('id="courses"');
+      expect(config).not.toContain("Add a course or intake");
+      expect(config).not.toContain('id="gmail"');
       const staff = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
-      expect(staff).toContain('id="courses"');
-      expect(staff).toContain('id="intakes"');
-      expect(staff).toContain("Add a course or intake");
+      expect(staff).not.toContain('id="courses"');
+      expect(staff).not.toContain("Add a course or intake");
+      // Visibility scope is the case type now, and it is edited here.
+      expect(staff).toContain("Visibility scope");
+      expect(staff).toContain('action="/staff/scopes"');
+      // Submission windows live with the requirements they gate.
+      const requirements = await (await fetch(`${base}/config?tab=requirements`, { headers: { cookie } })).text();
+      expect(requirements).toContain('id="intakes"');
+      expect(requirements).toContain("Submission windows");
 
       const replies = await (await fetch(`${base}/config?tab=replies`, { headers: { cookie } })).text();
       // OR-4: connection controls moved OUT of Configuration to Settings.
@@ -751,6 +833,7 @@ describe("QA audit regressions", () => {
       expect(settings).toContain('id="gmail"');
       expect(settings).toContain('id="gemini"');
       expect(replies).not.toContain('id="courses"');
+      expect(config).not.toContain('id="courses"');
     });
 
     it("settings keeps SLA response targets visible and unrelated retention wording out", async () => {

@@ -29,23 +29,24 @@ import type {
 import { recordDocuments } from "../matching";
 import { envInt } from "../util/envnum";
 import { resolveIdentity } from "../matching/identity";
-import { extractAttachment, MIN_AUTO_PASS_SCORE } from "../extraction/extract";
+import { computeConfidence, extractAttachment, MIN_AUTO_PASS_SCORE } from "../extraction/extract";
 import { consistencyCheck } from "../extraction/crosscheck";
 import { readBackText, documentIssuesText, internalNote } from "../extraction/feedback";
 import { decide, docLabel, normalizeName } from "../rules";
-import { evaluateAdmission, evaluateCaseTypeRules, downgradeRoutingForWatcher } from "../admissions/evaluate";
+import { evaluateCaseTypeRules } from "../rules/caseType";
 import { caseTypeGate, gate } from "../gate";
 import { fillSlots } from "../documents/matrix";
-import { categorizeEmail, classifyWithConfiguredCategories, priorityForCategory } from "../categorize";
+import { categorizeEmail, classifyWithConfiguredCategories, priorityForCategory, CLASSIFIER_MIN_CONFIDENCE } from "../categorize";
 import { emailTargetsKnownApplicant } from "../matching";
 import { classifyIntakeEmail, DEFAULT_INTAKE_HOTWORDS, intakeHotwordList } from "../intake";
 import { firstMatchingRule, rulesForCaseScope, replyStateOf, describeRule, type RuleAction, type RuleMatchInput, type WorkflowRule } from "../rules/workflow";
-import { extractPhone, inferIntake, inferProgramme, inferTransfer } from "../enrich";
+import { extractPhone, inferIntake } from "../enrich";
+import { extractGenericFacts } from "../extraction/fields";
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
 import { emailBanner, organizationName, organizationSender } from "../branding";
 import type { SendExtras } from "./adapters";
-import { LIFECYCLE_LABELS, LIFECYCLE_ORDER } from "../types";
+import { LIFECYCLE_LABELS } from "../types";
 import { log } from "../util/log";
 import type { PipelineContext } from "./adapters";
 
@@ -95,11 +96,15 @@ async function processEmailInner(
   opts: PipelineOptions
 ): Promise<ProcessResult> {
   const { repo, adapters } = ctx;
-  const intakeOrganizationId = email.organizationId ?? 1;
+  // Which tenant this message belongs to: declared by the connector/portal,
+  // else resolved from the address it was delivered to, else the head office.
+  const intakeOrganizationId = email.organizationId
+    ?? repo.organizationForInboundAddress(email.to)?.organizationId
+    ?? 1;
 
-  // ── Intake gate (round 9; PPR P0-4: stored rules decide, with the legacy
-  //    scorer as the education preset's signal source and as the fallback
-  //    for profiles without intake rules) ──────────────────────────────────
+  // ── Intake gate (round 9; PPR P0-4: stored rules decide, with the
+  //    configured scorer as the signal source and as the fallback for
+  //    tenants without intake rules) ───────────────────────────────────────
   // Only intake mail becomes a case: the mail carries an intake signal, or
   // it targets a contact we already know (conversation continuity).
   // Everything else is parked in the Mail window WITHOUT a case: kept,
@@ -109,27 +114,40 @@ async function processEmailInner(
     subject: email.subject,
     body: email.body,
     attachmentFilenames: (email.attachments ?? []).map((a) => a.filename),
-    // Both the editable display name and the stable course code are hotwords.
-    // Applicants commonly write “BBIT”/“BCS” rather than the full catalogue
-    // name, and codes are less ambiguous than a generic word such as “business”.
-    courseNames: [
-      ...(intakeOrganizationId === 1 ? repo.listProgrammes().flatMap((p) => [p.name, p.code]) : []),
-      ...repo.listCaseTypes(intakeOrganizationId).flatMap((t) => [t.name, t.code]),
-    ],
+    // Both the editable display name and the stable code of every case type the
+    // tenant configured are intake signals: contacts write the short code as
+    // often as the full name, and a code is less ambiguous than a generic word.
+    caseTypeNames: repo.listCaseTypes(intakeOrganizationId).flatMap((t) => [t.name, t.code]),
     customHotwords: intakeHotwordList(hotwords),
-    knownApplicant: emailTargetsKnownApplicant(repo, email),
+    knownContact: emailTargetsKnownApplicant(repo, email),
   });
   const senderState: "known" | "unknown" = emailTargetsKnownApplicant(repo, email) ? "known" : "unknown";
   const fallbackCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
   // Which profile this mail targets (declared on the connector/portal, or
   // the migrated legacy scope). Rule scope follows it exactly.
-  const scopeType = email.caseTypeCode ? repo.getCaseType(email.caseTypeCode, intakeOrganizationId) : undefined;
-  const scopeEducation = scopeType ? scopeType.education_module === 1 : intakeOrganizationId === 1;
+  // Which case type this message belongs to, in precedence order:
+  //   1. declared by the connector or portal (it knows better than we can guess);
+  //   2. an inbound ADDRESS ALIAS this tenant configured (Phase D3) — the sender
+  //      chose the route by picking an address;
+  //   3. the tenant's own type when it has exactly ONE (unambiguous);
+  //   4. nothing. With several configured types and no signal, nothing is
+  //      guessed: the case is flagged unconfigured and a person picks the right
+  //      checklist, because a wrong checklist silently demands the wrong
+  //      documents. Two aliases on one message pointing at DIFFERENT types are
+  //      ambiguous and are treated the same way — never a coin toss.
+  const tenantCaseTypes = repo.listCaseTypes(intakeOrganizationId);
+  const aliasResolution = email.caseTypeCode ? { status: "none" as const } : repo.resolveInboundAlias(intakeOrganizationId, email.to);
+  const aliasMatch = aliasResolution.status === "match" ? aliasResolution : null;
+  const aliasAmbiguous = aliasResolution.status === "ambiguous" ? aliasResolution : null;
+  const effectiveCaseTypeCode = email.caseTypeCode
+    ?? (aliasMatch ? aliasMatch.caseTypeCode : undefined)
+    ?? (aliasAmbiguous ? undefined : tenantCaseTypes.length === 1 ? tenantCaseTypes[0].code : undefined);
+  const scopeType = effectiveCaseTypeCode ? repo.getCaseType(effectiveCaseTypeCode, intakeOrganizationId) : undefined;
   const scopedIntakeRules = rulesForCaseScope(
-    repo.listWorkflowRules(intakeOrganizationId, { kind: "intake" }), scopeType?.id ?? null, scopeEducation
+    repo.listWorkflowRules(intakeOrganizationId, { kind: "intake" }), scopeType?.id ?? null
   );
   const scopedResponseRules = rulesForCaseScope(
-    repo.listWorkflowRules(intakeOrganizationId, { kind: "response" }), scopeType?.id ?? null, scopeEducation
+    repo.listWorkflowRules(intakeOrganizationId, { kind: "response" }), scopeType?.id ?? null
   );
   const bodyIsRefShape = /^[A-Z]{1,6}-\d{4}-\d{1,8}$/i.test(email.body.trim());
   const intakeInput: RuleMatchInput = {
@@ -139,7 +157,7 @@ async function processEmailInner(
     hasAttachments: email.attachments.length > 0,
     category: fallbackCategory,
     bodyIsRef: bodyIsRefShape,
-    educationSignals: verdict.category === "parked" ? "parked" : "open",
+    intakeSignals: verdict.category === "parked" ? "parked" : "open",
     docsState: "dirty", // document posture is a reply-time fact; intake rules match on message facts
     docsOnFile: 0,
   };
@@ -149,15 +167,16 @@ async function processEmailInner(
     intakeRule = firstMatchingRule(scopedIntakeRules, intakeInput);
     // Rules are present: an unmatched message still reaches the case flow
     // (human review) — mail is never silently dropped because a rule set
-    // has a gap. The education preset always matches (catch-all parks).
+    // has a gap.
     intakeDecision = intakeRule?.action.decision ?? "create";
   } else {
-    // Legacy fallback (profiles without intake rules): the built-in scorer.
+    // Fallback for tenants without intake rules: the configured scorer.
     intakeDecision = verdict.category === "parked" ? "ignore" : "create";
   }
   if (intakeDecision === "ignore") {
     repo.insertEmail({
       applicant_id: null,
+      organization_id: intakeOrganizationId,
       message_id: email.id,
       thread_id: email.threadId,
       direction: "in",
@@ -203,19 +222,33 @@ async function processEmailInner(
   // rule match above — same input, same result.)
   const configuredKeys = repo.listEmailCategories(intakeOrganizationId).map((x) => x.key);
   let category: EmailCategory = fallbackCategory;
-  if (process.env.GEMINI_API_KEY && configuredKeys.length > 0) {
+  let categoryLabelDetail: string | null = null;
+  // Set when the label is a guess: a fallback answer, or a model answer below
+  // the confidence floor. Both route to a person (Phase C3-2).
+  let classifierHold: string | null = null;
+  // Gemini runs only when THIS tenant defined its own labels and a key is
+  // reachable through the adapters (console secret store) or the environment.
+  if (configuredKeys.length > 0 && (adapters.categorizer || process.env.GEMINI_API_KEY)) {
     const label = await classifyWithConfiguredCategories(
-      { subject: email.subject, body: email.body }, configuredKeys
+      { subject: email.subject, body: email.body }, configuredKeys, adapters.categorizer
     );
     const normalized = label.label.toLowerCase();
     const mapped: Record<string, EmailCategory> = {
-      admission: "admission_enquiry", admission_enquiry: "admission_enquiry",
+      general_enquiry: "general_enquiry",
       application: "application", document_submission: "document_submission",
       missing_document: "missing_document", fee_enquiry: "fee_enquiry",
       follow_up: "follow_up", complaint: "complaint", other: "other", normal: "other",
     };
     category = mapped[normalized] ?? "other";
-    repo.audit(null, "system", "email_labelled", `label=${label.label} confidence=${label.confidence} source=${label.source ?? "gemini"}; routing metadata only`);
+    // Recorded on the CASE (below, once it exists) so the trail a person reads
+    // on the case page explains why the message was routed the way it was —
+    // and honestly names the fallback when the model could not be trusted.
+    categoryLabelDetail = `label=${label.label} confidence=${label.confidence} source=${label.source ?? "gemini"}; routed as '${category}'; routing metadata only, never a decision${mapped[normalized] ? "" : " — not one of the eight workflow categories"}`;
+    if ((label.source ?? "gemini") !== "gemini") {
+      classifierHold = `the label '${label.label}' came from the deterministic fallback, not the model`;
+    } else if (!(label.confidence >= CLASSIFIER_MIN_CONFIDENCE)) {
+      classifierHold = `classifier confidence ${label.confidence} is below the ${CLASSIFIER_MIN_CONFIDENCE} floor (label '${label.label}')`;
+    }
   }
 
   // An eligibility/requirements question may carry a screenshot as evidence.
@@ -224,7 +257,7 @@ async function processEmailInner(
   // awaiting-documents case. PPR P0-4: which mail needs a human is a stored
   // response rule (`decision: review`); profiles without rules keep the
   // original category policy.
-  const enquiryOnly = category === "admission_enquiry";
+  const enquiryOnly = category === "general_enquiry";
   let humanTriageOnly = false;
   if (scopedResponseRules.length > 0) {
     const reviewRule = firstMatchingRule(scopedResponseRules, {
@@ -246,7 +279,7 @@ async function processEmailInner(
   const identity = resolveIdentity(repo, email, {
     refPrefix,
     organizationId: intakeOrganizationId,
-    caseTypeCode: email.caseTypeCode,
+    caseTypeCode: effectiveCaseTypeCode,
   });
   const applicant = identity.applicant;
   // The intake rule's audit code records which rule opened/continued the case.
@@ -254,32 +287,20 @@ async function processEmailInner(
     repo.audit(applicant.id, "system", intakeRule.action.audit_code, `rule “${intakeRule.name}” matched — ${describeRule(intakeRule)}`);
   }
   const genericCaseType = repo.caseTypeForCase(applicant.id);
-  // PPR P0-2: the education_module flag on the workflow profile decides
-  // whether ANY academic code path may run for this case. Without it there
-  // is no grade engine, no academic document matrix, no admissions routing —
-  // just the generic evidence/triage flow (audit F1).
-  const educationCase = repo.educationCaseFor(applicant);
-  // The generic/no-eval folder has no rules of its own — automation stays
-  // held there (audit B1). A profile that OWNS reply behaviour is driven by
-  // it instead: response rules, OR an intake rule that carries its own reply
-  // action (create + reply in one rule — P0-4).
+  if (!email.caseTypeCode && genericCaseType) {
+    if (aliasMatch) {
+      repo.audit(applicant.id, "system", "case_type_by_alias",
+        `${genericCaseType.code} — the message was delivered to ${aliasMatch.alias}, which this organization routes to that case type`);
+    } else {
+      repo.audit(applicant.id, "system", "case_type_inferred",
+        `${genericCaseType.code} — this organization has exactly one case type, so the message was filed under it`);
+    }
+  }
+  repo.freezeCaseConfig(applicant);
+  const frozenConfig = repo.caseConfigFrozen(repo.getCase(applicant.id)!);
   const intakeCarriesReply = Boolean(intakeRule?.action.reply_action && intakeRule.action.reply_action !== "none");
-  if (!educationCase && scopedResponseRules.length === 0 && !intakeCarriesReply) humanTriageOnly = true;
-  // M-3: the profile's deterministic auto-admit posture (explicit opt-in only).
-  // The migrated education profile carries it; every profile a new
-  // organization creates starts with auto-admit OFF and draft automation, so
-  // a new organization can never enter this path. Draft mode always wins: a
-  // profile (or the global/per-category setting) that says "draft" holds every
-  // automatic reply — and therefore withholds the provisional admission too.
+  if (scopedResponseRules.length === 0 && !intakeCarriesReply) humanTriageOnly = true;
   const profileReplyMode = genericCaseType?.default_reply_action;
-  const autoAdmitEligible = Boolean(
-    educationCase &&
-      genericCaseType?.auto_admit === 1 &&
-      profileReplyMode !== "draft" &&
-      profileReplyMode !== "hold" &&
-      repo.automationMode(category) === "auto" &&
-      !humanTriageOnly
-  );
   const preFlags: DerivedFlag[] = [];
   if (identity.concern) {
     preFlags.push({ type: "identity_check", detail: identity.concern });
@@ -311,6 +332,7 @@ async function processEmailInner(
   // ── Store incoming email in the case history (feature 4) ────────────────
   repo.insertEmail({
     applicant_id: applicant.id,
+    organization_id: intakeOrganizationId,
     message_id: email.id,
     thread_id: email.threadId,
     direction: "in",
@@ -324,6 +346,7 @@ async function processEmailInner(
     at: email.receivedAt,
   });
   repo.audit(applicant.id, "system", "email_received", `"${email.subject}" [${category}] via ${email.channel ?? "email"}`);
+  if (categoryLabelDetail) repo.audit(applicant.id, "system", "email_labelled", categoryLabelDetail);
 
   // Priority from category (feature 27): complaints jump to high.
   const catPriority = priorityForCategory(category);
@@ -350,23 +373,32 @@ async function processEmailInner(
     // Generic document slots are organization-owned. A configured key or
     // label in the supplied filename/text is a routing hint only; extraction
     // fields and the human gate still decide whether the evidence is usable.
-    if (genericCaseType && !educationCase) {
-      const haystack = `${att.filename} ${res.text}`.toLowerCase();
-      // Exact key/label wins; otherwise the slot sharing the MOST words (not
-      // merely the first slot sharing any word — "agreement" must not route
-      // an NDA into the services-agreement slot).
-      const definitions = repo.listDocumentDefinitions(genericCaseType.id);
-      const exact = definitions.find((d) => haystack.includes(d.key.toLowerCase()) || haystack.includes(d.label.toLowerCase()));
-      let configured = exact;
-      if (!configured) {
-        let best = 0;
-        for (const d of definitions) {
-          const words = [...new Set(`${d.key} ${d.label}`.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2))];
-          const hits = words.filter((word) => haystack.includes(word)).length;
-          if (hits > best) { best = hits; configured = d; }
+    if (genericCaseType) {
+      const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      const haystack = ` ${normalize(`${att.filename} ${res.text}`)} `;
+      const definitions = frozenConfig?.documents ?? repo.listDocumentDefinitions(genericCaseType.id);
+      const exact = definitions.filter((definition) => haystack.includes(` ${normalize(definition.key)} `) || haystack.includes(` ${normalize(definition.label)} `));
+      let configured = exact.length === 1 ? exact[0] : undefined;
+      if (!configured && exact.length === 0) {
+        const scores = definitions.map((definition) => {
+          const words = [...new Set(normalize(`${definition.key} ${definition.label}`).split(" ").filter((word) => word.length > 2))];
+          return { definition, hits: words.filter((word) => haystack.includes(` ${word} `)).length };
+        }).sort((left, right) => right.hits - left.hits);
+        if (scores[0]?.hits >= 2 && scores[0].hits > (scores[1]?.hits ?? 0)) configured = scores[0].definition;
+      }
+      if (configured) {
+        res.document_type = configured.key;
+        // A routing hint cannot turn unreadable bytes or vision guesses into reliable evidence.
+        if (res.method !== "none") {
+          const confidence = computeConfidence({ text: res.text, fields: res.fields, docType: res.document_type, method: res.method,
+            tier: res.method === "pdf_text" ? "high" : res.method === "gemini_vision" ? res.confidence : "medium" });
+          // A routing hint may rename the document; it must not UPGRADE a file
+          // we only partly read (page cap, render budget). That cap survives.
+          const score = res.partial_read ? Math.min(confidence.score, res.confidence_score ?? confidence.score) : confidence.score;
+          res.confidence_score = score;
+          res.confidence = score >= MIN_AUTO_PASS_SCORE ? "high" : score >= 45 ? "medium" : "low";
         }
       }
-      if (configured) res.document_type = configured.key as typeof res.document_type;
     }
     const dup = repo.findDuplicate(applicant.id, res.sha256);
     if (dup) {
@@ -443,67 +475,11 @@ async function processEmailInner(
     activeDocs = repo.listDocuments(applicant.id, { activeOnly: true });
   }
 
-  // ── Enrich programme/intake from email + document text (feature 2) ──────
-  {
-    const current = repo.getApplicant(applicant.id)!;
-    const patch: { programme?: string; intake?: string; full_name?: string; transfer?: number } = {};
-
-    // Prefer the name printed on official documents over the email From name.
-    const docName = activeDocs
-      .map((d) => normalizeName(d.extracted_fields?.name as string | undefined))
-      .sort((a, b) => b.length - a.length)[0];
-    if (docName && docName.length >= 5 && (!current.full_name || docName.length >= (current.full_name || "").length)) {
-      patch.full_name = docName
-        .toLowerCase()
-        .split(" ")
-        .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
-        .join(" ");
-    }
-
-
-    if (!current.programme || !current.intake) {
-      const corpus = [email.subject, email.body, ...activeDocs.map((d) => d.extracted_text.slice(0, 800))].join("\n");
-      const programmes = repo.listProgrammes();
-      const intakes = repo.listIntakes();
-      if (!current.programme) {
-        const p = inferProgramme(corpus, programmes);
-        if (p) patch.programme = p;
-      }
-      if (!current.intake) {
-        const i = inferIntake(corpus, intakes);
-        if (i) patch.intake = i;
-      }
-      // Transfer applicants (credit from another institution) must also
-      // submit the credit transfer form — detected from their own words.
-      if (!current.transfer && inferTransfer(corpus)) patch.transfer = 1;
-    }
-    // Course routing: once the programme is known, the case lands with that
-    // course's assigned officer — automatically, and only when the case is
-    // unassigned (a human hand-over is never overwritten).
-    const prog = patch.programme ?? current.programme;
-    if (prog && !current.assigned_to) {
-      const ownerId = repo.ownerOfProgramme(prog);
-      if (ownerId) {
-        (patch as { assigned_to?: number }).assigned_to = ownerId;
-        const owner = repo.getStaff(ownerId);
-        repo.notify(
-          "assignment",
-          `New ${prog} case routed to you: ${applicant.ref_number}`,
-          applicant.id,
-          ownerId
-        );
-        repo.audit(applicant.id, "system", "case_routed", `assigned to ${owner?.display_name ?? ownerId} (owner of ${prog})`);
-      }
-    }
-    if (Object.keys(patch).length) {
-      repo.updateApplicant(applicant.id, patch);
-      repo.audit(
-        applicant.id,
-        "system",
-        "case_enriched",
-        Object.entries(patch).map(([k, v]) => `${k}=${v}`).join(", ")
-      );
-    }
+  // Prefer document names over mail display names; preserve tenant-owned case routing.
+  const current = repo.getCase(applicant.id)!;
+  const documentName = activeDocs.map((doc) => normalizeName(typeof doc.extracted_fields.name === "string" ? doc.extracted_fields.name : null)).sort((left, right) => right.length - left.length)[0];
+  if (documentName && documentName.length >= 5 && (!current.full_name || documentName.length >= current.full_name.length)) {
+    repo.updateApplicant(applicant.id, { full_name: documentName.toLowerCase().split(" ").map((part) => part ? part[0].toUpperCase() + part.slice(1) : part).join(" ") });
   }
 
   // ── Requirements for THIS applicant (features 8, 36, 37, v3-19) ──────────
@@ -513,18 +489,29 @@ async function processEmailInner(
   const applicantNow = repo.getApplicant(applicant.id)!;
   repo.freezeRequirementsSnapshot(applicantNow);
   repo.freezeCaseConfig(applicantNow);
-  if (educationCase) repo.freezeStructuredSnapshot(applicantNow);
   const requirements = repo.effectiveRequirements(repo.getApplicant(applicant.id)!);
 
-  // ── Intake deadline (v3 features 20, 21): late arrival → flag, never an
-  //    automatic rejection. ─────────────────────────────────────────────────
-  const deadline = repo.intakeDeadline(applicantNow.intake);
+  // ── Submission windows (v3 features 20, 21) ─────────────────────────────
+  // A tenant may configure windows (a service round, a funding cycle) with a
+  // deadline. The case names its own window; when it does not, a window named
+  // in the message is attached to it. A late arrival only ever RAISES A FLAG —
+  // a human decides, the machine never rejects on a calendar alone.
+  const configuredWindows = repo.listIntakes(intakeOrganizationId);
+  if (!applicantNow.intake && configuredWindows.length > 0) {
+    const named = inferIntake(`${email.subject}\n${email.body}`, configuredWindows);
+    if (named) {
+      repo.updateApplicant(applicant.id, { intake: named });
+      repo.audit(applicant.id, "system", "window_inferred", `window “${named}” is named in the message`);
+    }
+  }
+  const windowName = repo.getApplicant(applicant.id)?.intake ?? null;
+  const deadline = repo.intakeDeadline(windowName, intakeOrganizationId);
   if (deadline && new Date(email.receivedAt).getTime() > new Date(deadline).getTime()) {
     preFlags.push({
       type: "late_submission",
-      detail: `received ${email.receivedAt.slice(0, 10)} after the ${applicantNow.intake} intake deadline of ${deadline} — human decides whether to accept`,
+      detail: `received ${email.receivedAt.slice(0, 10)} after the ${windowName} window closed on ${deadline} — human decides whether to accept`,
     });
-    repo.audit(applicant.id, "system", "late_submission", `after ${applicantNow.intake} deadline ${deadline}`);
+    repo.audit(applicant.id, "system", "late_submission", `after the ${windowName} deadline ${deadline}`);
   }
 
   // ── Configured CaseType engine ───────────────────────────────────────────
@@ -532,24 +519,14 @@ async function processEmailInner(
   // tree. The generic evaluator returns evidence and human_review; it never
   // writes an approval/rejection decision and never inherits academic fields.
   let genericRuleResult: ReturnType<typeof evaluateCaseTypeRules> | null = null;
-  if (genericCaseType && !educationCase) {
-    const facts: Record<string, unknown> = {
-      subject: email.subject,
-      body: email.body,
-      has_attachments: email.attachments.length > 0,
-    };
-    for (const doc of activeDocs) Object.assign(facts, doc.extracted_fields ?? {});
-    // Organization-defined facts: "Label: value" lines in the documents and
-    // the message body become snake_case facts (lower-cased values) for the
-    // CaseType rule tree. Extracted fields win; nothing academic is read.
-    for (const text of [...activeDocs.map((d) => d.extracted_text ?? ""), email.body]) {
-      for (const m of text.matchAll(/^[ \t]*([A-Za-z][A-Za-z0-9 _/-]{1,40}?)[ \t]*:[ \t]*(.+?)[ \t]*$/gm)) {
-        const key = m[1].trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-        const value = m[2].trim().toLowerCase().replace(/[,](?=\d{3}\b)/g, "");
-        if (key && !(key in facts)) facts[key] = value;
-      }
+  if (genericCaseType) {
+    const facts: Record<string, unknown> = { subject: email.subject, body: email.body, has_attachments: email.attachments.length > 0 };
+    for (const doc of activeDocs) {
+      if ((doc.confidence_score ?? (doc.confidence === "high" ? 100 : 0)) < MIN_AUTO_PASS_SCORE || doc.extraction_method === "none") continue;
+      for (const [key, value] of Object.entries(doc.extracted_fields ?? {})) if (!["__proto__", "prototype", "constructor"].includes(key)) facts[key] = value;
     }
-    genericRuleResult = evaluateCaseTypeRules(repo, genericCaseType, repo.caseTypeRules(genericCaseType), facts);
+    for (const [key, value] of Object.entries(extractGenericFacts(email.body))) if (!Object.hasOwn(facts, key)) facts[key] = value;
+    genericRuleResult = evaluateCaseTypeRules(repo, genericCaseType, frozenConfig?.rules ?? repo.caseTypeRules(genericCaseType), facts);
     const matrix = fillSlots(requirements, activeDocs.map((d) => d.document_type));
     const matrixComplete = matrix.missing.length === 0;
     const configuredGate = caseTypeGate({
@@ -558,35 +535,37 @@ async function processEmailInner(
       watcher: { ran: false, flagged: false },
       confidenceFloorMet: activeDocs.every((d) => (d.confidence_score ?? 0) >= MIN_AUTO_PASS_SCORE),
     });
-    repo.audit(applicant.id, "system", "case_type_gate", `${genericCaseType.code}: matrix=${matrixComplete}; rules=${genericRuleResult.result}; action=${configuredGate.action}; outcome remains undecided`);
-    if (genericRuleResult.result !== "passed") {
+    repo.audit(applicant.id, "system", "case_type_gate", `${genericCaseType.code}: matrix=${matrixComplete}; rules=${genericRuleResult.total > 0 ? genericRuleResult.result : "none configured"}; action=${configuredGate.action}; outcome remains undecided`);
+    // An EMPTY rule tree is not an undetermined one: a case type that declares
+    // no rule constraints is gated by its document matrix alone. Filing a
+    // blocking flag for "undetermined" here made automation impossible for
+    // such a case type even after its administrator turned the evidence gate
+    // off and opted into sending — the switch documented below had no effect.
+    if (genericRuleResult.total > 0 && (genericRuleResult.result === "failed" || (genericRuleResult.result !== "passed" && matrixComplete))) {
       preFlags.push({ type: "low_confidence", detail: `Configured ${genericCaseType.name} rule tree is ${genericRuleResult.result}; human review required` });
     }
   }
-  // PPR P0-2 (audit F1): the academic engine runs ONLY for education-module
-  // cases. A non-academic profile never loads grades, routing or auto-admit.
-  // M-3: a profile with the legacy auto-admit opt-in lets the evaluator record
-  // the PROVISIONAL auto_admit route; the decision + letter below still wait
-  // for the watcher, the blocking flags, the qualification gate and draft mode.
-  const admission = genericRuleResult || !educationCase
-    ? { derivedFlags: [] as DerivedFlag[] }
-    : evaluateAdmission(repo, applicant.id, preFlags, { autoAdmit: autoAdmitEligible });
-  preFlags.push(...admission.derivedFlags);
-
-  // ── Rules: pure deterministic decision (feature 10) ─────────────────────
-  const rulesOut = genericRuleResult || !educationCase
-    ? (() => {
-      const missing = fillSlots(requirements, activeDocs.map((d) => d.document_type)).missing.map((x) => x.document_type);
-      const treeResult = genericRuleResult?.result ?? "undetermined";
-      const status: Classification = missing.length > 0 || treeResult !== "passed" ? "Orange" : "Green";
-      return {
-        status,
-        reasoning: `CaseType matrix ${missing.length ? `missing ${missing.join(", ")}` : "complete"}; rule tree ${treeResult}; routing human review; outcome undecided`,
-        derivedFlags: [] as DerivedFlag[],
-        missing,
-      };
-    })()
-    : decide({ requirements, docs: activeDocs, flags: preFlags });
+  if (!genericCaseType) {
+    // One flag, with the precise reason: "we could not tell" is not the same
+    // message to a person as "two of your own addresses disagree".
+    preFlags.push(aliasAmbiguous
+      ? {
+          type: "unconfigured_case",
+          detail: `delivered to ${aliasAmbiguous.aliases.map((x) => x.alias).join(" and ")}, which this organization routes to different case types (${aliasAmbiguous.aliases.map((x) => x.caseTypeCode ?? "?").join(", ")}) — a person must choose on the case page`,
+        }
+      : { type: "unconfigured_case", detail: "No case type is configured — human review required" });
+  }
+  if (aliasAmbiguous) {
+    // Deliberately unrouted: a person picks the case type on the case page
+    // (the re-type control), which is exactly what the safety valve is for.
+    repo.audit(applicant.id, "system", "case_type_alias_ambiguous",
+      `${aliasAmbiguous.aliases.map((x) => `${x.alias} → ${x.caseTypeCode ?? "?"}`).join("; ")} — left unconfigured for a person to choose`);
+    repo.notify("review_needed",
+      `${applicantNow.ref_number}: two configured addresses on this message point at different case types — choose one on the case page`, applicant.id);
+  }
+  const rulesOut = decide({ requirements, docs: activeDocs, flags: preFlags });
+  if (genericRuleResult && genericRuleResult.total > 0 && genericRuleResult.result !== "passed" && rulesOut.status === "Green") rulesOut.status = "Orange";
+  rulesOut.reasoning += `\nCaseType rule tree: ${genericRuleResult ? (genericRuleResult.total > 0 ? genericRuleResult.result : "none configured") : "unconfigured"}; outcome remains undecided.`;
 
   // ── Watcher: Green only, can only downgrade (feature: watcher) ──────────
   let finalStatus: Classification = rulesOut.status;
@@ -603,7 +582,6 @@ async function processEmailInner(
         extraction_method: d.extraction_method,
         confidence: d.confidence,
         name: (d.extracted_fields?.name as string | undefined) ?? null,
-        gradePoints: (d.extracted_fields?.gradePoints as number | undefined) ?? null,
         textExcerpt: d.extracted_text.slice(0, 600),
       })),
     };
@@ -623,7 +601,7 @@ async function processEmailInner(
   }
 
   if (humanTriageOnly) {
-    reasoning += `\nRouting: ${enquiryOnly ? "admission enquiry" : category.replace(/_/g, " ")} — the message is sent to human triage; attachments are evidence, not a document-pack submission.`;
+    reasoning += `\nRouting: ${enquiryOnly ? "general enquiry" : category.replace(/_/g, " ")} — the message is sent to human triage; attachments are evidence, not a document-pack submission.`;
   }
 
   // Persist flags (blocking + informational duplicates).
@@ -632,7 +610,18 @@ async function processEmailInner(
   repo.audit(applicant.id, "system", "requirements_checked", `verdict=${finalStatus}; missing=${rulesOut.missing.join(",") || "none"}`);
 
   // A watcher downgrade after a passing evaluation still forces human review.
-  if (watcherFlagged) downgradeRoutingForWatcher(repo, applicant.id);
+  const requirementResult = rulesOut.missing.length ? "missing_data" : genericRuleResult?.result === "failed" ? "failed" : finalStatus !== "Green" ? "needs_verification" : "passed";
+  const report: import("../types").EvaluationReport = {
+    result: requirementResult, routing: rulesOut.missing.length ? "waiting_documents" : "human_review",
+    reason: reasoning, reasonCode: rulesOut.missing.length ? "missing_documents" : finalStatus === "Green" ? "ready_for_review" : "verification_required",
+    leaves: genericRuleResult?.leaves ?? [], groups: genericRuleResult?.groups ?? [], rulesSatisfied: genericRuleResult?.passed ?? 0,
+    rulesTotal: genericRuleResult?.total ?? 0, missingDocuments: rulesOut.missing, blockingFlags: blockingFlags.map((flag) => flag.type),
+    evaluatedAt: new Date().toISOString(), frozenAt: frozenConfig?.frozen_at ?? null, configVersion: frozenConfig?.config_version ?? null,
+  };
+  repo.insertEvaluation({ applicant_id: applicant.id, set_id: null, case_type_code: genericCaseType?.code ?? null, system: null,
+    set_version: report.configVersion, result: report.result, routing: report.routing, reason: report.reason, reason_code: report.reasonCode,
+    detail: JSON.stringify(report), rule_snapshot: JSON.stringify(frozenConfig?.rules ?? []) });
+  repo.updateApplicant(applicant.id, { req_result: report.result, routing: report.routing, routing_reason: report.reasonCode });
 
   // ── Gate v2 (features 11, 13, 21) ────────────────────────────────────────
   const activeBlockingFlags = repo
@@ -641,7 +630,7 @@ async function processEmailInner(
   // Numeric readability gate: every document must reach the auto-pass score.
   // (Legacy DBs without the score fall back to the tier — high ⇒ pass.)
   const allDocsHigh = activeDocs.every(
-    (d) => (d.confidence_score || (d.confidence === "high" ? 100 : 0)) >= MIN_AUTO_PASS_SCORE
+    (d) => (d.confidence_score ?? (d.confidence === "high" ? 100 : 0)) >= MIN_AUTO_PASS_SCORE
   );
   const cleanMissingCase =
     !humanTriageOnly &&
@@ -654,6 +643,13 @@ async function processEmailInner(
   let autoKind: ProcessResult["autoKind"] = null;
   let draft: Draft | null = null;
   let queueForHuman = false;
+  if (classifierHold) {
+    // Uncertain classification is never automated: a person decides the route
+    // (a fallback label, or a model label below the confidence floor).
+    queueForHuman = true;
+    repo.audit(applicant.id, "system", "held_for_classification", `${classifierHold} — held for a person`);
+    repo.notify("review_needed", `${applicantNow.ref_number}: classification was uncertain (${classifierHold})`, applicant.id);
+  }
   /** PPR P0-4: the template a response rule resolved (may be any profile key). */
   let ruleTemplateKey: string | null = null;
   /** PPR P1-3: the queued draft needs "Approve automation" to release. */
@@ -670,11 +666,11 @@ async function processEmailInner(
   // ── Reply selection (PPR P0-4): stored response rules decide what the
   //    case replies and how it routes. Profiles without response rules keep
   //    the original chain below, unchanged. Templates, send/draft/hold,
-  //    follow-up ladder and audit codes are all rule data — the qualification
-  //    gate still holds every non-fully-qualified reply for staff when the
-  //    profile has one (the migrated education profile keeps it). ──────────
+  //    follow-up ladder and audit codes are all rule data — the evidence
+  //    gate still holds every reply that is not fully evidenced for staff
+  //    whenever the case type has one (it is on by default). ────────────
   const fullyQualified =
-    finalStatus === "Green" && activeBlockingFlags.length === 0 && !watcherFlagged;
+    finalStatus === "Green" && activeBlockingFlags.length === 0 && allDocsHigh && !watcherFlagged;
   const ruleDocsState = replyStateOf({
     fullyQualified,
     blockingFlags: activeBlockingFlags.length > 0,
@@ -689,7 +685,7 @@ async function processEmailInner(
         hasAttachments: email.attachments.length > 0,
         category,
         bodyIsRef: refOnlyOwnCase,
-        educationSignals: verdict.category === "parked" ? "parked" : "open",
+        intakeSignals: verdict.category === "parked" ? "parked" : "open",
         docsState: ruleDocsState,
         docsOnFile: activeDocs.length,
       })
@@ -739,7 +735,7 @@ async function processEmailInner(
       queueForHuman = true;
       if (replyAction.reply_action === "approve") draftNeedsApproval = true;
     } else if (replyAction.reply_action === "send" && key) {
-      // Intended to go out; the draft-first and qualification gates below
+      // Intended to go out; the draft-first and evidence gates below
       // decide send vs hold exactly as they always have.
       ruleTemplateKey = key;
       autoKind = autoKindFor(key);
@@ -768,6 +764,11 @@ async function processEmailInner(
     }
     if (typeof replyAction.assign === "number" && !applicantNow.assigned_to) {
       repo.updateApplicant(applicant.id, { assigned_to: replyAction.assign });
+      const assignee = repo.getStaff(replyAction.assign);
+      if (assignee) {
+        repo.notify("assignment", `${applicantNow.ref_number} was assigned to you by rule “${replyRule.name}”`, applicant.id, assignee.id);
+        repo.audit(applicant.id, "system", "case_assigned", `rule “${replyRule.name}” → ${assignee.display_name}`);
+      }
     }
   } else if (scopedResponseRules.length > 0 || intakeRule !== null) {
     // Rule-driven profile with a gap in its reply rules: never guess, never
@@ -777,7 +778,7 @@ async function processEmailInner(
   } else if (humanTriageOnly) {
     // A screenshot attached to an eligibility question, complaint or fee
     // enquiry is evidence for the human reply, not a submission of the
-    // admissions document pack.
+    // intake document pack.
     queueForHuman = true;
   } else if (opts.autoStatusAnswers && refOnlyOwnCase) {
     autoKind = "status_answer";
@@ -810,10 +811,9 @@ async function processEmailInner(
 
   // ── Draft-first mode (v3 feature 17): a global or per-category setting can
   //    hold ANY automated reply for human approval. The reply is still
-  //    drafted normally — it just gets queued instead of sent. A workflow
-  //    profile can declare its own default (new profiles default to draft —
-  //    automation is opt-in per profile; the migrated education profile keeps
-  //    its preserved "auto" setting). ──────────────────────────────────────
+  //    drafted normally — it just gets queued instead of sent. A case type
+  //    declares its own default (new case types default to draft — automation
+  //    is opt-in per case type). ────────────────────────────────────────────
   const replyMode: "auto" | "draft" = profileReplyMode === "draft" || profileReplyMode === "hold" ? "draft" : repo.automationMode(category);
   const replyAttempted = autoKind !== null || ruleTemplateKey !== null;
   const heldForApproval = replyAttempted && replyMode === "draft";
@@ -827,50 +827,28 @@ async function processEmailInner(
     queueForHuman = true;
   }
 
-  // ── Qualification gate: automated mail is for the FULLY QUALIFIED only ──
-  // Fully qualified = Green verdict, no blocking flags, watcher clean. Every
-  // other file — including "clean" missing-document cases — gets the reply
-  // HELD as a staff suggestion instead: an applicant who is short of a
-  // document or below a grade line today may still be admitted tomorrow on
-  // special acceptance, so the machine never speaks for the office on them.
-  // A profile may switch this gate off (its rules then own the send decision);
-  // the migrated education profile keeps it on, as it always was.
-  const typeGate = genericCaseType?.qualification_gate ?? 1;
-  const qualificationGateOn = typeGate !== 0;
-  const heldForQualification = replyAttempted && !fullyQualified && qualificationGateOn;
+  // ── Evidence gate: automated mail only for a fully evidenced case ───────
+  // Fully evidenced = Green verdict, no blocking flags, watcher clean. Every
+  // other file — including a "clean" missing-document case — gets the reply
+  // HELD as a staff suggestion instead: a contact who is short of a document
+  // today may still be accepted tomorrow on an exception, so the machine never
+  // speaks for the office on their behalf. A case type may switch this gate off
+  // (its workflow rules then own the send decision); it is on by default.
+  const typeGate = genericCaseType?.evidence_gate ?? 1;
+  const evidenceGateOn = typeGate !== 0;
+  const heldForQualification = replyAttempted && ((!fullyQualified && evidenceGateOn) || activeBlockingFlags.length > 0 || !allDocsHigh || watcherFlagged);
   if (heldForQualification) {
     repo.audit(
       applicant.id,
       "system",
-      "automation_held_qualification",
-      `verdict=${finalStatus} — not fully qualified, so the suggested reply is held for staff (special acceptance may apply)`
+      "automation_held_evidence",
+      `verdict=${finalStatus} — the case is not fully evidenced, so the suggested reply is held for staff (an exception may still apply)`
     );
     queueForHuman = true;
   }
 
-  // ── Admission safety gate ────────────────────────────────────────────────
-  // A passing rules evaluation is evidence for a reviewer, never by itself an
-  // admission decision. The evaluator records the PROVISIONAL auto_admit
-  // route for profiles that opt in; the decision is written below only after
-  // every gate has agreed (watcher clean, no blocking flag, fully qualified,
-  // not in draft mode, nothing queued for a human) — and the admission letter
-  // is the single automatic mail that goes out for such a case. Every other
-  // passing evaluation stays human review, exactly as it always has.
   const organizationId = applicantNow.organization_id ?? applicant.organization_id ?? 1;
   const caseTypeId = genericCaseType?.id;
-  const freshRouting = repo.getApplicant(applicant.id)!.routing;
-  const admitNow = Boolean(
-    autoAdmitEligible &&
-      freshRouting === "auto_admit" &&
-      finalStatus === "Green" &&
-      !watcherFlagged &&
-      activeBlockingFlags.length === 0 &&
-      !humanTriageOnly &&
-      !heldForApproval &&
-      !heldForQualification &&
-      !queueForHuman &&
-      repo.getTemplate("admission_letter", organizationId, caseTypeId)
-  );
 
   // ── Drafting (features 14, 35) ──────────────────────────────────────────
   const institution = organizationName(repo, applicantNow.organization_id ?? applicant.organization_id ?? 1);
@@ -881,9 +859,7 @@ async function processEmailInner(
     activeDocs
       .map((d) => normalizeName(d.extracted_fields?.name as string | undefined))
       .find((n) => n.length >= 3) || freshApplicant.full_name || email.fromName;
-  let lifecycleAfter: LifecycleStage = admitNow
-    ? "completed"
-    : humanTriageOnly
+  let lifecycleAfter: LifecycleStage = humanTriageOnly
       ? "application_received"
       : heldForApproval || heldForQualification
         ? activeDocs.length > 0
@@ -910,23 +886,12 @@ async function processEmailInner(
     name: knownName ?? undefined,
     missingLabels,
     checklist: checklistText({ requirements: requiredReqs, presentTypes }),
-    statusLabel: LIFECYCLE_LABELS[lifecycleAfter],
-    programme: applicantNow.programme
-      ? (repo.programmeByCode(applicantNow.programme)?.name ?? applicantNow.programme)
-      : undefined,
-    regDate: repo.getSetting("reg_date", ""),
-    orientationDates: repo.getSetting("orientation_dates", ""),
+    statusLabel: genericCaseType?.stages?.find((stage) => stage.id === lifecycleAfter)?.label ?? LIFECYCLE_LABELS[lifecycleAfter] ?? lifecycleAfter,
     readBack: readBackText(activeDocs),
     documentIssues: documentIssuesText(activeDocs),
   };
 
-  // M-3: a case that has qualified for the provisional admission sends the
-  // ADMISSION LETTER as its automatic reply — the letter IS the receipt for a
-  // file that has already been decided — with the profile's admission
-  // attachment set riding along (the template's attach_pack). Everything else
-  // keeps the ordinary template chain: factual acknowledgements and review
-  // notes only, unless a response rule names a profile template key.
-  const templateKey = (admitNow ? "admission_letter" : null) ?? ruleTemplateKey ?? (autoKind === "ack"
+  const templateKey = ruleTemplateKey ?? (autoKind === "ack"
     ? "ack_received"
     : autoKind === "docs_request"
         ? "docs_request"
@@ -936,20 +901,31 @@ async function processEmailInner(
             ? "status_answer"
             : null);
 
+  let missingTemplateKey: string | null = null;
   if (templateKey) {
     const tpl = repo.getTemplate(templateKey, organizationId, caseTypeId);
     if (tpl) {
       const rendered = renderTemplate(tpl.subject, tpl.body, draftCtx);
       draft = { subject: rendered.subject, body: rendered.body, audience: "auto", templateKey };
-    } else if (ruleTemplateKey) {
-      // A rule named a template this organization does not have. Never let
-      // that become silence: the case goes to a human with the standard
-      // internal note (failed/incomplete rule tree → human review).
+    } else {
+      // A reply was chosen — by a rule or by the case's own state — but this
+      // organization has no wording for it. That must never become silence and
+      // never become a guess: the case goes to a human, the audit names the
+      // missing key, and the queued draft explains what to do.
+      missingTemplateKey = templateKey;
       queueForHuman = true;
+      repo.audit(applicant.id, "system", "template_missing",
+        `reply template '${templateKey}' does not exist for this organization — nothing was rendered; add it under Templates`);
+      repo.notify("review_needed",
+        `${applicantNow.ref_number}: reply template '${templateKey}' is missing — the reply could not be written`, applicant.id);
     }
   }
+  // Uncertain classification is a hold in its own right: a person decides the
+  // route before anything is sent on the strength of a guessed label.
+  const heldForClassification = replyAttempted && classifierHold !== null;
+
   // Held replies keep their rendered content but are queued for a person.
-  if ((heldForApproval || heldForQualification) && draft) draft.audience = "human";
+  if ((heldForApproval || heldForQualification || heldForClassification) && draft) draft.audience = "human";
 
   if (!draft && queueForHuman) {
     // PPR P0-6/D4: a rule-driven profile with a reply gap gets the org's
@@ -965,21 +941,25 @@ async function processEmailInner(
   }
 
   if (!draft && queueForHuman) {
-    draft = pickQueuedDraft({
+    const picked = pickQueuedDraft({
       finalStatus,
       watcherFlagged,
       flags: activeBlockingFlags.map((f) => ({ type: f.type, detail: f.detail })),
       applicantName: knownName ?? undefined,
       ref: applicantNow.ref_number,
     });
+    draft = missingTemplateKey
+      ? {
+          ...picked,
+          body: `INTERNAL — DO NOT AUTO-SEND.\nThe reply template '${missingTemplateKey}' does not exist for this organization, so nothing could be rendered. Create it under Templates, then write this reply by hand.\n\n${picked.body}`,
+        }
+      : picked;
   }
 
   // ── Send or queue ────────────────────────────────────────────────────────
   // Send failures are never fatal: the reply becomes a queued draft and a
   // human handles it (v3 reliability requirement).
   let autoSent = false;
-  /** M-3: the admission letter actually left the building this pass. */
-  let admissionLetterSent = false;
   // A rule that answers with "draft", "approve" or "hold" means exactly that:
   // the pipeline never escalates it to a send, whatever the gates say. Only
   // "send" (or legacy non-rule automation) may reach the wire.
@@ -996,7 +976,7 @@ async function processEmailInner(
       const tplRow = templateKey ? repo.getTemplate(templateKey, organizationId, caseTypeId) : undefined;
       const setRef = replyAction?.attachment_set
         ?? tplRow?.attach_pack
-        ?? (autoKind === "docs_request" ? "application" : "none");
+        ?? "none";
       const resolved = repo.attachmentSetFiles(organizationId, setRef);
       const pack = resolved.files.length || resolved.issues.length ? resolved : null;
       const extras: SendExtras = {
@@ -1036,7 +1016,13 @@ async function processEmailInner(
       repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind ?? templateKey}: "${draft.subject}"`);
       log(`pipeline: auto-sent [${autoKind ?? templateKey}] to ${applicantNow.email_address}`);
       autoSent = true;
-      if (templateKey === "admission_letter") admissionLetterSent = true;
+      // An install with no mail connection records sends it cannot make. The
+      // audit trail must not claim a delivery that never happened.
+      if (adapters.sender.delivers === false) {
+        repo.audit(applicant.id, "system", "email_not_delivered",
+          `recorded only — no mail connection is configured, so "${draft.subject}" was NOT delivered to ${applicantNow.email_address}`);
+        log(`pipeline: reply recorded but NOT delivered (no mail connection) for ${applicantNow.ref_number}`, "warn");
+      }
     } catch (e) {
       repo.audit(applicant.id, "system", "send_failed", `auto-send [${autoKind ?? templateKey}] failed: ${(e as Error).message}`);
       repo.addOutbox({
@@ -1063,44 +1049,6 @@ async function processEmailInner(
       template_key: draft.templateKey ?? "",
       needs_approval: draftNeedsApproval ? 1 : 0,
     });
-  }
-
-  // ── Provisional admission (M-3: the legacy auto-admit path, restored) ───
-  // The letter went out under the profile's explicit opt-in, so the case is
-  // admitted provisionally and the decision is recorded as AUTOMATED:
-  // admission_route "auto" (never "human"), decision_reason explains the
-  // basis, and the audit trail carries the exact event. Nothing here decides
-  // on its own — the evaluator routed auto_admit only on a complete matrix +
-  // satisfied rule tree + reliable extraction, and every gate above has
-  // agreed. A registrar may reverse it through the ordinary not_admitted
-  // decision path on the case page.
-  let autoAdmitted = false;
-  if (admissionLetterSent) {
-    // The trail must show the step the file actually passed through before it
-    // was admitted: every required document was read and checked. Auto-admit
-    // would otherwise jump straight from documents_received to completed.
-    const stageNow = repo.getApplicant(applicant.id)!.lifecycle;
-    if (LIFECYCLE_ORDER.indexOf(stageNow) < LIFECYCLE_ORDER.indexOf("documents_checked")) {
-      repo.setLifecycle(applicant.id, "documents_checked", "system", "all required documents verified automatically");
-    }
-    repo.updateApplicant(applicant.id, {
-      admission_decision: "auto_admitted",
-      admission_route: "auto",
-      decision_reason: "All configured admission requirements satisfied — provisional admission recorded automatically; a registrar may reverse it.",
-      decision_at: new Date().toISOString(),
-    });
-    repo.audit(
-      applicant.id,
-      "system",
-      "auto_admission_triggered",
-      `${applicantNow.ref_number}: complete file, satisfied rules and clean watcher on auto-admit profile “${genericCaseType?.name ?? ""}” — provisional admission recorded and the admission letter sent`
-    );
-    repo.notify(
-      "auto_admitted",
-      `${applicantNow.ref_number}: provisionally admitted automatically — reversal available on the case page`,
-      applicant.id
-    );
-    autoAdmitted = true;
   }
 
   // ── Follow-up ladder (v3 feature 13) ─────────────────────────────────────
@@ -1137,9 +1085,9 @@ async function processEmailInner(
     const cur = repo.getApplicant(applicant.id)!;
     if (!cur.sla_handled_at) repo.updateApplicant(applicant.id, { sla_due_at: due });
     const reason = humanTriageOnly
-      ? `${enquiryOnly ? "admission enquiry" : category.replace(/_/g, " ")} — staff response required`
+      ? `${enquiryOnly ? "general enquiry" : category.replace(/_/g, " ")} — staff response required`
       : heldForQualification && !heldForApproval
-      ? "applicant not fully qualified — suggested reply held for staff (special acceptance may apply)"
+      ? "case not fully evidenced — suggested reply held for staff (an exception may still apply)"
       : heldForApproval
         ? "automated reply held for approval (draft-first mode)"
       : finalStatus === "Orange"
@@ -1153,15 +1101,9 @@ async function processEmailInner(
   }
 
   // ── Lifecycle transition + status history (features 15, 16) ─────────────
-  // The provisional admission set the file to "completed" above; if that
-  // admission never completed (send failed, letter template missing), the
-  // file waits for a person — it is never presented as closed.
-  if (admitNow && !autoAdmitted) lifecycleAfter = "awaiting_review";
   const lifecycleNow = repo.getApplicant(applicant.id)!.lifecycle;
   if (lifecycleNow !== lifecycleAfter) {
-    const why = autoAdmitted
-        ? "provisional admission recorded — the admission letter was sent; a registrar may reverse it"
-      : autoKind === "ack"
+    const why = autoKind === "ack"
         ? "all required documents verified automatically"
         : lifecycleAfter === "awaiting_review"
           ? "queued for human review"
@@ -1193,7 +1135,7 @@ async function processEmailInner(
     finalStatus,
     lifecycle: finalRow.lifecycle,
     autoSent,
-    // The kind the automation ATTEMPTED — even when the qualification gate
+    // The kind the automation ATTEMPTED — even when the evidence gate
     // held it as a suggestion (autoSent=false); null means no reply drafted.
     autoKind,
     category,

@@ -11,10 +11,9 @@
  * is not one situation: a password-protected PDF needs a different message
  * to the applicant than a corrupt upload or a valid-but-empty file.
  */
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const pdfjs = require("pdfjs-dist/legacy/build/pdf.js");
+import { openPdfDocument, PdfTimeoutError, type OpenedPdf } from "./pdfOptions";
 
-export type PdfStatus = "ok" | "encrypted" | "corrupt" | "empty";
+export type PdfStatus = "ok" | "encrypted" | "corrupt" | "empty" | "timeout";
 
 export interface PdfInspection {
   status: PdfStatus;
@@ -32,10 +31,12 @@ interface TextItem {
   transform: number[]; // [a, b, c, d, x, y]
 }
 
-/** Classify WHY a pdf.js open failed. */
-function classifyOpenError(e: unknown): { status: "encrypted" | "corrupt"; error: string } {
+/** Classify WHY a pdf.js open failed. A budget overrun is its own reason: the
+ *  file may be perfectly valid, we simply refuse to spend forever on it. */
+function classifyOpenError(e: unknown): { status: "encrypted" | "corrupt" | "timeout"; error: string } {
   const name = (e as any)?.name || "";
   const msg = String((e as Error)?.message || e);
+  if (e instanceof PdfTimeoutError || name === "PdfTimeoutError") return { status: "timeout", error: msg };
   if (/password/i.test(name) || /PasswordException/.test(name) || /password/i.test(msg)) {
     return { status: "encrypted", error: msg };
   }
@@ -45,12 +46,9 @@ function classifyOpenError(e: unknown): { status: "encrypted" | "corrupt"; error
 /** Open a PDF and classify WHY it can't be opened. */
 export async function pdfInspect(buf: Buffer): Promise<PdfInspection> {
   try {
-    const doc = await pdfjs.getDocument({
-      data: new Uint8Array(buf),
-      verbosity: 0,
-    }).promise;
+    const { doc, close } = await openPdfDocument(new Uint8Array(buf), "text");
     const numPages = doc.numPages;
-    await doc.destroy();
+    await close();
     if (numPages === 0) return { status: "empty", numPages: 0, truncated: false };
     return { status: "ok", numPages, truncated: numPages > PDF_MAX_PAGES };
   } catch (e) {
@@ -70,14 +68,9 @@ export interface PdfTextResult {
  * `inspection.status` for the reason.
  */
 export async function pdfRead(buf: Buffer): Promise<PdfTextResult> {
-  let doc: any;
+  let opened: OpenedPdf;
   try {
-    doc = await pdfjs.getDocument({
-      data: new Uint8Array(buf),
-      useSystemFonts: true,
-      isEvalSupported: false,
-      verbosity: 0,
-    }).promise;
+    opened = await openPdfDocument(new Uint8Array(buf), "text");
   } catch (e) {
     const c = classifyOpenError(e);
     return {
@@ -86,6 +79,7 @@ export async function pdfRead(buf: Buffer): Promise<PdfTextResult> {
     };
   }
 
+  const { doc, close } = opened;
   const numPages = doc.numPages;
   const inspection: PdfInspection =
     numPages === 0
@@ -105,13 +99,13 @@ export async function pdfRead(buf: Buffer): Promise<PdfTextResult> {
       }
     }
   } catch (e) {
-    await doc.destroy();
+    await close();
     return {
       text: null,
       inspection: { ...inspection, status: "corrupt", error: String((e as Error)?.message || e) },
     };
   }
-  await doc.destroy();
+  await close();
   return { text: lines.join("\n"), inspection };
 }
 

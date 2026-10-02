@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { assessTextQuality, isGoodText } from "../src/extraction/quality";
 
 const GOOD_TEXT = `REPUBLIC OF KENYA
-KENYA CERTIFICATE OF PRIMARY EDUCATION
+NATIONAL IDENTIFICATION DOCUMENT
 NAME: ALICE WANJIKU KAMAU
-KCPE POINTS: 312
-MEAN GRADE: B
-YEAR: 2017`;
+DOCUMENT NUMBER: 12345678
+DATE OF BIRTH: 1995-02-14
+ISSUED: 2017`;
 
 describe("extraction quality heuristics", () => {
   it("accepts real document text", () => {
@@ -37,13 +37,13 @@ describe("extraction quality heuristics", () => {
 
   it("accepts real OCR output of a clean scan", () => {
     const realOcr = `REPUBLIC OF KENYA
-KENYA CERTIFICATE OF PRIMARY EDUCATION
-(KCPE)
+NATIONAL IDENTIFICATION DOCUMENT
+(ID CARD)
 NAME: GRACE AKINYI OTIENO
-KCPE POINTS: 289
-MEAN GRADE: B
-YEAR: 2019
-INDEX NO: 10438211`;
+DOCUMENT NUMBER: 23456789
+DATE OF BIRTH: 1993-07-02
+ISSUED: 2019
+SERIAL NO: 10438211`;
     expect(isGoodText(realOcr)).toBe(true);
   });
 

@@ -2,10 +2,10 @@
  * PPR P1 acceptance (settings surfaces) — each item proven through real
  * admin routes and real rendered pages:
  *  P1-1: terminology labels (case/contact/category/stage/outcome) are
- *        profile data; defaults are the current education wording; internal
- *        keys and DB columns never move.
- *  P1-2: stages and queues are configurable per profile (the education
- *        preset is the six lifecycle stages), and a rule can route into a
+ *        case-type data; the defaults are the product's own generic wording;
+ *        internal keys and DB columns never move.
+ *  P1-2: stages and queues are configurable per case type (the shipped preset
+ *        is the four-stage generic lifecycle), and a rule can route into a
  *        configured queue.
  *  P1-6: SLA target hours, escalation hours and the follow-up ladder are
  *        surfaced in the real Settings UI and save through the real route.
@@ -15,11 +15,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Server } from "http";
 import { openDb } from "../src/db/db";
-import { Repo, EDUCATION_STAGE_PRESET, EDUCATION_QUEUE_PRESET } from "../src/db/repo";
+import { Repo, GENERIC_STAGE_PRESET, GENERIC_QUEUE_PRESET } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
 import { createApp } from "../src/web/server";
 import { hashPassword } from "../src/util/password";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization } from "./helpers";
 import { processEmail } from "../src/pipeline";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
@@ -60,6 +60,9 @@ describe("PPR P1-1/P1-2/P1-6/P1-8: vocabulary, stages & queues, SLA settings, pe
 
   beforeAll(async () => {
     repo = fresh();
+    // One explicitly configured tenant, created BEFORE any account so every
+    // staff member and every route resolves to it.
+    configureTestOrganization(repo);
     repo.createStaff("admin", "Administrator", hashPassword("admin123"), "admin");
     sender = new MockSender();
     ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
@@ -75,13 +78,11 @@ describe("PPR P1-1/P1-2/P1-6/P1-8: vocabulary, stages & queues, SLA settings, pe
 
   afterAll(() => server?.close());
 
-  it("P1-2: the education preset IS the six lifecycle stages (ids stable)", () => {
-    expect(EDUCATION_STAGE_PRESET.map((s) => s.id)).toEqual([
-      "application_received", "documents_received", "documents_checked", "awaiting_review", "verification", "completed",
+  it("P1-2: the shipped preset IS the generic lifecycle (ids stable)", () => {
+    expect(GENERIC_STAGE_PRESET.map((s) => s.id)).toEqual([
+      "application_received", "documents_received", "awaiting_review", "completed",
     ]);
-    expect(EDUCATION_QUEUE_PRESET.map((q) => q.id).sort()).toEqual(
-      ["completed", "decision", "enquiries", "human_review", "waiting_documents"].sort()
-    );
+    expect(GENERIC_QUEUE_PRESET.map((q) => q.id)).toEqual(["new", "in_progress", "waiting", "done"]);
     // Internal keys unchanged: the DB columns keep their names.
     const cols = (repo.db.prepare("PRAGMA table_info(applicants)").all() as Array<{ name: string }>).map((c) => c.name);
     expect(cols).toContain("lifecycle");
@@ -139,15 +140,21 @@ describe("PPR P1-1/P1-2/P1-6/P1-8: vocabulary, stages & queues, SLA settings, pe
     expect(page).toMatch(/Front desk/);             // queue label
   });
 
-  it("P1-1: education defaults keep the current wording until someone renames them", async () => {
+  it("P1-1: a case type nobody renamed keeps the shipped wording", async () => {
+    // A brand-new case type carries no vocabulary of its own: the console uses
+    // the product's generic words until an administrator renames something.
+    expect((await post("/config/case-types/create", {
+      organization_id: "1", code: "PLAIN", name: "Plain intake", category: "general",
+    }, adminAuth)).status).toBe(302);
     const result = await processEmail(mail({
-      id: "p1-edu-1", from: "pupil@example.test",
-      subject: "Application for BCS admission", body: "I am applying for the BCS programme this September 2026 intake.",
+      id: "p1-plain-1", from: "plain@example.test", organizationId: 1, caseTypeCode: "PLAIN",
+      subject: "Plain intake question", body: "Please help me with this plain intake.",
     }), ctx);
     expect(result.skipped).not.toBe(true);
     const page = await (await fetch(`${base}/case/${result.applicantId}`, { headers: { cookie: adminAuth.cookie } })).text();
-    expect(page).toMatch(/Applicant overview/);
+    expect(page).toMatch(/Case overview/);
     expect(page).not.toMatch(/Matter overview/);
+    expect(repo.getCaseType("PLAIN", 1)!.terminology ?? {}).toEqual({});
   });
 
   it("P1-6: SLA target, escalation hours and the follow-up ladder are in the real Settings UI", async () => {
@@ -197,11 +204,11 @@ describe("PPR P1-1/P1-2/P1-6/P1-8: vocabulary, stages & queues, SLA settings, pe
     }, officerAuth);
     expect(allowed.status).toBe(302);
 
-    // (2) record outcome — still refused (not granted). Outcomes are an
-    // education-module concept, so use the education case from earlier:
-    const eduCase = repo.db.prepare("SELECT id FROM applicants WHERE email_address = ?").get("pupil@example.test") as { id: number };
-    const deniedOutcome = await post(`/case/${eduCase.id}/admission-decision`, {
-      decision: "admit", reason: "test",
+    // (2) record outcome — still refused (not granted). Outcomes are a human
+    // decision on any case, so use the unrenamed case from earlier:
+    const plainCase = repo.db.prepare("SELECT id FROM applicants WHERE email_address = ?").get("plain@example.test") as { id: number };
+    const deniedOutcome = await post(`/case/${plainCase.id}/outcome`, {
+      outcome: "approved_after_review", reason: "test",
     }, officerAuth);
     expect(deniedOutcome.status).toBe(403);
     // Grant it and the same route works:
@@ -209,13 +216,13 @@ describe("PPR P1-1/P1-2/P1-6/P1-8: vocabulary, stages & queues, SLA settings, pe
       [`perm_${officer.id}_publish_rules`]: "1",
       [`perm_${officer.id}_record_outcome`]: "1",
     }, adminAuth)).status).toBe(302);
-    const allowedOutcome = await post(`/case/${eduCase.id}/admission-decision`, {
-      decision: "admit", reason: "qualified under the approved exception route",
+    const allowedOutcome = await post(`/case/${plainCase.id}/outcome`, {
+      outcome: "approved_after_review", reason: "approved under the documented exception route",
     }, officerAuth);
     expect(allowedOutcome.status).toBe(302);
     // And the outcome really landed (decision_by is the officer):
-    const recorded = repo.getApplicant(eduCase.id)!;
-    expect(recorded.admission_decision).toBe("admitted_after_review");
+    const recorded = repo.getApplicant(plainCase.id)!;
+    expect(recorded.outcome).toBe("approved_after_review");
     expect(recorded.decision_by).toBe("officer");
 
     // (3) approve automation — P1-3 split: an ordinary draft is officer work
@@ -225,16 +232,16 @@ describe("PPR P1-1/P1-2/P1-6/P1-8: vocabulary, stages & queues, SLA settings, pe
     const clerk = repo.getStaffByUsername("clerk")!;
     repo.setPermissions(clerk.id, ["send_automated"]); // explicitly no approval right
     const clerkLogin = await webLogin(base, "clerk", "clerk1");
-    const ordinaryDraft = await post(`/case/${eduCase.id}/draft`, { decision: "edit" }, {
+    const ordinaryDraft = await post(`/case/${plainCase.id}/draft`, { decision: "edit" }, {
       cookie: clerkLogin.cookie, csrf: clerkLogin.csrf,
     });
     expect(ordinaryDraft.status).toBe(302); // not 403 — ordinary drafts are officer work
     repo.addOutbox({
-      applicant_id: eduCase.id, to_address: "applicant@example.test",
+      applicant_id: plainCase.id, to_address: "plain@example.test",
       subject: "Awaiting approval", body: "A real reply body.", mode: "queued",
       template_key: "status_answer", needs_approval: 1,
     });
-    const deniedDraft = await post(`/case/${eduCase.id}/draft`, { decision: "discard" }, {
+    const deniedDraft = await post(`/case/${plainCase.id}/draft`, { decision: "discard" }, {
       cookie: clerkLogin.cookie, csrf: clerkLogin.csrf,
     });
     expect(deniedDraft.status).toBe(403);

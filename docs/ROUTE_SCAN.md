@@ -2,7 +2,11 @@
 
 Scope: every HTTP route registered in `src/web/server.ts` (express app built
 by `createApp`), verified against the real server (`tsx src/cli/serve.ts`)
-and the vitest suite (393 tests, 29 files — all pass at time of writing).
+and the vitest suite at the time of writing. **Historical scan, kept current
+for removed routes:** the admissions-era surfaces listed in earlier revisions
+(`GET /admissions`, `POST /case/:id/admission-decision`, `/config/course-owner`,
+the requirement-node builder and the pack-slot routes) no longer exist — they
+return 404. Human outcomes are recorded by `POST /case/:id/outcome`.
 
 Legend: **auth** = middleware chain · **verdict** = what the scan found.
 
@@ -40,17 +44,17 @@ on top.
 | `POST /case/:id/assign` | login + CSRF | ✓ unknown staff id refused before the FK could 500; assignee notified. |
 | `POST /case/:id/priority` | login + CSRF | ✓ validated enum. |
 | `POST /case/:id/category` | login + **admin** + CSRF | ✓ category correction. |
-| `POST /case/:id/admission-decision` | login + CSRF | ✓ the human final call; recorded with actor + reason. |
+| `POST /case/:id/outcome` | login + `record_outcome` permission + CSRF | ✓ the human final call; validated enum (`approved_after_review` · `not_approved` · `undecided`) and a written reason of 1–2000 characters are required. |
 | `POST /case/:id/reevaluate` | login + CSRF | ✓ re-runs the engine on the same frozen evidence. |
 
 ## 3. Lists, levels, dashboard (counts == lists)
 
 | Route | Auth | Verdict |
 |---|---|---|
-| `GET /` | login | ✓ every counter passes through the same school scope as the lists (OR-8). |
+| `GET /` | login | ✓ every counter passes through the same case-type scope as the lists (OR-8). |
 | `GET /queue` | login | ✓ legacy alias → redirects to `/applicants?queue=human_review` (kept so old bookmarks survive). |
 | `GET /applicants` | login | ✓ search + every queue tab scoped; LIKE wildcards escaped. |
-| `GET /admissions` | login | ✓ level tabs scoped; counts come from the same scoped query as the rows. |
+| `GET /cases` | login | ✓ stage tabs scoped; counts come from the same scoped query as the rows. |
 | `GET /notifications`, `POST /notifications/read-all` | login (+ CSRF) | ✓ scoped (out-of-scope case alerts hidden; broadcasts stay). |
 | `GET /team` | login | ✓ legacy alias → `/staff`. |
 | `GET /api/search` | login | ✓ command palette; scoped; returns JSON 404s under `/api/*`. |
