@@ -1731,7 +1731,17 @@ export function createApp(deps: WebDeps): Express {
     url.searchParams.set("client_id", clientId);
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("response_type", "code");
-    url.searchParams.set("scope", "https://www.googleapis.com/auth/gmail.modify");
+    // The narrowest scope set that covers every call this product makes:
+    //   gmail.readonly -> users.messages.list / .get / .attachments.get
+    //   gmail.send     -> users.messages.send (including the stale-thread retry)
+    // gmail.modify is deliberately NOT requested: it would also grant delete,
+    // label and read/unread writes on the mailbox, and nothing here performs
+    // them. If archiving or labelling processed mail is ever added, that is a
+    // deliberate re-widening — not a default.
+    url.searchParams.set(
+      "scope",
+      "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send"
+    );
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("prompt", "consent");
     url.searchParams.set("state", state);

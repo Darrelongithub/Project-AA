@@ -21,11 +21,28 @@ local sandbox. Real Google endpoints are still untouched — that is what this p
 ## 0. What you need
 
 - A **throwaway Gmail account** you are happy to lose (e.g. `yourorg-pilot@gmail.com`).
-- A Google Cloud project with the **Gmail API** enabled, an **OAuth client** (Desktop
-  app) and a **refresh token** for that account with the `gmail.modify` scope (the
-  console sends as `me`, reads all mail, and must be able to reply in threads).
-  Obtaining these is your step — this repository never sees them, and nothing here
-  prints or stores them outside the console's own `secrets` table.
+  Do not reuse an account tied to your real identity, and do not create the pilot's Google
+  Cloud project inside an existing Workspace organization or attach a custom domain you
+  use elsewhere — a standalone project and a plain `@gmail.com` address keep the pilot
+  from touching anything real.
+- A Google Cloud project with the **Gmail API** enabled and an **OAuth client of type
+  "Web application"** whose authorized redirect URI is exactly the one Settings →
+  Connections shows you (`…/settings/gmail/callback`). A *Desktop* client will fail with
+  `redirect_uri_mismatch` on the in-app "Connect with Google…" flow; use Desktop only if
+  you intend to mint the refresh token yourself in the OAuth Playground and paste it into
+  the advanced field.
+- Exactly **two OAuth scopes** — the narrowest set that covers every call this product
+  makes:
+  - `https://www.googleapis.com/auth/gmail.readonly` — `users.messages.list`,
+    `users.messages.get` (metadata and full) and `users.messages.attachments.get`;
+  - `https://www.googleapis.com/auth/gmail.send` — `users.messages.send`, including the
+    retry-as-a-new-message path when a thread no longer exists.
+
+  **Do not grant `gmail.modify`.** It additionally allows deleting, labelling, moving and
+  marking mail as read, and this codebase performs none of those operations (there is no
+  `messages.modify`, `messages.delete`, `labels.*`, `threads.*` or `watch` call anywhere).
+  Obtaining the credentials is your step — this repository never sees them, and nothing
+  here prints or stores them outside the console's own `secrets` table.
 - The build: `npm ci --ignore-scripts && npm run build`.
 - A separate database: `export DB_PATH=/tmp/pilot.sqlite` (delete it afterwards).
 
@@ -92,8 +109,10 @@ request"), give it two required documents, save a rule tree if you want one, the
   case below. Aliases are matched case-insensitively and honour the `+tag`, so one real
   mailbox is enough.
 - Settings → Letters & identity: set the **inbound mailbox address** to the throwaway
-  address (this is how the pilot's mail is attributed to your organization), plus the
-  From name and Reply-To you want on outgoing mail.
+  address (this is how the pilot's mail is attributed to your organization). Set the From
+  name and Reply-To to obviously-pilot values — for example From name
+  `PILOT — do not reply` and Reply-To the same throwaway mailbox — so that anything which
+  does go out can never be mistaken for real correspondence.
 - Team: create one non-admin officer, and give them a **visibility scope** of only this
   case type; check the scope matrix saves and that the officer sees only those cases.
 
@@ -101,6 +120,11 @@ request"), give it two required documents, save a rule tree if you want one, the
 
 Send each from a **different** external address to the throwaway mailbox. Wait up to 60
 seconds per message (the poll interval), or use Settings → Connections → "Sync now".
+
+> **Every address you send from is an address the console may reply to.** Step 7 releases
+> one real reply, and it goes to the contact on the case — i.e. to whichever of these
+> addresses opened it. Use only addresses you control (your own secondary mailboxes):
+> never a customer's, a colleague's, a role inbox, or a distribution list.
 
 | # | Message | What must happen |
 |---|---|---|
@@ -179,3 +203,32 @@ server log, and treat it as a bug report.
   proves the routing.
 - Only then consider releasing automation for one category at a time, and watch
   `email_sent_auto` versus `automation_held` in the audit log for a week.
+
+## 10. Teardown — do all of it, in this order
+
+A pilot leaves four things behind: a database containing live credentials, an OAuth grant,
+an OAuth client, and a mailbox. Removing only the database is not teardown.
+
+1. **Disconnect in the console first** — Settings → Connections → Gmail → disconnect. This
+   sets `gmail_disabled`, stops the 60 s poll, and means no further call can use the token.
+2. **Revoke the OAuth grant** for the throwaway account: Google account → *Security* →
+   *Your connections to third-party apps & services* → select the pilot client → **Remove
+   access**. Until you do this, the refresh token in that database stays valid.
+3. **Delete the OAuth client**, or delete the whole Google Cloud project if nothing else
+   uses it, so the client id/secret cannot be reused.
+4. **Delete the pilot database and every copy of it**: `/tmp/pilot.sqlite`,
+   `/tmp/pilot.sqlite-wal`, `/tmp/pilot.sqlite-shm`, plus anything `npm run backup`
+   produced, any download of an export, and any file you attached to a ticket or shared
+   while debugging. These files hold the client secret and refresh token **in plaintext** —
+   treat a stray copy as a leaked credential. If you must keep the database for a
+   post-mortem, keep it only after step 2 (the grant is then worthless) and store it like a
+   secret.
+5. **Delete the throwaway mailbox**, and remove any pilot alias address, plus-address or
+   forwarding rule you published in step 4.
+6. **Check the blast radius**: no real customer or colleague address was used as a sender
+   or recipient, nothing was auto-forwarded elsewhere, and the pilot's From name/Reply-To
+   were the obvious pilot values.
+7. Only then, remove the credentials from your password manager or notes.
+
+If you plan to pilot again, start from step 1 of this runbook with a **new** database —
+never reuse a pilot database that has held live credentials.

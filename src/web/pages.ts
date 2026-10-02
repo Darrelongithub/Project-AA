@@ -1883,8 +1883,8 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
     <li><b>APIs &amp; Services → Library</b>: enable the <b>Gmail API</b>.</li>
     <li><b>APIs &amp; Services → Credentials → Create credentials → OAuth client ID</b>, application type <b>Web application</b>.</li>
     <li>Under <b>Authorised redirect URIs</b> add exactly this address (copy it — Google rejects placeholders such as <span class="mono">0.0.0.0</span>):<br><input class="mono" style="width:100%;margin-top:4px" readonly value="${esc(gmailRedirectUri ?? "")}" onclick="this.select()"></li>
-    <li>Paste the <b>Client ID</b> and <b>Client secret</b> below, save, then press <b>Connect with Google…</b> and approve. The only scope requested is <span class="mono">https://www.googleapis.com/auth/gmail.modify</span> — read and send for this one mailbox.</li>
-    <li>No OAuth client of your own? Use the <b>OAuth Playground</b> (developers.google.com/oauthplayground) with your own client ID and the <span class="mono">gmail.modify</span> scope, then paste the resulting refresh token into the advanced field.</li>
+    <li>Paste the <b>Client ID</b> and <b>Client secret</b> below, save, then press <b>Connect with Google…</b> and approve. Exactly two scopes are requested — <span class="mono">gmail.readonly</span> (read this mailbox) and <span class="mono">gmail.send</span> (send as it). Nothing else: the app cannot delete, label, move or mark mail as read, and it never asks for the broader <span class="mono">gmail.modify</span>.</li>
+    <li>No OAuth client of your own? Use the <b>OAuth Playground</b> (developers.google.com/oauthplayground) with your own client ID and the same two scopes (<span class="mono">gmail.readonly</span> + <span class="mono">gmail.send</span>), then paste the resulting refresh token into the advanced field.</li>
   </ol>
   <form method="post" action="/settings/gmail/credentials">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">

@@ -109,3 +109,39 @@ describe("D2 — the mailbox-label field is gone; the watcher always reads the i
     expect(repo.getSetting("gmail_label", "")).toBe(""); // ← ignored from now on
   });
 });
+
+describe("D3 — the connect flow requests the narrowest scope that works", () => {
+  it("asks Google for gmail.readonly + gmail.send, and never gmail.modify", async () => {
+    repo.setSetting("gmail_client_id", "pilot-client-id");
+    repo.setSecret("gmail_client_secret", "GOCSPX-not-a-real-secret");
+    const base = await boot();
+    const { cookie } = await webLogin(base, "admin", "admin123");
+    const res = await fetch(`${base}/settings/gmail/connect`, { headers: { cookie }, redirect: "manual" });
+    expect(res.status).toBe(302);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.origin + location.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
+    expect(location.searchParams.get("scope")).toBe(
+      "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send"
+    );
+    expect(location.searchParams.get("scope")).not.toContain("gmail.modify");
+    // A refresh token requires both of these; losing either breaks ingestion.
+    expect(location.searchParams.get("access_type")).toBe("offline");
+    expect(location.searchParams.get("prompt")).toBe("consent");
+    // The anti-CSRF state is random and stored for the callback to check.
+    const state = location.searchParams.get("state")!;
+    expect(state).toMatch(/^[0-9a-f]{32}$/);
+    expect(repo.getSetting("gmail_oauth_state", "")).toBe(state);
+    expect(location.searchParams.get("client_id")).toBe("pilot-client-id");
+    // The secret never travels in the URL.
+    expect(res.headers.get("location")).not.toContain("GOCSPX-not-a-real-secret");
+  });
+
+  it("refuses to start the flow without a client id", async () => {
+    const base = await boot();
+    const { cookie } = await webLogin(base, "admin", "admin123");
+    const res = await fetch(`${base}/settings/gmail/connect`, { headers: { cookie }, redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(decodeURIComponent(res.headers.get("location")!)).toContain("Save the OAuth client ID and secret first.");
+    expect(res.headers.get("location")).not.toContain("accounts.google.com");
+  });
+});

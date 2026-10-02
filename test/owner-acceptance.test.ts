@@ -306,7 +306,11 @@ describe("OR-4: connections live in Settings, nowhere else", () => {
       expect(html).toContain("Google Cloud");
       expect(html).toContain("Gmail API");
       expect(html).toContain("OAuth client");
-      expect(html).toContain("gmail.modify");
+      // The guide must name the scopes actually requested — the narrow pair,
+      // and explicitly not the broader modify scope.
+      expect(html).toContain("gmail.readonly");
+      expect(html).toContain("gmail.send");
+      expect(html).not.toMatch(/auth\/gmail\.modify/);
       expect(html).toContain("/settings/gmail/callback");
       expect(html).toContain("OAuth Playground");
       expect(html).toContain("aistudio.google.com");
