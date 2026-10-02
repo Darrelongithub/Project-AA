@@ -115,12 +115,19 @@ of the tracked tree). The earlier set from this task —
 `final-20261002T103026Z.bundle` — was **destroyed by the sixth re-provision**, which is the
 sixth demonstration that git-ignored backups are not durable in this environment.
 
-**Push: rejected — `! [rejected] … (fetch first)`, non-fast-forward.** Credentials work;
-the blocker is that six re-provisions rewrote local history, so origin's tip `f4544c6`
-(Part C Phase 2) is not an ancestor of local HEAD. Rule 1 forbids force-push and merge, so
-no permitted path exists. **Everything after Part C Phase 2 — Part C Phases 3–7, all of
-Part D, and this upgrade — is local-only.** This is Q13 and it is now the largest single
-risk to the work.
+**Push: PUBLISHED (Q13 answered A after this report was first written).** The earlier
+attempts were rejected as non-fast-forward because the re-provisions rewrote local history;
+the owner then authorised a lease-pinned force-push of the arena branch only.
+
+One incident is recorded in full, because it matters operationally: the workspace
+re-provisioned a **seventh** time *while that push was in flight*. HEAD had been reset to
+base `47c025a` with the whole tree uncommitted, so the push moved the remote branch to
+`47c025a` — briefly rolling back the remote's `f4544c6` — instead of publishing the
+restored work. Recovery took one command: the identical tree was re-committed (`d7dd63d`)
+and pushed forward as a fast-forward. **The remote branch now equals local HEAD
+(`d7dd63d`), `main` was never touched, and no content was lost** — the tree is
+byte-identical to the state that passed every gate. Lesson (DECISIONS.md D19): verify
+`git rev-parse HEAD` and a clean `git status` *inside the same command* as any push.
 
 ### Reverting the upgrade (if you want 144 back)
 
@@ -134,9 +141,9 @@ changed nothing this product touches.
 
 ## e) What still needs you
 
-1. **Publish the branch (Q13).** Authorise one `git push --force-with-lease origin
-   arena/01a0f754-project-aa` (arena branch only, never `main`) or a merge/rebase of
-   `f4544c6`. Until then a seventh re-provision can erase this work again.
+1. ~~**Publish the branch (Q13)**~~ — **DONE**: answered A and executed; origin's arena
+   branch is at `d7dd63d` (identical to local HEAD), `main` untouched. The work is durable
+   off-box for the first time since Part C Phase 2.
 2. **Run the Gmail pilot** — `docs/PILOT-RUNBOOK.md`, which records the exact versions
    verified here (googleapis 182.0.0, google-auth-library 11.1.0, gaxios 7.3.1,
    pdfjs-dist 6.3.289, Node 22.22.3). Throwaway mailbox and database, draft-only switch
@@ -148,7 +155,9 @@ changed nothing this product touches.
 4. **Label 100 real messages and run the harness** — `GET /export/labels.csv` →
    `docs/LABELLING-GUIDE.md` → `scripts/eval-classifier.ts`; keep the auto-send allowlist
    empty until a category clears precision ≥ 95 % on ≥ 30 examples.
-5. **Q11 (Node ≥ 22.13)** still needs a decision before deploying.
+5. ~~**Q11 (Node ≥ 22.13)**~~ — **answered A (accept)**; no change needed, it is already the
+   committed state. Q8 (freeze-only), Q9 (honour plus-addressing) and Q12 (leave the
+   dev-only advisories) were likewise answered A and all confirmed the code as built.
 
 ## f) What I could not verify
 

@@ -5,6 +5,20 @@ the options, my recommendation and why, what I did meanwhile (PROVISIONAL or
 SKIPPED), what it affects, and exactly how to change it afterwards. The final
 report re-orders these by impact.
 
+## Answered by the owner after the googleapis run (2026-10-02, all settled)
+
+| # | Question | Answer | Effect |
+|---|---|---|---|
+| Q13 | How should the branch be published? | **A - force-push-with-lease, arena branch only** | Done: the branch now matches local HEAD on origin; `main` untouched |
+| Q11 | Accept Node >= 22.13 (pdf.js 6)? | **A - accept** | No change needed: already the committed state (`engines`, README, `scripts/setup-linux.sh`) |
+| Q12 | Clear the five dev-only vitest/vite advisories? | **A - leave them, documented** | No change; `vitest.config.ts`'s `server.deps.external` stays load-bearing for the pdf.js 6 bridge |
+| Q8 | Re-run the requirements check after a re-type? | **A - freeze only, no re-evaluation** | No change needed: implemented as provisionally chosen; `test/case-retype.test.ts` pins it |
+| Q9 | Honour plus-addressing in alias routing? | **A - honour the tag** | No change needed: implemented as provisionally chosen; `test/alias-routing.test.ts` pins it |
+| Q10 | googleapis major bump | **B - do it before the pilot** | Done: googleapis 182.0.0, audit 13 (base) -> 5, runtime chain cleared |
+
+All five answers confirmed the provisional choices already in the tree, so no code changed
+as a result of them. Q1-Q7 were settled before Part D and are listed below.
+
 ## Answered by the owner before Part D (settled, kept for the trail)
 
 | # | Question | Answer | Where it landed |
