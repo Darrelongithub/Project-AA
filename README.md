@@ -16,7 +16,7 @@ An administrator configures the following for each organization:
 | **Document matrix** | Document key, contact-facing label, required/optional, blocking/non-blocking, display order, and optional organization-defined axes/values. |
 | **Rule tree** | Deterministic `AND` / `OR` / `NOT` / group logic over configured scalar facts. Rules that cannot be evaluated remain undetermined and route to a human. |
 | **Workflow rules** | Intake and response actions, stages, queues, assignment, templates, attachment sets, follow-ups, and service targets. A stage can declare information required before a case advances. |
-| **Message categories** | An organization-owned allow-list. Gemini may return only a configured category; a category is routing metadata, never an outcome. |
+| **Message categories (Settings)** | An organization-owned allow-list. Gemini may return only a configured category; a category is routing metadata, never an outcome. |
 | **Templates and attachment sets** | Organization-owned reply copy and uploaded files. A template can explicitly request an attachment set; missing resources are reported rather than silently omitted. First-run setup creates seven neutral starter templates for that organization only; edit their wording before sending. |
 | **Organization branding** | Organization-owned name, logo, and theme colors are rendered in the web console and documents; new tenants do not inherit another tenant's identity. |
 | **Sender identity** | Organization-owned From display name and Reply-To are applied consistently to pipeline, follow-up, manual, and approved-draft mail. |
