@@ -2100,9 +2100,9 @@ export function createApp(deps: WebDeps): Express {
     return res.redirect(back(`${address} no longer routes mail. The record is kept.`));
   });
 
-  app.post("/config/categories/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+  app.post("/settings/categories/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const orgId = ownOrganizationId(req);
-    const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#categories`;
+    const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#categories`;
     if (!repo.getOrganization(orgId)) return res.redirect(back("Unknown organization — complete setup first."));
     const key = String(req.body.key ?? "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 40);
     const label = String(req.body.label ?? "").trim().slice(0, 60);
@@ -2114,9 +2114,9 @@ export function createApp(deps: WebDeps): Express {
       `${key} ("${label}")${routed ? "" : " — not a workflow category, so messages carrying it route as 'other'"}`);
     return res.redirect(back(`Category "${label}" (${key}) added.${routed ? "" : " Note: only the eight workflow categories drive routing; a custom label is recorded and routes as 'other'."}`));
   });
-  app.post("/config/categories/remove", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+  app.post("/settings/categories/remove", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const orgId = ownOrganizationId(req);
-    const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#categories`;
+    const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#categories`;
     const key = String(req.body.key ?? "").trim();
     if (!repo.listEmailCategories(orgId).some((row) => row.key === key)) return res.redirect(back("Unknown category — nothing changed."));
     // Retired, not deleted: messages already labelled keep their label.

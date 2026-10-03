@@ -128,8 +128,8 @@ Notes:
 - `--auto-send` is the allowlist you are *considering*. The harness reports which of
   those categories actually clear the bar; the product's allowlist is unchanged until
   an administrator adds categories in Settings → Automation mode.
-- `--classifier configured` needs the categories you configured in Configuration →
-  Requirements & repairs → Message categories, and a Gemini key in the environment. It
+- `--classifier configured` needs the categories you configured in Settings →
+  Message categories, and a Gemini key reachable from Connections (stored secret or environment). It
   never prints the key and never writes it to the report.
 - Exit code 0 = every bar met; 1 = a bar failed; 2 = bad arguments or CSV.
 

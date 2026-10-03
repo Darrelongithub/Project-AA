@@ -105,39 +105,43 @@ describe("classification without a configured allow-list", () => {
 });
 
 describe("the allow-list is tenant data, edited through real routes", () => {
-  it("adds, shows and retires categories on the Requirements & repairs tab", async () => {
+  it("adds, shows and retires categories on the Settings page", async () => {
     boot();
     admin = await webLogin(base, "admin", "admin123");
 
     expect(repo.listEmailCategories(1)).toEqual([]);
-    const page0 = await (await fetch(`${base}/config?tab=requirements`, { headers: { cookie: admin.cookie } })).text();
+    const page0 = await (await fetch(`${base}/settings`, { headers: { cookie: admin.cookie } })).text();
     expect(page0).toContain('id="categories"');
     expect(page0).toContain("Message categories");
     expect(page0).toContain("No categories configured");
-    expect(page0).toContain('action="/config/categories/create"');
+    expect(page0).toContain('action="/settings/categories/create"');
     // Honest about what a label can and cannot do.
     expect(page0).toMatch(/never approves, rejects or decides/i);
     expect(page0).toMatch(/No Gemini key is saved/i);
+    const config = await (await fetch(`${base}/config?tab=requirements`, { headers: { cookie: admin.cookie } })).text();
+    expect(config).toContain("Categories live in Settings");
+    expect(config).toContain('href="/settings#categories"');
+    expect(config).not.toContain('action="/settings/categories/create"');
 
-    expect((await post("/config/categories/create", { key: "general_enquiry", label: "General enquiry" })).status).toBe(302);
-    expect((await post("/config/categories/create", { key: "complaint", label: "Complaint" })).status).toBe(302);
+    expect((await post("/settings/categories/create", { key: "general_enquiry", label: "General enquiry" })).status).toBe(302);
+    expect((await post("/settings/categories/create", { key: "complaint", label: "Complaint" })).status).toBe(302);
     expect(repo.listEmailCategories(1).map((r) => r.key)).toEqual(["general_enquiry", "complaint"]);
 
-    const page = await (await fetch(`${base}/config?tab=requirements`, { headers: { cookie: admin.cookie } })).text();
+    const page = await (await fetch(`${base}/settings`, { headers: { cookie: admin.cookie } })).text();
     expect(page).toContain("general_enquiry");
     expect(page).toContain("General enquiry");
-    expect(page).toContain('action="/config/categories/remove"');
+    expect(page).toContain('action="/settings/categories/remove"');
     expect(page).not.toContain("No categories configured");
 
     // A key that cannot be a machine name is refused, loudly.
-    const bad = await post("/config/categories/create", { key: "No Spaces!", label: "" });
+    const bad = await post("/settings/categories/create", { key: "No Spaces!", label: "" });
     expect(decodeURIComponent(bad.headers.get("location") ?? "")).toMatch(/2-40 characters|needs a label/);
     expect(repo.listEmailCategories(1).length).toBe(2);
 
     // Retiring removes it from the allow-list; it is not a deletion of history.
-    expect((await post("/config/categories/remove", { key: "complaint" })).status).toBe(302);
+    expect((await post("/settings/categories/remove", { key: "complaint" })).status).toBe(302);
     expect(repo.listEmailCategories(1).map((r) => r.key)).toEqual(["general_enquiry"]);
-    expect((await post("/config/categories/remove", { key: "not_there" })).status).toBe(302);
+    expect((await post("/settings/categories/remove", { key: "not_there" })).status).toBe(302);
   });
 
   it("files a category under the acting administrator's own organization", async () => {
@@ -147,7 +151,7 @@ describe("the allow-list is tenant data, edited through real routes", () => {
     admin = await webLogin(base, "admin", "admin123");
     const other2 = await webLogin(base, "admin2", "admin2pass99");
 
-    expect((await post("/config/categories/create", { key: "follow_up", label: "Following up" }, other2)).status).toBe(302);
+    expect((await post("/settings/categories/create", { key: "follow_up", label: "Following up" }, other2)).status).toBe(302);
     expect(repo.listEmailCategories(other.id).map((r) => r.key)).toEqual(["follow_up"]);
     expect(repo.listEmailCategories(1)).toEqual([]); // nothing leaked into org 1
   });
@@ -220,7 +224,7 @@ describe("the model may only answer from the allow-list", () => {
   it("tells the administrator that a custom label routes as 'other'", async () => {
     boot();
     admin = await webLogin(base, "admin", "admin123");
-    const page = await (await fetch(`${base}/config?tab=requirements`, { headers: { cookie: admin.cookie } })).text();
+    const page = await (await fetch(`${base}/settings`, { headers: { cookie: admin.cookie } })).text();
     expect(page).toMatch(/routes as <span class="mono">other<\/span>/);
     expect(page).toMatch(/deterministic keyword matching/i); // no key saved in tests
   });

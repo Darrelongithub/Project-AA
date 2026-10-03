@@ -26,7 +26,7 @@ auto-rejects a late arrival.
 | Submission windows | Configuration → Requirements & repairs | Named windows and their deadlines; a late arrival raises `late_submission` for a human |
 | Visibility scope | Team | Which case types each staff member sees (administrators always see all) |
 | Inbound address | Settings → Letters & identity | Which mailbox address belongs to this organization — one mailbox can serve several tenants, and mail that names no tenant falls back to the head office with an audit line saying so |
-| Message categories | Configuration → Requirements & repairs | The only labels a message may be given. With a Gemini key reachable, the model is offered this list and nothing else; an off-list answer is rejected and the deterministic matcher decides. A label is routing metadata for people — it never approves or rejects |
+| Message categories | Settings | The only labels a message may be given. With a Gemini key reachable, the model is offered this list and nothing else; an off-list answer is rejected and the deterministic matcher decides. A label is routing metadata for people — it never approves or rejects |
 
 Automation is opt-in twice over: the global automation mode holds every automated reply
 for approval by default (`automation_mode=draft`), and each new case type starts

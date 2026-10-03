@@ -80,8 +80,7 @@ machinery.
 
 ## Option B — the classifier's label picks the case type
 
-Message categories are already tenant data (Configuration → Requirements & repairs →
-Message categories) and can be model-labelled with an enforced allow-list. Add a mapping
+Message categories are already tenant data (Settings → Message categories) and can be model-labelled with an enforced allow-list. Add a mapping
 from category → case type, and let the label choose the type.
 
 - **Pros.** Handles fuzzy language far better than keywords. Reuses the Phase C4

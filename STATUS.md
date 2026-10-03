@@ -125,8 +125,8 @@ in practice. Fixed, each with a regression test:
 - **Gemini classification was unreachable.** The pipeline called it only when
   `process.env.GEMINI_API_KEY` was set *and* `organization_categories` had rows,
   and `addEmailCategory` had **zero callers** — no route, no UI, no seed. Now:
-  Configuration → Requirements & repairs has a Message categories card
-  (`POST /config/categories/{create,remove}`, tenant-guarded), credentials
+  Settings has a Message categories card
+  (`POST /settings/categories/{create,remove}`, tenant-guarded), credentials
   resolve from the stored secret first and the environment second, and the label
   audit is written on the case with its confidence, source and routed category.
 - **`createApp` downgraded an env-configured Gemini to mocks on every boot** —

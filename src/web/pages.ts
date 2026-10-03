@@ -1721,6 +1721,8 @@ ${connectionsSection(c, gmailRedirectUri)}
   })()}
 </div>
 
+${categoriesCard(c)}
+
 <div class="card" id="automation">
   <h2>Automation mode (draft-first)</h2>
   <p class="small muted" style="margin-top:-6px">Two rules always apply. First, automated sending is reserved for <b>fully qualified</b> applicants — a Green verdict with no flags; everyone else gets the reply as a <b>suggested draft</b> for staff to review, edit or discard, because borderline files can still be admitted on special acceptance. Second, the rollout dial: the global mode starts on <b>draft</b> (every automated reply — including reminder rungs — waits for a human, whatever any rule says), and releasing it is not enough on its own: each category must then be <b>added to the allowlist</b> below. The allowlist starts empty, so nothing is ever sent automatically by accident.</p>
@@ -2081,35 +2083,42 @@ function documentsPackCard(c: Ctx): string {
 }
 
 
-function requirementsTab(c: Ctx, _target?: string, _system?: string): string {
-  const types = c.repo.listCaseTypes(c.user.organization_id ?? 1);
+/**
+ * Message categories — the allow-list a message may be labelled with, and the
+ * list a Gemini key may choose from. ONE home (Settings), because it describes
+ * how this organization reads its mail, not one case type's configuration.
+ */
+function categoriesCard(c: Ctx): string {
   const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
-  const orgId = c.user.organization_id ?? 1;
-  const categoryRows = c.repo.listEmailCategories(orgId);
-  // The model credential is installation-wide (organization 1) or environmental.
+  const categoryRows = c.repo.listEmailCategories(c.user.organization_id ?? 1);
   const geminiKeySaved = Boolean(c.geminiAvailable);
-  const categories = `<section class="card" id="categories">
+  return `<div class="card" id="categories">
   <h2>Message categories</h2>
-  <p class="small muted">The labels an incoming message may be given. ${geminiKeySaved
+  <p class="small muted" style="margin-top:-6px">The labels an incoming message may be given. ${geminiKeySaved
     ? "A Gemini key is reachable, so each message is offered to the model with <b>this list only</b> — an answer that is not on it is rejected and the deterministic matcher decides instead."
-    : "No Gemini key is saved (Settings &rarr; Connections), so categorization is deterministic keyword matching."}
+    : "No Gemini key is saved (see Connections below), so categorization is deterministic keyword matching."}
   A label is <b>routing metadata for people</b>: it never approves, rejects or decides anything. Only these eight keys drive workflow routing —
   <span class="mono">application</span>, <span class="mono">document_submission</span>, <span class="mono">missing_document</span>,
   <span class="mono">fee_enquiry</span>, <span class="mono">general_enquiry</span>, <span class="mono">follow_up</span>,
   <span class="mono">complaint</span>, <span class="mono">other</span> — a custom label is still recorded on the message and routes as <span class="mono">other</span>.</p>
   ${categoryRows.length ? `<table><tr><th>Key</th><th>Label</th><th></th></tr>${categoryRows.map((row) => `<tr>
       <td class="mono small">${esc(row.key)}</td><td>${esc(row.label)}</td>
-      <td><form method="post" action="/config/categories/remove" style="margin:0">${csrf}
+      <td><form method="post" action="/settings/categories/remove" style="margin:0">${csrf}
         <input type="hidden" name="key" value="${esc(row.key)}">
         <button class="btn small ghost" onclick="return confirm('Retire this category? Messages already labelled keep it.')">Retire</button></form></td>
     </tr>`).join("")}</table>`
     : '<p class="small muted">No categories configured — every message is categorized by the deterministic matcher.</p>'}
-  <form method="post" action="/config/categories/create" class="formrow" style="margin-top:10px">${csrf}
+  <form method="post" action="/settings/categories/create" class="formrow" style="margin-top:10px">${csrf}
     <div><label>Key</label><input name="key" placeholder="general_enquiry" required pattern="[A-Za-z0-9_]{2,40}"></div>
     <div style="flex:2"><label>Label staff see</label><input name="label" placeholder="General enquiry" required maxlength="60"></div>
     <div style="flex:0"><label>&nbsp;</label><button class="btn small">Add category</button></div>
   </form>
-</section>`;
+</div>`;
+}
+
+function requirementsTab(c: Ctx, _target?: string, _system?: string): string {
+  const types = c.repo.listCaseTypes(c.user.organization_id ?? 1);
+  const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
   const windowRows = c.repo.listIntakeRows(c.user.organization_id ?? 1);
   const windows = windowRows.length
     ? `<table><tr><th>Window</th><th>Closes</th><th></th></tr>${windowRows.map((w) => `<tr>
@@ -2126,7 +2135,7 @@ function requirementsTab(c: Ctx, _target?: string, _system?: string): string {
     <div><label>Closes</label><input type="date" name="deadline"></div>
     <div style="flex:0"><label>&nbsp;</label><button class="btn small">Add window</button></div>
   </form>`;
-  return `<section class="card"><h2>Configured requirements</h2><p>Document checklists and scalar AND / OR / NOT rules belong to each case type. Existing cases keep their frozen configuration until an explicit re-evaluation upgrade.</p>${types.length ? types.map((type) => '<h3>' + esc(type.name) + '</h3><p>' + esc(ruleTreeText(c.repo.caseTypeRules(type))) + '</p><p class="small">' + c.repo.listDocumentDefinitions(type.id).map((definition) => esc(definition.label) + (definition.required && definition.blocking ? ' (required)' : ' (optional)')).join(', ') + '</p>').join('') : '<p class="small muted">No case types configured.</p>'}<a class="btn ghost" href="/config?tab=case-types">Configure case types</a></section><section class="card" id="rules-ops"><h2>Rule operations</h2><form method="post" action="/config/reevaluate-open">${csrf}<button class="btn ghost">Re-evaluate all open cases</button></form></section>${categories}<section class="card" id="intakes"><h2>Submission windows</h2><p class="small muted">A window named in an incoming message is attached to its case. A deadline here turns an arrival after that date into a <span class="mono">late_submission</span> flag — a person decides whether to accept it; nothing is auto-rejected. Windows are inferred from real mail or added below.</p>${windows}${addWindow}</section><section class="card" id="deadletters"><h2>Parked mail</h2>${c.repo.listDeadLetters().map((letter) => '<p>' + esc(letter.subject) + ' — ' + esc(letter.error.slice(0,140)) + '</p><form method="post" action="/config/dead-letter/retry">' + csrf + '<input type="hidden" name="id" value="' + letter.id + '"><button class="btn small">Retry</button></form>').join('') || '<p>Nothing parked.</p>'}</section>`;
+  return `<section class="card"><h2>Configured requirements</h2><p>Document checklists and scalar AND / OR / NOT rules belong to each case type. Existing cases keep their frozen configuration until an explicit re-evaluation upgrade.</p>${types.length ? types.map((type) => '<h3>' + esc(type.name) + '</h3><p>' + esc(ruleTreeText(c.repo.caseTypeRules(type))) + '</p><p class="small">' + c.repo.listDocumentDefinitions(type.id).map((definition) => esc(definition.label) + (definition.required && definition.blocking ? ' (required)' : ' (optional)')).join(', ') + '</p>').join('') : '<p class="small muted">No case types configured.</p>'}<a class="btn ghost" href="/config?tab=case-types">Configure case types</a></section><section class="card" id="rules-ops"><h2>Rule operations</h2><form method="post" action="/config/reevaluate-open">${csrf}<button class="btn ghost">Re-evaluate all open cases</button></form></section><section class="card" id="categories-pointer"><h2>Message categories</h2><p class="small muted">Categories live in Settings: the labels an incoming message may be given — and the allow-list a Gemini key may choose from — are managed <a href="/settings#categories">there</a>.</p></section><section class="card" id="intakes"><h2>Submission windows</h2><p class="small muted">A window named in an incoming message is attached to its case. A deadline here turns an arrival after that date into a <span class="mono">late_submission</span> flag — a person decides whether to accept it; nothing is auto-rejected. Windows are inferred from real mail or added below.</p>${windows}${addWindow}</section><section class="card" id="deadletters"><h2>Parked mail</h2>${c.repo.listDeadLetters().map((letter) => '<p>' + esc(letter.subject) + ' — ' + esc(letter.error.slice(0,140)) + '</p><form method="post" action="/config/dead-letter/retry">' + csrf + '<input type="hidden" name="id" value="' + letter.id + '"><button class="btn small">Retry</button></form>').join('') || '<p>Nothing parked.</p>'}</section>`;
 }
 
 
