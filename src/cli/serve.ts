@@ -46,6 +46,13 @@ export function gmailFromSettings(repo: Repo): GmailConnectionConfig | null {
 async function main(): Promise<void> {
   const cfg = loadConfig();
   const repo = new Repo(openDb(cfg.dbPath));
+  // Preserve a minimal fatal-runtime marker in the existing audit table. The
+  // monitor observes the exception without suppressing Node's normal exit;
+  // stack/message details remain in process logs, not tenant-visible data.
+  process.on("uncaughtExceptionMonitor", (error, origin) => {
+    try { repo.audit(null, "system", "process_crash", `${origin}: ${error.name}`); }
+    catch { /* best effort when the database itself is part of the failure */ }
+  });
   seedDefaults(repo, { live: cfg.mode === "live" });
   // DEMO: opt-in second organization, seeded alongside Organization #1.
   if (process.env.SEED_DEMO_ORG === "1") {

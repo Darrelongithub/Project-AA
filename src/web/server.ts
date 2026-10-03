@@ -27,7 +27,7 @@ import { categorizeEmail, geminiCategoryLabeler } from "../categorize";
 
 import {
   accountPage, casesPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, mailPage, mailThreadPage, resetPasswordPage, setupPage,
-  replayPage, settingsPage, staffPage, templatesPage, intakeTestPage,
+  replayPage, securityConsolePage, settingsPage, staffPage, templatesPage, intakeTestPage,
 } from "./pages";
 import { TEMPLATE_DEFAULTS, seedStarterTemplates } from "../db/seed";
 import { processEmail } from "../pipeline";
@@ -1317,6 +1317,19 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(accountMsg(`Theme set to ${t} mode.`));
   });
 
+  // ── Admin security console (strictly the active tenant; read-only) ────────
+  app.get("/admin/security", requireLogin, requireRole("admin"), (req, res) => {
+    const ownOrganizationId = organizationId(req);
+    const requestedOrganizationId = req.query.organization_id;
+    // There is deliberately no tenant selector on this page. Reject an
+    // attempted cross-organization override instead of trusting a URL value.
+    if (requestedOrganizationId !== undefined
+      && (!/^\d+$/.test(String(requestedOrganizationId)) || Number(requestedOrganizationId) !== ownOrganizationId)) {
+      return res.status(404).send("Security records not found.");
+    }
+    return res.send(securityConsolePage(c(req)));
+  });
+
   // ── Settings (manager+) ──────────────────────────────────────────────────
 
   // 'it' role: cases + configuration, but not staff management.
@@ -2526,6 +2539,13 @@ export function createApp(deps: WebDeps): Express {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: unknown, req: Request, res: Response, _next: unknown) => {
     log(`unhandled error on ${req.method} ${req.path}: ${(err as Error)?.stack ?? err}`, "error");
+    // Persist only a minimal, tenant-attributable incident marker. The full
+    // stack/message stays in the process log and is never copied into the
+    // shared tenant audit surface where it could contain secrets or PII.
+    try {
+      const errorName = err instanceof Error ? err.name : "UnknownError";
+      repo.audit(null, req.staff?.username ?? "system", "server_error", `${req.method} ${req.path} — ${errorName}`);
+    } catch { /* the console log above remains authoritative if the DB is down */ }
     if (res.headersSent) return;
     if (req.path.startsWith("/api/")) {
       return res.status(500).json({ ok: false, error: "internal error" });

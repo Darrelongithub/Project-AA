@@ -1232,6 +1232,7 @@ export function layout(opts: {
       paletteLinks.push(
         { label: "Staff Configuration", hint: "team", href: "/staff", keys: "staff team accounts performance courses ownership" },
         { label: "Configuration", hint: "setup", href: "/config", keys: "courses requirements gmail templates intakes" },
+        { label: "Security Console", hint: "security", href: "/admin/security", keys: "security audit logins sessions errors pipeline provenance tampering gmail gemini health" },
         { label: "Settings", hint: "app", href: "/settings", keys: "settings automation targets retention" }
       );
     }
@@ -1258,6 +1259,7 @@ export function layout(opts: {
             { href: "/staff", label: "Staff Configuration", active: "staff" },
             { href: "/config", label: "Configuration", active: "config" },
             { href: "/templates", label: "Templates", active: "templates" },
+            { href: "/admin/security", label: "Security Console", active: "security" },
             { href: "/settings", label: "Settings", active: "settings" },
           ]
         : []),
@@ -1266,7 +1268,7 @@ export function layout(opts: {
     const navIcons: Record<string, keyof typeof ICONS> = {
       "Overview": "grid", "Cases": "chart", "Queues": "inbox", "Mail": "archive",
       "Compose": "send", "Staff Configuration": "users", "Configuration": "gear",
-      "Templates": "clip", "Settings": "gear", "Account": "users",
+      "Templates": "clip", "Security Console": "shield", "Settings": "gear", "Account": "users",
     };
     // DEMO: a visible organization switcher next to the account chip, so an
     // admin can move between tenants without knowing any URL.

@@ -2949,6 +2949,151 @@ ${workflowConfigHtml(c)}`
   );
 }
 
+function securityDetail(value: string, max = 240): string {
+  return esc(value
+    .replace(/\b(?:AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z._-]{10,})\b/g, "[credential redacted]")
+    .replace(/\b((?:password|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret)\s*[:=]\s*)[^\s,;]+/gi, "$1[redacted]")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim()
+    .slice(0, max));
+}
+
+function securityEventLabel(event: string): string {
+  const labels: Record<string, string> = {
+    send_failed: "Outbound send failed",
+    email_not_delivered: "Email was not delivered",
+    followup_send_failed: "Follow-up send failed",
+    gmail_sync_failed: "Gmail sync failed",
+    gmail_test_failed: "Gmail test failed",
+    gemini_test_failed: "Gemini test failed",
+    server_error: "Unhandled web request error",
+    process_crash: "Fatal process exception (shared runtime)",
+    ingestion_dead_letter: "Ingestion dead-letter",
+    human_outcome_recorded: "Human outcome recorded",
+    human_override: "Held draft approved by staff",
+    case_type_changed: "Case type changed",
+    case_config_upgraded: "Case configuration upgraded",
+    status_changed: "Case status changed by staff",
+  };
+  return labels[event] ?? capFirst(event.replace(/_/g, " "));
+}
+
+/** Read-only, organization-scoped operational/security view of existing records. */
+export function securityConsolePage(c: Ctx): string {
+  const { repo } = c;
+  const organizationId = c.user.organization_id ?? 1;
+  const demo = c.user.demo === 1 ? 1 : 0;
+  const snapshot = repo.securityConsoleSnapshot(organizationId, demo);
+
+  // Gmail and Gemini are shared runtime integrations in the current server
+  // architecture. Display configuration/last-recorded health only; this page
+  // never calls either provider and never exposes stored credentials.
+  const gmailPaused = repo.getSetting("gmail_disabled", "") === "1";
+  const gmailStored = Boolean(repo.getSetting("gmail_client_id", "").trim())
+    && repo.hasSecret("gmail_client_secret")
+    && repo.hasSecret("gmail_refresh_token");
+  const gmailConfigured = !gmailPaused && (Boolean(c.gmailConfigured) || gmailStored);
+  const gmailLastSync = repo.getSetting("gmail_last_sync_at", "");
+  const gmailLastError = repo.getSetting("gmail_last_error", "").trim();
+  const geminiConfigured = Boolean(c.geminiAvailable) || repo.hasSecret("gemini_api_key");
+  const geminiLastError = repo.getSetting("gemini_last_error", "").trim();
+
+  const loginRows = snapshot.logins.map((row) => `<tr>
+    <td><b>${esc(row.display_name)}</b><br><span class="muted small">@${esc(row.username)} · ${esc(row.role)}</span></td>
+    <td>${esc(fmtDate(row.at))}</td>
+  </tr>`).join("");
+  const sessionRows = snapshot.activeSessions.map((row) => `<tr>
+    <td><b>${esc(row.display_name)}</b><br><span class="muted small">@${esc(row.username)} · ${esc(row.role)}</span></td>
+    <td>${esc(fmtDate(row.created_at))}</td><td>${esc(fmtDate(row.expires_at))}</td>
+  </tr>`).join("");
+  const runRows = snapshot.pipelineRuns.map((row) => `<tr>
+    <td><a href="/case/${row.applicant_id}"><b>${esc(row.ref_number)}</b></a><br><span class="muted small">${esc(row.case_type_code ?? "Unprofiled case")}</span></td>
+    <td>${esc(fmtDate(row.timestamp))}<br><span class="muted small mono">${securityDetail(row.triggering_email_id, 72)}</span></td>
+    <td><span class="badge ${row.computed_status.toLowerCase() === "green" ? "b-green" : row.computed_status.toLowerCase() === "red" ? "b-red" : "b-orange"}">${esc(row.computed_status)}</span><br><span class="small">${row.auto_sent ? "Automated reply sent" : "No automated reply"}</span></td>
+    <td class="small">${securityDetail(row.reasoning)}</td>
+  </tr>`).join("");
+  const signalRows = snapshot.integritySignals.map((row) => `<tr>
+    <td><a href="/case/${row.applicant_id}"><b>${esc(row.ref_number)}</b></a><br><span class="muted small">${securityEventLabel(row.event)}</span></td>
+    <td>${esc(row.display_name)}<br><span class="muted small">${esc(fmtDate(row.at))}</span></td>
+    <td>${row.latest_computed_status
+      ? `<b>${esc(row.latest_computed_status)}</b><br><span class="muted small">Decision ${esc(fmtDate(row.latest_decision_at ?? ""))}</span><br><span class="small">${securityDetail(row.latest_reasoning ?? "", 180)}</span>`
+      : `<span class="muted">No earlier decision snapshot is recorded.</span>`}</td>
+    <td class="small">${securityDetail(row.detail)}</td>
+  </tr>`).join("");
+  const errorRows = snapshot.errors.map((row) => `<tr>
+    <td><b>${securityEventLabel(row.event)}</b>${row.attempts !== null ? `<br><span class="muted small">${row.attempts} attempt${row.attempts === 1 ? "" : "s"}</span>` : ""}</td>
+    <td>${row.ref_number && row.applicant_id
+      ? `<a href="/case/${row.applicant_id}">${esc(row.ref_number)}</a>`
+      : `<span class="muted">Service / ingestion</span>`}</td>
+    <td>${esc(row.display_name)}<br><span class="muted small">${esc(fmtDate(row.at))}</span></td>
+    <td class="small">${securityDetail(row.detail)}</td>
+  </tr>`).join("");
+
+  const metric = (value: number, label: string, detail: string) => `<div class="stat"><div class="n">${value}</div><div class="l">${esc(label)}</div><div class="context">${esc(detail)}</div></div>`;
+  const gmailStatus = gmailPaused ? "Paused" : gmailConfigured ? "Configured" : "Not configured";
+  const geminiStatus = geminiConfigured ? "Configured" : "Not configured";
+
+  return head(c, "Security Console", "security", `
+<div id="security-console">
+  <h1>Security Console</h1>
+  <p class="sub">Read-only access, decision provenance, error and integration health for <b>${esc(c.institution)}</b>.</p>
+  <div class="card" style="border-left:4px solid var(--wine-mid)">
+    <b>Read-only operational view.</b> Activity is limited to this organization and its current live/demo realm. Integrations are shared by the running installation; this page shows stored status only and makes no Gmail or Gemini calls.
+  </div>
+
+  <section class="card">
+    <h2>Recent activity</h2>
+    <div class="metric-ribbon">
+      ${metric(snapshot.logins.length, "Recent logins", "latest recorded sign-ins")}
+      ${metric(snapshot.activeSessions.length, "Active sessions", "valid staff sessions")}
+      ${metric(snapshot.pipelineRuns.length, "Decision runs", "latest provenance records")}
+      ${metric(snapshot.integritySignals.length, "Change signals", "review indicators, not proof")}
+      ${metric(snapshot.errors.length, "Errors", "recorded failed work / requests")}
+    </div>
+  </section>
+
+  <section class="card nopad">
+    <div class="card-head"><h2>Gemini &amp; Gmail service health</h2><a class="small" href="/settings#connections">Settings → Connections</a></div>
+    <p class="small muted" style="padding:0 24px">These integrations are installation-wide in the current runtime. Status uses saved configuration and the latest recorded result; it is not a live connectivity test.</p>
+    <div class="kv" style="padding:0 24px 20px">
+      <div><span>Gmail</span><b><span class="badge ${gmailPaused ? "b-orange" : gmailConfigured ? "b-green" : "b-gray"}">${gmailStatus}</span></b></div>
+      <div><span>Last successful sync</span><b>${gmailLastSync ? esc(fmtDate(gmailLastSync)) : "Not recorded"}</b></div>
+      <div><span>Latest Gmail result</span><b>${gmailLastError ? `<span class="badge b-red">Failure recorded</span>` : `<span class="badge ${gmailConfigured ? "b-green" : "b-gray"}">${gmailConfigured ? "No recorded failure" : "No connection configured"}</span>`}</b></div>
+      <div><span>Gemini</span><b><span class="badge ${geminiConfigured ? "b-green" : "b-gray"}">${geminiStatus}</span></b></div>
+      <div><span>Latest Gemini result</span><b>${geminiLastError ? `<span class="badge b-red">Failure recorded</span>` : `<span class="badge ${geminiConfigured ? "b-green" : "b-gray"}">${geminiConfigured ? "No recorded failure" : "No connection configured"}</span>`}</b></div>
+    </div>
+  </section>
+
+  <section class="card nopad">
+    <div class="card-head"><h2>Successful staff logins</h2></div>
+    ${loginRows ? `<div class="table-scroll"><table><tr><th>Staff member</th><th>When</th></tr>${loginRows}</table></div>` : `<div class="empty"><p>No sign-ins are recorded for this organization and realm yet.</p></div>`}
+  </section>
+
+  <section class="card nopad">
+    <div class="card-head"><h2>Active staff sessions</h2></div>
+    ${sessionRows ? `<div class="table-scroll"><table><tr><th>Staff member</th><th>Started</th><th>Expires</th></tr>${sessionRows}</table></div>` : `<div class="empty"><p>No active staff sessions are recorded.</p></div>`}
+    <p class="small muted" style="padding:0 24px 18px;margin:0">Session tokens and CSRF values are never displayed.</p>
+  </section>
+
+  <section class="card nopad">
+    <div class="card-head"><h2>Pipeline runs &amp; decision provenance</h2></div>
+    ${runRows ? `<div class="table-scroll"><table><tr><th>Case</th><th>Run / source email</th><th>Outcome</th><th>Recorded reasoning</th></tr>${runRows}</table></div>` : `<div class="empty"><p>No decision-log runs are recorded for this organization and realm yet.</p></div>`}
+  </section>
+
+  <section class="card nopad">
+    <div class="card-head"><h2>Case-tampering / decision-change signals</h2></div>
+    <p class="small muted" style="padding:0 24px">Human overrides/outcomes, case-type changes, configuration upgrades and staff status changes are surfaced beside the latest earlier decision-log snapshot. These are audit indicators for review, not proof of tampering.</p>
+    ${signalRows ? `<div class="table-scroll"><table><tr><th>Case / signal</th><th>Actor / time</th><th>Earlier decision provenance</th><th>Recorded change</th></tr>${signalRows}</table></div>` : `<div class="empty"><p>No decision-change indicators are recorded for this organization and realm.</p></div>`}
+  </section>
+
+  <section class="card nopad">
+    <div class="card-head"><h2>Crashes, errors &amp; failed work</h2></div>
+    <p class="small muted" style="padding:0 24px">Shows persisted service, send, ingestion and unhandled web-request errors attributable to this organization. Fatal process exceptions are marked as shared-runtime events; forced shutdowns or failures before the database opens cannot be recorded. Mail failures without a persisted case/tenant link are excluded rather than shown across tenants.</p>
+    ${errorRows ? `<div class="table-scroll"><table><tr><th>Issue</th><th>Case</th><th>Actor / time</th><th>Recorded detail</th></tr>${errorRows}</table></div>` : `<div class="empty"><p>No attributable errors or failed work are recorded.</p></div>`}
+  </section>
+</div>`);
+}
+
 export function replayPage(c: Ctx, a: ApplicantRow): string {
   const frozen = c.repo.caseConfigFrozen(a);
   const evaluations = c.repo.evaluationsForApplicant(a.id);

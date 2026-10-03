@@ -89,6 +89,15 @@ export interface StaffStatsRow {
   casesCompleted: number;
 }
 
+/** Existing audit/session/decision data assembled for the read-only admin console. */
+export interface SecurityConsoleSnapshot {
+  logins: Array<{ id: number; at: string; username: string; display_name: string; role: string }>;
+  activeSessions: Array<{ username: string; display_name: string; role: string; created_at: string; expires_at: string }>;
+  pipelineRuns: Array<{ id: number; applicant_id: number; timestamp: string; ref_number: string; case_type_code: string | null; triggering_email_id: string; computed_status: string; reasoning: string; auto_sent: number }>;
+  errors: Array<{ id: number; applicant_id: number | null; at: string; actor: string; display_name: string; event: string; detail: string; ref_number: string | null; attempts: number | null; source: "audit" | "dead-letter" }>;
+  integritySignals: Array<{ id: number; applicant_id: number; at: string; actor: string; display_name: string; event: string; detail: string; ref_number: string; latest_computed_status: string | null; latest_reasoning: string | null; latest_decision_at: string | null }>;
+}
+
 type ScopeTag = string[] & { organizationId?: number; allCaseTypes?: boolean };
 
 export type ApplicantLookupSite =
@@ -786,6 +795,104 @@ export class Repo {
     return this.db
       .prepare("SELECT at, actor, event, detail, applicant_id FROM audit_log ORDER BY id DESC LIMIT ?")
       .all(limit) as never[];
+  }
+
+  /**
+   * Read-only security-console view assembled from existing records. Every
+   * tenant-bearing query is constrained to both the acting organization and
+   * the existing live/demo realm. System-level service configuration is read
+   * separately by the page; this method never exposes credentials or tokens.
+   */
+  securityConsoleSnapshot(organizationId: number, demo: 0 | 1): SecurityConsoleSnapshot {
+    const logins = this.db.prepare(
+      `SELECT al.id, al.at, s.username, s.display_name, s.role
+       FROM audit_log al
+       JOIN staff_users s ON s.username = al.actor COLLATE NOCASE
+       WHERE al.event = 'staff_login'
+         AND COALESCE(s.organization_id, 1) = ? AND COALESCE(s.demo, 0) = ?
+       ORDER BY al.id DESC LIMIT 20`
+    ).all(organizationId, demo) as SecurityConsoleSnapshot["logins"];
+
+    const activeSessions = this.db.prepare(
+      `SELECT s.username, s.display_name, s.role, se.created_at, se.expires_at
+       FROM sessions se
+       JOIN staff_users s ON s.id = se.staff_id
+       WHERE COALESCE(s.organization_id, 1) = ? AND COALESCE(s.demo, 0) = ?
+         AND s.active = 1 AND se.expires_at > ?
+       ORDER BY se.created_at DESC LIMIT 20`
+    ).all(organizationId, demo, nowIso()) as SecurityConsoleSnapshot["activeSessions"];
+
+    const pipelineRuns = this.db.prepare(
+      `SELECT d.id, a.id AS applicant_id, d.timestamp, a.ref_number, a.case_type_code, d.triggering_email_id,
+              d.computed_status, d.reasoning, d.auto_sent
+       FROM decision_logs d
+       JOIN applicants a ON a.id = d.applicant_id
+       WHERE COALESCE(a.organization_id, 1) = ? AND COALESCE(a.demo, 0) = ?
+       ORDER BY d.id DESC LIMIT 20`
+    ).all(organizationId, demo) as SecurityConsoleSnapshot["pipelineRuns"];
+
+    const auditErrors = this.db.prepare(
+      `SELECT al.id, a.id AS applicant_id, al.at, al.actor,
+              CASE WHEN al.event = 'process_crash' THEN 'Shared runtime' ELSE COALESCE(s.display_name, al.actor) END AS display_name,
+              al.event, al.detail, a.ref_number, NULL AS attempts, 'audit' AS source
+       FROM audit_log al
+       LEFT JOIN applicants a ON a.id = al.applicant_id
+       LEFT JOIN staff_users s ON s.username = al.actor COLLATE NOCASE
+       WHERE al.event IN (
+           'send_failed', 'email_not_delivered', 'followup_send_failed',
+           'gmail_sync_failed', 'gmail_test_failed', 'gemini_test_failed', 'server_error', 'process_crash'
+         )
+         AND (
+           (a.id IS NOT NULL AND COALESCE(a.organization_id, 1) = ? AND COALESCE(a.demo, 0) = ?)
+           OR (al.applicant_id IS NULL AND s.id IS NOT NULL
+               AND COALESCE(s.organization_id, 1) = ? AND COALESCE(s.demo, 0) = ?)
+           OR (al.applicant_id IS NULL AND al.event = 'process_crash' AND al.actor = 'system')
+         )
+       ORDER BY al.id DESC LIMIT 40`
+    ).all(organizationId, demo, organizationId, demo) as SecurityConsoleSnapshot["errors"];
+
+    // Dead letters do not carry a tenant column. Include only failures that
+    // already have a persisted email/case link; unknown-tenant fetch failures
+    // are intentionally not attributed to any organization.
+    const deadLetterErrors = this.db.prepare(
+      `SELECT d.id, a.id AS applicant_id, d.updated_at AS at, 'ingestion' AS actor, 'Mail pipeline' AS display_name,
+              'ingestion_dead_letter' AS event, d.error AS detail, a.ref_number,
+              d.attempts, 'dead-letter' AS source
+       FROM dead_letters d
+       JOIN emails e ON e.message_id = d.message_id
+       JOIN applicants a ON a.id = e.applicant_id
+       WHERE COALESCE(a.organization_id, 1) = ? AND COALESCE(a.demo, 0) = ?
+         AND e.organization_id = ?
+       ORDER BY d.updated_at DESC, d.id DESC LIMIT 40`
+    ).all(organizationId, demo, organizationId) as SecurityConsoleSnapshot["errors"];
+    const utcMillis = (value: string): number => Date.parse(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
+    const errors = [...auditErrors, ...deadLetterErrors]
+      .sort((a, b) => utcMillis(b.at) - utcMillis(a.at))
+      .slice(0, 20);
+
+    const integritySignals = this.db.prepare(
+      `SELECT al.id, a.id AS applicant_id, al.at, al.actor, COALESCE(s.display_name, al.actor) AS display_name,
+              al.event, al.detail, a.ref_number,
+              d.computed_status AS latest_computed_status,
+              d.reasoning AS latest_reasoning,
+              d.timestamp AS latest_decision_at
+       FROM audit_log al
+       JOIN applicants a ON a.id = al.applicant_id
+       LEFT JOIN staff_users s ON s.username = al.actor COLLATE NOCASE
+       LEFT JOIN decision_logs d ON d.id = (
+         SELECT d2.id FROM decision_logs d2
+         WHERE d2.applicant_id = a.id AND datetime(d2.timestamp) <= datetime(al.at)
+         ORDER BY d2.id DESC LIMIT 1
+       )
+       WHERE COALESCE(a.organization_id, 1) = ? AND COALESCE(a.demo, 0) = ?
+         AND (
+           al.event IN ('human_outcome_recorded', 'human_override', 'case_type_changed', 'case_config_upgraded')
+           OR (al.event = 'status_changed' AND al.actor <> 'system')
+         )
+       ORDER BY al.id DESC LIMIT 20`
+    ).all(organizationId, demo) as SecurityConsoleSnapshot["integritySignals"];
+
+    return { logins, activeSessions, pipelineRuns, errors, integritySignals };
   }
 
   // ── Programmes & intakes ─────────────────────────────────────────────────
