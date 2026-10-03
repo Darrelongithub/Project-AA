@@ -11,7 +11,7 @@
  *  - it is audited with the actor and both ends of the change;
  *  - it SENDS NOTHING and fires no rule, even with every automation switch
  *    released and a send rule waiting on the target type;
- *  - it does not re-run the requirements check (PROVISIONAL, QUESTIONS.md Q8):
+ *  - it does not re-run the requirements check (settled freeze-only choice; see BUGS.md#resolved-product-decisions):
  *    the recorded verdict survives untouched until a person re-evaluates.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";

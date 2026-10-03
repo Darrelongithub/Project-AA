@@ -1203,9 +1203,9 @@ export function createApp(deps: WebDeps): Express {
    * workflow rule fires, and no verdict is recomputed: the case adopts the new
    * type's checklist and rules (re-frozen, so what staff see and what the next
    * evaluation uses agree), while the recorded verdict stays exactly as a human
-   * or the pipeline left it until somebody presses Re-evaluate. Whether that
-   * re-evaluation should happen automatically is QUESTIONS.md Q8 (PROVISIONAL:
-   * it does not).
+   * or the pipeline left it until somebody presses Re-evaluate. The settled
+   * owner choice is freeze-only: do not re-evaluate automatically (see
+   * BUGS.md#resolved-product-decisions).
    */
   app.post("/case/:id/case-type", requireLogin, csrfCheck, (req, res) => {
     const id = Number(req.params.id);
@@ -2443,14 +2443,14 @@ export function createApp(deps: WebDeps): Express {
     repo.audit(null, req.staff!.username, "labels_exported",
       `${rows.length} inbound message(s) of organization ${orgId} (limit ${limit}) — the file contains message text, i.e. personal data`);
     // Header values must stay ASCII (Node rejects anything else).
-    res.setHeader("X-Personal-Data", "subjects and bodies of real messages - handle per docs/LABELLING-GUIDE.md");
+    res.setHeader("X-Personal-Data", "real message subjects and bodies - handle per README.md#classifier-evaluation-and-personal-data-handling");
     csv(
       res,
       "labels.csv",
       ["id", "subject", "body", "true_category"],
       rows.map((r) => [r.id, r.subject, r.body, ""]),
       {
-        note: " PERSONAL DATA: real subjects and bodies. Remove names, phone numbers, addresses, ID/reference numbers and account numbers before this file leaves your machine; keep it out of version control (labels/ and *.labels.csv are git-ignored) and delete it after labelling. Fill true_category with one of the eight keys using the tie-breaks in docs/LABELLING-GUIDE.md, then score it with scripts/eval-classifier.ts. true_category is deliberately blank: labelling before reading the machine's answer is what makes the measurement honest.",
+        note: " PERSONAL DATA: real subjects and bodies. Remove names, phone numbers, addresses, ID/reference numbers and account numbers before this file leaves your machine; keep it out of version control (labels/ and *.labels.csv are git-ignored) and delete it after labelling. Fill true_category with one of the eight keys using the tie-breaks in README.md#classifier-evaluation-and-personal-data-handling, then score it with scripts/eval-classifier.ts. true_category is deliberately blank: labelling before reading the machine's answer is what makes the measurement honest.",
       }
     );
   });

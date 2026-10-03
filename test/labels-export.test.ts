@@ -133,7 +133,7 @@ describe("GET /export/labels.csv", () => {
 
   it("carries the personal-data note inside the file and in a header", async () => {
     const res = await get("/export/labels.csv", ADMIN);
-    expect(res.headers.get("x-personal-data")).toMatch(/docs\/LABELLING-GUIDE\.md/);
+    expect(res.headers.get("x-personal-data")).toMatch(/README\.md#classifier-evaluation-and-personal-data-handling/);
     expect(res.headers.get("content-disposition")).toContain('filename="labels.csv"');
     const firstLine = res.text.split("\r\n")[0];
     expect(firstLine.startsWith("#")).toBe(true);

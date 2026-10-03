@@ -4,7 +4,7 @@
  * These fixtures are TINY and SYNTHETIC: they prove the harness counts,
  * thresholds and reports correctly. They say nothing whatsoever about the real
  * accuracy of any classifier — that needs the 100 labelled real messages
- * described in docs/LABELLING-GUIDE.md.
+ * described in README.md#classifier-evaluation-and-personal-data-handling.
  */
 import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";

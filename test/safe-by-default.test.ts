@@ -258,8 +258,8 @@ describe("uncertainty always reaches a person", () => {
     }), ctx);
     // The stranger's message is retained, never dropped. Quoting a reference is
     // treated as conversation continuity, so it is filed on the case it names
-    // (staff can see who actually wrote it) — see QUESTIONS.md Q5, which asks
-    // whether that should instead park or open a separate case.
+    // (staff can see who actually wrote it); no automatic reply discloses the case.
+    // This settled behavior is summarized in README.md#identity-matching-and-message-safety.
     expect(stranger.skipped).toBeFalsy();
     expect(repo.emailsForApplicant(mine.applicantId!).some((e) => e.direction === "in" && e.from_addr === "stranger@example.org")).toBe(true);
     // Nothing is ever sent TO the stranger on the strength of somebody else's

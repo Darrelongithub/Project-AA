@@ -18,6 +18,6 @@ eng.traineddata
 # Phase C bundle backups (local safety copies, never committed)
 backups/
 
-# Labelled message sets contain real mail text: never commit them (docs/LABELLING-GUIDE.md)
+# Labelled message sets contain real mail text: never commit them (README.md#classifier-evaluation-and-personal-data-handling)
 labels/
 *.labels.csv

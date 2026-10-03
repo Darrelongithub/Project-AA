@@ -335,7 +335,7 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (arg === "--help" || arg === "-h") throw new Error("usage: --csv FILE [--classifier deterministic|configured] [--categories a,b] [--auto-send a,b] [--json OUT]");
     else throw new Error(`unknown argument ${arg}`);
   }
-  if (!opts.csv) throw new Error("--csv is required (see docs/eval-template.csv and docs/LABELLING-GUIDE.md)");
+  if (!opts.csv) throw new Error("--csv is required (see docs/eval-template.csv and README.md#classifier-evaluation-and-personal-data-handling)");
   if (opts.classifier === "configured" && opts.categories.length === 0) throw new Error("--classifier configured needs --categories (the tenant's own allow-list)");
   return opts;
 }

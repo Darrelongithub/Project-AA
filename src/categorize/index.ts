@@ -57,8 +57,8 @@ export function priorityForCategory(category: EmailCategory): "normal" | "high" 
 
 /**
  * Below this confidence a model label is treated as a guess: the message is
- * routed by the deterministic matcher AND held for a person. PROVISIONAL value
- * (see QUESTIONS.md Q4) — it is a routing threshold, not a decision threshold.
+ * routed by the deterministic matcher AND held for a person. The owner-settled
+ * 0.70 value is a routing threshold, not a decision threshold (see README.md#automation-and-outcomes).
  */
 export const CLASSIFIER_MIN_CONFIDENCE = 0.7;
 
