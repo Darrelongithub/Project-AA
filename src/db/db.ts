@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import * as fs from "fs";
 import * as path from "path";
 import legacyStorage from "../../migrations/legacy-storage.json";
+import { markDatabaseActive } from "./activity";
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS applicants (
@@ -577,7 +578,27 @@ function migrate(db: Database.Database): void {
 }
 export function openDb(file: string): Database.Database {
   if (file !== ":memory:") fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
-  const db = new Database(file);
+  const releaseActivity = markDatabaseActive(file);
+  let db: Database.Database;
+  try {
+    db = new Database(file);
+  } catch (error) {
+    releaseActivity();
+    throw error;
+  }
+  const originalClose = db.close.bind(db);
+  try {
+    Object.defineProperty(db, "close", {
+      configurable: true,
+      value: () => {
+        originalClose();
+        releaseActivity();
+      },
+    });
+  } catch (error) {
+    try { originalClose(); } finally { releaseActivity(); }
+    throw error;
+  }
   try {
     db.pragma("journal_mode = WAL");
     db.pragma("foreign_keys = OFF");
