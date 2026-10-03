@@ -16,6 +16,7 @@
 import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 import type { WatcherInput, WatcherResult } from "../types";
 import { normalizeName } from "../rules";
+import { withTimeout } from "../util/withTimeout";
 
 const SUSPICIOUS_RE = /\b(specimen|sample\s+copy|void|not\s+valid|cancelled|draft\s+copy)\b/i;
 
@@ -60,31 +61,21 @@ export function heuristicWatcher(input: WatcherInput): WatcherResult {
   return { flagged: concerns.length > 0, concerns, source: "heuristic" };
 }
 
-const WATCHER_PROMPT = `You are a final sanity-checker in an admissions document-intake system.
-The deterministic rules engine has marked this applicant file GREEN (complete).
+const WATCHER_PROMPT = `You are a final sanity-checker in an general document-intake system.
+The deterministic rules engine has marked this case file GREEN (complete).
 Your ONLY job: look for reasons a human should double-check before an automatic acknowledgement is sent.
 Look for: names that don't match across documents, a file that seems to be the wrong document type,
 illegible or partial scans, specimen/sample/void markings, duplicate files, or anything else that looks off.
-You never decide admissions outcomes. Respond with ONLY a JSON object:
+You never decide general outcomes. Respond with ONLY a JSON object:
 {"looks_off": true|false, "concerns": ["short concern", ...]}`;
 
 /**
  * A Gemini call that never settles must not stall the pipeline forever —
  * the fail-closed catch only fires on REJECTION; a hung socket rejects
- * never. Race the call against a hard timeout. (Timeout default matches
- * the vision tier; constructor override exists for tests.)
+ * never. Use the shared timeout helper with the watcher’s tighter 45-second
+ * default (the constructor override keeps the deadline deterministic in tests).
  */
 const WATCHER_TIMEOUT_MS = 45_000;
-
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expiry = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
-    // An unref'd timer never keeps the process alive on its own.
-    if (typeof timer === "object" && timer) (timer as { unref?: () => void }).unref?.();
-  });
-  return Promise.race([p, expiry]).finally(() => { if (timer) clearTimeout(timer); });
-}
 
 export class GeminiWatcher {
   private model: any;
@@ -112,7 +103,6 @@ export class GeminiWatcher {
           extraction_method: d.extraction_method,
           confidence: d.confidence,
           name_on_document: d.name ?? null,
-          grade_points: d.gradePoints ?? null,
           text_excerpt: d.textExcerpt,
         })),
       };

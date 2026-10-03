@@ -11,11 +11,12 @@ import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
 import { createApp } from "../src/web/server";
 import { hashPassword } from "../src/util/password";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization } from "./helpers";
 
 function fresh(): Repo {
   const repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  configureTestOrganization(repo);
   return repo;
 }
 

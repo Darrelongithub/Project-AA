@@ -1,9 +1,10 @@
 /** DEMO — a real, navigable second organization. Proves the seeded demo org
  * is complete, reachable from visible UI, isolated end-to-end, and that no
- * Organization #1 (academic) data leaks into its rows or its case path. */
+ * Organization #1 data leaks into its rows or its case path. The demo tenant
+ * is optional and separate: it is seeded only by an explicit CLI/boot flag. */
 import { describe, expect, it } from "vitest";
 import type { Server } from "http";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization } from "./helpers";
 import { createApp } from "../src/web/server";
 import { hashPassword } from "../src/util/password";
 import { openDb } from "../src/db/db";
@@ -18,9 +19,12 @@ import { makeTextPdf } from "../src/simulation/pdfFactory";
 /** Words that must never appear in the demo org's rows or screens. */
 const LEAK = /riara|kcse|kcpe|igcse|programme|school|admission|applicant|university|mean grade/i;
 
+/** Organization #1 is a real, configured tenant; the demo org is seeded
+ *  alongside it (and becomes organization 2). */
 function fresh(): Repo {
   const repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  configureTestOrganization(repo);
   return repo;
 }
 
@@ -31,7 +35,7 @@ const DEMO_PAGES = [
   "/settings", "/staff", "/account",
 ];
 
-/** The acceptance list: Organization #1 identity and academic catalogue words. */
+/** The acceptance list: Organization #1 identity and catalogue words. */
 const SCREEN_LEAK = /riara|kcse|kcpe|igcse|programme|school|university/i;
 /** Pages on the demo walkthrough path are held to the stricter LEAK list too. */
 const WALK_PAGES = new Set(["/", "/applicants", "/config?tab=case-types", "/templates", "/intake/test", "/case/:case"]);
@@ -68,8 +72,8 @@ describe("DEMO — second organization", () => {
       docs: repo.db.prepare("SELECT d.* FROM document_definitions d JOIN case_types c ON c.id = d.case_type_id WHERE c.organization_id = 1 ORDER BY d.id").all(),
       tpl: repo.db.prepare("SELECT * FROM templates ORDER BY key").all(),
       orgTpl: repo.db.prepare("SELECT * FROM organization_templates WHERE organization_id = 1 ORDER BY key").all(),
-      programmes: repo.db.prepare("SELECT * FROM programmes ORDER BY code").all(),
-      rules: repo.db.prepare("SELECT COUNT(*) AS n FROM admission_rule_nodes").get(),
+      rules: repo.db.prepare("SELECT * FROM workflow_rules WHERE organization_id = 1 ORDER BY id").all(),
+      settings: repo.db.prepare("SELECT * FROM settings ORDER BY key").all(),
     });
     const first = seedDemoOrganization(repo);
     const second = seedDemoOrganization(repo);
@@ -83,8 +87,8 @@ describe("DEMO — second organization", () => {
       docs: repo.db.prepare("SELECT d.* FROM document_definitions d JOIN case_types c ON c.id = d.case_type_id WHERE c.organization_id = 1 ORDER BY d.id").all(),
       tpl: repo.db.prepare("SELECT * FROM templates ORDER BY key").all(),
       orgTpl: repo.db.prepare("SELECT * FROM organization_templates WHERE organization_id = 1 ORDER BY key").all(),
-      programmes: repo.db.prepare("SELECT * FROM programmes ORDER BY code").all(),
-      rules: repo.db.prepare("SELECT COUNT(*) AS n FROM admission_rule_nodes").get(),
+      rules: repo.db.prepare("SELECT * FROM workflow_rules WHERE organization_id = 1 ORDER BY id").all(),
+      settings: repo.db.prepare("SELECT * FROM settings ORDER BY key").all(),
     });
     expect(org1After).toBe(org1Before);
 
@@ -95,7 +99,7 @@ describe("DEMO — second organization", () => {
     const types = repo.listCaseTypes(org.id);
     expect(types.map((t) => t.code).sort()).toEqual(DEMO_CASE_TYPES.map((d) => d.code).sort());
     for (const ct of types) {
-      expect(ct.education_module).toBe(0);
+      expect(ct.default_reply_action).toBe("draft");
       const docs = repo.listDocumentDefinitions(ct.id);
       expect(docs.length).toBeGreaterThanOrEqual(3);
       expect(docs.length).toBeLessThanOrEqual(5);
@@ -122,17 +126,27 @@ describe("DEMO — second organization", () => {
     const dump = JSON.stringify(rows);
     expect(dump.length).toBeGreaterThan(2000);
     expect(dump).not.toMatch(LEAK);
-    // And no legacy (Organization #1 store) template is visible to the demo org.
+    // And no Organization #1 template is visible to the demo org.
     for (const t of repo.listTemplates(id)) expect(`${t.subject} ${t.body}`).not.toMatch(LEAK);
-    expect(repo.getTemplate("admission_letter", id)).toBeUndefined();
+    // Every demo case type carries its OWN bound template…
+    for (const def of DEMO_CASE_TYPES) {
+      const ct = repo.listCaseTypes(id).find((t) => t.code === def.code)!;
+      expect(repo.getTemplate(def.template.key, id, ct.id)?.subject).toBe(def.template.subject);
+    }
+    // …and nothing the demo tenant sees comes from a shared legacy store:
+    // every visible template is one of its own organization-owned rows.
+    const own = new Set(
+      (repo.db.prepare("SELECT key FROM organization_templates WHERE organization_id = ?").all(id) as Array<{ key: string }>).map((r) => r.key)
+    );
+    for (const t of repo.listTemplates(id)) expect(own.has(t.key), t.key).toBe(true);
   });
 
   it("switches organization through the visible sidebar switcher and walks a full demo case end-to-end", async () => {
     const repo = fresh();
     const { organizationId: demoId } = seedDemoOrganization(repo);
     repo.createStaff("admin", "Administrator", hashPassword("admin123"), "admin");
-    // A Riara (Organization #1) case that shares the SAME contact email.
-    const riaraCase = repo.createCase({ emailAddress: "jordan.rivera@example.test", threadId: "org1-thread", organizationId: 1, caseTypeCode: "GENERAL", fullName: "Org One Person" });
+    // An Organization #1 case that shares the SAME contact email.
+    const orgOneCase = repo.createCase({ emailAddress: "jordan.rivera@example.test", threadId: "org1-thread", organizationId: 1, caseTypeCode: "SERVICE_REQUEST", fullName: "Org One Person" });
     const sender = new MockSender();
     const ctx: PipelineContext = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
     const app = createApp({ repo, ctx });
@@ -181,11 +195,11 @@ describe("DEMO — second organization", () => {
       expect(caseId).toBeGreaterThan(0);
       const demoCase = repo.getApplicant(caseId)!;
 
-      // Gets the demo prefix, lives in the demo org, is NOT the Riara case.
+      // Gets the demo prefix, lives in the demo org, is NOT the org-1 case.
       expect(demoCase.ref_number).toMatch(new RegExp(`^${DEMO_ORG_PREFIX}-\\d{4}-\\d{6}$`));
       expect(demoCase.organization_id).toBe(demoId);
-      expect(demoCase.id).not.toBe(riaraCase.id);
-      expect(repo.getApplicant(riaraCase.id)!.ref_number).toMatch(/^RU-/);
+      expect(demoCase.id).not.toBe(orgOneCase.id);
+      expect(repo.getApplicant(orgOneCase.id)!.ref_number).toMatch(/^ORG-/);
       expect(repo.caseTypeForCase(caseId)?.code).toBe("NEW_HIRE_ONBOARDING");
 
       // Used ONLY the demo CaseType's own matrix + rule tree.
@@ -196,9 +210,9 @@ describe("DEMO — second organization", () => {
       const gate = repo.db.prepare("SELECT detail FROM audit_log WHERE applicant_id = ? AND event = 'case_type_gate'").get(caseId) as { detail: string };
       expect(gate.detail).toContain("NEW_HIRE_ONBOARDING: matrix=true; rules=passed");
       expect(demoCase.outcome).toBe("undecided");
-      // No academic engine / Riara templates touched this case.
+      // No Organization #1 template or legacy engine touched this case.
       const trail = JSON.stringify(repo.db.prepare("SELECT event, detail FROM audit_log WHERE applicant_id = ?").all(caseId));
-      expect(trail).not.toMatch(/admission_rule|structured_snapshot|kcse/i);
+      expect(trail).not.toMatch(/structured_snapshot|legacy_outcome/i);
       const outbox = repo.db.prepare("SELECT subject, body, template_key FROM outbox WHERE applicant_id = ?").all(caseId);
       expect(JSON.stringify(outbox)).not.toMatch(LEAK);
       expect(sender.sent.map((m) => `${m.subject} ${m.body}`).join(" ")).not.toMatch(LEAK);
@@ -206,7 +220,7 @@ describe("DEMO — second organization", () => {
       // 5. Queues are isolated both ways.
       const demoQueues = await get("/applicants?queue=human_review&q=jordan");
       expect(demoQueues).toContain(demoCase.ref_number);
-      expect(demoQueues).not.toContain(riaraCase.ref_number);
+      expect(demoQueues).not.toContain(orgOneCase.ref_number);
 
       // 6. Nothing on the demo org's screens names Organization #1 or academic concepts.
       const hits: Record<string, string[]> = {};
@@ -219,11 +233,11 @@ describe("DEMO — second organization", () => {
       }
       expect(hits).toEqual({});
 
-      // 7. Switch back: the Riara case is there and the demo case is not.
+      // 7. Switch back: the org-1 case is there and the demo case is not.
       await post("/org/switch", { organization_id: "1" });
-      const riaraQueues = await get("/applicants?q=jordan");
-      expect(riaraQueues).toContain(riaraCase.ref_number);
-      expect(riaraQueues).not.toContain(demoCase.ref_number);
+      const orgOneQueues = await get("/applicants?q=jordan");
+      expect(orgOneQueues).toContain(orgOneCase.ref_number);
+      expect(orgOneQueues).not.toContain(demoCase.ref_number);
       // Direct URL to a case in another organization is refused.
       const cross = await fetch(`${base}/case/${caseId}`, { headers: { cookie: auth.cookie }, redirect: "manual" });
       expect(await cross.text()).not.toContain(demoCase.ref_number);
@@ -232,20 +246,20 @@ describe("DEMO — second organization", () => {
     }
   });
 
-  it("mail explicitly addressed to the demo org never continues a Riara case with the same contact", async () => {
+  it("mail explicitly addressed to the demo org never continues an Organization #1 case with the same contact", async () => {
     const repo = fresh();
     const { organizationId: demoId } = seedDemoOrganization(repo);
-    const riara = repo.createCase({ emailAddress: "shared@example.test", threadId: "t-1", organizationId: 1, caseTypeCode: "GENERAL" });
+    const orgOne = repo.createCase({ emailAddress: "shared@example.test", threadId: "t-1", organizationId: 1, caseTypeCode: "SERVICE_REQUEST" });
     const ctx: PipelineContext = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender: new MockSender() } };
     const pdf = await makeTextPdf(["Equipment requisition", "Estimated cost: 900"]);
     const result = await processEmail({
-      id: "eq-1", threadId: "eq-thread", from: "shared@example.test", subject: `Equipment Request (${riara.ref_number})`,
+      id: "eq-1", threadId: "eq-thread", from: "shared@example.test", subject: `Equipment Request (${orgOne.ref_number})`,
       body: "Estimated cost: 900\nManager approved: yes\nAsset outstanding: no", receivedAt: new Date().toISOString(),
       organizationId: demoId, caseTypeCode: "EQUIPMENT_REQUEST",
       attachments: [{ filename: "equipment_requisition.pdf", mimeType: "application/pdf", content: pdf }],
     }, ctx);
     const row = repo.getApplicant(result.applicantId!)!;
-    expect(row.id).not.toBe(riara.id);
+    expect(row.id).not.toBe(orgOne.id);
     expect(row.organization_id).toBe(demoId);
     expect(row.ref_number.startsWith(`${DEMO_ORG_PREFIX}-`)).toBe(true);
     const gate = repo.db.prepare("SELECT detail FROM audit_log WHERE applicant_id = ? AND event = 'case_type_gate'").get(row.id) as { detail: string };
@@ -256,8 +270,9 @@ describe("DEMO — second organization", () => {
   it("a tenant admin who belongs only to the demo org gets no switcher and cannot switch", async () => {
     const repo = fresh();
     const { organizationId: demoId } = seedDemoOrganization(repo);
-    repo.createStaff("peopleops", "People Ops Admin", hashPassword("admin123"), "admin");
-    repo.db.prepare("UPDATE staff_users SET organization_id = ? WHERE username = 'peopleops'").run(demoId);
+    // Created straight into the demo tenant: an account whose home is not the
+    // head office never gets the switcher (can_switch_org stays off).
+    repo.createStaff("peopleops", "People Ops Admin", hashPassword("admin123"), "admin", false, demoId);
     const ctx: PipelineContext = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender: new MockSender() } };
     const app = createApp({ repo, ctx });
     let server: Server | undefined;

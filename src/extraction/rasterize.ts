@@ -17,8 +17,7 @@ import type { Canvas, CanvasRenderingContext2D } from "canvas";
 import { envInt, envNum } from "../util/envnum";
 import { log } from "../util/log";
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const pdfjs = require("pdfjs-dist/legacy/build/pdf.js");
+import { openPdfDocument } from "./pdfOptions";
 
 /** pdf.js uses DOMMatrix on some rendering paths; give Node a minimal one. */
 if (typeof (globalThis as any).DOMMatrix === "undefined") {
@@ -134,13 +133,9 @@ export async function rasterizePdf(
     },
   };
 
-  const doc = await pdfjs.getDocument({
-    data: new Uint8Array(buf),
-    useSystemFonts: true,
-    isEvalSupported: false,
-    verbosity: 0,
-    canvasFactory,
-  }).promise;
+  // Hardened options + the parse budget live in pdfOptions; the canvas factory
+  // is the only render-specific extra.
+  const { doc, close } = await openPdfDocument(new Uint8Array(buf), "render", { canvasFactory });
 
   try {
     const count = Math.min(doc.numPages, o.maxPages);
@@ -187,7 +182,7 @@ export async function rasterizePdf(
       }
     }
   } finally {
-    await doc.destroy();
+    await close();
   }
   return report;
 }

@@ -2,8 +2,8 @@
  * PPR P1-4 acceptance: the ten fixed pack slots are replaced by a real
  * document library (organization files inside named attachment sets), and
  * required-information lists are configurable per stage and enforced when
- * staff move a case. The education matrix stays exactly where it belongs —
- * as the profile GENERATOR on the Requirements tab. Everything is exercised
+ * staff move a case. Nothing is bundled: a new organization starts with an
+ * empty library and its own configured requirements. Everything is exercised
  * through the real admin and case routes.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -13,7 +13,7 @@ import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
 import { createApp } from "../src/web/server";
 import { hashPassword } from "../src/util/password";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization } from "./helpers";
 import { processEmail } from "../src/pipeline";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
@@ -57,6 +57,9 @@ describe("PPR P1-4: document library + per-stage required information", () => {
 
   beforeAll(async () => {
     repo = fresh();
+    // The tenant is configured BEFORE any account exists, so the
+    // administrator resolves to it and its own requirements are on file.
+    configureTestOrganization(repo);
     repo.createStaff("admin", "Administrator", hashPassword("admin123"), "admin");
     ctx = {
       repo,
@@ -74,8 +77,8 @@ describe("PPR P1-4: document library + per-stage required information", () => {
 
   afterAll(() => server?.close());
 
-  it("the pack tab is a document library — the ten fixed slots are gone; the education matrix stays as generator", async () => {
-    // A NEW set with an arbitrary name — no Riara pack vocabulary anywhere.
+  it("the pack tab is a document library — the ten fixed slots are gone and nothing bundled remains", async () => {
+    // A NEW set with an arbitrary name — no bundled pack vocabulary anywhere.
     expect((await post("/config/attachment-sets/create", {
       name: "onboarding pack", description: "Files we send to new joiners",
     })).status).toBe(302);
@@ -97,18 +100,19 @@ describe("PPR P1-4: document library + per-stage required information", () => {
     expect(page).not.toContain("data-pack-slot");
     expect(page).not.toContain("Application pack</h3>");
     expect(page).not.toContain("Admission pack</h3>");
-    // The migrated education packs remain only as a labelled, read-only
-    // snapshot (migration readers — not editable slots):
-    expect(page).toContain("Legacy education packs");
-    expect(page).toContain("migration");
-    // The education matrix stays as the profile generator on Requirements:
+    // No bundled snapshot survives either — the library is empty until this
+    // organization uploads something.
+    expect(page).not.toMatch(/legacy/i);
+    expect(page).toContain("No sample files or fixed packs are provided");
+    // The requirements tab reads this tenant's OWN configured checklists:
     const reqs = await get("/config?tab=requirements");
-    expect(reqs).toContain("Mean grade");
-    expect(reqs).toContain("Requirements");
+    expect(reqs).toContain("Configured requirements");
+    expect(reqs).toContain("Request form");
+    expect(reqs).toContain("Identity document");
   });
 
   it("required-information lists configure per stage and gate stage movement", async () => {
-    // Non-academic profile + an intake rule → real case via the pipeline.
+    // A new case type + an intake rule → a real case via the pipeline.
     expect((await post("/config/case-types/create", {
       organization_id: "1", code: "LIB", name: "Library services", category: "general",
     })).status).toBe(302);
@@ -138,7 +142,7 @@ describe("PPR P1-4: document library + per-stage required information", () => {
     const gated = stages.find((s) => s.id === "documents_checked")!;
     expect(gated.requires).toEqual(["proof_of_address", "id_photo"]);
 
-    // A real case for the profile:
+    // A real case for the case type:
     const result = await processEmail(mail({
       id: "dl-case-1", from: "joiner@example.test",
       subject: "joinlibrary request", body: "I would like to joinlibrary — details attached.",

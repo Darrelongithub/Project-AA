@@ -23,20 +23,41 @@ describe("email categorization (feature 26)", () => {
     expect(categorizeEmail("Following up", "Just following up on my previous email, any update?", false)).toBe("follow_up");
   });
 
-  it("new application intent", () => {
-    expect(categorizeEmail("Application", "I would like to apply for the BCS programme.", false)).toBe("application");
+  it("new request intent", () => {
+    expect(categorizeEmail("Service request", "I would like to request a service from your team.", false)).toBe("application");
   });
 
-  it("general admissions questions", () => {
-    expect(categorizeEmail("Admission enquiry", "When does the January intake close for admission?", false)).toBe("admission_enquiry");
+  it("general service questions", () => {
+    expect(categorizeEmail("Service enquiry", "When does the September window close for requests?", false)).toBe("general_enquiry");
   });
 
   it("an eligibility question with a screenshot remains an enquiry, not document receipt", () => {
     expect(categorizeEmail(
-      "Inquiry Regarding BBIT Admission Eligibility (KCSE B- Mean)",
-      "I am writing to inquire about admission into the Bachelor of Business Information Technology programme. I have attached a screenshot of my KCSE results for your reference.",
+      "Inquiry regarding service request eligibility",
+      "I am writing to inquire what you need before I submit my request. I have attached a screenshot of my previous statement for your reference.",
       true
-    )).toBe("admission_enquiry");
+    )).toBe("general_enquiry");
+  });
+
+  it("ordinary business mail is an enquiry, not 'other' (domain-free vocabulary)", () => {
+    // A plainly-worded request that has nothing to do with enrolment.
+    expect(categorizeEmail(
+      "Quote request for a 5-tonne consignment",
+      "Hello, I need a quote for moving machinery from Mombasa to Nairobi next week. Please advise.",
+      false
+    )).toBe("general_enquiry");
+    expect(categorizeEmail("Booking", "Can I book an appointment for Tuesday?", false)).toBe("general_enquiry");
+  });
+
+  it("money questions are fee enquiries", () => {
+    expect(categorizeEmail("Invoice 4417", "Your invoice is overdue and payment is required.", false)).toBe("fee_enquiry");
+    expect(categorizeEmail("Pricing", "Send me your pricing for the delivery.", false)).toBe("fee_enquiry");
+  });
+
+  it("no lender or enrolment vocabulary is baked in", () => {
+    // These two Kenyan education lenders used to be hardcoded fee signals.
+    expect(categorizeEmail("HELB", "hesb helb", false)).toBe("other");
+    expect(categorizeEmail("Prospectus", "matriculation prospectus", false)).not.toBe("fee_enquiry");
   });
 
   it("fallback → other", () => {

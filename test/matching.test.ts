@@ -3,17 +3,17 @@
  * supersede chains for corrected documents, and flag reconciliation.
  */
 import { beforeEach, describe, expect, it } from "vitest";
+import { configureTestOrganization } from "./helpers";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { recordDocuments, resolveApplicant } from "../src/matching";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 import type { ExtractionResult, IncomingEmail } from "../src/types";
 
 let repo: Repo;
 
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  configureTestOrganization(repo);
 });
 
 function mkEmail(id: string, threadId: string, from: string): IncomingEmail {

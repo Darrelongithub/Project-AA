@@ -2,12 +2,10 @@ node_modules/
 dist/
 # Anchored to the repo root: unanchored "logs/" and "data/" previously
 # swallowed src/logs/index.ts (the decision-log module) from the repo.
-/data/*
-# The official document packs + email branding ship WITH the repo.
-!/data/pack/
-!/data/branding/
-!/data/migrated/
-!/data/migrated/organization-1.json
+# Nothing under data/ ships any more — no bundled packs, branding or migrated
+# tenant snapshot — and the old un-ignore exceptions for those paths were a
+# trap: a re-created directory would have been committed again silently.
+/data/
 /logs/
 /backups/
 .env
@@ -16,3 +14,10 @@ dist/
 *.sqlite-wal
 *.sqlite-shm
 eng.traineddata
+
+# Phase C bundle backups (local safety copies, never committed)
+backups/
+
+# Labelled message sets contain real mail text: never commit them (README.md#classifier-evaluation-and-personal-data-handling)
+labels/
+*.labels.csv

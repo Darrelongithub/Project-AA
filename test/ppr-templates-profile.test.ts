@@ -1,16 +1,16 @@
 /**
- * PPR P0-6 acceptance: templates belong to workflow profiles — not a closed
- * 8-key enum — Reset restores the profile's OWN default, and the D4
+ * PPR P0-6 acceptance: templates belong to case types — not a closed 8-key
+ * enum — Reset restores the case type's OWN default, and the D4
  * generic_enquiry is a real fallback (or honest about being one).
  *  - an admin creates a brand-new template key through the real routes,
- *    binds it to a profile, and a rule-driven send carries exactly that
+ *    binds it to a case type, and a rule-driven send carries exactly that
  *    wording end-to-end;
  *  - Reset restores the wording the template had at CREATION (its own saved
  *    default), not a shared global text;
- *  - a rule-driven profile with a reply gap gets the organization's
+ *  - a rule-driven case type with a reply gap gets the organization's
  *    generic_enquiry as a QUEUED staff suggestion — never sent automatically
  *    — and the UI no longer claims anything else;
- *  - a profile-bound template never leaks into another profile's cases.
+ *  - a case-type-bound template never leaks into another case type's cases.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Server } from "http";
@@ -19,7 +19,7 @@ import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
 import { createApp } from "../src/web/server";
 import { hashPassword } from "../src/util/password";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization, releaseAutomation } from "./helpers";
 import { processEmail } from "../src/pipeline";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
@@ -42,7 +42,7 @@ const mail = (over: Partial<IncomingEmail>): IncomingEmail => ({
   ...over,
 });
 
-describe("PPR P0-6: templates per profile, profile-owned defaults, real fallback", () => {
+describe("PPR P0-6: templates per case type, case-type-owned defaults, real fallback", () => {
   let repo: Repo;
   let ctx: PipelineContext;
   let sender: MockSender;
@@ -60,6 +60,9 @@ describe("PPR P0-6: templates per profile, profile-owned defaults, real fallback
 
   beforeAll(async () => {
     repo = fresh();
+    // One explicitly configured tenant, created BEFORE the administrator
+    // account so the account resolves to it (and its templates exist).
+    configureTestOrganization(repo);
     repo.createStaff("admin", "Administrator", hashPassword("admin123"), "admin");
     sender = new MockSender();
     ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
@@ -75,7 +78,7 @@ describe("PPR P0-6: templates per profile, profile-owned defaults, real fallback
 
   afterAll(() => server?.close());
 
-  it("creates a NEW template key for a profile through the routes and fires it end-to-end", async () => {
+  it("creates a NEW template key for a case type through the routes and fires it end-to-end", async () => {
     expect((await post("/config/case-types/create", {
       organization_id: "1", code: "VOL", name: "Volunteer intake", category: "general",
     })).status).toBe(302);
@@ -102,8 +105,11 @@ describe("PPR P0-6: templates per profile, profile-owned defaults, real fallback
       cond_field_0: "always", cond_value_0: "true",
       reply_action: "send", template_key: "volunteer_welcome", audit_code: "rule_vol_welcome", fallback: "human_draft",
     })).status).toBe(302);
+    // Automation is opt-in twice over: the global mode holds every automated
+    // reply, and each case type carries its own draft-first default.
+    releaseAutomation(repo);
     expect((await post("/config/case-types/profile", {
-      id: String(vol.id), default_reply_action: "auto", qualification_gate: "0",
+      id: String(vol.id), default_reply_action: "auto", evidence_gate: "0",
     })).status).toBe(302);
 
     sender.sent.length = 0;
@@ -128,7 +134,7 @@ describe("PPR P0-6: templates per profile, profile-owned defaults, real fallback
     const after = repo.getTemplate("volunteer_welcome", 1)!;
     expect(after.subject).toBe("Subject for Volunteer welcome"); // its own default
     expect(after.body).not.toContain("volunteering at the harbour"); // edit gone
-    // …and the education profile's reset still restores the education wording:
+    // …and a starter template's reset still restores its own shipped wording:
     expect((await post("/templates/reset", { key: "docs_request" })).status).toBe(302);
     const docs = repo.getTemplate("docs_request", 1)!;
     expect(docs.body.length).toBeGreaterThan(0);
@@ -140,9 +146,9 @@ describe("PPR P0-6: templates per profile, profile-owned defaults, real fallback
     const tplPage = await (await fetch(`${base}/templates?template=generic_enquiry`, { headers: { cookie: auth.cookie } })).text();
     expect(tplPage).not.toMatch(/Automated fallback acknowledgement/);
     expect(tplPage).toMatch(/never sent automatically/);
-    // A rule-driven profile with a reply GAP (rules that match nothing):
+    // A rule-driven case type with a reply GAP (rules that match nothing):
     expect((await post("/config/case-types/create", {
-      organization_id: "1", code: "GAP", name: "Gap profile", category: "general",
+      organization_id: "1", code: "GAP", name: "Gap intake", category: "general",
     })).status).toBe(302);
     const gap = repo.getCaseType("GAP", 1)!;
     expect((await post("/config/workflow-rules/save", {
@@ -167,11 +173,11 @@ describe("PPR P0-6: templates per profile, profile-owned defaults, real fallback
     expect(sender.sent.length).toBe(0);
     const held = repo.queuedOutbox(result.applicantId!);
     expect(held).toBeTruthy();
-    expect(held!.subject).toContain("Thank you for contacting Admissions");
-    expect(held!.body).toContain("Thank you for contacting");
+    expect(held!.subject).toContain("Thank you for contacting us");
+    expect(held!.body).toContain("We have received your message about case");
   });
 
-  it("a profile-bound template never leaks into another profile's cases", async () => {
+  it("a case-type-bound template never leaks into another case type's cases", async () => {
     const vol = repo.getCaseType("VOL", 1)!;
     const gap = repo.getCaseType("GAP", 1)!;
     // volunteer_welcome is bound to VOL — GAP cases must not resolve it.

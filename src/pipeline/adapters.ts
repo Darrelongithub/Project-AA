@@ -4,6 +4,7 @@
  */
 import type { Repo } from "../db/repo";
 import type { VisionAdapter } from "../extraction/gemini";
+import { geminiCategoryLabeler, type CategoryLabeler } from "../categorize";
 import type { Watcher } from "../watcher";
 import type { AppConfig } from "../config";
 import { BudgetedVisionAdapter, GeminiVisionAdapter, MockVisionAdapter } from "../extraction/gemini";
@@ -24,10 +25,19 @@ export interface SendExtras {
 
 export interface EmailSender {
   send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void>;
+  /**
+   * Does this sender put mail on the wire? `false` means every "sent" reply is
+   * only RECORDED (no mail connection), which the console must say out loud —
+   * an audit trail that claims a send nobody received is worse than no audit
+   * trail. Absent (a test double) is treated as "not our business".
+   */
+  delivers?: boolean;
 }
 
-/** Records sends in memory (simulation/tests) — plus an audit printout. */
+/** Records sends in memory (simulation/tests, and any install with no mail
+ *  connection) — nothing is delivered, and it says so. */
 export class MockSender implements EmailSender {
+  readonly delivers = false;
   sent: Array<{ to: string; subject: string; body: string; threadId: string; attachments: string[]; banner: boolean; fromName: string | null; replyTo: string | null }> = [];
   async send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void> {
     this.sent.push({
@@ -45,6 +55,20 @@ export interface Adapters {
   watcher: Watcher;
   sender: EmailSender;
   ocr?: (image: Buffer, ext?: "png" | "jpg") => Promise<string | null>;
+  /** Labels an incoming message with ONE of the tenant's own category keys.
+   *  Absent when no Gemini key is reachable — classification then stays
+   *  deterministic. */
+  categorizer?: CategoryLabeler;
+}
+
+/** The Gemini key the console knows: the organization's stored secret first
+ *  (Settings → Connections), the environment second (headless CLIs). */
+export function resolveGeminiCredentials(cfg: AppConfig, repo?: Repo): { apiKey: string; model: string } | null {
+  const stored = repo?.getSecret("gemini_api_key").trim() || "";
+  const apiKey = stored || cfg.geminiApiKey || "";
+  if (!apiKey) return null;
+  const model = (repo && repo.getSetting("gemini_model", "").trim()) || cfg.geminiModel;
+  return { apiKey, model };
 }
 
 export function buildAdapters(cfg: AppConfig, sender: EmailSender, repo?: Repo): Adapters {
@@ -69,11 +93,19 @@ export function buildAdapters(cfg: AppConfig, sender: EmailSender, repo?: Repo):
       })()
     : makeHeuristicWatcher();
 
+  // Classification is a sensor, never a decision-maker: it only runs when the
+  // tenant has defined its own category keys AND a key is reachable.
+  const credentials = resolveGeminiCredentials(cfg, repo);
+  const categorizer = credentials
+    ? geminiCategoryLabeler({ apiKey: credentials.apiKey, model: credentials.model })
+    : (useGemini ? geminiCategoryLabeler({ apiKey: cfg.geminiApiKey!, model: cfg.geminiModel }) : undefined);
+
   return {
     vision,
     watcher,
     sender,
     ocr: cfg.disableOcr ? undefined : ocrImage,
+    categorizer,
   };
 }
 

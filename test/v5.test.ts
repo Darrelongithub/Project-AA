@@ -1,228 +1,185 @@
 /**
- * v5 features: stage levels, gauge counts, course routing, compose flow,
- * grade-based requirements, admissions page, Gemini settings slot.
+ * v5 features, expressed against the generic model: stage buckets, rule-driven
+ * assignment, evidence flags, the case work areas, compose flow and the
+ * Settings validation slots.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openDb } from "../src/db/db";
-import { Repo } from "../src/db/repo";
-import { seedDefaults } from "../src/db/seed";
 import { hashPassword } from "../src/util/password";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
-import { deriveFlags, gradeBelow, parseGradeRule } from "../src/rules";
+import { deriveFlags, normalizeName } from "../src/rules";
+import { compareFacts } from "../src/rules/caseType";
 import { createApp } from "../src/web/server";
 import type { ApplicantRow, DocumentRecord } from "../src/types";
-import { webLogin } from "./helpers";
+import { freshRepo, webLogin } from "./helpers";
 import { mustProcessed } from "./harness";
+import type { Repo } from "../src/db/repo";
+import type { PipelineContext } from "../src/pipeline/adapters";
+import { MockSender } from "../src/pipeline/adapters";
 
 let repo: Repo;
 
 beforeEach(() => {
-  repo = new Repo(openDb(":memory:"));
-  seedDefaults(repo);
-  // OR-1: no seeded accounts — provision the admin like first-run setup does.
+  repo = freshRepo({ refPrefix: "V5" });
+  // No seeded accounts exist on a fresh install: provision one like setup does.
   repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
 });
 
-function mkApplicant(opts: Partial<ApplicantRow> = {}): ApplicantRow {
-  const a = repo.getOrCreateApplicant(opts.email_address ?? `v5-${Math.random().toString(36).slice(2)}@example.org`, `t-${Math.random()}`);
-  repo.updateApplicant(a.id, opts);
-  return repo.getApplicant(a.id)!;
+function mkCase(opts: Partial<ApplicantRow> = {}): ApplicantRow {
+  const a = repo.createCase({
+    emailAddress: opts.email_address ?? `v5-${Math.random().toString(36).slice(2)}@example.test`,
+    threadId: `t-${Math.random().toString(36).slice(2)}`,
+    organizationId: 1,
+    caseTypeCode: "SERVICE_REQUEST",
+  });
+  if (Object.keys(opts).length) repo.updateApplicant(a.id, opts);
+  return repo.getCase(a.id)!;
 }
-
-
-// createApp needs an express app to test against — build a minimal one.
-import type { PipelineContext } from "../src/pipeline/adapters";
-import { MockSender } from "../src/pipeline/adapters";
 
 function testApp(): { app: ReturnType<typeof createApp>; ctx: PipelineContext } {
   const sender = new MockSender();
   const ctx: PipelineContext = { repo, adapters: { vision: null as never, watcher: null as never, sender } };
-  const app = createApp({ repo, ctx });
-  return { app, ctx };
+  return { app: createApp({ repo, ctx }), ctx };
 }
 
-describe("grades, not points", () => {
-  it("gradeBelow compares on the KCSE ladder strictly", () => {
-    expect(gradeBelow("C+", "B-")).toBe(true);
-    expect(gradeBelow("B", "B-")).toBe(false);
-    expect(gradeBelow("A", "E")).toBe(false);
-    expect(gradeBelow("D-", "D")).toBe(true);
-    expect(gradeBelow(undefined, "A")).toBe(false); // unreadable never compares
+describe("evidence flags never become decisions", () => {
+  const doc = (fields: Record<string, unknown>, confidence: DocumentRecord["confidence"] = "high", score = 98): DocumentRecord[] => [
+    {
+      id: 1, applicant_id: 1, document_type: "request_form", source_email_id: "m1",
+      extraction_method: "pdf_text", extracted_text: "x", extracted_fields: fields,
+      confidence, confidence_score: score, superseded_by: null, received_at: "2026-09-14T00:00:00Z",
+    },
+  ];
+
+  it("flags weak extraction instead of failing the file", () => {
+    expect(deriveFlags([], doc({ name: "ALEX MORGAN" }, "low", 40)).map((flag) => flag.type)).toContain("low_confidence");
+    expect(deriveFlags([], doc({ name: "ALEX MORGAN" }))).toEqual([]);
   });
 
-  it("parseGradeRule reads the published subject lines", () => {
-    const parsed = parseGradeRule("B in English and Kiswahili; C+ in Mathematics");
-    expect(parsed).toHaveLength(2);
-    expect(parsed[0].grade).toBe("B");
-    expect(parsed[0].subjects).toEqual(["English", "Kiswahili"]);
-    expect(parsed[1].grade).toBe("C+");
-    expect(parsed[1].subjects).toEqual(["Mathematics"]);
+  it("flags differing names for a human rather than picking one", () => {
+    const flags = deriveFlags([], [
+      { ...doc({ name: "ALEX MORGAN" })[0], id: 1 },
+      { ...doc({ name: "ALEXA MORGAN" })[0], id: 2, document_type: "id" },
+    ]);
+    expect(flags.map((flag) => flag.type)).toContain("name_mismatch");
+    expect(normalizeName("  alex  morgan. ")).toBe("ALEX MORGAN");
   });
 
-  it("mean grade below the rule → grade_below_requirement; subject miss → low_confidence", () => {
-    const doc = (fields: Record<string, unknown>): DocumentRecord[] => [
-      {
-        id: 1, applicant_id: 1, document_type: "academic_cert", source_email_id: "m1",
-        extraction_method: "pdf_text", extracted_text: "x", extracted_fields: fields,
-        confidence: "high", superseded_by: null, received_at: "2026-09-14T00:00:00Z",
-      },
-    ];
-    const reqs = [{ document_type: "academic_cert" as const, required: true, meanGrade: "C+", subjectGrades: "C+ in English" }];
-    const flags = deriveFlags(reqs, doc({ meanGrade: "C-", subjectGrades: { English: "B" } }));
-    expect(flags.map((f) => f.type)).toContain("grade_below_requirement");
-    const flags2 = deriveFlags(reqs, doc({ meanGrade: "A", subjectGrades: { Mathematics: "A" } }));
-    expect(flags2.map((f) => f.type)).toContain("low_confidence"); // English unreadable
-    const flags3 = deriveFlags(reqs, doc({ meanGrade: "A", subjectGrades: { English: "A" } }));
-    expect(flags3).toEqual([]);
+  it("treats an unread fact as undetermined, never as false", () => {
+    expect(compareFacts("yes", "=", "yes")).toBe(true);
+    expect(compareFacts(undefined, "=", "yes")).toBeNull();
+    expect(compareFacts("1,200,000", ">=", "1000000")).toBeNull(); // text is not a number
+    expect(compareFacts(1200000, ">=", 1000000)).toBe(true);
   });
 });
 
-describe("course routing", () => {
-  it("a case for a course lands with that course's assigned officer", async () => {
-    repo.createStaff("courseowner", "Course Owner", "x", "officer");
-    const owner = repo.getStaffByUsername("courseowner")!.id;
-    repo.assignProgrammeOwner("BCS", owner);
-    const sender2 = new MockSender();
-    const ctx: PipelineContext = {
-      repo,
-      adapters: { vision: null as never, watcher: null as never, sender: sender2 },
-    };
+describe("rule-driven assignment", () => {
+  it("assigns a case to the officer named by the matching response rule", async () => {
+    repo.createStaff("officer", "Case Officer", "x", "user");
+    const owner = repo.getStaffByUsername("officer")!.id;
+    const type = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    // Updating the configured response rule by name — a repeated save edits
+    // the published rule instead of duplicating it.
+    const before = repo.listWorkflowRules(1, { caseTypeId: type.id, kind: "response" }).length;
+    repo.saveWorkflowRule({
+      organizationId: 1, caseTypeId: type.id, kind: "response", name: "Prepare a factual status draft", position: 0,
+      conditions: [{ field: "always", value: true }],
+      action: { reply_action: "draft", template_key: "status_answer", assign: owner, audit_code: "assigned_to_officer" },
+    });
+    expect(repo.listWorkflowRules(1, { caseTypeId: type.id, kind: "response" })).toHaveLength(before);
+    const ctx: PipelineContext = { repo, adapters: { vision: null as never, watcher: null as never, sender: new MockSender() } };
     const { processEmail } = await import("../src/pipeline");
     const res = mustProcessed(await processEmail(
       {
-        id: "route-1", threadId: "t-route-1", from: "router@example.org",
-        subject: "Application for BSc Computer Science",
-        body: "I would like to apply for BCS in the September 2026 intake.",
+        id: "route-1", threadId: "t-route-1", from: "router@example.test", organizationId: 1, caseTypeCode: "SERVICE_REQUEST",
+        subject: "Service request for a new access card",
+        body: "Please process my request. Consent: yes.",
         receivedAt: "2026-09-14T09:00:00Z", attachments: [],
       },
       ctx
     ));
-    const applicant = repo.getApplicant(res.applicantId)!;
-    expect(applicant.programme).toBe("BCS");
-    expect(applicant.assigned_to).toBe(owner);
-    // the owner was notified
-    const notes = repo.notificationsFor(owner);
-    expect(notes.some((n) => n.kind === "assignment")).toBe(true);
+    const caseRow = repo.getCase(res.applicantId)!;
+    expect(caseRow.assigned_to).toBe(owner);
+    expect(repo.notificationsFor(owner).some((note) => note.kind === "assignment")).toBe(true);
   });
 });
 
 describe("stages & routing", () => {
-  it("stageCounts buckets every applicant into exactly one level", () => {
-    mkApplicant({ lifecycle: "application_received" });
-    mkApplicant({ lifecycle: "documents_received" });
-    mkApplicant({ lifecycle: "documents_checked" });
-    mkApplicant({ lifecycle: "awaiting_review" });
-    mkApplicant({ lifecycle: "verification" });
-    mkApplicant({ lifecycle: "completed" });
+  it("stageCounts buckets every case into exactly one stage", () => {
+    mkCase({ lifecycle: "application_received" });
+    mkCase({ lifecycle: "documents_received" });
+    mkCase({ lifecycle: "documents_checked" });
+    mkCase({ lifecycle: "awaiting_review" });
+    mkCase({ lifecycle: "verification" });
+    mkCase({ lifecycle: "completed" });
     const c = repo.stageCounts();
     expect(c.total).toBe(6);
-    expect(c.unfinished).toBe(3); // received + docs received + docs checked
-    expect(c.pending).toBe(2); // awaiting review + verification
+    expect(c.unfinished).toBe(3);
+    expect(c.pending).toBe(2);
     expect(c.finished).toBe(1);
     expect(c.application_received).toBe(1);
     expect(c.completed).toBe(1);
   });
 
   it("approverFor names who completed a file", () => {
-    const a = mkApplicant({});
-    repo.setLifecycle(a.id, "completed", "jane", "approved by panel");
-    const appr = repo.approverFor(a.id);
-    expect(appr?.actor).toBe("jane");
-    expect(appr?.at).toBeTruthy();
+    const a = mkCase();
+    repo.setLifecycle(a.id, "completed", "jane", "closed after review");
+    const approver = repo.approverFor(a.id);
+    expect(approver?.actor).toBe("jane");
+    expect(approver?.at).toBeTruthy();
   });
 
-  it("programme catalogue is editable and lookup-able", () => {
-    expect(repo.programmeByCode("llb")?.name).toContain("Laws"); // case-insensitive
-    expect(repo.programmeByCode("BNS")?.school).toBe("School of Nursing");
-    repo.updateProgramme("BNS", { entry_requirements: "New NCK rules apply from 2027." });
-    expect(repo.programmeByCode("BNS")?.entry_requirements).toContain("New NCK rules");
-  });
-
-  it("seeded structured entry requirements match the published set", () => {
-    const blocks = (code: string) => repo.listSystemBlocks(code);
-    // LLB: KCSE C+ with B in English or Kiswahili.
-    const llb = blocks("LLB").find((b) => b.system === "KCSE");
-    expect(llb?.overall).toBe("C+");
-    expect(llb?.subjects?.some((r) => r.subject === "English" && r.grade === "B" && r.alts?.includes("Kiswahili"))).toBe(true);
-    // BBA: C in English AND Mathematics.
-    const bba = blocks("BBA").find((b) => b.system === "KCSE");
-    expect(bba?.subjects?.some((r) => r.subject === "Mathematics" && r.grade === "C")).toBe(true);
-    // Diploma floors override the university-wide C+ degree minimum.
-    expect(blocks("DBM").find((b) => b.system === "KCSE")?.overall).toBe("C-");
-    // DBM (2026 brochure): D plain in Mathematics — NOT the English-or-Maths
-    // C- rule an earlier draft carried.
-    const dbm = blocks("DBM").find((b) => b.system === "KCSE");
-    expect(dbm?.subjects?.some((r) => r.subject === "Mathematics" && r.grade === "D")).toBe(true);
-    expect(dbm?.subjects?.some((r) => r.subject === "English")).toBe(false);
-    // DIR (2026 brochure): C in English only — no science subject.
-    const dir = blocks("DIR").find((b) => b.system === "KCSE");
-    expect(dir?.overall).toBe("C-");
-    expect(dir?.subjects?.some((r) => r.subject === "English" && r.grade === "C")).toBe(true);
-    expect(dir?.subjects?.some((r) => ["Biology", "Chemistry", "Physics"].includes(r.subject))).toBe(false);
-    // Postgraduate routes check the degree class — no KCSE rule.
-    expect(blocks("MBA").find((b) => b.system === "DEGREE")?.minClass).toContain("Upper Division");
-    // Nursing specifics were not in the published details → no invented
-    // subject clusters; the programme falls back to the university-wide floor.
-    expect(blocks("BNS").length).toBe(0);
+  it("case configuration is organization-owned and editable", () => {
+    const type = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    expect(repo.caseTypeForCase(mkCase().id)?.code).toBe("SERVICE_REQUEST");
+    repo.updateCaseTypeVocabulary(type.id, { terminology: { case: "Ticket", contact: "Customer" } });
+    expect(repo.getCaseType("SERVICE_REQUEST", 1)?.terminology).toMatchObject({ case: "Ticket" });
   });
 });
 
-describe("web: admissions, compose, gemini slot", () => {
+describe("web: cases, compose, settings slots", () => {
   let app: ReturnType<typeof createApp>;
   let server: ReturnType<typeof app.listen> | undefined;
   let base = "";
   let auth: { cookie: string; csrf: string };
 
-  const start = async () => {
+  beforeEach(async () => {
     ({ app } = testApp());
     server = app.listen(0);
-    const port = (server.address() as { port: number }).port;
-    base = `http://127.0.0.1:${port}`;
-    auth = await loginWith(base);
-  };
-
-  beforeEach(async () => {
-    await start();
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    auth = await webLogin(base, "admin", "admin123");
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     server?.close();
+    server = undefined;
   });
 
-  it("admissions page splits the pipeline by level with counts", async () => {
-    const a = mkApplicant({ lifecycle: "awaiting_review" });
-    const page = await (await fetch(`${base}/admissions`, { headers: { cookie: auth.cookie } })).text();
-    expect(page).toContain("Admissions");
-    expect(page).toContain("Application received");
-    expect(page).toContain("Awaiting review");
+  it("the cases page splits the pipeline by stage with counts", async () => {
+    const a = mkCase({ lifecycle: "awaiting_review" });
+    const page = await (await fetch(`${base}/cases`, { headers: { cookie: auth.cookie } })).text();
+    expect(page).toContain("Cases");
     expect(page).toContain(a.ref_number);
-    const filtered = await (await fetch(`${base}/admissions?stage=awaiting_review`, { headers: { cookie: auth.cookie } })).text();
-    expect(filtered).toContain('class="tabs"');
-    // admin nav includes admissions everywhere
-    expect(page).toContain('href="/admissions"');
+    expect(page).toContain('class="tabs"');
+    const filtered = await (await fetch(`${base}/cases?stage=awaiting_review`, { headers: { cookie: auth.cookie } })).text();
+    expect(filtered).toContain(a.ref_number);
+    expect(page).toContain('href="/cases"');
   });
 
-  it("case page shows the status level next to the name and keeps the work areas", async () => {
-    const a = mkApplicant({});
-        const page = await (await fetch(`${base}/case/${a.id}`, { headers: { cookie: auth.cookie } })).text();
-    expect(page).toContain("Applicant overview");
-    expect(page).toContain("Applied programme");
+  it("the case page keeps every work area", async () => {
+    const a = mkCase();
+    const page = await (await fetch(`${base}/case/${a.id}`, { headers: { cookie: auth.cookie } })).text();
     expect(page).toContain("Email history");
     expect(page).toContain("Audit log");
     expect(page).toContain("Status history");
     expect(page).toContain("Responses");
     expect(page).toContain('name="template"');
-    expect(page).toContain('name="preview"');
-    expect(page).toContain("/case/" + a.id + "/compose?template=missing_documents");
+    expect(page).toContain(`/case/${a.id}/compose?template=missing_documents`);
   });
 
   it("compose opens a ready-filled template and sending records it", async () => {
-    const a = mkApplicant({});
+    const a = mkCase();
     const page = await (await fetch(`${base}/case/${a.id}/compose?template=missing_documents`, { headers: { cookie: auth.cookie } })).text();
     expect(page).toContain("Compose reply");
     expect(page).toContain(`To <b>${a.email_address}</b>`);
-    expect(page).toContain("Send now");
 
     const res = await fetch(`${base}/case/${a.id}/compose`, {
       method: "POST",
@@ -232,18 +189,14 @@ describe("web: admissions, compose, gemini slot", () => {
     });
     expect(res.status).toBe(302);
     expect(decodeURIComponent(res.headers.get("location") || "")).toContain("Reply sent");
-    const emails = repo.emailsForApplicant(a.id).filter((e) => e.direction === "out");
-    expect(emails.some((e) => e.subject === "Hello")).toBe(true);
+    expect(repo.emailsForApplicant(a.id).some((email) => email.direction === "out" && email.subject === "Hello")).toBe(true);
   });
 
-  it("gemini slot exists and validates a junk grade rule politely", async () => {
-    // OR-4: the Gemini connection slot's home is Settings (moved out of Configuration).
-    const config = await (await fetch(`${base}/settings`, { headers: { cookie: auth.cookie } })).text();
-    expect(config).toContain('id="gemini"');
-    expect(config).toContain("Gemini API key");
-    expect(config).toContain('action="/settings/gemini"');
+  it("the Gemini slot lives in Settings and rejects an empty key politely", async () => {
+    const settings = await (await fetch(`${base}/settings`, { headers: { cookie: auth.cookie } })).text();
+    expect(settings).toContain('id="gemini"');
+    expect(settings).toContain('action="/settings/gemini"');
 
-    // empty key + nothing saved → honest message, no crash
     const res = await fetch(`${base}/settings/gemini`, {
       method: "POST",
       headers: { cookie: auth.cookie, "content-type": "application/x-www-form-urlencoded" },
@@ -254,37 +207,23 @@ describe("web: admissions, compose, gemini slot", () => {
     expect(decodeURIComponent(res.headers.get("location") || "")).toContain("Paste a Gemini API key");
   });
 
-  it("document requirements are NOT staff-configurable (OR-5)", async () => {
-    // OR-5 removed the per-document toggles: requirements are generated
-    // deterministically from the official application-form checklist. A
-    // stale POST to the old endpoints must be refused explicitly (no
-    // silent success, no hidden write).
-    const before = repo.listRules().length;
-    const res = await fetch(`${base}/settings/rules/add`, {
+  it("removed requirement endpoints stay closed while case-type configuration is open", async () => {
+    const legacy = await fetch(`${base}/settings/rules/add`, {
       method: "POST",
       headers: { cookie: auth.cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${auth.csrf}&programme=LLB&intake=&document_type=academic_cert&required=1&mean_grade=B-&subject_grades=${encodeURIComponent("B in English")}`,
+      body: `_csrf=${auth.csrf}&document_type=request_form&required=1`,
       redirect: "manual",
     });
-    expect(res.status).toBe(302);
-    expect(decodeURIComponent(res.headers.get("location") || "")).toContain("generated deterministically");
-    expect(repo.listRules().length).toBe(before); // nothing written
+    expect(legacy.status).toBe(404);
 
-    const del = await fetch(`${base}/settings/rules/delete`, {
+    const type = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    const save = await fetch(`${base}/config/case-types/document`, {
       method: "POST",
       headers: { cookie: auth.cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${auth.csrf}&id=1`,
+      body: new URLSearchParams({ _csrf: auth.csrf, organization_id: "1", case_type_id: String(type.id), key: "site_plan", label: "Site plan", required: "1", blocking: "1" }),
       redirect: "manual",
     });
-    expect(decodeURIComponent(del.headers.get("location") || "")).toContain("generated deterministically");
-    // the config page shows the deterministic notice, not toggles
-    const page = await (await fetch(`${base}/config`, { headers: { cookie: auth.cookie } })).text();
-    expect(page).toContain("generated deterministically");
-    expect(page).not.toContain('action="/settings/rules/add"');
+    expect(save.status).toBe(302);
+    expect(repo.listDocumentDefinitions(type.id).map((definition) => definition.key)).toContain("site_plan");
   });
 });
-
-async function loginWith(base: string): Promise<{ cookie: string; csrf: string }> {
-  const { cookie, csrf } = await webLogin(base, "admin", "admin123");
-  return { cookie, csrf };
-}

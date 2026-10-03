@@ -37,12 +37,15 @@ let agent2 = 0;
 beforeAll(async () => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.createStaff("admin", "Org One Admin", hashPassword("admin123"), "admin");
-  repo.createStaff("agent1", "Org One Agent", hashPassword("agent1pass99"), "user");
-  const org = repo.createOrganization({ name: "Hillcrest Academy", refPrefix: "HA" });
-  org2Id = org.id;
-  repo.createStaff("admin2", "Org Two Admin", hashPassword("admin2pass99"), "admin", false, org.id);
-  repo.createStaff("agent2", "Org Two Agent", hashPassword("agent2pass99"), "user", false, org.id);
+  // A fresh boot is empty: both tenants are created explicitly, and every
+  // account belongs to one of them (no implicit organization 1).
+  const one = repo.createOrganization({ name: "Northside Cooperative", refPrefix: "NSC" });
+  const two = repo.createOrganization({ name: "Hillcrest Cooperative", refPrefix: "HLC" });
+  org2Id = two.id;
+  repo.createStaff("admin", "Org One Admin", hashPassword("admin123"), "admin", false, one.id);
+  repo.createStaff("agent1", "Org One Agent", hashPassword("agent1pass99"), "user", false, one.id);
+  repo.createStaff("admin2", "Org Two Admin", hashPassword("admin2pass99"), "admin", false, two.id);
+  repo.createStaff("agent2", "Org Two Agent", hashPassword("agent2pass99"), "user", false, two.id);
   agent1 = repo.getStaffByUsername("agent1")!.id;
   agent2 = repo.getStaffByUsername("agent2")!.id;
 
@@ -112,7 +115,7 @@ describe("H-2: staff surfaces resolve to the acting admin's organization", () =>
   it("/staff/add creates the account inside the ACTING admin's organization", async () => {
     const res = await postForm("/staff/add", org2, {
       username: "registrar2",
-      display_name: "Hillcrest Registrar",
+      display_name: "Hillcrest Officer",
       password: "registrar2pass",
       confirm: "registrar2pass",
       role: "user",
@@ -162,14 +165,21 @@ describe("H-3: cross-tenant staff writes are refused", () => {
     const html = await res.text();
     expect(html).toContain("Unknown staff member — no code issued.");
     expect(html).not.toMatch(/Reset code issued/);
-    expect(html).not.toMatch(/[A-HJKMNPQRSTUVWXYZ2-9]{10}/);
+    // Assert the property at its source: no code row exists for that member.
+    // (The previous check scanned the whole page for a 10-character
+    // code-shaped string. Session and CSRF tokens are 32 hex characters, and a
+    // run of ten digits 2-9 occurs in roughly 1.3% of them — so the page-wide
+    // pattern failed at random about one run in eighty while nothing had
+    // leaked. This asserts the same guarantee without the false positive.)
+    expect(repo.db.prepare("SELECT COUNT(*) AS n FROM password_reset_codes WHERE staff_id = ?").get(agent1)).toEqual({ n: 0 });
+    expect(repo.db.prepare("SELECT COUNT(*) AS n FROM password_reset_codes").get()).toEqual({ n: 0 });
   });
 
   it("org-2 admin cannot re-scope org-1 staff via /staff/scopes", async () => {
-    const res = await postForm("/staff/scopes", org2, { staff_id: String(agent1), schools: "Riara University" });
+    const res = await postForm("/staff/scopes", org2, { staff_id: String(agent1), case_types: "SERVICE_REQUEST" });
     expect(res.status).toBe(302);
     expect(res.headers.get("location") || "").toContain(encodeURIComponent("Unknown staff member — nothing saved."));
-    expect(repo.scopesFor(agent1)).toEqual([]);
+    expect(repo.caseTypeScopesFor(agent1)).toEqual([]);
   });
 
   it("same-tenant writes still work end to end", async () => {

@@ -18,11 +18,15 @@
  *   DB_PATH=$(mktemp -d)/email-sorter.sqlite PORT=8137 npm run serve
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { openDb } from "../src/db/db";
+import { Repo } from "../src/db/repo";
+import { seedDefaults } from "../src/db/seed";
+import { configureTestOrganization } from "./helpers";
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -61,19 +65,28 @@ describe("C-1: booting with DB_PATH outside the repository", () => {
     tmpDir = null;
   });
 
-  it("bundled data resolves from the module location, not DB_PATH or CWD", async () => {
-    // Set DB_PATH (and a hostile CWD env marker) BEFORE the module is loaded:
-    // the resolution happens at import time.
+  it("ships no bundled tenant data: packs come from the database only", async () => {
+    // Set DB_PATH BEFORE the module is loaded: the resolution happens at
+    // import time, and nothing may reach for a bundled data directory.
     const outside = mkdtempSync(path.join(os.tmpdir(), "aa-db-outside-"));
     const previousDbPath = process.env.DB_PATH;
     process.env.DB_PATH = path.join(outside, "email-sorter.sqlite");
     try {
       const pack = await import("../src/pack");
-      expect(path.resolve(pack.DATA_DIR)).toBe(path.join(repoRoot, "data"));
-      expect(path.resolve(pack.PACK_DIR)).toBe(path.join(repoRoot, "data", "pack"));
-      const sets = pack.migratedAttachmentSets();
-      expect(sets.map((s) => s.name)).toEqual(["application", "admission", "transfer"]);
-      expect(sets.find((s) => s.name === "admission")!.files.length).toBeGreaterThan(0);
+      expect(Object.keys(pack).sort()).toEqual(["defaultEmailBanner", "organizationPack", "packManifest"]);
+      expect(existsSync(path.join(repoRoot, "data", "migrated"))).toBe(false);
+      expect(existsSync(path.join(repoRoot, "data", "presets"))).toBe(false);
+      const bundled = existsSync(path.join(repoRoot, "data", "pack"))
+        ? readdirSync(path.join(repoRoot, "data", "pack")).filter((name) => !name.startsWith("."))
+        : [];
+      expect(bundled).toEqual([]);
+
+      // A tenant's pack is database-owned: an empty install has no files.
+      const repo = new Repo(openDb(path.join(outside, "pack-check.sqlite")));
+      seedDefaults(repo);
+      configureTestOrganization(repo);
+      expect(pack.packManifest(repo, 1)).toEqual([]);
+      expect(pack.organizationPack(repo, 1).files).toEqual([]);
     } finally {
       if (previousDbPath === undefined) delete process.env.DB_PATH;
       else process.env.DB_PATH = previousDbPath;

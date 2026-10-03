@@ -174,9 +174,9 @@ describe("AUX-2 — behind a proxy, the settings page must warn about the un-reg
   it("warns when the computed redirect URI is plain-http on a public host", async () => {
     await startServer();
     // Reverse proxy in front: public Host header, plain http hop, no base URL.
-    const { html } = await rawGet("/settings", "admissions.example.ac.ke");
+    const { html } = await rawGet("/settings", "intake.example.org");
     // The (broken) URI is what the app would actually send to Google:
-    expect(html).toContain("http://admissions.example.ac.ke/settings/gmail/callback");
+    expect(html).toContain("http://intake.example.org/settings/gmail/callback");
     // RED before the fix: no warning, no pointer at the escape hatch.
     expect(html).toMatch(/behind a proxy/i);
     expect(html).toMatch(/Public base URL/i);
@@ -184,10 +184,10 @@ describe("AUX-2 — behind a proxy, the settings page must warn about the un-reg
 
   it("no warning once the public base URL is set (and the URI is https)", async () => {
     await startServer();
-    repo.setSetting("gmail_public_base_url", "https://admissions.example.ac.ke");
-    const { html } = await rawGet("/settings", "admissions.example.ac.ke");
+    repo.setSetting("gmail_public_base_url", "https://intake.example.org");
+    const { html } = await rawGet("/settings", "intake.example.org");
     expect(html).not.toMatch(/behind a proxy/i);
-    expect(html).toContain("https://admissions.example.ac.ke/settings/gmail/callback");
+    expect(html).toContain("https://intake.example.org/settings/gmail/callback");
   });
 
   it("no warning for a plain local (loopback) deployment", async () => {

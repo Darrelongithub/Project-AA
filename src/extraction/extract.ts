@@ -14,7 +14,7 @@
  * Round 19 — CONFIDENCE v2. The score is no longer "how nice the text
  * looks". It answers the real question — can we TRUST this document?
  *   1. field quality   — did we actually read the facts this document exists
- *                        to carry (mean grade, points, name, DOB, ID)?
+ *                        to carry (names, dates, identifiers and configured scalar facts)?
  *   2. accuracy        — were the facts read from a native text layer or a
  *                        real OCR pass rather than a vision-model guess?
  *   3. forgery resistance — native text layers on official formats are far
@@ -85,77 +85,12 @@ const METHOD_SCORE: Record<ExtractionResult["method"], number> = {
  * the OCR was.
  */
 export function fieldScore(fields: ExtractedFields, docType: DocType): number {
-  const f = fields || {};
-  const hasName = Boolean(f.name);
-  const hasAcademic = Boolean(
-    f.meanGrade || f.gradePoints || f.ibPoints || f.credits || f.principals ||
-    f.classAwarded || f.gpa ||
-    (f.subjectGrades && Object.keys(f.subjectGrades as object).length > 0)
-  );
-  switch (docType) {
-    case "academic_cert": {
-      let s = 0;
-      if (hasAcademic) s += 55;
-      if (f.subjectGrades && Object.keys(f.subjectGrades as object).length >= 3) s += 15;
-      else if (f.subjectGrades) s += 8;
-      if (hasName) s += 20;
-      if (f.examSystem) s += 10;
-      return s;
-    }
-    case "kcpe_cert": {
-      let s = 0;
-      if (f.gradePoints) s += 50;
-      if (hasName) s += 35;
-      if (f.examYear) s += 15;
-      return s;
-    }
-    case "birth_cert": {
-      let s = 0;
-      if (hasName) s += 60;
-      if (f.dateOfBirth) s += 40;
-      return s;
-    }
-    case "id": {
-      let s = 0;
-      if (hasName) s += 45;
-      if (f.idNumber) s += 45;
-      if (f.dateOfBirth) s += 10;
-      return s;
-    }
-    case "application_form":
-    case "credit_transfer_form":
-      return hasName ? 80 : 20;
-    case "exam_result_slip": {
-      // Carries grades like an academic result document.
-      let s = 0;
-      if (hasAcademic) s += 55;
-      if (hasName) s += 20;
-      if (f.examSystem) s += 10;
-      if (f.examYear) s += 15;
-      return s;
-    }
-    case "undergraduate_transcript":
-    case "masters_transcript": {
-      let s = 0;
-      if (hasAcademic) s += 45;
-      if (hasName) s += 30;
-      return s;
-    }
-    case "leaving_certificate":
-    case "undergraduate_degree_certificate":
-    case "masters_degree_certificate":
-    case "law_personal_statement":
-    case "business_statement_of_objective":
-    case "student_pass_application":
-    case "foreign_qualification_equivalence":
-      // Identity/narrative documents: a clear name is the critical field.
-      return hasName ? 75 : 20;
-    case "passport_photo":
-      // A photo carries little machine-readable text; trust the name line.
-      return hasName ? 70 : 25;
-    default:
-      return 10; // unknown type: fields alone can't earn trust
-  }
+  const hasName = Boolean(fields?.name);
+  if (docType === "unknown") return 10;
+  if (docType === "id") return (hasName ? 45 : 0) + (fields.idNumber ? 45 : 0) + (fields.dateOfBirth ? 10 : 0);
+  if (docType === "birth_cert") return (hasName ? 60 : 0) + (fields.dateOfBirth ? 40 : 0);
+  if (docType === "passport_photo") return hasName ? 70 : 25;
+  return hasName ? 80 : 40;
 }
 
 export interface ConfidenceInput {
@@ -201,33 +136,42 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceVerdict {
     reasons.push("vision-model reading held below the auto-pass line pending human confirmation");
     score = 74;
   }
-  if (input.docType === "academic_cert" && !input.fields?.examSystem && fScore < 55) {
-    reasons.push("qualification system not identified on results document");
-  }
-
   const confidence: Confidence = score >= MIN_AUTO_PASS_SCORE ? "high" : score >= 45 ? "medium" : "low";
   return { confidence, score: Math.max(5, Math.min(100, score)), reasons };
 }
+
+/**
+ * A document we could only read PARTLY — pages beyond the cap, a rendering
+ * time budget, pages too large to rasterise — is never evidence for an
+ * automated reply. Its score is capped below the auto-pass floor so the case
+ * keeps a blocking flag and a person reads it (Phase C1-2). The text is still
+ * recorded: partial information is useful to the human, just not to a machine.
+ */
+export const PARTIAL_READ_SCORE = 60;
 
 function finish(
   filename: string,
   text: string,
   method: ExtractionResult["method"],
   tier: Confidence,
-  note?: string
+  note?: string,
+  partialRead = false
 ): Omit<ExtractionResult, "sha256"> {
   const document_type = classifyDocumentType(text);
   const fields = extractFields(text);
   const verdict = computeConfidence({ text, fields, docType: document_type, method, tier });
+  const score = partialRead ? Math.min(verdict.score, PARTIAL_READ_SCORE) : verdict.score;
+  const confidence: Confidence = score >= MIN_AUTO_PASS_SCORE ? "high" : score >= 45 ? "medium" : "low";
   return {
     filename,
     document_type,
     method,
     text,
     fields,
-    confidence: verdict.confidence,
-    confidence_score: verdict.score,
+    confidence,
+    confidence_score: score,
     failure_reason: note ?? null,
+    partial_read: partialRead || undefined,
   };
 }
 
@@ -365,6 +309,14 @@ export async function extractAttachment(
         "The file appears to be damaged or incomplete. Please re-export the PDF and send it again."
       );
     }
+    if (inspection.status === "timeout") {
+      log(`extraction: ${att.filename} exceeded the PDF parse budget (${inspection.error})`, "warn");
+      return unreadable(
+        att.filename,
+        sha256,
+        "The file took too long to read, so it was not processed. Please send a simpler or smaller PDF — a person will look at this one."
+      );
+    }
     if (inspection.status === "empty") {
       log(`extraction: ${att.filename} contains no pages`, "warn");
       return unreadable(
@@ -383,7 +335,7 @@ export async function extractAttachment(
       const t1Type = classifyDocumentType(rawText);
       if (isGoodText(rawText, t1Type)) {
         log(`extraction: ${att.filename} → embedded text layer (high confidence)`);
-        return { ...finish(att.filename, rawText, "pdf_text", "high", truncNote), sha256 };
+        return { ...finish(att.filename, rawText, "pdf_text", "high", truncNote, Boolean(truncNote)), sha256 };
       }
     }
 
@@ -398,7 +350,7 @@ export async function extractAttachment(
       const joined = parts.join("\n");
       if (joined && isGoodText(joined, classifyDocumentType(joined))) {
         log(`extraction: ${att.filename} → Tesseract OCR on embedded images`);
-        return { ...finish(att.filename, joined, "ocr", "medium", truncNote), sha256 };
+        return { ...finish(att.filename, joined, "ocr", "medium", truncNote, Boolean(truncNote)), sha256 };
       }
       if (images.length === 0) {
         log(`extraction: ${att.filename} → no usable embedded images found for OCR`);
@@ -436,7 +388,7 @@ export async function extractAttachment(
           }
           if (report.skipped > 0) notes.push(`${report.skipped} page(s) were too large to render.`);
           if (report.timedOut) notes.push("Rendering stopped at the time limit; later pages were not read.");
-          return { ...finish(att.filename, joined, "pdf_raster", "medium", notes.length ? notes.join(" ") : undefined), sha256 };
+          return { ...finish(att.filename, joined, "pdf_raster", "medium", notes.length ? notes.join(" ") : undefined, notes.length > 0), sha256 };
         }
       } catch (e) {
         log(`extraction: rasterise failed for ${att.filename}: ${(e as Error).message}`);

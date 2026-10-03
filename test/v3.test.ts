@@ -8,7 +8,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
 import { processEmail } from "../src/pipeline";
@@ -16,9 +15,9 @@ import { resolveIdentity } from "../src/matching/identity";
 import { runFollowUpSweep } from "../src/followups";
 import { decide } from "../src/rules";
 import { extractFields } from "../src/extraction/fields";
-import { makeTextPdf, docLines } from "../src/simulation/pdfFactory";
+import {makeTextPdf } from "../src/simulation/pdfFactory";
 import type { Attachment, IncomingEmail } from "../src/types";
-import { REQS, mkDoc } from "./helpers";
+import { REQS, mkDoc, configureTestOrganization, docLines, releaseAutomation } from "./helpers";
 import { mustProcessed } from "./harness";
 
 let repo: Repo;
@@ -28,7 +27,7 @@ let ctx: PipelineContext;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  configureTestOrganization(repo);
   sender = new MockSender();
   ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
 });
@@ -36,9 +35,11 @@ beforeEach(() => {
 function mkEmail(id: string, threadId: string, from: string, extra: Partial<IncomingEmail> = {}): IncomingEmail {
   return {
     id, threadId, from,
-    subject: "Application documents",
-    body: "Please find attached.",
+    subject: "Service request",
+    body: "Please find the attached request.",
     receivedAt: "2026-09-14T09:00:00Z",
+    organizationId: 1,
+    caseTypeCode: "SERVICE_REQUEST",
     attachments: [],
     ...extra,
   };
@@ -48,14 +49,11 @@ async function mkAtt(filename: string, docType: string, name: string, extra = {}
   return { filename, mimeType: "application/pdf", content: await makeTextPdf(docLines(docType, { name, ...extra })) };
 }
 
-// OR-5: complete file per the official application-form checklist.
-const fullSet = async (name: string, opts: { kcpeYear?: string; kcseYear?: string } = {}) => [
-  await mkAtt("a.pdf", "academic_cert", name, opts.kcseYear ? { year: opts.kcseYear } : {}),
-  await mkAtt("l.pdf", "leaving_certificate", name),
-  await mkAtt("p.pdf", "passport_photo", name),
-  await mkAtt("b.pdf", "birth_cert", name),
-  await mkAtt("i.pdf", "id", name),
-  await mkAtt("f.pdf", "application_form", name),
+/** Every blocking slot of the configured checklist, plus the optional note. */
+const fullSet = async (name: string) => [
+  await mkAtt("request.pdf", "request_form", name, { consent: "yes" }),
+  await mkAtt("id.pdf", "id", name),
+  await mkAtt("note.pdf", "supporting_document", name),
 ];
 
 describe("identity matching (features 4, 5, 34)", () => {
@@ -108,76 +106,85 @@ describe("identity matching (features 4, 5, 34)", () => {
     expect(res.autoSent).toBe(false);
   });
 
-  it("pipeline: completed case + new substantive email → SAME case reopened", async () => {
-    const first = mustProcessed(await processEmail(mkEmail("u1", "tu-a", "uma@example.org", { attachments: await fullSet("UMA WANJIRU MUTURI") }), ctx));
-    // On the migrated profile a clean qualified file is auto-admitted, which
-    // completes the case by itself — exactly the terminal state the reopen
-    // behaviour must still honour.
-    expect(first.lifecycle).toBe("completed");
-    expect(repo.getApplicant(first.applicantId)!.admission_decision).toBe("auto_admitted");
+  it("pipeline: completed case + new substantive email reopens the SAME case", async () => {
+    const first = mustProcessed(await processEmail(mkEmail("u1", "tu-a", "uma@example.test", { attachments: await fullSet("UMA MUTURI") }), ctx));
+    // Outcomes are human acts: close the case the way an officer would, then
+    // prove new evidence reopens THAT case rather than fragmenting a second.
+    repo.updateCase(first.applicantId, { outcome: "approved_after_review" });
+    repo.setLifecycle(first.applicantId, "completed", "officer", "closed after review");
+    expect(repo.getCase(first.applicantId)!.lifecycle).toBe("completed");
 
     const res = mustProcessed(await processEmail(
-      mkEmail("u2", "tu-b", "uma@example.org", { attachments: [await mkAtt("i2.pdf", "id", "UMA WANJIRU MUTURI", { idNumber: "99988877" })] }),
+      mkEmail("u2", "tu-b", "uma@example.test", { attachments: [await mkAtt("i2.pdf", "id", "UMA MUTURI", { idNumber: "99988877" })] }),
       ctx
     ));
     expect(res.applicantId).toBe(first.applicantId);
-    const audit = repo.auditForApplicant(first.applicantId);
-    expect(audit.some((e) => e.event === "case_reopened")).toBe(true);
+    expect(repo.getCase(first.applicantId)!.lifecycle).not.toBe("completed");
+    expect(repo.auditForApplicant(first.applicantId).some((entry) => entry.event === "case_reopened")).toBe(true);
+    // Reopening never erases the recorded outcome.
+    expect(repo.getCase(first.applicantId)!.outcome).toBe("approved_after_review");
   });
 });
 
-describe("anomaly & document intelligence (features 6, 7)", () => {
-  it("KCPE dated after KCSE → anomaly flag → Orange, never an auto verdict", () => {
+describe("cross-document intelligence (features 6, 7)", () => {
+  it("contradicting dates of birth raise an identity concern, never an auto verdict", () => {
     const docs = [
-      mkDoc("academic_cert", { fields: { examYear: "2021" } }),
-      mkDoc("kcpe_cert", { fields: { examYear: "2022", gradePoints: 320 } }),
-      mkDoc("id"),
-      mkDoc("application_form"),
+      mkDoc("request_form", { fields: { name: "ALEX MORGAN", dateOfBirth: "1995-02-14" } }),
+      mkDoc("id", { fields: { name: "ALEX MORGAN", dateOfBirth: "1990-11-03" } }),
     ];
-    const out = decide({ requirements: REQS, docs, flags: [] });
+    const out = decide({ requirements: REQS, docs, flags: [{ type: "identity_check", detail: "date of birth differs between documents" }] });
     expect(out.status).toBe("Orange");
-    expect(out.derivedFlags.map((f) => f.type)).toContain("anomaly");
+    expect(out.reasoning).toContain("date of birth differs between documents");
+    expect(out.reasoning).toContain("[identity_check]");
   });
 
-  it("consistent exam years raise no anomaly", () => {
+  it("consistent documents raise no identity flag", () => {
     const docs = [
-      mkDoc("academic_cert", { fields: { examYear: "2021" } }),
-      mkDoc("kcpe_cert", { fields: { examYear: "2017", gradePoints: 320 } }),
-      mkDoc("id"),
-      mkDoc("application_form"),
+      mkDoc("request_form", { fields: { name: "ALEX MORGAN", dateOfBirth: "1995-02-14" } }),
+      mkDoc("id", { fields: { name: "ALEX MORGAN", dateOfBirth: "14/02/1995" } }),
     ];
     const out = decide({ requirements: REQS, docs, flags: [] });
-    expect(out.derivedFlags.some((f) => f.type === "anomaly")).toBe(false);
+    expect(out.derivedFlags.some((flag) => flag.type === "identity_check")).toBe(false);
+    expect(out.status).toBe("Green");
   });
 
-  it("extracts the exam index number", () => {
-    const f = extractFields("NAME: JANE DOE\nKCPE POINTS: 312\nINDEX NO: 10438211\nYEAR: 2017");
-    expect(f.indexNumber).toBe("10438211");
+  it("extracts the configured scalar facts and the identity number", () => {
+    const fields = extractFields("NAME: ALEX MORGAN\nCONSENT: YES\nID NUMBER: 10438211\nDATE OF BIRTH: 14/02/1995");
+    expect(fields.name).toBe("ALEX MORGAN");
+    expect(fields.consent).toBe("yes");
+    expect(fields.idNumber).toBe("10438211");
+    expect(fields.dateOfBirth).toContain("1995");
+  });
+
+  it("never reads a prototype-polluting key as a fact", () => {
+    const fields = extractFields("__proto__: polluted\nconstructor: evil\nregion: north");
+    expect(fields.region).toBe("north");
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.keys(fields)).not.toContain("__proto__");
   });
 });
 
 describe("rules versioning (feature 19) & deadlines (features 20, 21)", () => {
-  it("snapshot freezes the requirement set; later rule edits don't move goalposts", () => {
-    const a = repo.getOrCreateApplicant("snap@example.org", "t-snap", {});
+  it("snapshot freezes the requirement set; later configuration edits do not move goalposts", () => {
+    const a = repo.createCase({ emailAddress: "snap@example.test", threadId: "t-snap", organizationId: 1, caseTypeCode: "SERVICE_REQUEST" });
     repo.freezeRequirementsSnapshot(a);
-    const frozen = repo.effectiveRequirements(repo.getApplicant(a.id)!);
-    // Later: somebody makes the birth certificate required.
-    repo.upsertRule({ programme: null, intake: null, document_type: "birth_cert", required: true, meanGrade: null });
-    const after = repo.effectiveRequirements(repo.getApplicant(a.id)!);
-    expect(after).toEqual(frozen);
-    // …but brand-new applicants get the new rules.
-    const fresh = repo.getOrCreateApplicant("fresh@example.org", "t-fresh", {});
-    const freshReqs = repo.effectiveRequirements(fresh);
-    expect(freshReqs.find((r) => r.document_type === "birth_cert")?.required).toBe(true);
+    const frozen = repo.effectiveRequirements(repo.getCase(a.id)!);
+    // Later: somebody adds a blocking slot to the checklist.
+    const type = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    repo.upsertDocumentDefinition(type.id, { key: "site_survey", label: "Site survey", required: true, blocking: true });
+    expect(repo.effectiveRequirements(repo.getCase(a.id)!)).toEqual(frozen);
+    // Brand-new cases get the current configuration.
+    const fresh = repo.createCase({ emailAddress: "fresh@example.test", threadId: "t-fresh", organizationId: 1, caseTypeCode: "SERVICE_REQUEST" });
+    expect(repo.effectiveRequirements(fresh).map((row) => row.document_type)).toContain("site_survey");
   });
 
-  it("submission after the intake deadline → late_submission flag → human", async () => {
+  it("a submission after the window deadline → late_submission flag → human", async () => {
     repo.addIntakeWithDeadline("September 2026", "2026-08-31T23:59:59Z");
     const res = mustProcessed(await processEmail(
       mkEmail("r1", "tr", "rosa@example.org", {
         body: "Here are my documents for the September 2026 intake.",
         receivedAt: "2026-09-14T09:00:00Z",
-        attachments: await fullSet("ROSA WAMBUI GITHINJI"),
+        attachments: await fullSet("ROSA WAMBUI"),
       }),
       ctx
     ));
@@ -191,7 +198,7 @@ describe("rules versioning (feature 19) & deadlines (features 20, 21)", () => {
     const res = mustProcessed(await processEmail(
       mkEmail("r2", "tr2", "early@example.org", {
         body: "Documents for September 2026 intake.",
-        attachments: await fullSet("EARLY BIRD APPLICANT"),
+        attachments: await fullSet("EARLY BIRD CONTACT"),
       }),
       ctx
     ));
@@ -204,7 +211,7 @@ describe("draft-first automation (features 16, 17)", () => {
   it("per-category draft mode holds even a clean Green auto-reply", async () => {
     repo.setAutomationMode("document_submission", "draft");
     const res = mustProcessed(await processEmail(
-      mkEmail("d1", "td", "tina@example.org", { attachments: await fullSet("TINA NYAMBURA KARIUKI") }),
+      mkEmail("d1", "td", "tina@example.org", { attachments: await fullSet("TINA NYAMBURA") }),
       ctx
     ));
     expect(res.finalStatus).toBe("Green");
@@ -224,23 +231,67 @@ describe("draft-first automation (features 16, 17)", () => {
     expect(repo.queuedOutbox(res.applicantId)).toBeTruthy();
   });
 
-  it("switching the category back to auto restores auto-send", async () => {
-    repo.setAutomationMode("document_submission", "draft");
+  it("a configured rule outranks the per-category automation mode", async () => {
+    // The stored rule says "draft": flipping the category to auto must not make
+    // the machine speak — the tenant's own configuration wins.
     repo.setAutomationMode("document_submission", "auto");
-    const res = mustProcessed(await processEmail(
-      mkEmail("d3", "td3", "free@example.org", { attachments: await fullSet("FREE TO SEND APPLICANT") }),
+    const held = mustProcessed(await processEmail(
+      mkEmail("d3", "td3", "free@example.org", { attachments: await fullSet("FREE TO SEND CONTACT") }),
       ctx
     ));
-    expect(res.autoSent).toBe(true);
+    expect(held.autoSent).toBe(false);
+    expect(repo.queuedOutbox(held.applicantId)).toBeTruthy();
+  });
+
+  it("send is only automatic once every gate is opened", async () => {
+    // Three independent gates: the rule's reply_action, the global automation
+    // mode and the case type's evidence gate. All three must allow a send.
+    const type = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    const rule = repo.listWorkflowRules(1, { kind: "response" }).find((r) => r.name === "Prepare a factual status draft")!;
+    repo.saveWorkflowRule({
+      organizationId: 1, caseTypeId: type.id, kind: "response", name: rule.name, position: rule.position,
+      conditions: rule.conditions, action: { ...rule.action, reply_action: "send" },
+    });
+    // Gate 1: the case type opts into automation. Gate 2: its evidence gate is
+    // off, so the rules own the send decision. Gate 3: the rule says "send".
+    // Gate 4: no global or per-category draft mode.
+    repo.updateCaseTypeProfile(type.id, { default_reply_action: "auto", evidence_gate: 0 });
+    releaseAutomation(repo);
+    repo.setAutomationMode("document_submission", "auto");
+    const sent = mustProcessed(await processEmail(
+      mkEmail("d4", "td4", "free2@example.org", { attachments: await fullSet("FREE TO SEND CONTACT TWO") }),
+      ctx
+    ));
+    expect(sent.autoSent).toBe(true);
     expect(sender.sent.length).toBe(1);
   });
 });
 
 describe("automatic follow-up ladder (feature 13)", () => {
-  async function incompleteApplicant(email: string) {
+  // This tenant chases incomplete files: a response rule matched on the
+  // document posture prepares the chase. Without it the ladder has nothing to
+  // arm, which is the correct behaviour for a silent tenant.
+  beforeEach(() => {
+    const type = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    repo.saveWorkflowRule({
+      organizationId: 1, caseTypeId: type.id, kind: "response", name: "Chase the missing document", position: 0,
+      conditions: [{ field: "docs_state", values: ["empty", "missing"] }],
+      action: { reply_action: "draft", template_key: "missing_documents", followup: "ladder", followup_action: "draft", audit_code: "fixture_chase" },
+    });
+    // The catch-all status rule stays, but behind the chase.
+    const status = repo.listWorkflowRules(1, { kind: "response" }).find((r) => r.name === "Prepare a factual status draft")!;
+    repo.saveWorkflowRule({
+      organizationId: 1, caseTypeId: type.id, kind: "response", name: status.name, position: 5,
+      conditions: status.conditions, action: status.action,
+    });
+  });
+
+  async function incompleteCase(email: string) {
     const res = mustProcessed(await processEmail(
       mkEmail(`f-${email}`, `tf-${email}`, email, {
-        attachments: [await mkAtt("a.pdf", "academic_cert", "FOLLOW UP APPLICANT")],
+        // The request form arrives, the identity document does not: the
+        // checklist is incomplete, so a chase is prepared and the ladder arms.
+        attachments: [await mkAtt("request.pdf", "request_form", "FOLLOW UP CONTACT", { consent: "yes" })],
       }),
       ctx
     ));
@@ -249,23 +300,23 @@ describe("automatic follow-up ladder (feature 13)", () => {
   }
 
   it("missing-docs notice arms the ladder; a due rung HOLDS a reminder suggestion and advances", async () => {
-    const id = await incompleteApplicant("ladder@example.org");
+    const id = await incompleteCase("ladder@example.org");
     // Wind the clock: reminder is due now.
     repo.setFollowup(id, 0, new Date(Date.now() - 1000).toISOString());
 
     const processed = await runFollowUpSweep(repo, ctx);
     expect(processed).toBe(1);
-    expect(sender.sent.length).toBe(0); // qualification gate: never auto-sent
+    expect(sender.sent.length).toBe(0); // evidence gate: never auto-sent
     const held = repo.queuedOutbox(id);
     expect(held?.subject).toContain("REMINDER");
     const a = repo.getApplicant(id)!;
     expect(a.followup_rung).toBe(1);
     expect(a.followup_next_at).toBeTruthy();
-    expect(repo.auditForApplicant(id).some((e) => e.event === "followup_held_qualification")).toBe(true);
+    expect(repo.auditForApplicant(id).some((e) => e.event === "followup_drafted")).toBe(true);
   });
 
   it("ladder exhaustion escalates to a human instead of emailing forever", async () => {
-    const id = await incompleteApplicant("exhaust@example.org");
+    const id = await incompleteCase("exhaust@example.org");
     repo.setFollowup(id, 3, new Date(Date.now() - 1000).toISOString()); // past last rung (ladder 3,7,10)
 
     await runFollowUpSweep(repo, ctx);
@@ -275,18 +326,15 @@ describe("automatic follow-up ladder (feature 13)", () => {
   });
 
   it("a complete file silently cancels the ladder", async () => {
-    const id = await incompleteApplicant("done@example.org");
+    const id = await incompleteCase("done@example.org");
     repo.setFollowup(id, 0, new Date(Date.now() - 1000).toISOString());
     // The missing document arrives → file becomes complete.
     await processEmail(
       mkEmail("f-done-2", "tf-done@example.org", "done@example.org", {
-        // OR-5: everything the official checklist still asks for arrives.
+        // Everything the configured checklist still asks for arrives.
         attachments: [
-          await mkAtt("l.pdf", "leaving_certificate", "FOLLOW UP APPLICANT"),
-          await mkAtt("p.pdf", "passport_photo", "FOLLOW UP APPLICANT"),
-          await mkAtt("b.pdf", "birth_cert", "FOLLOW UP APPLICANT"),
-          await mkAtt("i.pdf", "id", "FOLLOW UP APPLICANT"),
-          await mkAtt("f.pdf", "application_form", "FOLLOW UP APPLICANT"),
+          await mkAtt("i.pdf", "id", "FOLLOW UP CONTACT"),
+          await mkAtt("note.pdf", "supporting_document", "FOLLOW UP CONTACT"),
         ],
       }),
       ctx

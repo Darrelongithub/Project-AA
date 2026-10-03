@@ -1,8 +1,9 @@
 /**
  * DEMO — a real, persistent second organization that proves the CaseType
- * engine is general. It is seeded ALONGSIDE Organization #1 and never reads,
- * copies or edits Organization #1's rows (programmes, requirement matrix,
- * admission rule sets, templates, settings or branding).
+ * engine is general. It is optional and off by default: nothing seeds it on a
+ * normal boot. It is created ALONGSIDE the other tenants and never reads,
+ * copies or edits their rows (case types, requirement matrices, rule sets,
+ * templates, settings or branding).
  *
  * How it is seeded (idempotent — safe to run repeatedly):
  *   - `npm run seed:demo-org`            (one-off CLI; see src/cli/seedDemoOrg.ts)
@@ -254,9 +255,8 @@ export interface DemoSeedResult { organizationId: number; created: boolean; case
 
 /** Idempotently seed the demo organization. Touches ONLY rows it owns. */
 export function seedDemoOrganization(repo: Repo): DemoSeedResult {
-  const existing = repo.listOrganizations().find((o) => o.id !== 1 && o.ref_prefix === DEMO_ORG_PREFIX);
+  const existing = repo.listOrganizations().find((o) => o.ref_prefix === DEMO_ORG_PREFIX);
   const org = existing ?? repo.createOrganization({ name: DEMO_ORG_NAME, refPrefix: DEMO_ORG_PREFIX, theme: DEMO_ORG_THEME, logo: DEMO_ORG_LOGO });
-  if (org.id === 1) throw new Error("Refusing to seed demo content into Organization #1");
   if (!existing) {
     repo.updateOrganization(org.id, { fromName: `${DEMO_ORG_NAME} Team`, locale: "en", timezone: "UTC" });
   }
@@ -264,7 +264,7 @@ export function seedDemoOrganization(repo: Repo): DemoSeedResult {
   for (const def of DEMO_CASE_TYPES) {
     let ct = repo.getCaseType(def.code, org.id);
     if (!ct) {
-      ct = repo.createCaseType(org.id, { code: def.code, name: def.name, category: def.category, config: { rules: [] }, educationModule: false, defaultReplyAction: "draft" });
+      ct = repo.createCaseType(org.id, { code: def.code, name: def.name, category: def.category, config: { rules: [] }, defaultReplyAction: "draft" });
       repo.replaceDocumentDefinitions(ct.id, def.documents);
       repo.updateCaseTypeRules(ct.id, def.rules);
       repo.updateCaseTypeVocabulary(ct.id, { terminology: def.terminology });

@@ -17,7 +17,7 @@ import { createApp } from "../src/web/server";
 import type { PipelineContext } from "../src/pipeline/adapters";
 import { MockSender } from "../src/pipeline/adapters";
 import type { ApplicantRow } from "../src/types";
-import { webLogin } from "./helpers";
+import { configureTestOrganization, webLogin } from "./helpers";
 
 let repo: Repo;
 let sender: MockSender;
@@ -26,6 +26,7 @@ let server: ReturnType<ReturnType<typeof createApp>["listen"]>;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  configureTestOrganization(repo);
   repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
   sender = new MockSender();
 });
@@ -40,9 +41,11 @@ async function startServer(): Promise<{ base: string; cookie: string; csrf: stri
   return { base, cookie, csrf };
 }
 
-function mkApplicant(email: string, opts: Partial<ApplicantRow> = {}): ApplicantRow {
-  const a = repo.getOrCreateApplicant(email, `t-${Math.random().toString(36).slice(2)}`);
-  repo.updateApplicant(a.id, { full_name: "Compose Tester", ...opts });
+function mkCase(email: string, opts: { fullName?: string; caseTypeCode?: string } = {}): ApplicantRow {
+  const a = repo.createCase({
+    emailAddress: email, threadId: `t-${Math.random().toString(36).slice(2)}`, organizationId: 1,
+    fullName: opts.fullName ?? "Compose Tester", caseTypeCode: opts.caseTypeCode,
+  });
   return repo.getApplicant(a.id)!;
 }
 
@@ -55,19 +58,19 @@ describe("the new-window composer", () => {
 
     const page = await (await fetch(`${base}/compose`, { headers: { cookie } })).text();
     expect(page).toContain("Compose");
-    expect(page).toMatch(/recipient|applicant/i); // recipient picker present
+    expect(page).toMatch(/recipient|contact/i); // recipient picker present
   });
 
   it("finds recipients through the scoped search", async () => {
-    mkApplicant("amara.nurse@example.org", { full_name: "Amara Nurse", programme: "BNS" });
+    mkCase("amara.njoki@example.org", { fullName: "Amara Njoki", caseTypeCode: "SERVICE_REQUEST" });
     const { base, cookie } = await startServer();
     const page = await (await fetch(`${base}/compose?q=amara`, { headers: { cookie } })).text();
-    expect(page).toContain("Amara Nurse");
-    expect(page).toContain("amara.nurse@example.org");
+    expect(page).toContain("Amara Njoki");
+    expect(page).toContain("amara.njoki@example.org");
   });
 
   it("opens pre-addressed from a case, and the case page offers it (same tab)", async () => {
-    const a = mkApplicant("cased@example.org");
+    const a = mkCase("cased@example.org");
     const { base, cookie } = await startServer();
     const page = await (await fetch(`${base}/compose?case=${a.id}`, { headers: { cookie } })).text();
     expect(page).toContain("cased@example.org");
@@ -80,19 +83,19 @@ describe("the new-window composer", () => {
   });
 
   it("picks a template via GET and renders it into an editable draft", async () => {
-    const a = mkApplicant("prep@example.org");
+    const a = mkCase("prep@example.org");
     const { base, cookie } = await startServer();
     const res = await fetch(`${base}/compose?case=${a.id}&template=ack_received`, { headers: { cookie } });
     expect(res.status).toBe(200);
     const page = await res.text();
-    expect(page).toContain("Your application documents have been received");
+    expect(page).toContain("We received the information for your case");
     expect(page).toContain(a.ref_number);
     // the rendered template must sit in the editable fields
-    expect(page).toMatch(/name="subject" value="[^"]*documents have been received/i);
+    expect(page).toMatch(/name="subject" value="[^"]*Information received/i);
   });
 
   it("has exactly ONE submit button — Send now — so Enter sends, never reloads or wipes", async () => {
-    const a = mkApplicant("enter@example.org");
+    const a = mkCase("enter@example.org");
     const { base, cookie } = await startServer();
     const page = await (await fetch(`${base}/compose?case=${a.id}`, { headers: { cookie } })).text();
     const form = page.match(/<form method="post" action="\/compose">[\s\S]*?<\/form>/);
@@ -104,28 +107,35 @@ describe("the new-window composer", () => {
     expect(page).toContain("ack_received"); // template choice still reachable (as chips/links, outside the form)
   });
 
-  it("sends and records the outgoing mail with its pack attachments", async () => {
-    const a = mkApplicant("sendme@example.org");
+  it("sends and records the outgoing mail with its attachment set", async () => {
+    const a = mkCase("sendme@example.org");
+    // Nothing ships with the product: the files that ride along are the
+    // organization's OWN attachment set, named by one of its own templates.
+    const set = repo.createAttachmentSet(1, "Welcome pack");
+    for (const filename of ["welcome-pack.pdf", "service-guide.pdf", "contact-details.pdf"]) {
+      repo.addAttachmentSetFile(set.id, { filename, content: Buffer.from(`%PDF-1.4\n${filename}\n`) });
+    }
+    repo.upsertTemplate("welcome", "Welcome", "Welcome aboard", "Hello {first_name},\n\nWelcome to the service.\n\n{institution}", true, "Welcome pack", 1);
+
     const { base, cookie, csrf } = await startServer();
     const res = await fetch(`${base}/compose`, {
       method: "POST", redirect: "manual",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${encodeURIComponent(csrf)}&case=${a.id}&template=admission_letter&subject=Congratulations&body=Welcome+aboard`,
+      body: `_csrf=${encodeURIComponent(csrf)}&case=${a.id}&template=welcome&subject=Congratulations&body=Welcome+aboard`,
     });
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toContain(`/case/${a.id}`);
     expect(sender.sent.length).toBe(1);
-    expect(sender.sent[0].attachments.length).toBe(7); // admission pack rides along
+    expect(sender.sent[0].attachments.length).toBe(3); // the organization's set rides along
 
     const out = repo.emailsForApplicant(a.id).find((e) => e.direction === "out")!;
     expect(out.subject).toBe("Congratulations");
     const attached = JSON.parse(out.attachments || "[]") as string[];
-    expect(attached.length).toBe(7);
-    expect(attached.some((f) => /Hostels/i.test(f))).toBe(true);
+    expect(attached.sort()).toEqual(["contact-details.pdf", "service-guide.pdf", "welcome-pack.pdf"]);
   });
 
   it("refuses to send without a subject and a body — loudly, sending nothing", async () => {
-    const a = mkApplicant("empty@example.org");
+    const a = mkCase("empty@example.org");
     const { base, cookie, csrf } = await startServer();
     const res = await fetch(`${base}/compose`, {
       method: "POST", redirect: "manual",
@@ -140,20 +150,14 @@ describe("the new-window composer", () => {
 });
 
 describe("compose scoping", () => {
-  it("scoped staff only see and reach their own schools' cases", async () => {
-    // Two programmes in two different schools
-    const progs = repo.listProgrammes();
-    const schoolA = repo.listSchools()[0];
-    const progA = progs.find((p) => p.school === schoolA)!;
-    const otherSchool = repo.listSchools().find((s) => s !== schoolA)!;
-    const progB = progs.find((p) => p.school === otherSchool) ?? progs[progs.length - 1];
-
-    const mine = mkApplicant("mine@example.org", { programme: progA.code });
-    mkApplicant("theirs@example.org", { programme: progB.code, full_name: "Theirs Person" });
+  it("scoped staff only see and reach their own case types", async () => {
+    // Two case types, two officers, one scope each.
+    const mine = mkCase("mine@example.org", { caseTypeCode: "SERVICE_REQUEST" });
+    mkCase("theirs@example.org", { fullName: "Theirs Person", caseTypeCode: "VENDOR_INTAKE" });
 
     repo.createStaff("scoped", "Scoped Officer", hashPassword("scoped-pass-1"), "user");
     const officer = repo.getStaffByUsername("scoped")!;
-    repo.setScopes(officer.id, [schoolA]);
+    repo.setCaseTypeScopes(officer.id, ["SERVICE_REQUEST"]);
 
     const ctx: PipelineContext = { repo, adapters: { vision: null as never, watcher: null as never, sender } };
     const app = createApp({ repo, ctx });
@@ -161,7 +165,7 @@ describe("compose scoping", () => {
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const { cookie, csrf } = await webLogin(base, "scoped", "scoped-pass-1");
 
-    // search sees only their school's case
+    // search sees only their own case type
     const search = await (await fetch(`${base}/compose?q=example.org`, { headers: { cookie } })).text();
     expect(search).toContain("mine@example.org");
     expect(search).not.toContain("theirs@example.org");

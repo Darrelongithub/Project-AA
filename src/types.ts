@@ -17,55 +17,9 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   record_outcome: "Record outcome",
 };
 
-/**
- * OR-5: concrete document catalogue. Vague umbrella types like "academic
- * certificate" are BANNED as requirement slots — every slot names the exact
- * document from the application-form checklist (data/pack/application-form.pdf,
- * pp. 3–4). `academic_cert` survives ONLY as a classifier fallback family
- * (one upload of unclear academic paperwork); it is never a required slot.
- */
-export type DocType =
-  | "application_form"
-  | "exam_result_slip"
-  | "leaving_certificate"
-  | "passport_photo"
-  | "id"
-  | "birth_cert"
-  | "undergraduate_transcript"
-  | "undergraduate_degree_certificate"
-  | "masters_transcript"
-  | "masters_degree_certificate"
-  | "law_personal_statement"
-  | "business_statement_of_objective"
-  | "credit_transfer_form"
-  | "student_pass_application"
-  | "foreign_qualification_equivalence"
-  | "academic_cert"
-  | "kcpe_cert"
-  | "unknown"
-  /** Organization-owned document keys for non-academic CaseTypes. */
-  | (string & {});
-
-export const DOC_TYPES: DocType[] = [
-  "application_form",
-  "exam_result_slip",
-  "leaving_certificate",
-  "passport_photo",
-  "id",
-  "birth_cert",
-  "undergraduate_transcript",
-  "undergraduate_degree_certificate",
-  "masters_transcript",
-  "masters_degree_certificate",
-  "law_personal_statement",
-  "business_statement_of_objective",
-  "credit_transfer_form",
-  "student_pass_application",
-  "foreign_qualification_equivalence",
-  "academic_cert",
-  "kcpe_cert",
-  "unknown",
-];
+/** Built-in generic hints; organizations may define any document key. */
+export type DocType = "request_form" | "id" | "birth_cert" | "passport_photo" | "supporting_document" | "unknown" | (string & {});
+export const DOC_TYPES: DocType[] = ["request_form", "id", "birth_cert", "passport_photo", "supporting_document", "unknown"];
 
 /** "none" = every tier failed (or the attachment was rejected outright). */
 export type ExtractionMethod = "pdf_text" | "ocr" | "pdf_raster" | "gemini_vision" | "none";
@@ -73,7 +27,7 @@ export type Confidence = "high" | "medium" | "low";
 
 /** Blocking flag types feed the rules engine; duplicate_submission is informational. */
 export type FlagType =
-  | "grade_below_requirement"
+  | "rule_not_satisfied"
   | "name_mismatch"
   | "low_confidence"
   | "watcher_flag"
@@ -81,11 +35,11 @@ export type FlagType =
   | "identity_check"
   | "late_submission"
   | "anomaly"
-  | "alternative_qualification"
+  | "unconfigured_case"
   | "wrong_document";
 
 export const BLOCKING_FLAG_TYPES: FlagType[] = [
-  "grade_below_requirement",
+  "rule_not_satisfied",
   "name_mismatch",
   "low_confidence",
   "watcher_flag",
@@ -115,7 +69,7 @@ export const LIFECYCLE_ORDER: LifecycleStage[] = [
 ];
 
 export const LIFECYCLE_LABELS: Record<LifecycleStage, string> = {
-  application_received: "Application Received",
+  application_received: "Received",
   documents_received: "Documents Received",
   documents_checked: "Documents Checked",
   awaiting_review: "Awaiting Review",
@@ -129,7 +83,7 @@ export type EmailCategory =
   | "document_submission"
   | "missing_document"
   | "fee_enquiry"
-  | "admission_enquiry"
+  | "general_enquiry"
   | "follow_up"
   | "complaint"
   | "other";
@@ -139,7 +93,7 @@ export const EMAIL_CATEGORY_LABELS: Record<EmailCategory, string> = {
   document_submission: "Document Submission",
   missing_document: "Missing Document",
   fee_enquiry: "Fee Enquiry",
-  admission_enquiry: "Admission Enquiry",
+  general_enquiry: "General enquiry",
   follow_up: "Follow-up",
   complaint: "Complaint",
   other: "Other",
@@ -168,67 +122,15 @@ export interface StaffUser {
   can_switch_org?: boolean;
 }
 
-// ── Requirements ───────────────────────────────────────────────────────────
-
-/**
- * RequirementSet — config: what's currently being asked for.
- * v2: rules can be scoped per programme and/or intake (features 8, 36, 37);
- * the most specific rule wins.
- * v5: rules speak GRADES, not points — `meanGrade` ("C+") and optional
- * per-subject lines ("C+ in English and Mathematics") exactly as published.
- */
-/**
- * One structured subject requirement: the subject must reach `grade` — OR any
- * of `alts` may (English/Kiswahili, Mathematics/Physics). Checked subjects
- * within a block are AND-ed together.
- */
-export interface SubjectRequirement {
-  subject: string;
-  grade: string;
-  alts?: string[];
-}
-
-/**
- * One qualification-system route for a course (or the university-wide
- * defaults when programme is null). An applicant qualifies through a route
- * when its overall minimum AND every ticked subject pass the checks.
- */
-export interface SystemBlock {
-  system: ExamSystem;
-  enabled: boolean;
-  /** KCSE mean grade (grade ladder) — the overall floor for this route. */
-  overall?: string | null;
-  /** IGCSE/O-Level: minimum subjects at grade C or better. */
-  minCredits?: number | null;
-  /** GCE A-Level / KACE: minimum principal passes (+ optional subsidiaries). */
-  minPrincipals?: number | null;
-  minSubsidiaries?: number | null;
-  /** IB diploma minimum total points. */
-  minPoints?: number | null;
-  /** Minimum GPA (Pre-University, IB Grade 12, some diplomas). */
-  minGpa?: number | null;
-  /** Minimum award class ("Credit", "Second Class Upper"…). */
-  minClass?: string | null;
-  subjects?: SubjectRequirement[];
-}
-
-/** OR-6: Master's and PhD are DISTINCT levels — they enforce different
- * university-wide defaults and generate different document checklists.
- * ("postgrad" survives only as legacy data, migrated to "masters".) */
-export type CourseLevel = "degree" | "diploma" | "certificate" | "masters" | "phd";
-
 export interface RequirementSetEntry {
   document_type: DocType;
   required: boolean;
   /** Generic CaseType slots may be visible without blocking the gate. */
   blocking?: boolean;
-  /** Minimum overall mean grade, e.g. "C+". null/undefined = not graded. */
-  meanGrade?: string | null;
-  /** Free-form subject lines, e.g. "C+ in English and Mathematics". */
-  subjectGrades?: string | null;
+  label?: string;
 }
 
-/** A course in the official catalogue, grouped by school. */
+/** A legacy catalogue entry (programmes), grouped by unit. */
 export interface Programme {
   code: string;
   name: string;
@@ -238,7 +140,7 @@ export interface Programme {
   owner_id: number | null;
   owner_name: string | null;
   /** Award level — selects the university-wide default entry requirements. */
-  level: CourseLevel;
+  level: string;
 }
 
 export interface RequirementRule extends RequirementSetEntry {
@@ -247,26 +149,8 @@ export interface RequirementRule extends RequirementSetEntry {
   intake: string | null; // null = all intakes
 }
 
-// ── Admissions rules engine (round 18) ─────────────────────────────────────
-// Machine-evaluable requirement trees per (programme, qualification system).
-// Failure of a published rule NEVER rejects — it routes to human review.
-
-/** Qualification routes the engine can evaluate. */
-export type AdmissionSystem =
-  | "KCSE" | "IGCSE" | "IB" | "ALEVEL" | "KACE" | "EACE"
-  | "DIPLOMA" | "PROFCERT" | "DEGREE" | "OTHER";
-
-export const ADMISSION_SYSTEMS: AdmissionSystem[] = [
-  "KCSE", "IGCSE", "IB", "ALEVEL", "KACE", "EACE",
-  "DIPLOMA", "PROFCERT", "DEGREE", "OTHER",
-];
-
-/** What a condition compares. */
-export type RuleField =
-  | "mean_grade" | "subject" | "credits" | "principals"
-  | "subsidiaries" | "points" | "gpa" | "class"
-  /** Generic organization-defined scalar used by non-academic case types. */
-  | "numeric" | (string & {});
+/** Organization-defined scalar inspected by a condition. */
+export type RuleField = string;
 
 /** One node of a requirement tree. Groups combine children; conditions compare one value. */
 export interface RuleNode {
@@ -283,19 +167,6 @@ export interface RuleNode {
   value?: string | null;
   position?: number;
   children?: RuleNode[];
-}
-
-/** Versioned requirement set for one (programme, qualification system) route. */
-export interface AdmissionRuleSet {
-  id: number;
-  programme: string | null; // null = university-wide default for `level`
-  level: CourseLevel;
-  system: AdmissionSystem;
-  version: number;
-  status: "draft" | "active" | "retired";
-  created_by: string;
-  created_at: string;
-  nodes?: RuleNode[];
 }
 
 /** Leaf-level outcome of one condition. */
@@ -317,17 +188,13 @@ export interface GroupOutcome {
 }
 
 export type RequirementResult = "passed" | "failed" | "missing_data" | "needs_verification";
-export type AdmissionRouting = "auto_admit" | "human_review" | "waiting_documents";
 
 /** Full, storable report of one evaluation run. */
 export interface EvaluationReport {
   result: RequirementResult;
-  routing: AdmissionRouting;
+  routing: "human_review" | "waiting_documents";
   reason: string;
   reasonCode: string;
-  system: AdmissionSystem | null;
-  setId: number | null;
-  setVersion: number | null;
   leaves: LeafOutcome[];
   groups: GroupOutcome[];
   rulesSatisfied: number;
@@ -336,12 +203,9 @@ export interface EvaluationReport {
   blockingFlags: string[];
   evaluatedAt: string;
   frozenAt: string | null;
+  configVersion: number | null;
 }
 
-export type AdmissionDecision = "undecided" | "auto_admitted" | "admitted_after_review" | "not_admitted";
-
-/** Generic vocabulary for the configurable intake engine. The admissions
- * names above remain as source-compatible aliases for existing deployments. */
 export type CaseOutcome = "undecided" | "auto_approved" | "approved_after_review" | "not_approved";
 export type Case = ApplicantRow;
 export type CaseType = {
@@ -352,21 +216,17 @@ export type CaseType = {
   category: string;
   config?: Record<string, unknown> | null;
   active?: number;
-  /** PPR P0-2: academic engine/matrix/admissions UI on or off for this profile. */
-  education_module?: number;
   /** PPR P1-1: display labels for case/contact/category/stage/outcome. */
   terminology?: Record<string, string> | null;
-  /** PPR P1-2: configurable stage and queue sets (education preset by default). */
+  /** PPR P1-2: configurable stage and queue sets (generic defaults). */
   stages?: Array<{ id: string; label: string; requires?: string[] }> | null;
   queues?: Array<{ id: string; label: string }> | null;
   /** PPR P0-3: bumped on every publish of rules/documents for the profile. */
   config_version?: number;
   /** Automation posture for the profile's rules (PPR P0-4/P1-3). */
   default_reply_action?: "none" | "draft" | "approve" | "send" | string;
-  /** Education safety default: never auto-send unless the file is fully qualified. */
-  qualification_gate?: number;
-  /** Deterministic auto-decision switch — OFF everywhere except explicit opt-in. */
-  auto_admit?: number;
+  /** Evidence safety gate: never auto-send unless the file is fully qualified. */
+  evidence_gate?: number;
 };
 /** Frozen per-case configuration (PPR P0-3): the exact profile version a case was opened under. */
 export interface CaseConfigFrozen {
@@ -387,6 +247,8 @@ export interface Organization {
   reply_to?: string | null;
   locale?: string | null;
   timezone?: string | null;
+  /** Mailbox address that belongs to this tenant (inbound attribution). */
+  inbound_address?: string | null;
 }
 export interface DocumentDefinition {
   id?: number;
@@ -398,35 +260,10 @@ export interface DocumentDefinition {
   position?: number;
 }
 
-// ── Documents & extraction ─────────────────────────────────────────────────
-
-/** Qualification systems the engine can check deterministically. */
-export type ExamSystem = "KCSE" | "IGCSE" | "ALEVEL" | "IB" | "DIPLOMA" | "PREUNI" | "DEGREE";
-
 export interface ExtractedFields {
   name?: string | null;
-  gradePoints?: number | null;
-  meanGrade?: string | null;
-  /** Per-subject grades read off a KNEC slip, e.g. { English: "B-" }. */
-  subjectGrades?: Record<string, string> | null;
-  /** Qualification system detected on the document. */
-  examSystem?: ExamSystem | null;
-  /** IGCSE/O-Level: subjects passed at grade C or better. */
-  credits?: number | null;
-  /** GCE A-Level / KACE: principal passes (and subsidiaries). */
-  principals?: number | null;
-  subsidiaries?: number | null;
-  /** IB diploma total points. */
-  ibPoints?: number | null;
-  /** GPA (Pre-University, diploma, IB Grade 12…). */
-  gpa?: number | null;
-  /** Award class, normalised ("Credit", "Second Class Upper"…). */
-  classAwarded?: string | null;
   idNumber?: string | null;
-  indexNumber?: string | null;
-  examYear?: string | null;
   issueDate?: string | null;
-  /** Date of birth as printed on the document (best-effort normalisation). */
   dateOfBirth?: string | null;
   [key: string]: unknown;
 }
@@ -504,12 +341,16 @@ export interface IncomingEmail {
   receivedAt: string;
   attachments: Attachment[];
   channel?: Channel;
+  /** The address this message was delivered to (Delivered-To, else To). Used
+   *  to decide WHICH tenant owns it — a mailbox may serve several. */
+  to?: string;
   /** Tenant and configured CaseType selected by the mailbox connector/portal. */
   organizationId?: number;
   caseTypeCode?: string;
 }
 
 export interface EmailRecord {
+  organization_id?: number;
   id?: number;
   applicant_id: number | null;
   message_id: string;
@@ -558,6 +399,13 @@ export interface ExtractionResult {
    * and quoted, in friendly words, in applicant replies.
    */
   failure_reason?: string | null;
+  /**
+   * True when only PART of the file could be read (pages beyond the cap, a
+   * rendering time budget, pages too large to rasterise). The score is capped
+   * below the auto-pass floor and STAYS capped: a later routing hint may rename
+   * the document, but it cannot make a partly-read file more readable.
+   */
+  partial_read?: boolean;
   sha256: string;
   duplicateOf?: number | null;
 }
@@ -570,7 +418,6 @@ export interface WatcherInput {
     extraction_method: ExtractionMethod;
     confidence: Confidence;
     name?: string | null;
-    gradePoints?: number | null;
     textExcerpt: string;
   }>;
 }
@@ -592,16 +439,19 @@ export interface ApplicantRow {
   thread_id: string;
   full_name: string | null;
   phone: string | null;
-  programme: string | null;
+  /** The case type's code. Renamed from the legacy `programme` column (C2);
+   *  old databases are renamed on open by migrations/legacy-storage.json. */
+  case_type_code: string | null;
+  /** Submission window the case belongs to (legacy column name kept). */
   intake: string | null;
-  /** Applying with prior credit from another institution (0/1). */
+  /** Legacy transfer marker carried by migrated rows (0/1). */
   transfer: number;
   /** Realm flag: 1 = seeded demo applicant, 0 = live data (0/1). */
   demo: number;
   /** Canonical generic ownership fields; null only for pre-migration rows. */
   organization_id?: number | null;
   case_type_id?: number | null;
-  /** Canonical aliases; programme/admission_decision remain compatibility fields. */
+  /** Canonical aliases; legacy category fields remain in storage. */
   category?: string | null;
   outcome?: CaseOutcome;
   priority: Priority;
@@ -612,7 +462,7 @@ export interface ApplicantRow {
   sla_handled_at: string | null;
   escalated: number;
   requirements_snapshot: string | null;
-  /** Frozen structured entry-requirement blocks (JSON SystemBlock[]). */
+  /** Frozen structured requirement blocks from migrated rows (JSON). */
   requirements_structured: string | null;
   followup_rung: number;
   followup_next_at: string | null;
@@ -624,21 +474,11 @@ export interface ApplicantRow {
   config_version_frozen_at?: string | null;
   /** PPR P0-4/P1-2: rule-assigned queue id (generic workflows). */
   queue?: string | null;
-  // ── Admissions engine (round 18): eligibility, routing and decision are
-  //    SEPARATE concepts — never one giant status field. ──────────────────
-  /** Latest evaluation result: passed|failed|missing_data|needs_verification. */
+  /** Evidence and routing are separate from a human-recorded outcome. */
   req_result: string | null;
-  /** Latest automated routing: auto_admit|human_review|waiting_documents. */
   routing: string | null;
-  /** Machine-readable "why is it here" code for the queue subcategories. */
   routing_reason: string | null;
-  /** Frozen rule sets this applicant is judged by (JSON AdmissionRuleSet[]). */
-  admission_rules_frozen: string | null;
-  /** ISO timestamp of the first freeze of the admission rule sets (E1). */
-  admission_rules_frozen_at: string | null;
-  admission_decision: AdmissionDecision;
-  /** automated | human — how the decision came about. */
-  admission_route: string | null;
+  outcome_route: string | null;
   decision_by: string | null;
   decision_reason: string | null;
   decision_at: string | null;

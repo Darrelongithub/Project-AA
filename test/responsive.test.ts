@@ -14,6 +14,7 @@ import { hashPassword } from "../src/util/password";
 import { createApp } from "../src/web/server";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
+import { configureTestOrganization } from "./helpers";
 
 let server: Server;
 let base = "";
@@ -23,10 +24,15 @@ let page: Page | null = null;
 beforeAll(async () => {
   const repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  // A configured tenant, created before any account: list and case pages only
+  // render real table content when the workspace has case types.
+  configureTestOrganization(repo);
   repo.createStaff("boss", "Responsive Tester", hashPassword("responsive-pass-1"), "admin");
-  // One applicant so list/case pages render real table content.
-  const a = repo.getOrCreateApplicant("resp@example.com", "t-resp");
-  repo.updateApplicant(a.id, { programme: "BBIT", full_name: "Responsive Test" });
+  // One case so list/case pages render real table content.
+  repo.createCase({
+    emailAddress: "resp@example.org", threadId: "t-resp", organizationId: 1,
+    fullName: "Responsive Test", caseTypeCode: "SERVICE_REQUEST",
+  });
   const ctx: PipelineContext = {
     repo,
     adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender: new MockSender() },
@@ -62,7 +68,7 @@ describe("OR-3: responsive layout", () => {
     if (!page) { t.skip(); return; }
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    const routes = ["/", "/applicants", "/admissions", "/staff", "/config", "/settings", "/account", "/case/1"];
+    const routes = ["/", "/applicants", "/mail", "/staff", "/config", "/settings", "/account", "/case/1"];
     const widths = [1280, 1024, 768, 480, 360];
     const bad: string[] = [];
     for (const route of routes) {

@@ -1,19 +1,19 @@
 /**
- * v2 repository behaviour: reference numbers, programme/intake requirement
- * resolution, status history, SLA/escalation, search.
+ * v2 repository behaviour: reference numbers, requirement resolution from
+ * organization configuration, status history, SLA/escalation, search.
  */
 import { beforeEach, describe, expect, it } from "vitest";
+import { configureTestOrganization } from "./helpers";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 
 let repo: Repo;
 
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  configureTestOrganization(repo);
 });
 
 describe("reference numbers (feature 1)", () => {
@@ -21,45 +21,37 @@ describe("reference numbers (feature 1)", () => {
     const year = new Date().getFullYear();
     const a = repo.getOrCreateApplicant("one@example.org", "t1");
     const b = repo.getOrCreateApplicant("two@example.org", "t2");
-    expect(a.ref_number).toBe(`RU-${year}-000001`);
-    expect(b.ref_number).toBe(`RU-${year}-000002`);
-    expect(repo.findByRef("ru-" + year + "-000002")?.id).toBe(b.id); // case-insensitive
+    expect(a.ref_number).toBe(`ORG-${year}-000001`);
+    expect(b.ref_number).toBe(`ORG-${year}-000002`);
+    expect(repo.findByRef("org-" + year + "-000002")?.id).toBe(b.id); // case-insensitive
   });
 });
 
 describe("requirement resolution (features 8, 36, 37)", () => {
-  it("base requirements apply to everyone — generated, not toggled", () => {
-    // OR-5: document requirements come from the deterministic matrix
-    // (application-form checklist). KCPE is never required (owner constant
-    // false); ID/passport and birth certificate are core checklist items.
-    const reqs = repo.resolveRequirements(null, null);
-    expect(reqs.find((r) => r.document_type === "kcpe_cert")).toBeUndefined();
-    expect(reqs.find((r) => r.document_type === "id")?.required).toBe(true);
-    expect(reqs.find((r) => r.document_type === "birth_cert")?.required).toBe(true);
-    // The general minimum lives in the structured entry requirements:
-    // university-wide degree floor = KCSE mean grade C+.
-    const kcse = repo.listSystemBlocks(null).find((b) => b.level === "degree" && b.system === "KCSE");
-    expect(kcse?.overall).toBe("C+");
+  it("resolves the checklist from the case's own configuration", () => {
+    const reqs = repo.resolveRequirements("SERVICE_REQUEST", null);
+    expect(reqs.map((row) => row.document_type)).toEqual(["request_form", "id", "supporting_document"]);
+    expect(reqs.find((row) => row.document_type === "id")).toMatchObject({ required: true, blocking: true });
+    expect(reqs.find((row) => row.document_type === "supporting_document")).toMatchObject({ required: false, blocking: false });
   });
 
-  it("programme-specific rules override base", () => {
-    repo.upsertSystemBlock("LAW", "degree", { system: "KCSE", enabled: true, overall: "B", subjects: [] });
-    const law = repo.resolveBlocks("LAW").find((b) => b.system === "KCSE");
-    const bcs = repo.resolveBlocks("BCS").find((b) => b.system === "KCSE");
-    expect(law?.overall).toBe("B");
-    // BCS keeps its own seeded block — unaffected by LAW's override.
-    expect(bcs?.overall).toBe("C+");
-    // A system the course never configured falls back to the university-wide default.
-    expect(repo.resolveBlocks("BCS").find((b) => b.system === "IGCSE")?.minCredits).toBe(5);
+  it("another case type resolves a different checklist", () => {
+    expect(repo.resolveRequirements("VENDOR_INTAKE", null).map((row) => row.document_type))
+      .toEqual(["services_agreement", "insurance_certificate"]);
+    expect(repo.resolveRequirements("ACCESS_REQUEST", null).map((row) => row.document_type)).toEqual(["authorization"]);
   });
 
-  it("programme-conditional documents apply only to their programme", () => {
-    // OR-5 retired the staff-editable programme×intake toggle ladder: the
-    // checklist is deterministic. Conditional items attach to the programme
-    // the checklist names (LLB personal statement) and to no other course.
-    expect(repo.resolveRequirements("LLB", null).some((r) => r.document_type === "law_personal_statement")).toBe(true);
-    expect(repo.resolveRequirements("BCS", null).some((r) => r.document_type === "law_personal_statement")).toBe(false);
-    expect(repo.resolveRequirements("BCS", "January 2027").some((r) => r.document_type === "birth_cert")).toBe(true);
+  it("an unknown or unconfigured type resolves to nothing — never a bundled default", () => {
+    expect(repo.resolveRequirements("NOT_CONFIGURED", null)).toEqual([]);
+    expect(repo.resolveRequirements(null, null)).toEqual([]);
+  });
+
+  it("checklists are independent per organization", () => {
+    const second = repo.createOrganization({ name: "Second Tenant", refPrefix: "SEC" });
+    const type = repo.createCaseType(second.id, { code: "SERVICE_REQUEST", name: "Service request", category: "services" });
+    repo.replaceDocumentDefinitions(type.id, [{ key: "site_survey", label: "Site survey", required: true, blocking: true }]);
+    expect(repo.resolveRequirements("SERVICE_REQUEST", null, second.id).map((row) => row.document_type)).toEqual(["site_survey"]);
+    expect(repo.resolveRequirements("SERVICE_REQUEST", null, 1).map((row) => row.document_type)).toContain("request_form");
   });
 });
 
@@ -107,11 +99,12 @@ describe("search & filters (features 18, 19)", () => {
     expect(repo.searchApplicants({ q: "SEARCH@EXAMPLE" })[0]?.id).toBe(a.id);
   });
 
-  it("filters by programme and lifecycle states", () => {
-    const a = repo.getOrCreateApplicant("p1@example.org", "t");
-    repo.updateApplicant(a.id, { programme: "LAW", lifecycle: "awaiting_review" });
-    expect(repo.searchApplicants({ programme: "LAW" })[0]?.id).toBe(a.id);
-    expect(repo.searchApplicants({ filter: "human_review" })[0]?.id).toBe(a.id);
-    expect(repo.searchApplicants({ programme: "BCS" }).length).toBe(0);
+  it("filters by case type and lifecycle state", () => {
+    const a = repo.createCase({ emailAddress: "p1@example.test", threadId: "t-filter", organizationId: 1, caseTypeCode: "SERVICE_REQUEST" });
+    repo.updateApplicant(a.id, { lifecycle: "awaiting_review" });
+    const b = repo.createCase({ emailAddress: "p2@example.test", threadId: "t-filter-2", organizationId: 1, caseTypeCode: "VENDOR_INTAKE" });
+    expect(repo.searchApplicants({ caseTypeCode: "SERVICE_REQUEST" }).map((row) => row.id)).toContain(a.id);
+    expect(repo.searchApplicants({ filter: "human_review" }).map((row) => row.id)).toContain(a.id);
+    expect(repo.searchApplicants({ caseTypeCode: "SERVICE_REQUEST" }).map((row) => row.id)).not.toContain(b.id);
   });
 });

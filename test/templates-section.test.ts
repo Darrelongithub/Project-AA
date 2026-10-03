@@ -8,14 +8,14 @@
  *     placeholders are flagged loudly — never left to render as literal text
  *     without warning.
  *  3. Every template can be RESET to the official seeded default.
- *  4. Each template can optionally attach a pack PDF set (application pack /
- *     admission pack); manual sends honour the flag and missing pack files
- *     are audited, never silent.
+ *  4. Each template can optionally attach one of the organization's OWN
+ *     attachment sets; manual sends honour the choice and missing files are
+ *     audited, never silent. Nothing ships bundled.
  *  5. The old location is removed: Configuration → Replies no longer hosts
  *     the template editor and the legacy save endpoint refuses writes.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization } from "./helpers";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults, TEMPLATE_SEEDS } from "../src/db/seed";
@@ -31,28 +31,43 @@ let sender: MockSender;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  configureTestOrganization(repo);
   repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
   sender = new MockSender();
 });
 
-function mkApplicant(opts: Partial<ApplicantRow> = {}): ApplicantRow {
-  const a = repo.getOrCreateApplicant(opts.email_address ?? `or7-${Math.random().toString(36).slice(2)}@example.org`, `t-${Math.random()}`);
-  repo.updateApplicant(a.id, { full_name: "Wanjiku Kamau", ...opts });
+function mkCase(): ApplicantRow {
+  const a = repo.createCase({
+    emailAddress: `or7-${Math.random().toString(36).slice(2)}@example.org`,
+    threadId: `t-${Math.random()}`,
+    organizationId: 1,
+    fullName: "Wanjiku Kamau",
+    caseTypeCode: "SERVICE_REQUEST",
+  });
   return repo.getApplicant(a.id)!;
+}
+
+const SET_FILES = ["price-list.pdf", "data-protection-form.pdf"];
+
+/** The organization's own sendable files — nothing ships with the product. */
+function welcomeSet(): string {
+  const set = repo.createAttachmentSet(1, "Welcome pack");
+  for (const filename of SET_FILES) repo.addAttachmentSetFile(set.id, { filename, content: Buffer.from(`%PDF-1.4\n${filename}\n`) });
+  return set.name;
 }
 
 describe("the Templates section", () => {
   it("lists every outgoing type the system sends, with its sender annotated", async () => {
     const { base, cookie } = await startServer();
     const page = await (await fetch(`${base}/templates`, { headers: { cookie } })).text();
-    for (const key of [...TEMPLATE_SEEDS.map((t) => t.key), "admission_letter"]) {
+    for (const key of TEMPLATE_SEEDS.map((t) => t.key)) {
       expect(page).toContain(`value="${key}"`);
     }
     // nav shows it to admins
     expect(page).toContain('href="/templates"');
-    // sender annotations: pipeline auto-replies, reminders, admission
-    expect(page).toContain("automated");
-    expect(page).toContain("reminder");
+    // sender annotations: which reply is automated and which is staff work
+    expect(page).toContain("automatically");
+    expect(page).toContain("Manual staff reply");
   });
 
   it("officers (user role) do not get the admin Templates section", async () => {
@@ -68,7 +83,7 @@ describe("the Templates section", () => {
   it("documents every placeholder and renders a live preview", async () => {
     const { base, cookie } = await startServer();
     const page = await (await fetch(`${base}/templates?template=missing_documents`, { headers: { cookie } })).text();
-    for (const ph of ["{ref}", "{name}", "{first_name}", "{missing_docs}", "{missing_docs_section}", "{checklist}", "{status}", "{institution}", "{programme}", "{reg_date}", "{orientation_dates}", "{read_back}", "{document_issues}"]) {
+    for (const ph of ["{ref}", "{name}", "{first_name}", "{missing_docs}", "{missing_docs_section}", "{checklist}", "{status}", "{institution}", "{case_type}", "{category}", "{read_back}", "{document_issues}"]) {
       expect(page).toContain(ph);
     }
     // preview rendered with sample data — the placeholder tokens themselves
@@ -78,7 +93,7 @@ describe("the Templates section", () => {
     const preview = /id="tpl-preview"[^>]*>([\s\S]*?)<\/div>/.exec(page)![1];
     expect(preview).not.toContain("{first_name}");
     expect(preview).not.toContain("{institution}");
-    expect(preview).toContain("Wanjiku");
+    expect(preview).toContain("Alex"); // the sample contact's name is rendered
   });
 
   it("saving a template with an unknown placeholder warns loudly but still saves", async () => {
@@ -121,32 +136,31 @@ describe("reset to default", () => {
   });
 });
 
-describe("optional pack attachments", () => {
-  it("seeds the pack flag: application pack on docs_request, admission pack on the letter", () => {
-    expect(repo.getTemplate("docs_request")?.attach_pack).toBe("application");
-    expect(repo.getTemplate("admission_letter")?.attach_pack).toBe("admission");
-    expect(repo.getTemplate("missing_documents")?.attach_pack).toBe("none");
+describe("optional attachment sets", () => {
+  it("ships nothing bundled: every starter template attaches no files", () => {
+    for (const key of TEMPLATE_SEEDS.map((t) => t.key)) {
+      expect(repo.getTemplate(key, 1)?.attach_pack, key).toBe("none");
+    }
+    expect(repo.listAttachmentSets(1)).toEqual([]);
   });
 
-  it("manual template sends attach the pack when the flag says so", async () => {
+  it("manual template sends attach the organization's set when the template names it", async () => {
     const { base, cookie, csrf } = await startServer();
-    const a = mkApplicant();
-    // flag missing_documents to carry the application pack
-    repo.upsertTemplate("missing_documents", repo.getTemplate("missing_documents")!.name,
-      repo.getTemplate("missing_documents")!.subject, repo.getTemplate("missing_documents")!.body, undefined, "application");
+    const a = mkCase();
+    const t = repo.getTemplate("missing_documents", 1)!;
+    repo.upsertTemplate(t.key, t.name, t.subject, t.body, t.include_banner === 1, welcomeSet(), 1);
     const res = await fetch(`${base}/case/${a.id}/send`, {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
       body: `_csrf=${csrf}&template=missing_documents`, redirect: "manual",
     });
     expect(res.status).toBe(302);
     expect(sender.sent.length).toBe(1);
-    expect(sender.sent[0].attachments.length).toBeGreaterThan(0);
-    expect(sender.sent[0].attachments.some((f) => /Application Form/i.test(f))).toBe(true);
+    expect([...sender.sent[0].attachments].sort()).toEqual([...SET_FILES].sort());
   });
 
-  it("manual sends attach nothing when the flag is none", async () => {
+  it("manual sends attach nothing when the choice is none", async () => {
     const { base, cookie, csrf } = await startServer();
-    const a = mkApplicant();
+    const a = mkCase();
     await fetch(`${base}/case/${a.id}/send`, {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
       body: `_csrf=${csrf}&template=missing_documents`, redirect: "manual",
@@ -155,10 +169,10 @@ describe("optional pack attachments", () => {
     expect(sender.sent[0].attachments).toEqual([]);
   });
 
-  it("compose sends honour the same flag", async () => {
+  it("compose sends honour the same choice", async () => {
     const { base, cookie, csrf } = await startServer();
-    const a = mkApplicant();
-    repo.upsertTemplate("under_review", "Under review", "S", "B", undefined, "application");
+    const a = mkCase();
+    repo.upsertTemplate("under_review", "Under review", "S", "B", false, welcomeSet(), 1);
     const res = await fetch(`${base}/case/${a.id}/compose`, {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
       body: `_csrf=${csrf}&template=under_review&subject=Hello&body=World`, redirect: "manual",
@@ -167,17 +181,24 @@ describe("optional pack attachments", () => {
     expect(sender.sent[0].attachments.length).toBeGreaterThan(0);
   });
 
-  it("the flag is editable from the Templates page", async () => {
+  it("the choice is editable from the Templates page", async () => {
     const { base, cookie, csrf } = await startServer();
+    const setName = welcomeSet();
     const res = await fetch(`${base}/templates/save`, {
       method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${csrf}&key=verification&name=Verification stage&subject=Your application has moved to verification&body=Dear {first_name}, moved.&attach_pack=application`,
+      body: `_csrf=${csrf}&key=verification&name=Verification stage&subject=Your case has moved to verification&body=Dear {first_name}, moved.&attach_pack=${encodeURIComponent(setName)}`,
       redirect: "manual",
     });
     expect(res.status).toBe(302);
-    expect(repo.getTemplate("verification")?.attach_pack).toBe("application");
+    expect(repo.getTemplate("verification", 1)?.attach_pack).toBe(setName);
     const page = await (await fetch(`${base}/templates?template=verification`, { headers: { cookie } })).text();
-    expect(page).toContain('value="application" selected');
+    expect(page).toContain(`value="${setName}" selected`);
+  });
+
+  it("an unknown set is refused at the repo level, never silently dropped", () => {
+    expect(() => repo.upsertTemplate("verification", "V", "S", "B", false, "Not our set", 1))
+      .toThrow(/Unknown attachment set/);
+    expect(repo.getTemplate("verification", 1)?.attach_pack).toBe("none");
   });
 });
 
