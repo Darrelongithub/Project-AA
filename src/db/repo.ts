@@ -92,6 +92,7 @@ export interface StaffStatsRow {
 type ScopeTag = string[] & { organizationId?: number; allCaseTypes?: boolean };
 
 export type ApplicantLookupSite =
+  | "repo.create"
   | "repo.refreeze.requirements"
   | "repo.refreeze.result"
   | "pipeline.phone-enrichment"
@@ -638,7 +639,7 @@ export class Repo {
       if (existing) return existing;
       const ref = this.nextRefNumber(opts.refPrefix ?? this.organizationRefPrefix(organizationId), new Date().getFullYear());
       const created = this.db.prepare("INSERT INTO applicants (ref_number,email_address,thread_id,full_name,organization_id,case_type_id,case_type_code,category) VALUES (?,?,?,?,?,?,?,?)").run(ref, addr, threadId, opts.fullName ?? null, organizationId, type?.id ?? null, type?.code ?? null, type?.category ?? null);
-      const row = this.getApplicant(Number(created.lastInsertRowid))!;
+      const row = this.requireApplicant(Number(created.lastInsertRowid), "repo.create");
       this.audit(row.id, "system", "case_created", `Case ${row.ref_number} opened for ${addr}`);
       return row;
     })();

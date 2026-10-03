@@ -68,6 +68,26 @@ afterEach(async () => {
   server = undefined;
 });
 
+describe("Repo.getOrCreateApplicant missing-applicant boundary", () => {
+  it("throws a typed error if the newly inserted case cannot be re-read", () => {
+    failAtRequiredLookup("repo.create");
+
+    let thrown: unknown;
+    try {
+      repo.getOrCreateApplicant("create@example.test", "create-thread", {
+        organizationId: 1,
+        caseTypeCode: "SERVICE_REQUEST",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ApplicantNotFoundError);
+    expect(thrown).toMatchObject({ name: "ApplicantNotFoundError", code: "APPLICANT_NOT_FOUND", lookupSite: "repo.create" });
+    expect(repo.db.prepare("SELECT COUNT(*) AS n FROM applicants WHERE email_address = ?").get("create@example.test")).toEqual({ n: 0 });
+  });
+});
+
 describe("Repo.reFreezeCaseConfig missing-applicant boundaries", () => {
   it("repo.refreeze.requirements throws a typed error if the case vanishes before snapshot freezing", () => {
     const applicant = repo.createCase({ emailAddress: "freeze@example.test", threadId: "freeze-thread", organizationId: 1, caseTypeCode: "SERVICE_REQUEST" });
