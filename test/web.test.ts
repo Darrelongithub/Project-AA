@@ -99,6 +99,21 @@ describe("web console", () => {
     expect(res.headers.get("location")).toBe("/login");
   });
 
+  it("redirects repeat setup visits to login instead of a confusing 404", async () => {
+    const get = await fetch(`${base}/setup`, { redirect: "manual" });
+    expect(get.status).toBe(302);
+    expect(get.headers.get("location")).toContain("/login?msg=");
+
+    const post = await fetch(`${base}/setup`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "",
+      redirect: "manual",
+    });
+    expect(post.status).toBe(302);
+    expect(post.headers.get("location")).toContain("/login?msg=");
+  });
+
   it("rejects bad credentials", async () => {
     // Go through the real flow: fetch the page, get the login-CSRF pair,
     // then post wrong credentials WITH the token — the 401 must come from
@@ -114,6 +129,31 @@ describe("web console", () => {
       body: "username=admin&password=admin123",
     });
     expect(res.status).toBe(403);
+  });
+
+  it("accepts independent one-time login tokens without relying on a CSRF cookie", async () => {
+    const tokenFromPage = async () => {
+      const page = await fetch(`${base}/login`);
+      expect(page.headers.get("cache-control")).toContain("no-store");
+      expect(page.headers.get("set-cookie") || "").not.toContain("lcsrf=");
+      const html = await page.text();
+      return (/name="_lcsrf" value="([^"]+)"/.exec(html) || [])[1] ?? "";
+    };
+    const firstToken = await tokenFromPage();
+    const secondToken = await tokenFromPage();
+    expect(firstToken).toBeTruthy();
+    expect(secondToken).toBeTruthy();
+    expect(firstToken).not.toBe(secondToken);
+
+    const post = (token: string) => fetch(`${base}/login`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: `username=admin&password=admin123&_lcsrf=${encodeURIComponent(token)}`,
+      redirect: "manual",
+    });
+    expect((await post(firstToken)).status).toBe(302);
+    expect((await post(firstToken)).status).toBe(403); // one-time: replay is rejected
+    expect((await post(secondToken)).status).toBe(302); // another tab remains valid
   });
 
   it("admin lands on the oversight dashboard (not applicant casework)", async () => {

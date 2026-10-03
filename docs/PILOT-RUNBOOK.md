@@ -179,7 +179,7 @@ Go only if every box is ticked:
 - [ ] Fresh/copy database; no real tenant data involved at any point.
 - [ ] Global automation mode is `draft` and the allowlist is empty (verified in the DB).
 - [ ] Gmail shows connected and the "Mail is not connected" banner is gone.
-- [ ] All ten test messages behaved as the table says.
+- [ ] All thirteen test messages behaved as the table says.
 - [ ] No `email_not_delivered`, no unexplained `send_failed`, no dead letters
       (Configuration → Requirements & repairs → Parked mail).
 - [ ] The deleted-thread case (6) still delivered.

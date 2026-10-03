@@ -4,7 +4,7 @@
  *  B1  /case/:id middleware must reject cross-realm access (live ↔ demo) for
  *      EVERY route under it, not just the two GETs that re-check manually.
  *  B2  All three CSV exports must filter realm + school scope.
- *  B3  Archive directory created with mode 0o700.
+ *  B3  Retention archives are encrypted and stored with private permissions.
  *  B4  Login-failure map prunes by time, never a blunt clear at 5,000.
  *  B5  Retention defaults to the LIVE realm only (explicit flag to widen).
  *  B6  Admin password reset gets the same rules as first-run setup
@@ -20,7 +20,8 @@ import { openDb } from "../src/db/db";
 import { seedDefaults } from "../src/db/seed";
 import { createApp } from "../src/web/server";
 import { hashPassword, verifyPassword } from "../src/util/password";
-import {webLogin, configureTestOrganization } from "./helpers";
+import { decryptArchive, parseArchiveEncryptionKey } from "../src/util/archiveCrypto";
+import { webLogin, configureTestOrganization } from "./helpers";
 import type { PipelineContext } from "../src/pipeline/adapters";
 import type { Server } from "http";
 
@@ -126,9 +127,10 @@ describe("B3+B5 — retention: archive dir locked, live realm by default", () =>
     const demo = r.getOrCreateApplicant("old-demo@example.ke", "t2");
     raw.db.prepare("UPDATE applicants SET lifecycle='completed', demo=1, updated_at=? WHERE id=?").run(old, demo.id);
 
+    const archiveKey = "4b".repeat(32);
     const run = spawnSync("./node_modules/.bin/tsx", ["src/cli/retain.ts"], {
       cwd: path.resolve(__dirname, ".."),
-      env: { ...process.env, DB_PATH: dbPath, DISABLE_OCR: "1" },
+      env: { ...process.env, DB_PATH: dbPath, DISABLE_OCR: "1", ARCHIVE_ENCRYPTION_KEY: archiveKey },
       timeout: 60_000,
     });
     expect(run.status).toBe(0);
@@ -140,7 +142,59 @@ describe("B3+B5 — retention: archive dir locked, live realm by default", () =>
     const mode = fs.statSync(archiveDir).mode & 0o777;
     expect(mode).toBe(0o700);                                 // dir locked (today: 0755)
     const file = fs.readdirSync(archiveDir)[0];
+    expect(file).toBe(`${live.ref_number}.json.enc`);
+    const encrypted = fs.readFileSync(path.join(archiveDir, file), "utf8");
+    expect(encrypted).not.toContain("old-live@example.ke");
+    const archive = JSON.parse(decryptArchive(encrypted, parseArchiveEncryptionKey(archiveKey))) as {
+      applicant: { id: number; email_address: string };
+    };
+    expect(archive.applicant.id).toBe(live.id);
+    expect(archive.applicant.email_address).toBe("old-live@example.ke");
     expect(fs.statSync(path.join(archiveDir, file)).mode & 0o777).toBe(0o600);
+  });
+
+  it("rolls back the retention transaction if archive persistence fails", () => {
+    const live = repo.getOrCreateApplicant("archive-fails@example.ke", "t-archive-fails");
+    const old = new Date(Date.now() - 1000 * 24 * 3600_000).toISOString();
+    (repo as unknown as { db: { prepare: (q: string) => { run: (...x: unknown[]) => unknown } } }).db
+      .prepare("UPDATE applicants SET lifecycle='completed', updated_at=? WHERE id=?").run(old, live.id);
+
+    expect(() => repo.archiveAndDeleteDueApplicant(
+      live.id,
+      new Date().toISOString(),
+      730,
+      () => { throw new Error("simulated archive disk failure"); }
+    )).toThrow("simulated archive disk failure");
+    expect(repo.getApplicant(live.id)).toBeDefined();
+  });
+
+  it("refuses retention without the external key and leaves an eligible case untouched", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "retain-missing-key-"));
+    const dbPath = path.join(dir, "t.sqlite");
+    const db = openDb(dbPath);
+    const r = new Repo(db);
+    seedDefaults(r);
+    configureTestOrganization(r);
+    const old = new Date(Date.now() - 1000 * 24 * 3600_000).toISOString();
+    const live = r.getOrCreateApplicant("needs-key@example.ke", "t-key");
+    (r as unknown as { db: { prepare: (q: string) => { run: (...x: unknown[]) => unknown } } }).db
+      .prepare("UPDATE applicants SET lifecycle='completed', demo=0, updated_at=? WHERE id=?").run(old, live.id);
+    db.close();
+
+    const run = spawnSync("./node_modules/.bin/tsx", ["src/cli/retain.ts"], {
+      cwd: path.resolve(__dirname, ".."),
+      env: { ...process.env, DB_PATH: dbPath, ARCHIVE_ENCRYPTION_KEY: "" },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("ARCHIVE_ENCRYPTION_KEY is required");
+    expect(fs.existsSync(path.join(dir, "archive"))).toBe(false);
+
+    const checkDb = openDb(dbPath);
+    expect(new Repo(checkDb).getApplicant(live.id)).toBeDefined();
+    checkDb.close();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
 

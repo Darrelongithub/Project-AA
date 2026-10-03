@@ -40,6 +40,7 @@ import { validateRuleTree } from "../rules/caseType";
 import type { VisionCacheStore } from "../extraction/gemini";
 import { isValidCachedVision } from "../extraction/gemini";
 import type { VisionExtraction } from "../types";
+import { retentionDue } from "./retention";
 
 const nowIso = () => new Date().toISOString();
 
@@ -89,6 +90,14 @@ export interface StaffStatsRow {
 }
 
 type ScopeTag = string[] & { organizationId?: number; allCaseTypes?: boolean };
+
+export interface RetentionArchiveRecord {
+  archived_at: string;
+  retention_days: number;
+  applicant: ApplicantRow;
+  [section: string]: unknown;
+}
+
 /** A tagged scope meaning "every case type, but only in this organization". */
 function isAllCaseTypes(s: string[] | null | undefined): boolean { return Boolean(s && (s as ScopeTag).allCaseTypes); }
 /** An explicit empty scope = deliberately no access. */
@@ -716,10 +725,24 @@ export class Repo {
 
   // ── Audit log (feature 17) ───────────────────────────────────────────────
 
-  audit(applicantId: number | null, actor: string, event: string, detail = ""): void {
-    this.db
+  audit(applicantId: number | null, actor: string, event: string, detail = ""): number {
+    const result = this.db
       .prepare("INSERT INTO audit_log (applicant_id, actor, event, detail) VALUES (?,?,?,?)")
       .run(applicantId, actor, event, detail);
+    return Number(result.lastInsertRowid);
+  }
+
+  /** Attach pre-routing audit rows (written before a case exists) to the case
+   *  that the intake rules subsequently opened. Updating the foreign key keeps
+   *  their original audit ids/timestamps, so the case history preserves the
+   *  true classifier-before-routing order. Parked mail leaves these rows
+   *  case-less and searchable in the global audit log by message_id. */
+  attachAuditRowsToApplicant(auditIds: number[], applicantId: number): void {
+    const ids = [...new Set(auditIds)].filter((id) => Number.isSafeInteger(id) && id > 0);
+    if (!ids.length) return;
+    this.db
+      .prepare(`UPDATE audit_log SET applicant_id = ? WHERE applicant_id IS NULL AND id IN (${ids.map(() => "?").join(",")})`)
+      .run(applicantId, ...ids);
   }
 
   auditForApplicant(applicantId: number): Array<{ at: string; actor: string; event: string; detail: string }> {
@@ -2559,6 +2582,43 @@ export class Repo {
 
 
   // ── Data retention (feature 38) ──────────────────────────────────────────
+
+  /**
+   * Build a complete archive snapshot and delete its live rows under one
+   * IMMEDIATE transaction. The writer must persist/verify the snapshot before
+   * returning; a thrown file/encryption error rolls the database transaction
+   * back. Re-checking the lifecycle and cutoff here prevents a stale candidate
+   * list from deleting a case changed while the sweep was in progress.
+   */
+  archiveAndDeleteDueApplicant(
+    applicantId: number,
+    cutoffIso: string,
+    retentionDays: number,
+    writeArchive: (record: RetentionArchiveRecord) => void,
+  ): string | undefined {
+    const tx = this.db.transaction(() => {
+      const applicant = this.getApplicant(applicantId);
+      if (!applicant || applicant.lifecycle !== "completed" || !retentionDue(applicant.updated_at, cutoffIso)) {
+        return undefined;
+      }
+      const record: RetentionArchiveRecord = {
+        archived_at: nowIso(),
+        retention_days: retentionDays,
+        applicant,
+        documents: this.listDocuments(applicantId, { activeOnly: false }),
+        emails: this.emailsForApplicant(applicantId),
+        flags: this.activeFlags(applicantId),
+        notes: this.notesForApplicant(applicantId),
+        status_history: this.statusHistory(applicantId),
+        decision_logs: this.decisionLogs(applicantId),
+        audit: this.auditForApplicant(applicantId),
+      };
+      writeArchive(record);
+      this.deleteApplicantFull(applicantId);
+      return applicant.ref_number;
+    });
+    return tx.immediate();
+  }
 
   /** Fully remove an applicant's data (used after archiving). */
   deleteApplicantFull(applicantId: number): void {

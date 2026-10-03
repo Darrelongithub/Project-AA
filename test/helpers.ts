@@ -142,9 +142,9 @@ export function freshRepo(opts: { name?: string; refPrefix?: string; configured?
 }
 
 /**
- * Full sign-in flow for fetch-based tests: GET /login (collect the lcsrf
- * cookie + hidden field), then POST credentials with the token. Returns the
- * session cookie and a page CSRF token for subsequent POSTs.
+ * Full sign-in flow for fetch-based tests: GET /login (collect its one-time
+ * hidden token), then POST credentials with that token. Returns the session
+ * cookie and a page CSRF token for subsequent POSTs.
  */
 export async function webLogin(
   base: string,
@@ -152,12 +152,11 @@ export async function webLogin(
   password: string
 ): Promise<{ cookie: string; csrf: string; status: number }> {
   const page = await fetch(`${base}/login`);
-  const lcsrfCookie = ((page.headers.get("set-cookie") || "").match(/lcsrf=([^;]+)/) || [])[1] ?? "";
   const html = await page.text();
-  const hidden = (/name="_lcsrf" value="([^"]+)"/.exec(html) || [])[1] ?? lcsrfCookie;
+  const hidden = (/name="_lcsrf" value="([^"]+)"/.exec(html) || [])[1] ?? "";
   const res = await fetch(`${base}/login`, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", cookie: `lcsrf=${lcsrfCookie}` },
+    headers: { "content-type": "application/x-www-form-urlencoded" },
     body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&_lcsrf=${encodeURIComponent(hidden)}`,
     redirect: "manual",
   });

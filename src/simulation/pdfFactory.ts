@@ -38,4 +38,3 @@ export async function makeScannedPdf(lines: string[]): Promise<Buffer> {
     doc.image(png, 40, 40, { width: 515 });
   });
 }
-

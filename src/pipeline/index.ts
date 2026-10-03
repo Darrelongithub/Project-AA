@@ -2,7 +2,8 @@
  * The v2 pipeline per incoming email:
  *
  *   1. ingestion delivers the email (caller)
- *   2. categorize (deterministic) + resolve/create applicant + ref number
+ *   2. categorize (Gemini first when configured; deterministic regex fallback)
+ *      before intake routing, then resolve/create applicant + ref number
  *   3. store the incoming email in the case history + audit
  *   4. extraction: pdf text → Tesseract → Gemini (fixed chain), with
  *      duplicate detection by content hash
@@ -36,7 +37,7 @@ import { decide, docLabel, normalizeName } from "../rules";
 import { evaluateCaseTypeRules } from "../rules/caseType";
 import { caseTypeGate, gate } from "../gate";
 import { fillSlots } from "../documents/matrix";
-import { categorizeEmail, classifyWithConfiguredCategories, priorityForCategory, CLASSIFIER_MIN_CONFIDENCE } from "../categorize";
+import { categorizeEmail, classifyWithConfiguredCategories, priorityForCategory, CLASSIFIER_MIN_CONFIDENCE, type CategoryClassificationTrace } from "../categorize";
 import { emailTargetsKnownApplicant } from "../matching";
 import { classifyIntakeEmail, DEFAULT_INTAKE_HOTWORDS, intakeHotwordList } from "../intake";
 import { firstMatchingRule, rulesForCaseScope, replyStateOf, describeRule, type RuleAction, type RuleMatchInput, type WorkflowRule } from "../rules/workflow";
@@ -102,6 +103,62 @@ async function processEmailInner(
     ?? repo.organizationForInboundAddress(email.to)?.organizationId
     ?? 1;
 
+  // Classify FIRST: a configured Gemini categorizer must get its chance before
+  // either the intake scorer can park mail or an intake rule can ignore it.
+  // The trace rows are inserted now (before routing) and attached to a case
+  // later without changing their ids, preserving the real order in its audit.
+  const configuredKeys = repo.listEmailCategories(intakeOrganizationId).map((x) => x.key);
+  const classifierAuditIds: number[] = [];
+  const traceValue = (value: unknown, max = 180) =>
+    String(value ?? "").replace(/[\r\n;=]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+  const recordClassifierAttempt = (attempt: CategoryClassificationTrace) => {
+    const event = attempt.classifier === "gemini" ? "email_classifier_gemini" : "email_classifier_fallback";
+    const details = [
+      `message_id=${traceValue(email.id, 120)}`,
+      `outcome=${attempt.outcome}`,
+      ...(attempt.label !== undefined ? [`label=${traceValue(attempt.label, 80)}`] : []),
+      ...(attempt.confidence !== undefined ? [`confidence=${attempt.confidence}`] : []),
+      ...(attempt.reason ? [`reason=${traceValue(attempt.reason)}`] : []),
+    ];
+    classifierAuditIds.push(repo.audit(null, "system", event, details.join("; ")));
+  };
+
+  let category: EmailCategory;
+  let categoryLabelDetail: string;
+  let classifierHold: string | null = null;
+  if (configuredKeys.length > 0) {
+    const label = await classifyWithConfiguredCategories(
+      {
+        subject: email.subject,
+        body: email.body,
+        hasAttachments: email.attachments.length > 0,
+      },
+      configuredKeys,
+      adapters.categorizer,
+      undefined,
+      recordClassifierAttempt
+    );
+    const normalized = label.label.toLowerCase();
+    const mapped: Record<string, EmailCategory> = {
+      general_enquiry: "general_enquiry",
+      application: "application", document_submission: "document_submission",
+      missing_document: "missing_document", fee_enquiry: "fee_enquiry",
+      follow_up: "follow_up", complaint: "complaint", other: "other", normal: "other",
+    };
+    category = mapped[normalized] ?? "other";
+    categoryLabelDetail = `label=${label.label} confidence=${label.confidence} source=${label.source ?? "fallback"}; routed as '${category}'; routing metadata only, never a decision${mapped[normalized] ? "" : " — not one of the eight workflow categories"}`;
+    if ((label.source ?? "fallback") !== "gemini") {
+      classifierHold = `the label '${label.label}' came from the deterministic fallback, not the model`;
+    } else if (!(label.confidence >= CLASSIFIER_MIN_CONFIDENCE)) {
+      classifierHold = `classifier confidence ${label.confidence} is below the ${CLASSIFIER_MIN_CONFIDENCE} floor (label '${label.label}')`;
+    }
+  } else {
+    recordClassifierAttempt({ classifier: "gemini", outcome: "not_run", reason: "no tenant message categories configured" });
+    category = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
+    recordClassifierAttempt({ classifier: "deterministic_regex", outcome: "returned", label: category, confidence: 1, reason: "no tenant message categories configured" });
+    categoryLabelDetail = `label=${category} confidence=1 source=deterministic_regex; routed as '${category}'; routing metadata only, never a decision`;
+  }
+
   // ── Intake gate (round 9; PPR P0-4: stored rules decide, with the
   //    configured scorer as the signal source and as the fallback for
   //    tenants without intake rules) ───────────────────────────────────────
@@ -122,7 +179,6 @@ async function processEmailInner(
     knownContact: emailTargetsKnownApplicant(repo, email),
   });
   const senderState: "known" | "unknown" = emailTargetsKnownApplicant(repo, email) ? "known" : "unknown";
-  const fallbackCategory = categorizeEmail(email.subject, email.body, email.attachments.length > 0);
   // Which profile this mail targets (declared on the connector/portal, or
   // the migrated legacy scope). Rule scope follows it exactly.
   // Which case type this message belongs to, in precedence order:
@@ -155,7 +211,7 @@ async function processEmailInner(
     subject: email.subject,
     body: email.body,
     hasAttachments: email.attachments.length > 0,
-    category: fallbackCategory,
+    category,
     bodyIsRef: bodyIsRefShape,
     intakeSignals: verdict.category === "parked" ? "parked" : "open",
     docsState: "dirty", // document posture is a reply-time fact; intake rules match on message facts
@@ -215,42 +271,6 @@ async function processEmailInner(
     };
   }
 
-  // ── Categorize (feature 26) ──────────────────────────────────────────────
-  // Gemini may provide only an organization-owned routing label. Code maps
-  // that label to the legacy workflow enum; it never produces an outcome.
-  // (The deterministic fallback category was already computed for the intake
-  // rule match above — same input, same result.)
-  const configuredKeys = repo.listEmailCategories(intakeOrganizationId).map((x) => x.key);
-  let category: EmailCategory = fallbackCategory;
-  let categoryLabelDetail: string | null = null;
-  // Set when the label is a guess: a fallback answer, or a model answer below
-  // the confidence floor. Both route to a person (Phase C3-2).
-  let classifierHold: string | null = null;
-  // Gemini runs only when THIS tenant defined its own labels and a key is
-  // reachable through the adapters (console secret store) or the environment.
-  if (configuredKeys.length > 0 && (adapters.categorizer || process.env.GEMINI_API_KEY)) {
-    const label = await classifyWithConfiguredCategories(
-      { subject: email.subject, body: email.body }, configuredKeys, adapters.categorizer
-    );
-    const normalized = label.label.toLowerCase();
-    const mapped: Record<string, EmailCategory> = {
-      general_enquiry: "general_enquiry",
-      application: "application", document_submission: "document_submission",
-      missing_document: "missing_document", fee_enquiry: "fee_enquiry",
-      follow_up: "follow_up", complaint: "complaint", other: "other", normal: "other",
-    };
-    category = mapped[normalized] ?? "other";
-    // Recorded on the CASE (below, once it exists) so the trail a person reads
-    // on the case page explains why the message was routed the way it was —
-    // and honestly names the fallback when the model could not be trusted.
-    categoryLabelDetail = `label=${label.label} confidence=${label.confidence} source=${label.source ?? "gemini"}; routed as '${category}'; routing metadata only, never a decision${mapped[normalized] ? "" : " — not one of the eight workflow categories"}`;
-    if ((label.source ?? "gemini") !== "gemini") {
-      classifierHold = `the label '${label.label}' came from the deterministic fallback, not the model`;
-    } else if (!(label.confidence >= CLASSIFIER_MIN_CONFIDENCE)) {
-      classifierHold = `classifier confidence ${label.confidence} is below the ${CLASSIFIER_MIN_CONFIDENCE} floor (label '${label.label}')`;
-    }
-  }
-
   // An eligibility/requirements question may carry a screenshot as evidence.
   // Keep it in the enquiry workflow: OCR can still preserve the evidence, but
   // the attachment must not turn a question into a documents-received or
@@ -282,6 +302,8 @@ async function processEmailInner(
     caseTypeCode: effectiveCaseTypeCode,
   });
   const applicant = identity.applicant;
+  // Preserve the classifier's original pre-routing audit order on the case.
+  repo.attachAuditRowsToApplicant(classifierAuditIds, applicant.id);
   // The intake rule's audit code records which rule opened/continued the case.
   if (intakeRule?.action.audit_code) {
     repo.audit(applicant.id, "system", intakeRule.action.audit_code, `rule “${intakeRule.name}” matched — ${describeRule(intakeRule)}`);

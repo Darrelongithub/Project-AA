@@ -82,4 +82,3 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
 // organization row (`organizations.from_name`) and is applied to the MIME
 // of every outgoing message (PPR P1-5). The old dead `from_name` setting
 // is migrated there and then removed.
-

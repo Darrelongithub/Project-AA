@@ -98,6 +98,24 @@ opted in: the global automation mode, the case type's own reply default, its evi
 and a workflow rule that says `send` — all four must be open before the machine speaks to a
 contact.
 
+## Encrypted retention archives
+
+`npm run retain` archives completed cases as authenticated AES-256-GCM ciphertext
+before deleting their live rows. It requires an external 32-byte key in
+`ARCHIVE_ENCRYPTION_KEY` (canonical base64 from `openssl rand -base64 32`, or 64
+hex characters). Store the key in a secret manager, separate from both the database
+and archive directory. Retention fails closed before opening the database if the key
+is missing or invalid; there is no plaintext fallback. Keep the key backed up: without
+it, encrypted archives cannot be recovered.
+
+For legacy plaintext archives, `npm run archive:migrate -- /path/to/archive` writes and
+verifies a `.json.enc` sibling for each `.json` archive. It never deletes or replaces
+source files, so review the encrypted copies and make the organization's retention
+choice for old plaintext only after verifying them. To inspect one encrypted archive,
+`npm run archive:decrypt -- /path/to/archive.json.enc /private/path/review.json` writes
+a new file with mode 0600 and refuses to overwrite an existing destination. The
+plaintext copy contains sensitive information and must be handled accordingly.
+
 ## Scripts
 
 | Script | Purpose |
@@ -112,6 +130,8 @@ contact.
 | `npm run seed:demo-org` | Optional, idempotent seed of a **demo second organization** (Aperture People Ops, `APO`) alongside your own — see [docs/DEMO_ORG.md](docs/DEMO_ORG.md). `SEED_DEMO_ORG=1 npm run serve` does the same on boot |
 | `npm run purge-mock` | One-time safe cleanup of old demo/simulation rows (backup first, idempotent) |
 | `npm run ingest / queue / escalate / followups / retain / backup / restore` | Operational CLIs |
+| `npm run archive:migrate -- <directory>` | Encrypt existing plaintext retention archives; preserves each source file |
+| `npm run archive:decrypt -- <archive.json.enc> <output.json>` | Decrypt one archive to a new mode-0600 file (sensitive plaintext) |
 
 ## Simulation and stress tooling are isolated
 

@@ -100,7 +100,10 @@ describe("classification without a configured allow-list", () => {
     expect(res.skipped).toBeFalsy();
     expect(calls.length).toBe(0); // nothing configured → nothing to choose from
     expect(res.category).toBe("general_enquiry"); // "please advise" + a service word
-    expect(repo.auditForApplicant(res.applicantId!).some((a) => a.event === "email_labelled")).toBe(false);
+    const audit = repo.auditForApplicant(res.applicantId!).reverse();
+    expect(audit.find((a) => a.event === "email_classifier_gemini")!.detail).toMatch(/outcome=not_run/);
+    expect(audit.find((a) => a.event === "email_classifier_fallback")!.detail).toMatch(/label=general_enquiry/);
+    expect(audit.find((a) => a.event === "email_labelled")!.detail).toContain("source=deterministic_regex");
   });
 });
 

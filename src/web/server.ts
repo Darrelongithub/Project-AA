@@ -33,7 +33,7 @@ import { TEMPLATE_DEFAULTS, seedStarterTemplates } from "../db/seed";
 import { processEmail } from "../pipeline";
 import { makeTextPdf } from "../simulation/pdfFactory";
 import { avatar, layout } from "./views";
-import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
+import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, requireLogin, requireRole, sessionCookie } from "./auth";
 import { GmailClient } from "../ingestion/gmailClient";
 import { BudgetedVisionAdapter, GeminiVisionAdapter, MockVisionAdapter } from "../extraction/gemini";
 import { GeminiWatcher, makeHeuristicWatcher } from "../watcher";
@@ -230,6 +230,10 @@ export function createApp(deps: WebDeps): Express {
     for (const [k, exp] of setupTokens) if (exp < Date.now()) setupTokens.delete(k);
     return t;
   };
+  const setNoStore = (res: Response): void => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+  };
 
   app.use((req, res, next) => {
     if (repo.staffCount() === 0 && req.path !== "/setup" && req.path !== "/healthz" && req.path !== "/theme") {
@@ -241,18 +245,25 @@ export function createApp(deps: WebDeps): Express {
 
   app.get("/setup", (req, res) => {
     if (repo.staffCount() > 0) {
-      res.status(404).send("Not found");
+      res.redirect(`/login?msg=${encodeURIComponent("Setup is already complete. Sign in with your account.")}`);
       return;
     }
+    setNoStore(res);
     res.send(setupPage(newSetupToken(), undefined, req.theme, authName()));
   });
 
   app.post("/setup", (req, res) => {
     if (repo.staffCount() > 0) {
-      res.status(404).send("Not found");
+      // Setup may have succeeded even if the browser lost its session cookie or
+      // a double-submit raced the first POST. Never create another admin here;
+      // guide the owner to sign in instead of showing a confusing 404.
+      res.redirect(`/login?msg=${encodeURIComponent("Setup is already complete. Sign in with your account.")}`);
       return;
     }
-    const fail = (msg: string) => res.status(200).send(setupPage(newSetupToken(), msg, req.theme, authName()));
+    const fail = (msg: string) => {
+      setNoStore(res);
+      return res.status(200).send(setupPage(newSetupToken(), msg, req.theme, authName()));
+    };
     const token = String(req.body._setup ?? "");
     const exp = setupTokens.get(token);
     setupTokens.delete(token);
@@ -283,19 +294,30 @@ export function createApp(deps: WebDeps): Express {
       repo.audit(null, username, "first_run_setup", "Blank organization and administrator created together (starter reply templates included)");
       return repo.createSession(created.id);
     })();
-    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies));
+    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies, partitionedCookies));
     res.redirect("/");
   });
 
-  // Login-CSRF defence (double-submit): the sign-in form echoes a token the
-  // server also sets as a cookie. A cross-site forged login POST cannot read
-  // that cookie, so it cannot supply the matching field. Set `COOKIE_SECURE=1`
-  // behind TLS so the session cookie is never sent over plain HTTP.
+  // The preview may be embedded cross-site. Secure cookie deployments can
+  // opt into CHIPS partitioning so the session survives browsers that block
+  // unpartitioned third-party cookies. Local HTTP keeps the Lax defaults.
   const secureCookies = process.env.COOKIE_SECURE === "1";
-  const newLoginCsrf = (res: Response): string => {
-    const t = crypto.randomBytes(16).toString("hex");
-    res.setHeader("Set-Cookie", `lcsrf=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`);
-    return t;
+  const partitionedCookies = secureCookies && process.env.COOKIE_PARTITIONED === "1";
+
+  // Login-CSRF tokens are one-time, server-side values in the form, not a
+  // double-submit cookie. This avoids browsers/proxies dropping the CSRF cookie
+  // in an embedded preview, while cross-site forms still cannot read the token.
+  const loginCsrfTokens = new Map<string, number>();
+  const newLoginCsrf = (): string => {
+    const token = crypto.randomBytes(24).toString("hex");
+    loginCsrfTokens.set(token, Date.now() + 10 * 60_000);
+    for (const [key, expires] of loginCsrfTokens) if (expires < Date.now()) loginCsrfTokens.delete(key);
+    return token;
+  };
+  const consumeLoginCsrf = (token: string): boolean => {
+    const expires = loginCsrfTokens.get(token);
+    loginCsrfTokens.delete(token);
+    return expires !== undefined && expires >= Date.now();
   };
 
   app.get("/login", (req, res) => {
@@ -303,8 +325,9 @@ export function createApp(deps: WebDeps): Express {
       res.redirect("/setup");
       return;
     }
+    setNoStore(res);
     // ?msg= carries the one success notice (password just reset via code).
-    res.send(loginPage(undefined, req.theme, authName(), newLoginCsrf(res), req.query.msg ? String(req.query.msg) : undefined));
+    res.send(loginPage(undefined, req.theme, authName(), newLoginCsrf(), req.query.msg ? String(req.query.msg) : undefined));
   });
 
   /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
@@ -340,26 +363,28 @@ export function createApp(deps: WebDeps): Express {
   app.post("/login", (req, res) => {
     const ip = req.ip ?? "?";
     if (loginBlocked(ip)) {
-      res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, authName(), newLoginCsrf(res)));
+      setNoStore(res);
+      res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, authName(), newLoginCsrf()));
       return;
     }
-    // Login-CSRF: the token the page rendered must come back in the body AND
-    // match the cookie. A mismatch means the form was forged or stale.
+    // The one-time form token is checked server-side. Multiple open login tabs
+    // remain valid independently; missing/expired/forged tokens fail closed.
     const provided = String(req.body._lcsrf ?? "");
-    const cookieToken = parseCookies(req.headers.cookie)["lcsrf"] ?? "";
-    if (!provided || provided !== cookieToken) {
-      res.status(403).send(loginPage("That sign-in page expired — please try again.", req.theme, authName(), newLoginCsrf(res)));
+    if (!consumeLoginCsrf(provided)) {
+      setNoStore(res);
+      res.status(403).send(loginPage("That sign-in page expired — please try again.", req.theme, authName(), newLoginCsrf()));
       return;
     }
     const staff = loginAttempt(repo, String(req.body.username ?? ""), String(req.body.password ?? ""));
     if (!staff) {
       loginRecordFail(ip);
-      res.status(401).send(loginPage("Invalid username or password.", req.theme, authName(), newLoginCsrf(res)));
+      setNoStore(res);
+      res.status(401).send(loginPage("Invalid username or password.", req.theme, authName(), newLoginCsrf()));
       return;
     }
     const session = repo.createSession(staff.id);
     repo.audit(null, staff.username, "staff_login", "");
-    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies));
+    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies, partitionedCookies));
     res.redirect("/");
   });
 
@@ -367,7 +392,7 @@ export function createApp(deps: WebDeps): Express {
   // otherwise a cross-site 1-pixel form could sign staff out mid-crisis.
   app.post("/logout", csrfCheck, (req, res) => {
     if (req.sessionId) repo.deleteSession(req.sessionId);
-    res.setHeader("Set-Cookie", clearSessionCookie());
+    res.setHeader("Set-Cookie", clearSessionCookie(secureCookies, partitionedCookies));
     res.redirect("/login");
   });
 
@@ -382,21 +407,27 @@ export function createApp(deps: WebDeps): Express {
   const resetThrottle = new LoginThrottle({ windowMs: 10 * 60_000, maxFails: 5 });
 
   app.get("/reset-password", (req, res) => {
-    res.send(resetPasswordPage(undefined, req.theme, authName(), newLoginCsrf(res)));
+    setNoStore(res);
+    res.send(resetPasswordPage(undefined, req.theme, authName(), newLoginCsrf()));
   });
 
   app.post("/reset-password", (req, res) => {
     const ip = req.ip ?? "?";
     if (!resetThrottle.allowed(ip)) {
-      return res.status(429).send(resetPasswordPage("Too many reset attempts from this address — please wait a few minutes.", req.theme, authName(), newLoginCsrf(res)));
+      setNoStore(res);
+      return res.status(429).send(resetPasswordPage("Too many reset attempts from this address — please wait a few minutes.", req.theme, authName(), newLoginCsrf()));
     }
-    // Same anonymous double-submit CSRF as /login.
+    // The same one-time server-side form token used by /login works without
+    // relying on an anonymous cookie in the hosted preview.
     const provided = String(req.body._lcsrf ?? "");
-    const cookieToken = parseCookies(req.headers.cookie)["lcsrf"] ?? "";
-    if (!provided || provided !== cookieToken) {
-      return res.status(403).send(resetPasswordPage("That page expired — please try again.", req.theme, authName(), newLoginCsrf(res)));
+    if (!consumeLoginCsrf(provided)) {
+      setNoStore(res);
+      return res.status(403).send(resetPasswordPage("That page expired — please try again.", req.theme, authName(), newLoginCsrf()));
     }
-    const refuse = (m: string) => res.send(resetPasswordPage(m, req.theme, authName(), newLoginCsrf(res)));
+    const refuse = (m: string) => {
+      setNoStore(res);
+      return res.send(resetPasswordPage(m, req.theme, authName(), newLoginCsrf()));
+    };
     const GENERIC = "We couldn't verify that username and code. Check both, or ask your admin for a fresh code.";
     const username = String(req.body.username ?? "").trim();
     const code = String(req.body.code ?? "").trim();

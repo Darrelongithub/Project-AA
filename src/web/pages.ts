@@ -2504,7 +2504,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     <tr><th>Profile</th><th>Automation default</th><th>Evidence gate</th><th></th></tr>
     ${caseTypes.map((t) => `<tr>
       <td><b>${esc(t.name)}</b> <span class=\"small muted\">${esc(t.code)}</span></td>
-      
+
       <td><form method=\"post\" action=\"/config/case-types/profile\" style=\"display:flex;gap:6px;margin:0\">
         <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\"><input type=\"hidden\" name=\"id\" value=\"${t.id}\">
         <select name=\"default_reply_action\">

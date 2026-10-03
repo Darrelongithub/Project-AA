@@ -91,9 +91,15 @@ describe("OR-1: the product contains no mock data", () => {
       const cookie = (res.headers.get("set-cookie") || "").split(";")[0];
       expect(cookie).toContain("sid=");
 
-      // The setup endpoint is gone forever once one account exists.
-      const again = await fetch(`${base}/setup`);
-      expect(again.status).toBe(404);
+      // Setup stays closed after the first account, but directs a repeat visit
+      // to sign-in instead of returning a confusing 404. Do not follow the
+      // redirect here: the assertion is about the route contract itself.
+      const again = await fetch(`${base}/setup`, { redirect: "manual" });
+      expect(again.status).toBe(302);
+      expect(again.headers.get("location")).toBe(
+        `/login?msg=${encodeURIComponent("Setup is already complete. Sign in with your account.")}`
+      );
+      expect(repo.staffCount()).toBe(1);
 
       // And the created account works.
       const home = await fetch(`${base}/`, { headers: { cookie } });

@@ -44,12 +44,24 @@ export function parseCookies(header: string | undefined): Record<string, string>
   return out;
 }
 
-export function sessionCookie(token: string, maxAgeSec: number, secure = false): string {
-  return `sid=${token}; Path=/; HttpOnly; SameSite=Lax;${secure ? " Secure;" : ""} Max-Age=${maxAgeSec}`;
+/**
+ * HTTPS reverse proxies can embed the app in a cross-site preview frame. Use
+ * SameSite=None + Secure for HTTPS deployments, and optionally CHIPS
+ * partitioning where third-party cookies are blocked. Plain local HTTP keeps
+ * the safer Lax default.
+ */
+function cookieSite(secure: boolean, partitioned: boolean): string {
+  return secure
+    ? `SameSite=None; Secure;${partitioned ? " Partitioned;" : ""}`
+    : "SameSite=Lax;";
 }
 
-export function clearSessionCookie(): string {
-  return "sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
+export function sessionCookie(token: string, maxAgeSec: number, secure = false, partitioned = false): string {
+  return `sid=${token}; Path=/; HttpOnly; ${cookieSite(secure, partitioned)} Max-Age=${maxAgeSec}`;
+}
+
+export function clearSessionCookie(secure = false, partitioned = false): string {
+  return `sid=; Path=/; HttpOnly; ${cookieSite(secure, partitioned)} Max-Age=0`;
 }
 
 export function authMiddleware(repo: Repo) {

@@ -83,15 +83,15 @@ async function login(username: string, password: string): Promise<{ cookie: stri
 }
 
 async function publicResetPost(fields: Record<string, string>): Promise<{ status: number; html: string }> {
-  // Fresh anonymous visitor: GET the page (collects the lcsrf cookie), then POST.
+  // Fresh anonymous visitor: GET the page to receive a one-time form token,
+  // then POST it without depending on a third-party cookie.
   const page = await fetch(`${base}/reset-password`);
-  const lcsrfCookie = ((page.headers.get("set-cookie") || "").match(/lcsrf=([^;]+)/) || [])[1] ?? "";
   const html = await page.text();
-  const hidden = (/name="_lcsrf" value="([^"]+)"/.exec(html) || [])[1] ?? lcsrfCookie;
+  const hidden = (/name="_lcsrf" value="([^"]+)"/.exec(html) || [])[1] ?? "";
   const body = new URLSearchParams({ ...fields, _lcsrf: hidden }).toString();
   const res = await fetch(`${base}/reset-password`, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded", cookie: `lcsrf=${lcsrfCookie}` },
+    headers: { "content-type": "application/x-www-form-urlencoded" },
     body,
     redirect: "manual", // the success path 302s to /login?msg=… — we assert the hop, not the target
   });
