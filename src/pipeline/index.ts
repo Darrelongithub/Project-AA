@@ -378,7 +378,7 @@ async function processEmailInner(
   }
 
   // Enrich phone from the email body.
-  const freshApplicant = repo.getApplicant(applicant.id)!;
+  const freshApplicant = repo.requireApplicant(applicant.id, "pipeline.phone-enrichment");
   if (!freshApplicant.phone) {
     const phone = extractPhone(email.body);
     if (phone) {
@@ -508,10 +508,10 @@ async function processEmailInner(
   // First triage freezes a snapshot of the requirement set; later rule
   // changes never retroactively move an applicant's goalposts. PPR P0-3
   // adds the exact profile configuration version to that freeze.
-  const applicantNow = repo.getApplicant(applicant.id)!;
+  const applicantNow = repo.requireApplicant(applicant.id, "pipeline.requirements-case");
   repo.freezeRequirementsSnapshot(applicantNow);
   repo.freezeCaseConfig(applicantNow);
-  const requirements = repo.effectiveRequirements(repo.getApplicant(applicant.id)!);
+  const requirements = repo.effectiveRequirements(repo.requireApplicant(applicant.id, "pipeline.requirements"));
 
   // ── Submission windows (v3 features 20, 21) ─────────────────────────────
   // A tenant may configure windows (a service round, a funding cycle) with a
@@ -1104,7 +1104,7 @@ async function processEmailInner(
     // A corrupt setting must not crash intake (NaN → Invalid Date → throw).
     const slaHours = replyAction?.sla_hours ?? envInt(repo.getSetting("sla_target_hours", "4"), 4);
     const due = new Date(Date.now() + slaHours * 3600_000).toISOString();
-    const cur = repo.getApplicant(applicant.id)!;
+    const cur = repo.requireApplicant(applicant.id, "pipeline.human-review");
     if (!cur.sla_handled_at) repo.updateApplicant(applicant.id, { sla_due_at: due });
     const reason = humanTriageOnly
       ? `${enquiryOnly ? "general enquiry" : category.replace(/_/g, " ")} — staff response required`
@@ -1123,7 +1123,7 @@ async function processEmailInner(
   }
 
   // ── Lifecycle transition + status history (features 15, 16) ─────────────
-  const lifecycleNow = repo.getApplicant(applicant.id)!.lifecycle;
+  const lifecycleNow = repo.requireApplicant(applicant.id, "pipeline.lifecycle").lifecycle;
   if (lifecycleNow !== lifecycleAfter) {
     const why = autoKind === "ack"
         ? "all required documents verified automatically"
@@ -1150,7 +1150,7 @@ async function processEmailInner(
     },
     { jsonlPath: ctx.jsonlPath }
   );
-  const finalRow = repo.getApplicant(applicant.id)!;
+  const finalRow = repo.requireApplicant(applicant.id, "pipeline.result");
   return {
     applicantId: applicant.id,
     refNumber: applicantNow.ref_number,

@@ -91,6 +91,25 @@ export interface StaffStatsRow {
 
 type ScopeTag = string[] & { organizationId?: number; allCaseTypes?: boolean };
 
+export type ApplicantLookupSite =
+  | "repo.refreeze.requirements"
+  | "repo.refreeze.result"
+  | "pipeline.phone-enrichment"
+  | "pipeline.requirements-case"
+  | "pipeline.requirements"
+  | "pipeline.human-review"
+  | "pipeline.lifecycle"
+  | "pipeline.result";
+
+export class ApplicantNotFoundError extends Error {
+  readonly code = "APPLICANT_NOT_FOUND" as const;
+
+  constructor(readonly applicantId: number, readonly lookupSite: ApplicantLookupSite) {
+    super(`Case ${applicantId} no longer exists at ${lookupSite}`);
+    this.name = "ApplicantNotFoundError";
+  }
+}
+
 export interface RetentionArchiveRecord {
   archived_at: string;
   retention_days: number;
@@ -347,9 +366,12 @@ export class Repo {
     this.db.transaction(() => {
       this.db.prepare("UPDATE applicants SET case_config_frozen = NULL, requirements_snapshot = NULL WHERE id = ?").run(a.id);
       this.freezeCaseConfig({ ...a, case_config_frozen: null } as ApplicantRow);
-      this.freezeRequirementsSnapshot(this.getApplicant(a.id)!);
+      this.freezeRequirementsSnapshot(this.requireApplicant(a.id, "repo.refreeze.requirements"));
     })();
-    return this.caseConfigFrozen(this.getApplicant(a.id)!)!;
+    const refreshed = this.requireApplicant(a.id, "repo.refreeze.result");
+    const frozen = this.caseConfigFrozen(refreshed);
+    if (!frozen) throw new Error(`Case ${a.id} has no configuration snapshot after re-freeze`);
+    return frozen;
   }
 
   // ── PPR P0-4: workflow rules (intake + response behaviour as data) ───────
@@ -631,6 +653,13 @@ export class Repo {
 
   getApplicant(id: number): ApplicantRow | undefined {
     return this.db.prepare("SELECT * FROM applicants WHERE id = ?").get(id) as ApplicantRow | undefined;
+  }
+
+  /** Re-read a case at a critical boundary and fail with typed context if it vanished. */
+  requireApplicant(id: number, lookupSite: ApplicantLookupSite): ApplicantRow {
+    const applicant = this.getApplicant(id);
+    if (!applicant) throw new ApplicantNotFoundError(id, lookupSite);
+    return applicant;
   }
 
   updateApplicant(

@@ -1109,6 +1109,8 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/case/:id/assign", requireLogin, csrfCheck, (req, res) => {
     const id = Number(req.params.id);
+    const existing = requireCase(req, res, id);
+    if (!existing) return;
     const staffId = req.body.staff_id ? Number(req.body.staff_id) : null;
     // An unknown staff id violates the assigned_to FK and would 500 —
     // validate before writing.
@@ -1116,12 +1118,11 @@ export function createApp(deps: WebDeps): Express {
       return res.redirect(backToCase(id, "Unknown staff member — not assigned."));
     }
     repo.updateApplicant(id, { assigned_to: staffId });
+    const updated = requireCase(req, res, id);
+    if (!updated) return;
     const who = staffId ? repo.getStaff(staffId)?.display_name : "nobody";
     staffAction(req, id, "case_assigned", `assigned to ${who}`);
-    if (staffId) {
-      const a = repo.getApplicant(id)!;
-      repo.notify("assignment", `${a.ref_number} assigned to you`, id, staffId);
-    }
+    if (staffId) repo.notify("assignment", `${updated.ref_number} assigned to you`, id, staffId);
     res.redirect(backToCase(id, `Assigned to ${who ?? "nobody"}.`));
   });
 
@@ -1219,7 +1220,9 @@ export function createApp(deps: WebDeps): Express {
     const before = repo.caseTypeForCase(id);
     if (before?.id === target.id) return res.redirect(backToCase(id, `This case is already ${target.name} — nothing changed.`));
     repo.updateCase(id, { case_type_id: target.id });
-    repo.reFreezeCaseConfig(repo.getApplicant(id)!);
+    const updated = requireCase(req, res, id);
+    if (!updated) return;
+    repo.reFreezeCaseConfig(updated);
     repo.audit(id, req.staff!.username, "case_type_changed",
       `${before?.code ?? "unconfigured"} → ${target.code}; checklist re-frozen, verdict unchanged, nothing sent`);
     res.redirect(backToCase(id, `Moved to ${target.name}. Its checklist and rules apply from here; the recorded verdict predates the change — use Re-evaluate to recompute it. Nothing was sent.`));
