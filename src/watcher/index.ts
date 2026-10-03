@@ -16,6 +16,7 @@
 import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 import type { WatcherInput, WatcherResult } from "../types";
 import { normalizeName } from "../rules";
+import { withTimeout } from "../util/withTimeout";
 
 const SUSPICIOUS_RE = /\b(specimen|sample\s+copy|void|not\s+valid|cancelled|draft\s+copy)\b/i;
 
@@ -71,20 +72,10 @@ You never decide general outcomes. Respond with ONLY a JSON object:
 /**
  * A Gemini call that never settles must not stall the pipeline forever —
  * the fail-closed catch only fires on REJECTION; a hung socket rejects
- * never. Race the call against a hard timeout. (Timeout default matches
- * the vision tier; constructor override exists for tests.)
+ * never. Use the shared timeout helper with the watcher’s tighter 45-second
+ * default (the constructor override keeps the deadline deterministic in tests).
  */
 const WATCHER_TIMEOUT_MS = 45_000;
-
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const expiry = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
-    // An unref'd timer never keeps the process alive on its own.
-    if (typeof timer === "object" && timer) (timer as { unref?: () => void }).unref?.();
-  });
-  return Promise.race([p, expiry]).finally(() => { if (timer) clearTimeout(timer); });
-}
 
 export class GeminiWatcher {
   private model: any;

@@ -19,6 +19,7 @@
  */
 import * as crypto from "crypto";
 import { envInt } from "../util/envnum";
+import { TimeoutError, withTimeout } from "../util/withTimeout";
 import type { Attachment, DocType, VisionExtraction } from "../types";
 import { DOC_TYPES } from "../types";
 
@@ -101,22 +102,6 @@ If you cannot read a field, use null. The local deterministic pipeline verifies 
 /** A hung vision call must never stall the pipeline forever. */
 const VISION_TIMEOUT_MS = envInt(process.env.GEMINI_TIMEOUT_MS, 60_000);
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      }
-    );
-  });
-}
-
 /**
  * The default Gemini model, in ONE place. The old default (gemini-1.5-flash)
  * no longer exists in the v1beta API — probes and live reading 404'd with
@@ -141,8 +126,19 @@ export const DEAD_GEMINI_MODELS = new Set([
 
 export class GeminiVisionAdapter implements VisionAdapter {
   private model: any;
+  private timeoutMs: number;
 
-  constructor(apiKey: string, modelName = DEFAULT_GEMINI_MODEL) {
+  constructor(
+    apiKey: string,
+    modelName = DEFAULT_GEMINI_MODEL,
+    model?: unknown,
+    timeoutMs = VISION_TIMEOUT_MS
+  ) {
+    this.timeoutMs = timeoutMs;
+    if (model) {
+      this.model = model;
+      return;
+    }
     // Lazy require so mock mode never needs the SDK at runtime. A missing
     // SDK is a configuration error — say so loudly instead of throwing an
     // opaque MODULE_NOT_FOUND deep in request handling.
@@ -171,13 +167,15 @@ export class GeminiVisionAdapter implements VisionAdapter {
             },
           },
         ]),
-        VISION_TIMEOUT_MS,
+        this.timeoutMs,
         "gemini vision call"
       );
       return parseVisionJson(res.response.text());
     } catch (e) {
       const msg = (e as Error)?.message || String(e);
-      if (/timed out/i.test(msg)) throw new VisionUnavailableError("timeout", `Vision model timed out (${VISION_TIMEOUT_MS / 1000}s)`);
+      if (e instanceof TimeoutError || /timed out/i.test(msg)) {
+        throw new VisionUnavailableError("timeout", `Vision model timed out (${this.timeoutMs / 1000}s)`);
+      }
       throw new VisionUnavailableError("api", `Vision model call failed: ${msg.slice(0, 200)}`);
     }
   }
@@ -186,7 +184,7 @@ export class GeminiVisionAdapter implements VisionAdapter {
   async probeKey(): Promise<void> {
     const res: any = await withTimeout(
       this.model.generateContent("Reply with the single word OK."),
-      VISION_TIMEOUT_MS,
+      this.timeoutMs,
       "gemini key test"
     );
     const text = String(res?.response?.text() ?? "");
