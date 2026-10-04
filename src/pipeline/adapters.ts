@@ -62,24 +62,25 @@ export interface Adapters {
   categorizer?: CategoryLabeler;
 }
 
-/** The Gemini key the console knows: the organization's stored secret first
- *  (Settings → Connections), the environment second (headless CLIs). */
+/** Gemini credentials are read only from the installation's secret store
+ *  (Settings → Connections); environment variables never supply the API key. */
 export function resolveGeminiCredentials(cfg: AppConfig, repo?: Repo): { apiKey: string; model: string } | null {
-  const stored = repo?.getSecret("gemini_api_key").trim() || "";
-  const apiKey = stored || cfg.geminiApiKey || "";
+  const apiKey = repo?.getSecret("gemini_api_key").trim() || "";
   if (!apiKey) return null;
   const model = (repo && repo.getSetting("gemini_model", "").trim()) || cfg.geminiModel;
   return { apiKey, model };
 }
 
 export function buildAdapters(cfg: AppConfig, sender: EmailSender, repo?: Repo): Adapters {
-  const useGemini = cfg.mode === "live" && !!cfg.geminiApiKey;
+  const credentials = resolveGeminiCredentials(cfg, repo);
+  const useGemini = cfg.mode === "live" && credentials !== null;
+  const geminiModel = credentials?.model ?? cfg.geminiModel;
 
   // Live vision gets the resilience wrapper: SHA-256 result cache, daily
   // budget and a circuit breaker. Mock mode stays unwrapped (no budget to
   // burn, and tests assert on MockVisionAdapter directly).
   let vision: VisionAdapter = useGemini
-    ? new GeminiVisionAdapter(cfg.geminiApiKey!, cfg.geminiModel)
+    ? new GeminiVisionAdapter(credentials!.apiKey, geminiModel)
     : new MockVisionAdapter();
   if (useGemini && repo) {
     vision = new BudgetedVisionAdapter(vision, repo.visionCacheStore());
@@ -89,17 +90,16 @@ export function buildAdapters(cfg: AppConfig, sender: EmailSender, repo?: Repo):
   // and re-instantiated the model on every single email.
   const watcher: Watcher = useGemini
     ? (() => {
-        const w = new GeminiWatcher(cfg.geminiApiKey!, cfg.geminiModel);
+        const w = new GeminiWatcher(credentials!.apiKey, geminiModel);
         return (input) => w.watch(input);
       })()
     : makeHeuristicWatcher();
 
   // Classification is a sensor, never a decision-maker: it only runs when the
-  // tenant has defined its own category keys AND a key is reachable.
-  const credentials = resolveGeminiCredentials(cfg, repo);
+  // tenant has defined its own category keys AND a stored secret is available.
   const categorizer = credentials
     ? geminiCategoryLabeler({ apiKey: credentials.apiKey, model: credentials.model })
-    : (useGemini ? geminiCategoryLabeler({ apiKey: cfg.geminiApiKey!, model: cfg.geminiModel }) : undefined);
+    : undefined;
 
   return {
     vision,

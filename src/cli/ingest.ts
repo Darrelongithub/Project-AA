@@ -5,7 +5,8 @@
  *   npm run ingest            # one pass over recent mail
  *   npm run ingest -- --watch # keep polling every 60s
  *
- * Requires MODE=live plus GMAIL_* and GEMINI_API_KEY in .env
+ * Requires MODE=live plus GMAIL_* in .env. Gemini is optional and reads only
+ * the key already stored in this database through Settings → Connections.
  */
 import { loadConfig } from "../config";
 import { openDb } from "../db/db";
@@ -27,9 +28,9 @@ async function main(): Promise<void> {
         "Set these in .env (copy .env.example):",
         "  MODE=live",
         "  GMAIL_ADDRESS, GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET, GMAIL_OAUTH_REFRESH_TOKEN",
-        "  GEMINI_API_KEY",
         "",
         "Tip: `npm run serve`, then connect Gmail under Settings → Connections.",
+        "Gemini is optional; save its key in that same database under Settings → Connections."
       ].join("\n")
     );
     process.exit(1);

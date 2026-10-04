@@ -32,7 +32,7 @@ interface Ctx {
   gmailAddress?: string;
   /** Is outgoing mail actually delivered, or only recorded? */
   mailDelivers?: boolean;
-  /** Is a Gemini credential reachable (console secret or environment)? */
+  /** Is a Gemini credential present in the installation secret store? */
   geminiAvailable?: boolean;
 }
 

@@ -84,7 +84,7 @@ The default mode is `MODE=mock`; external services are not contacted in that mod
 
 Do **not** grant `gmail.modify`: the application does not delete, label, move, or mark mail as read. No Gmail or Gemini endpoint has been exercised against a real account as part of the repository's automated checks. See the pilot checklist in [`BUGS.md`](BUGS.md#real-mail-pilot-unverified).
 
-Gmail and Gemini credentials are stored in the organization-scoped `secrets` table rather than the rendered/exportable settings bag. The Gemini API key is installation-wide. Do not put credentials into source control or chat.
+Gmail and Gemini credentials are stored in the organization-scoped `secrets` table rather than the rendered/exportable settings bag. The Gemini API key is installation-wide, is managed through **Settings → Connections**, and is read only from that secret store; `GEMINI_API_KEY` environment values are not used. Headless CLI tools read the same database secret. `GEMINI_MODEL` remains an optional, non-secret model-name override. Do not put credentials into source control or chat.
 
 ## Architecture and limits
 
@@ -176,7 +176,7 @@ The per-category auto-send allow-list starts empty. Measure any candidate catego
      --json labels/round1.report.json
    ```
 
-   To evaluate the configured Gemini classifier, add `--classifier configured --categories a,b,...` and provide a valid key through the approved local secret/environment configuration; the CLI does not print or store the key in its report.
+   To evaluate the configured Gemini classifier, add `--classifier configured --categories a,b,...` and ensure the selected workspace database (`DB_PATH` or the default) has a valid key saved through Settings → Connections; the CLI does not print or store the key in its report.
 
 Fixed acceptance bars: overall accuracy ≥90%; a category may be considered for auto-send only with precision ≥95% on at least 30 labelled examples. The report lists every wrong high-confidence prediction by ID (confidence floor 0.70). The harness never changes the product allow-list. Until real labels clear the bars, keep it empty and keep automation draft-only.
 

@@ -14,14 +14,19 @@
  *   ... --classifier configured --categories general_enquiry,complaint \
  *       --auto-send general_enquiry --json report.json
  *
- * `--classifier configured` needs a Gemini key in the environment
- * (GEMINI_API_KEY). Nothing is printed about it and it is never written to the
- * report. This harness makes no decision about sending: it reports which
+ * `--classifier configured` reads the Gemini key from the same local database
+ * secret store used by the web console (DB_PATH or the default DB). It never
+ * reads a key from the environment, prints it, or writes it to the report.
+ * This harness makes no decision about sending: it reports which
  * categories MEET the bar, and the allowlist in the product stays empty until
  * an administrator acts on that.
  */
 import * as fs from "node:fs";
-import { categorizeEmail, classifyWithConfiguredCategories, CLASSIFIER_MIN_CONFIDENCE, type CategoryLabeler } from "../src/categorize";
+import { categorizeEmail, classifyWithConfiguredCategories, CLASSIFIER_MIN_CONFIDENCE, geminiCategoryLabeler, type CategoryLabeler } from "../src/categorize";
+import { loadConfig } from "../src/config";
+import { openDb } from "../src/db/db";
+import { Repo } from "../src/db/repo";
+import { resolveGeminiCredentials } from "../src/pipeline/adapters";
 
 /** Fixed bars (Phase C4-2). A category may only be allowlisted for automatic
  *  sending when it clears its precision bar on enough labelled examples. */
@@ -340,11 +345,26 @@ export function parseArgs(argv: string[]): CliOptions {
   return opts;
 }
 
+function storedGeminiLabeler(): CategoryLabeler {
+  const cfg = loadConfig();
+  if (cfg.dbPath === ":memory:" || !fs.existsSync(cfg.dbPath)) {
+    throw new Error("Configured classifier needs the workspace database selected by DB_PATH (or the default) with a Gemini key saved in Settings → Connections.");
+  }
+  const db = openDb(cfg.dbPath);
+  try {
+    const credentials = resolveGeminiCredentials(cfg, new Repo(db));
+    if (!credentials) throw new Error("Configured classifier needs a Gemini key saved in Settings → Connections; environment keys are not used.");
+    return geminiCategoryLabeler(credentials);
+  } finally {
+    db.close();
+  }
+}
+
 export async function run(argv: string[]): Promise<{ report: EvalReport; exitCode: number }> {
   const opts = parseArgs(argv);
   const rows = rowsFromCsv(fs.readFileSync(opts.csv, "utf8"));
   const predictor = opts.classifier === "configured"
-    ? configuredPredictor(opts.categories)
+    ? configuredPredictor(opts.categories, storedGeminiLabeler())
     : deterministicPredictor();
   const predictions: Prediction[] = [];
   for (const row of rows) predictions.push(await predictor(row));

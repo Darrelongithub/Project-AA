@@ -13,7 +13,6 @@ export interface AppConfig {
   mode: "mock" | "live";
   dbPath: string;
   port: number;
-  geminiApiKey?: string;
   geminiModel: string;
   gmail?: {
     address: string;
@@ -44,7 +43,6 @@ export function loadConfig(): AppConfig {
     mode,
     dbPath: env.DB_PATH || "./data/email-sorter.sqlite",
     port: envInt(env.PORT, 8080),
-    geminiApiKey: env.GEMINI_API_KEY || undefined,
     geminiModel: env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
     gmail: gmailConfigured
       ? {

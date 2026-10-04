@@ -148,7 +148,7 @@ export class GeminiVisionAdapter implements VisionAdapter {
       ({ GoogleGenerativeAI } = require("@google/generative-ai"));
     } catch (e) {
       throw new Error(
-        `GEMINI_API_KEY is set but the @google/generative-ai SDK failed to load: ${(e as Error).message}`
+        `A Gemini API key is configured but the @google/generative-ai SDK failed to load: ${(e as Error).message}`
       );
     }
     const gen = new GoogleGenerativeAI(apiKey);

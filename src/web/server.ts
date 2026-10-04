@@ -117,7 +117,7 @@ export function createApp(deps: WebDeps): Express {
     // explicit "does not deliver" raises the banner (a test double says nothing).
     // Defensive: a context built for a test may pass no sender at all.
     mailDelivers: ctx.adapters?.sender?.delivers,
-    // Is a model credential reachable at all (console secret or environment)?
+    // Is a stored Gemini credential reachable for this installation?
     geminiAvailable: geminiCredentials() !== null,
   });
 
@@ -1966,13 +1966,10 @@ export function createApp(deps: WebDeps): Express {
   // The key is stored in the secret store (PPR P0-1), used by the extraction
   // pipeline AT ONCE (no restart, no env file). "Test key" performs a real
   // round-trip and reports exactly what happened.
-  /** The model credential the console knows: the stored secret first (that is
-   *  what Settings manages), then the environment — an infrastructure-as-code
-   *  deployment sets GEMINI_API_KEY and has no secret row at all. Reading only
-   *  the secret used to downgrade an env-configured installation to mock
-   *  reading on every boot, moments after buildAdapters had wired the real one. */
+  /** Gemini's secret is managed only in the installation secret store;
+   *  environment variables never supply or replace it. */
   const geminiCredentials = (): { apiKey: string; model: string } | null => {
-    const apiKey = repo.getSecret("gemini_api_key").trim() || (process.env.GEMINI_API_KEY ?? "").trim();
+    const apiKey = repo.getSecret("gemini_api_key").trim();
     if (!apiKey) return null;
     const model = repo.getSetting("gemini_model", "").trim() || (process.env.GEMINI_MODEL ?? "").trim() || DEFAULT_GEMINI_MODEL;
     return { apiKey, model };
@@ -2033,12 +2030,8 @@ export function createApp(deps: WebDeps): Express {
       // N1: the message below is only true if the adapters actually go
       // back to mock — rebuild before claiming it.
       rebuildAdapters();
-      const envStill = Boolean((process.env.GEMINI_API_KEY ?? "").trim());
-      repo.audit(null, req.staff!.username, "gemini_disabled",
-        envStill ? "API key removed from the console — the environment key is still in use" : "API key removed — back to text/OCR reading");
-      return res.redirect(back(envStill
-        ? "Gemini key removed from the console. The environment key (GEMINI_API_KEY) is still in use."
-        : "Gemini key removed. Document reading falls back to text/OCR only."));
+      repo.audit(null, req.staff!.username, "gemini_disabled", "API key removed — back to text/OCR reading");
+      return res.redirect(back("Gemini key removed. Document reading falls back to text/OCR only."));
     }
     if (!key && !repo.hasSecret("gemini_api_key")) {
       return res.redirect(back("Paste a Gemini API key first (get one free at aistudio.google.com/apikey)."));
