@@ -14,6 +14,17 @@
 import type { Classification, DocType, DerivedFlag } from "../types";
 import { docLabel } from "../rules";
 import { fillSlots } from "../documents/matrix";
+import { renderTpl } from "./tpl";
+
+export {
+  DEFAULT_TEMPLATE_PARTIALS,
+  TEMPLATE_PARTIAL_DOCS,
+  TEMPLATE_TOKEN_NAMES,
+  TemplatePartialError,
+  inspectTemplate,
+  renderTpl,
+} from "./tpl";
+export type { TemplateInspection, TemplatePartials, TemplateTokenName, TemplateValues } from "./tpl";
 
 export interface DraftContext {
   ref: string;
@@ -52,28 +63,24 @@ export function renderTemplate(
     ? `We are still missing:\n\n${ctx.missingLabels.map((m) => `  • ${m}`).join("\n")}\n\nPlease send these as PDF attachments in reply to this thread.`
     : "Nothing is missing — your file is complete.";
   const replacements: Record<string, string> = {
-    "{ref}": ctx.ref,
-    "{name}": name,
-    "{first_name}": first,
-    "{missing_docs}": ctx.missingLabels.length
+    ref: ctx.ref,
+    name,
+    first_name: first,
+    missing_docs: ctx.missingLabels.length
       ? ctx.missingLabels.map((m) => `  • ${m}`).join("\n")
       : "  (none — your file is complete)",
-    "{missing_docs_section}": missingSection,
-    "{checklist}": ctx.checklist,
-    "{status}": ctx.statusLabel,
-    "{institution}": ctx.institution,
-    "{case_type}": ctx.caseType?.trim() || "your case",
-    "{category}": ctx.caseType?.trim() || "your case",
-    "{read_back}": ctx.readBack?.trim() || "",
-    "{document_issues}": ctx.documentIssues?.trim() || "",
+    missing_docs_section: missingSection,
+    checklist: ctx.checklist,
+    status: ctx.statusLabel,
+    institution: ctx.institution,
+    case_type: ctx.caseType?.trim() || "your case",
+    category: ctx.caseType?.trim() || "your case",
+    read_back: ctx.readBack?.trim() || "",
+    document_issues: ctx.documentIssues?.trim() || "",
   };
-  let s = subject;
-  let b = body;
-  for (const [k, v] of Object.entries(replacements)) {
-    s = s.split(k).join(v);
-    b = b.split(k).join(v);
-  }
-  return { subject: subjectWithRef(ctx.ref, s), body: b };
+  const renderedSubject = renderTpl(subject, replacements);
+  const renderedBody = renderTpl(body, replacements);
+  return { subject: subjectWithRef(ctx.ref, renderedSubject), body: renderedBody };
 }
 
 export function checklistText(args: {

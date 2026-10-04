@@ -108,6 +108,51 @@ describe("the Templates section", () => {
     expect(loc).toContain("bogus_placeholder");
     expect(repo.getTemplate("generic_enquiry")?.body).toContain("{bogus_placeholder}");
   });
+
+  it("documents, persists and previews reusable partial includes", async () => {
+    const { base, cookie, csrf } = await startServer();
+    const body = "{{> greeting}}\n\n{{> case_reference}}\n\n{{> organization_signature}}";
+    const saved = await fetch(`${base}/templates/save`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        _csrf: csrf,
+        key: "generic_enquiry",
+        name: "Generic enquiry",
+        subject: "Update for {ref}",
+        body,
+      }),
+      redirect: "manual",
+    });
+    expect(saved.status).toBe(302);
+    expect(repo.getTemplate("generic_enquiry", 1)?.body).toBe(body);
+
+    const page = await (await fetch(`${base}/templates?template=generic_enquiry`, { headers: { cookie } })).text();
+    expect(page).toContain("Reusable partials");
+    expect(page).toContain("{{&gt; greeting}}");
+    const preview = /id="tpl-preview"[^>]*>([\s\S]*?)<\/div>/.exec(page)![1];
+    expect(preview).toContain("Hello Alex,");
+    expect(preview).toContain("Case reference: ORG-");
+    expect(preview).not.toContain("{{&gt;");
+  });
+
+  it("refuses an unknown partial without overwriting the saved template", async () => {
+    const { base, cookie, csrf } = await startServer();
+    const before = repo.getTemplate("generic_enquiry", 1)!.body;
+    const res = await fetch(`${base}/templates/save`, {
+      method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        _csrf: csrf,
+        key: "generic_enquiry",
+        name: "Generic enquiry",
+        subject: "Hello",
+        body: "{{> tenant_secret_signature}}",
+      }),
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(decodeURIComponent(res.headers.get("location") || "")).toContain("unknown partial");
+    expect(repo.getTemplate("generic_enquiry", 1)?.body).toBe(before);
+  });
 });
 
 describe("reset to default", () => {

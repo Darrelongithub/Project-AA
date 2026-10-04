@@ -11,7 +11,7 @@ import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, 
 import { describeRule } from "../rules/workflow";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../rules/queues";
 import { docLabel } from "../rules";
-import { renderTemplate } from "../drafting";
+import { TEMPLATE_PARTIAL_DOCS, inspectTemplate, renderTemplate } from "../drafting";
 import { organizationName, organizationTheme } from "../branding";
 import {
   avatar, categoryBadge, crest, esc, flagLabel, flowLine, fmtDate, gaugeRow,
@@ -2666,18 +2666,28 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
 
   // Live preview against a sample contact — exactly what renderTemplate
   // will produce, so staff see the real output before anyone receives it.
-  const preview = renderTemplate(tpl.subject, tpl.body, {
-    ref: `${repo.organizationRefPrefix(c.user.organization_id ?? 1)}-${new Date().getFullYear()}-000001`,
-    institution: c.institution,
-    name: "Alex Morgan",
-    missingLabels: ["Identity document", "Request form"],
-    checklist: "✓ Supporting information\n✗ Identity document\n✗ Request form",
-    statusLabel: "Documents received",
-    caseType: "Service request",
-    readBack: "Your information was received and read successfully.",
-    documentIssues: "",
-  });
-  const unknown = [...new Set(((tpl.subject + " " + tpl.body).match(/\{[a-z_]+\}/g) ?? []).filter((ph) => !PLACEHOLDER_DOCS.some(([k]) => k === ph)))];
+  const inspection = inspectTemplate(`${tpl.subject}\n${tpl.body}`);
+  let preview: { subject: string; body: string };
+  try {
+    preview = renderTemplate(tpl.subject, tpl.body, {
+      ref: `${repo.organizationRefPrefix(c.user.organization_id ?? 1)}-${new Date().getFullYear()}-000001`,
+      institution: c.institution,
+      name: "Alex Morgan",
+      missingLabels: ["Identity document", "Request form"],
+      checklist: "✓ Supporting information\n✗ Identity document\n✗ Request form",
+      statusLabel: "Documents received",
+      caseType: "Service request",
+      readBack: "Your information was received and read successfully.",
+      documentIssues: "",
+    });
+  } catch (error) {
+    preview = { subject: "Preview unavailable", body: error instanceof Error ? error.message : String(error) };
+  }
+  const unknown = inspection.unknownTokens.map((token) => `{${token}}`);
+  const partialProblems = [
+    ...inspection.unknownPartials.map((partial) => `{{> ${partial}}}`),
+    ...inspection.malformedIncludes,
+  ];
 
   const editor = `<form method="post" action="/templates/save">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -2763,6 +2773,7 @@ ${templates.length === 0 ? `<section class="card" id="templates-empty">
     ${picker}
     <p class="small muted" style="margin-top:6px"><b>Who sends this:</b> ${esc(usage)}</p>
     ${unknown.length ? `<div class="flash err" style="position:static;margin:10px 0">Unknown placeholder${unknown.length === 1 ? "" : "s"} in this template: ${unknown.map(esc).join(", ")} — contacts will see it as literal text.</div>` : ""}
+    ${partialProblems.length ? `<div class="flash err" style="position:static;margin:10px 0">Invalid partial include${partialProblems.length === 1 ? "" : "s"}: ${partialProblems.map(esc).join(", ")} — preview is disabled and the template must be corrected before it can be saved.</div>` : ""}
     <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:22px">
       <div>${editor}</div>
       <div>
@@ -2771,6 +2782,11 @@ ${templates.length === 0 ? `<section class="card" id="templates-empty">
         <h3 style="margin:16px 0 6px;font-size:13px">Placeholders</h3>
         <table><tr><th>Token</th><th>Filled with</th></tr>
           ${placeholderDocsFor(c).map(([k, v]) => `<tr><td class="mono small">${esc(k)}</td><td class="small muted">${esc(v)}</td></tr>`).join("")}
+        </table>
+        <h3 style="margin:16px 0 6px;font-size:13px">Reusable partials</h3>
+        <p class="small muted">Insert a shared fragment with <span class="mono">{{&gt; partial_name}}</span>. Partials may contain placeholders and are composed before values are filled.</p>
+        <table><tr><th>Include</th><th>Renders</th></tr>
+          ${TEMPLATE_PARTIAL_DOCS.map(([name, detail]) => `<tr><td class="mono small">${esc(`{{> ${name}}}`)}</td><td class="small muted">${esc(detail)}</td></tr>`).join("")}
         </table>
       </div>
     </div>

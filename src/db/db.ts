@@ -530,6 +530,44 @@ function tenantConstraints(db: Database.Database): void {
   if (singleKey.test(processedSql)) rebuildConstraint(db, "processed_emails", processedSql.replace(singleKey, "$1 NOT NULL").replace(/\)\s*$/, ", PRIMARY KEY (organization_id, email_id))"));
 }
 
+export const LEGACY_TEMPLATE_MIGRATION_MARKER = "organization_templates_v1";
+
+/**
+ * Copy legacy shared-template rows into the organization-owned store without
+ * deleting or rewriting their source rows. Existing organization rows win, so
+ * an administrator's newer edit is never replaced by an older fallback.
+ *
+ * The marker prevents a deliberately deleted/changed organization row from
+ * being resurrected on every boot. If a legacy row refers to an organization
+ * that does not exist yet, it remains readable through the fallback and the
+ * marker is withheld so a later boot can finish the copy after that tenant is
+ * restored.
+ */
+function migrateLegacyTemplates(db: Database.Database): void {
+  if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(LEGACY_TEMPLATE_MIGRATION_MARKER)) return;
+
+  db.exec(`
+    INSERT OR IGNORE INTO organization_templates (
+      organization_id, key, name, subject, body, include_banner,
+      attach_pack, case_type_id, default_snapshot, updated_at
+    )
+    SELECT COALESCE(t.organization_id, 1), t.key, t.name, t.subject, t.body,
+           t.include_banner, t.attach_pack, 0, t.default_snapshot, t.updated_at
+      FROM templates t
+      JOIN organizations o ON o.id = COALESCE(t.organization_id, 1)
+  `);
+
+  const unresolved = db.prepare(
+    `SELECT COUNT(*) AS n
+       FROM templates t
+       LEFT JOIN organizations o ON o.id = COALESCE(t.organization_id, 1)
+      WHERE o.id IS NULL`
+  ).get() as { n: number };
+  if (unresolved.n === 0) {
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, '1')").run(LEGACY_TEMPLATE_MIGRATION_MARKER);
+  }
+}
+
 function migrate(db: Database.Database): void {
   const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((table) => table.name));
   for (const [from, to] of Object.entries(legacyStorage.tables)) if (tables.has(from) && !tables.has(to)) db.exec(`ALTER TABLE "${from}" RENAME TO "${to}"`);
@@ -569,6 +607,9 @@ function migrate(db: Database.Database): void {
     const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
     if (row) { db.prepare("INSERT OR IGNORE INTO secrets (organization_id,key,value) VALUES (1,?,?)").run(key,row.value); db.prepare("DELETE FROM settings WHERE key = ?").run(key); }
   }
+  // Non-destructive template migration: the old table stays in place as a
+  // read fallback until a separately approved cleanup removes it.
+  migrateLegacyTemplates(db);
   db.exec("CREATE INDEX IF NOT EXISTS idx_outbox_applicant ON outbox(applicant_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_cases_org_email ON applicants(organization_id,email_address)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_emails_org_thread ON emails(organization_id,thread_id)");

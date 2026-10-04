@@ -16,7 +16,7 @@ import type { PipelineContext } from "../pipeline/adapters";
 import type { Adapters } from "../pipeline/adapters";
 import type { ApplicantRow, LifecycleStage, Permission } from "../types";
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS, type EmailCategory } from "../types";
-import { checklistText, renderTemplate } from "../drafting";
+import { checklistText, inspectTemplate, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import { fillSlots } from "../documents/matrix";
 import { validateRuleTree } from "../rules/caseType";
@@ -2201,14 +2201,6 @@ export function createApp(deps: WebDeps): Express {
   // ── OR-7: Templates section — every outgoing type, one home ──────────────
   const tplBack = (key: string, m: string) =>
     `/templates?template=${encodeURIComponent(key)}&msg=${encodeURIComponent(m)}#tpl-${key}`;
-  const KNOWN_PLACEHOLDERS = [
-    "{ref}", "{name}", "{first_name}", "{missing_docs}", "{missing_docs_section}",
-    "{checklist}", "{status}", "{institution}", "{case_type}", "{category}", "{read_back}", "{document_issues}",
-  ];
-  const unknownPlaceholders = (text: string): string[] => {
-    const found = text.match(/\{[a-z_]+\}/g) ?? [];
-    return [...new Set(found.filter((p) => !KNOWN_PLACEHOLDERS.includes(p)))];
-  };
 
   app.get("/templates", requireLogin, requireRole("admin"), (req, res) => {
     const key = String(req.query.template ?? "");
@@ -2226,6 +2218,14 @@ export function createApp(deps: WebDeps): Express {
     if (!name || !subject || !body) return res.redirect(tplBack(key, "Template needs a name, a subject and a body — nothing saved."));
     const packRaw = String(req.body.attach_pack ?? "none").trim() || "none";
     const caseTypeId = req.body.case_type_id !== undefined ? Number(req.body.case_type_id) || 0 : existing.case_type_id;
+    const inspection = inspectTemplate(`${subject}\n${body}`);
+    if (inspection.malformedIncludes.length || inspection.unknownPartials.length) {
+      const problems = [
+        ...inspection.unknownPartials.map((partial) => `unknown partial {{> ${partial}}}`),
+        ...inspection.malformedIncludes,
+      ];
+      return res.redirect(tplBack(key, `Template not saved: ${problems.join("; ")}. Use one of the documented partial includes.`));
+    }
     try {
       // PPR P0-5 (E3 close): upsertTemplate validates the reference against
       // this organization's OWN attachment sets — unknown refs are refused.
@@ -2234,7 +2234,7 @@ export function createApp(deps: WebDeps): Express {
       return res.redirect(tplBack(key, `Template not saved: ${(e as Error).message}`));
     }
     repo.audit(null, req.staff!.username, "template_changed", `${key}${packRaw !== "none" ? ` (+${packRaw} set)` : ""}${caseTypeId ? ` [profile #${caseTypeId}]` : ""}`);
-    const unknown = unknownPlaceholders(subject + " " + body);
+    const unknown = inspection.unknownTokens.map((token) => `{${token}}`);
     const warn = unknown.length
       ? ` ⚠ Unknown placeholder${unknown.length === 1 ? "" : "s"} left in the text: ${unknown.join(", ")} — it will reach contacts as literal text.`
       : "";

@@ -1811,28 +1811,36 @@ export class Repo {
     }
     const bannerVal = includeBanner === undefined ? 1 : includeBanner ? 1 : 0;
     const snapshot = JSON.stringify({ name, subject, body, include_banner: bannerVal, attach_pack: pack ?? "none" });
-    if (organizationId !== 1 || caseTypeId > 0) {
-      const current = this.getTemplate(key, organizationId, caseTypeId);
-      this.db.prepare(
-        `INSERT INTO organization_templates (organization_id, key, name, subject, body, include_banner, attach_pack, case_type_id, default_snapshot) VALUES (?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(organization_id, key) DO UPDATE SET name=excluded.name, subject=excluded.subject, body=excluded.body,
-           include_banner=COALESCE(?, organization_templates.include_banner), attach_pack=COALESCE(?, organization_templates.attach_pack),
-           case_type_id=excluded.case_type_id, updated_at=datetime('now')`
-      ).run(organizationId, key, name, subject, body, includeBanner === undefined ? current?.include_banner ?? 1 : bannerVal,
-        pack ?? current?.attach_pack ?? "none", caseTypeId, snapshot,
-        includeBanner === undefined ? null : bannerVal, pack);
-      return;
-    }
+    const current = this.getTemplate(key, organizationId, caseTypeId);
+    // All new writes use the organization-owned store, including organization
+    // 1. A legacy fallback may still supply `current` while an old database is
+    // transitioning; preserve its original default snapshot on that first
+    // modern write rather than redefining the administrator's edit as default.
+    const priorDefault = this.templateDefaultSnapshot(key, organizationId);
+    const initialSnapshot = priorDefault ? JSON.stringify(priorDefault) : snapshot;
     this.db.prepare(
-      `INSERT INTO templates (key, organization_id, name, subject, body, include_banner, attach_pack, default_snapshot) VALUES (?,?,?,?,?,?,?,?)
-       ON CONFLICT(key) DO UPDATE SET organization_id = excluded.organization_id, name = excluded.name, subject = excluded.subject, body = excluded.body,
-         include_banner = COALESCE(?, templates.include_banner), attach_pack = COALESCE(?, templates.attach_pack), updated_at = datetime('now')`
-    ).run(key, organizationId, name, subject, body, bannerVal, pack ?? "none", snapshot,
+      `INSERT INTO organization_templates (organization_id, key, name, subject, body, include_banner, attach_pack, case_type_id, default_snapshot) VALUES (?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(organization_id, key) DO UPDATE SET name=excluded.name, subject=excluded.subject, body=excluded.body,
+         include_banner=COALESCE(?, organization_templates.include_banner), attach_pack=COALESCE(?, organization_templates.attach_pack),
+         case_type_id=excluded.case_type_id, updated_at=datetime('now')`
+    ).run(organizationId, key, name, subject, body, includeBanner === undefined ? current?.include_banner ?? 1 : bannerVal,
+      pack ?? current?.attach_pack ?? "none", caseTypeId, initialSnapshot,
       includeBanner === undefined ? null : bannerVal, pack);
   }
 
-  setTemplateBanner(key: string, include: boolean): void {
-    this.db.prepare("UPDATE templates SET include_banner = ? WHERE key = ?").run(include ? 1 : 0, key);
+  setTemplateBanner(key: string, include: boolean, organizationId = 1): void {
+    const current = this.getTemplate(key, organizationId);
+    if (!current) return;
+    this.upsertTemplate(
+      current.key,
+      current.name,
+      current.subject,
+      current.body,
+      include,
+      current.attach_pack,
+      organizationId,
+      current.case_type_id
+    );
   }
 
   // ── Settings ─────────────────────────────────────────────────────────────
