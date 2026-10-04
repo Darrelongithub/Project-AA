@@ -146,7 +146,7 @@ export function createApp(deps: WebDeps): Express {
     res.send(Buffer.from(LOGO_WHITE_BASE64, "base64"));
   });
 
-  // Browser-tab mark: the a² SVG; organization logos remain stored on their organization row.
+  // Browser-tab mark: the aᵃ SVG; organization logos remain stored on their organization row.
   app.get("/assets/favicon", (_req, res) => {
     res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
     res.setHeader("Cache-Control", "public, max-age=604800");

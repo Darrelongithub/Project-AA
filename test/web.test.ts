@@ -161,8 +161,8 @@ describe("web console", () => {
     const res = await fetch(`${base}/`, { headers: { cookie } });
     const html = await res.text();
     expect(res.status).toBe(200);
-    expect(html).toContain("Team performance");
-    expect(html).toContain("Completed files &amp; approvals");
+    expect(html).toContain("Team practice");
+    expect(html).toContain("Completed files and decisions");
     expect(html).toContain("System");
     // Round 18: ownership moved to Staff Configuration; activity feed removed.
     expect(html).not.toContain("Courses &amp; ownership");
@@ -256,11 +256,11 @@ describe("web console", () => {
     expect(home).toContain("Example Service Cooperative");
     expect(home).toContain("Your workspace"); // the default tagline
     expect(home).toContain('data-theme="light"');
-    // The bundled Manrope variable font now handles both display and interface text.
+    // The bundled type system uses Manrope for interface copy and Instrument Serif for display text.
     expect(home).toContain("/assets/fonts/manrope.woff2");
-    expect(home).toContain('--display: "Manrope"');
-    expect(home).toContain("a²");
-    expect(home).not.toContain("Instrument Serif");
+    expect(home).toContain('--display: var(--font-display)');
+    expect(home).toContain("aᵃ");
+    expect(home).toContain("Instrument Serif");
     const font = await fetch(`${base}/assets/fonts/manrope.woff2`);
     expect(font.status).toBe(200);
     expect(font.headers.get("content-type")).toBe("font/woff2");

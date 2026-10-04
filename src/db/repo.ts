@@ -148,7 +148,7 @@ export class Repo {
       | { id: number; name: string; logo: string | null; ref_prefix: string; theme: string; from_name: string | null; reply_to: string | null; locale: string | null; timezone: string | null; inbound_address: string | null }
       | undefined;
     if (!row) return undefined;
-    let theme: OrganizationTheme = { primary: "#650019", accent: "#c89a4a" };
+    let theme: OrganizationTheme = { primary: "#3b1d5f", accent: "#9a78c7" };
     try { theme = { ...theme, ...(JSON.parse(row.theme || "{}") as Partial<OrganizationTheme>) }; } catch { /* use safe defaults */ }
     return {
       id: row.id, name: row.name, logo: row.logo, ref_prefix: row.ref_prefix || "ORG", theme,
@@ -162,8 +162,8 @@ export class Repo {
     const name = input.name.trim();
     if (!name) throw new Error("Organization name is required");
     const theme = {
-      primary: input.theme?.primary ?? "#650019",
-      accent: input.theme?.accent ?? "#c89a4a",
+      primary: input.theme?.primary ?? "#3b1d5f",
+      accent: input.theme?.accent ?? "#9a78c7",
     };
     const prefix = (input.refPrefix ?? "ORG").trim().toUpperCase();
     if (!/^[A-Z][A-Z0-9]{0,7}$/.test(prefix)) throw new Error("Reference prefix must be 1–8 characters and start with a letter");

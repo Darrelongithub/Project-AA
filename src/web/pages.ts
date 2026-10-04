@@ -67,22 +67,22 @@ export function kindLabel(kind: string): string {
   return known[kind] ?? capFirst(kind.replace(/_/g, " "));
 }
 
-/** Legacy catalogue grouping — the compatibility shim behind case-type codes. */
+/** Legacy catalogue grouping | the compatibility shim behind case type codes. */
 
 // ── Login ──────────────────────────────────────────────────────────────────
 
 export function loginPage(error?: string, theme?: Theme, institution = "Organization", loginCsrf?: string, okMsg?: string): string {
   return layout({
-    title: `Sign in — ${institution}`,
+    title: `Enter the workspace | ${institution}`,
     institution,
     publicPage: true,
     theme,
     content: `
 <div class="loginbox card">
   ${crest(58)}
-  <div class="brand-lockup"><span>PROJECT</span><b>a<sup>2</sup></b></div>
-  <h1 class="center">Sign in</h1>
-  <p class="sub center">${esc(institution)} · Automated case intake</p>
+  <div class="brand-lockup"><span>PROJECT</span><b>a<sup>a</sup></b></div>
+  <h1 class="center">Enter the workspace</h1>
+  <p class="sub center">${esc(institution)} · Case operations, considered clearly</p>
   ${okMsg ? `<div class="flash ok" style="position:static;margin-bottom:14px">${esc(okMsg)}</div>` : ""}
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
   <form method="post" action="/login">
@@ -91,47 +91,47 @@ export function loginPage(error?: string, theme?: Theme, institution = "Organiza
     <input type="text" name="username" autofocus autocomplete="username" placeholder="your.username">
     <label>Password</label>
     <input type="password" name="password" autocomplete="current-password" placeholder="••••••••">
-    <p style="margin-top:18px"><button class="btn" style="width:100%">Sign in to the console</button></p>
+    <p style="margin-top:18px"><button class="btn" style="width:100%">Enter the workspace to the console</button></p>
   </form>
-  <p class="small center" style="margin-top:14px"><a href="/reset-password">Forgot your password? Ask your admin for a reset code.</a></p>
-  <p class="small muted center">Accounts are provisioned by your administrator.</p>
+  <p class="small center" style="margin-top:14px"><a href="/reset-password">Forgot your password? Request a new access code from your administrator.</a></p>
+  <p class="small muted center">Access is entrusted by your administrator.</p>
 </div>`,
   });
 }
 
-/** Forgot-password: redeem an admin-issued one-time reset code. Anonymous. */
+/** Forgot-password: redeem an admin-issued single use reset code. Anonymous. */
 export function resetPasswordPage(error?: string, theme?: Theme, institution = "Organization", loginCsrf?: string): string {
   return layout({
-    title: `Reset password — ${institution}`,
+    title: `Restore access | ${institution}`,
     institution,
     publicPage: true,
     theme,
     content: `
 <div class="loginbox card">
   ${crest(58)}
-  <div class="brand-lockup"><span>PROJECT</span><b>a<sup>2</sup></b></div>
-  <h1 class="center">Reset password</h1>
-  <p class="sub center">Enter your username and the one-time reset code your administrator issued for you. It works once and expires after 30 minutes.</p>
+  <div class="brand-lockup"><span>PROJECT</span><b>a<sup>a</sup></b></div>
+  <h1 class="center">Restore access</h1>
+  <p class="sub center">Enter your username and the single use code issued by your administrator. The code expires after thirty minutes.</p>
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
   <form method="post" action="/reset-password">
     ${loginCsrf ? `<input type="hidden" name="_lcsrf" value="${esc(loginCsrf)}">` : ""}
     <label>Username</label>
     <input type="text" name="username" autofocus autocomplete="username" placeholder="your.username">
-    <label>Reset code (from your admin)</label>
+    <label>Access code</label>
     <input type="text" name="code" autocomplete="one-time-code" placeholder="e.g. 7KMQ3NP9XW" class="mono" style="text-transform:uppercase">
     <label>New password</label>
     <input type="password" name="password" autocomplete="new-password" placeholder="at least 8 characters">
-    <label>Confirm new password</label>
+    <label>Confirm password</label>
     <input type="password" name="confirm" autocomplete="new-password" placeholder="repeat it">
     <p style="margin-top:18px"><button class="btn" style="width:100%">Set new password</button></p>
   </form>
-  <p class="small muted center"><a href="/login">← Back to sign in</a></p>
+  <p class="small muted center"><a href="/login">← Return to the sign in page</a></p>
 </div>`,
   });
 }
 
 
-/** OR-1: one-time first-run screen — the owner creates their own admin account. */
+/** OR-1: single use first run screen | the owner creates their own admin account. */
 export function setupPage(token: string, error?: string, theme?: Theme, institution = "Organization"): string {
   return layout({
     title: `First-run setup — ${institution}`,
@@ -141,12 +141,12 @@ export function setupPage(token: string, error?: string, theme?: Theme, institut
     content: `
 <div class="loginbox card">
   ${crest(58)}
-  <div class="brand-lockup"><span>PROJECT</span><b>a<sup>2</sup></b></div>
+  <div class="brand-lockup"><span>PROJECT</span><b>a<sup>a</sup></b></div>
   <h1 class="center">Welcome to ${esc(institution)}</h1>
-  <p class="sub center">This is a fresh installation. Create the administrator account — you will not see this screen again.</p>
+  <p class="sub center">This workspace is ready to be established. Create the administrator account. This page will not appear again.</p>
   ${error ? `<div class="flash err" style="position:static;margin-bottom:14px">${esc(error)}</div>` : ""}
   <form method="post" action="/setup">
-    <label for="organization-name">Organization name</label><input id="organization-name" name="organization_name" required maxlength="120" autocomplete="organization" placeholder="Your organization">
+    <label for="organization-name">Organization name</label><input id="organization-name" name="organization_name" required maxlength="120" autocomplete="organization" placeholder="Your organization name">
     <input type="hidden" name="_setup" value="${token}">
     <label>Your name</label>
     <input type="text" name="display_name" autofocus autocomplete="name" placeholder="e.g. Darrel">
@@ -156,7 +156,7 @@ export function setupPage(token: string, error?: string, theme?: Theme, institut
     <input type="password" name="password" autocomplete="new-password" placeholder="••••••••">
     <label>Confirm password</label>
     <input type="password" name="confirm" autocomplete="new-password" placeholder="••••••••">
-    <p style="margin-top:18px"><button class="btn" style="width:100%">Create administrator account</button></p>
+    <p style="margin-top:18px"><button class="btn" style="width:100%">Establish administrator access</button></p>
   </form>
 </div>`,
   });
@@ -170,7 +170,7 @@ export function setupPage(token: string, error?: string, theme?: Theme, institut
 /** First name for the greeting — empty when the account has no personal name. */
 function firstName(display: string): string {
   const w = (display || "").trim().split(/\s+/)[0] || "";
-  return w === "System" ? "" : w;
+  return w === "Workspace" ? "" : w;
 }
 
 function greeting(): string {
@@ -200,13 +200,13 @@ function adminDashboard(c: Ctx): string {
   const completed = Number(s.completed);
   const completion = applications > 0 ? Math.round((completed / applications) * 100) : null;
 
-  // Team performance — the same numbers a staff member sees, per person.
+  // Team practice | the same numbers a staff member sees, per person.
   const teamRows = team
     .map((t) => `<tr${t.active ? "" : ' class="muted"'}>
       <td><div class="nameline">${avatar(t.display_name, 26)}<span><b>${esc(t.display_name)}</b><br><span class="muted small">${esc(capFirst(t.role))}${t.active ? "" : " · deactivated"}</span></span></div></td>
       <td>${t.assignedCases}</td>
       <td>${t.emailsReceived} in · ${t.emailsSent} out</td>
-      <td>${t.avgResponseMinutes !== null ? `${t.avgResponseMinutes} min` : "—"}</td>
+      <td>${t.avgResponseMinutes !== null ? `${t.avgResponseMinutes} min` : "Not recorded"}</td>
       <td>${t.casesCompleted}</td>
     </tr>`)
     .join("");
@@ -219,7 +219,7 @@ function adminDashboard(c: Ctx): string {
     .map((a) => {
       const appr = repo.approverFor(a.id);
       const decision = a.outcome === "auto_approved"
-        ? `<span class="badge b-green">auto-admitted</span>`
+        ? `<span class="badge b-green">admitted automatically</span>`
         : a.outcome === "approved_after_review"
           ? `<span class="badge b-purple">admitted after review</span>`
           : a.outcome === "not_approved"
@@ -227,9 +227,9 @@ function adminDashboard(c: Ctx): string {
             : "";
       return `<tr>
         <td class="mono"><a href="/case/${a.id}">${esc(a.ref_number)}</a></td>
-        <td>${esc(a.full_name ?? "—")}</td>
-        <td>${esc(a.case_type_code ?? "—")}</td>
-        <td class="small">${decision || esc(appr?.actor ?? "—")}</td>
+        <td>${esc(a.full_name ?? "Not recorded")}</td>
+        <td>${esc(a.case_type_code ?? "Not recorded")}</td>
+        <td class="small">${decision || esc(appr?.actor ?? "Not recorded")}</td>
         <td class="small nowrap muted">${esc(fmtDate(appr?.at ?? a.updated_at))}</td>
       </tr>`;
     })
@@ -251,27 +251,27 @@ function adminDashboard(c: Ctx): string {
     `
 <header class="overview-mast">
   <div class="mast-main">
-    <div class="mast-index"><span>a²</span><i> / </i>OPERATIONS REGISTER</div>
+    <div class="mast-index"><span>aᵃ</span><i> / </i>OPERATIONS REGISTER</div>
     <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}<b>.</b></h1>
     <p class="mast-sub">${applications} cases in the register <span>·</span> all times East Africa</p>
   </div>
-  <div class="mast-time">${heroClock()}<span class="mast-live"><i></i> SYSTEM LIVE</span></div>
-  <span class="mast-watermark" aria-hidden="true">a²</span>
-  <span class="mast-folio">PRIVATE
+  <div class="mast-time">${heroClock()}<span class="mast-live"><i></i> SYSTEM IN OPERATION</span></div>
+  <span class="mast-watermark" aria-hidden="true">aᵃ</span>
+  <span class="mast-folio">PRIVATE RECORD
 CASEWORK
 NO. 01</span>
 </header>
 
 <section class="overview-flow">
-  <div class="flow-heading"><span class="flow-index">01</span><div><div class="kicker">THE REGISTER</div><h2>Cases in motion</h2><p>${applications} cases · choose a dial to open its queue</p></div><a class="flow-link" href="/cases">OPEN REGISTER <b>↗</b></a></div>
+  <div class="flow-heading"><span class="flow-index">01</span><div><div class="kicker">THE REGISTER</div><h2>Cases presently unfolding</h2><p>${applications} cases · Choose a measure to enter its queue</p></div><a class="flow-link" href="/cases">OPEN THE REGISTER <b>↗</b></a></div>
   <div class="gauge-band"><div class="band-label"><b>At a glance</b><span>WORKLOAD</span></div>
   ${gaugeRow([
     { n: stage.finished, label: "Finished", tone: "green", href: "/cases?stage=completed", caption: `${completion ?? 0}% of all files` },
-    { n: stage.unfinished, label: "Unfinished", tone: "orange", href: "/cases?stage=unfinished", caption: "gathering documents" },
-    { n: stage.pending, label: "Pending review", tone: "purple", href: "/cases?stage=awaiting_review", caption: "waiting on staff" },
+    { n: stage.unfinished, label: "In progress", tone: "orange", href: "/cases?stage=unfinished", caption: "gathering documents" },
+    { n: stage.pending, label: "Awaiting review", tone: "purple", href: "/cases?stage=awaiting_review", caption: "waiting on staff" },
     { n: stage.enquiries, label: "Enquiries today", tone: "blue", href: "/cases?stage=enquiries", caption: "across the team" },
   ])}</div>
-  <div class="gauge-band levels-band"><div class="band-label"><b>By stage</b><span>PIPELINE</span></div>
+  <div class="gauge-band levels-band"><div class="band-label"><b>By stage</b><span>CASE PROGRESSION</span></div>
   ${gaugeRow([
     { n: stage.application_received, label: "Received", href: "/cases?stage=application_received" },
     { n: stage.documents_received, label: "Documents received", href: "/cases?stage=documents_received" },
@@ -283,18 +283,18 @@ NO. 01</span>
 </section>
 
 <section class="card nopad" id="alerts">
-  <div class="card-head"><h2>Alerts${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
-    ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark all read</button></form>` : ""}
+  <div class="card-head"><h2>Notices${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
+    ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark every notice as read</button></form>` : ""}
   </div>
   ${alerts.length
     ? `<div class="feed">${alertRows}</div>`
-    : `<div class="empty"><p>No alerts. Escalations and auto-case intake appear here.</p></div>`}
+    : `<div class="empty"><p>There are no notices at present. Escalations and newly opened cases will appear here.</p></div>`}
 </section>
 
 ${missingDocs.length
   ? `<section class="card" id="missing-docs">
     <h2>Most requested missing documents</h2>
-    <p class="small muted" style="margin-top:-6px">Required documents the most open cases are still waiting on — work down the list.</p>
+    <p class="small muted" style="margin-top:-6px">These are the documents most frequently awaited by open cases. Begin with the matters at the top of the list.</p>
     <div class="kv">
       ${missingDocs.map((m) => `<div><span>${esc(docLabel(m.type as DocType))}</span><b>${m.count} case${m.count === 1 ? "" : "s"}</b></div>`).join("")}
     </div>
@@ -304,26 +304,26 @@ ${missingDocs.length
 ${triageTile(triage)}
 
 <section class="card nopad">
-  <div class="card-head"><h2>Team performance <span class="muted small" style="text-transform:none;letter-spacing:0">— how your staff are working</span></h2><a class="small" href="/staff">staff configuration →</a></div>
+  <div class="card-head"><h2>Team practice <span class="muted small" style="text-transform:none;letter-spacing:0">| How the team is carrying the work</span></h2><a class="small" href="/staff">Staff configuration →</a></div>
   ${team.length
-    ? `<table><tr><th>Staff member</th><th>Assigned cases</th><th>Emails</th><th>Avg response</th><th>Files completed</th></tr>${teamRows}</table>`
-    : `<div class="empty"><p>No staff accounts yet.</p></div>`}
+    ? `<table><tr><th>Member of staff</th><th>Cases entrusted</th><th>Emails</th><th>Avg response</th><th>Files concluded</th></tr>${teamRows}</table>`
+    : `<div class="empty"><p>No staff accounts have been established yet.</p></div>`}
 </section>
 
 <section class="card nopad">
-  <div class="card-head"><h2>Completed files &amp; approvals <span class="muted small" style="text-transform:none;letter-spacing:0">— who finished what, and when</span></h2></div>
+  <div class="card-head"><h2>Completed files and decisions <span class="muted small" style="text-transform:none;letter-spacing:0">| A record of what was completed and when</span></h2></div>
   ${completedFiles
-    ? `<table><tr><th>Ref</th><th>Contact</th><th>Case</th><th>Decision / completed by</th><th>When</th></tr>${completedFiles}</table>`
-    : `<div class="empty"><p>No completed files yet — approvals appear here as cases finish.</p></div>`}
+    ? `<table><tr><th>Ref</th><th>Correspondent</th><th>Case</th><th>Decision / completed by</th><th>When</th></tr>${completedFiles}</table>`
+    : `<div class="empty"><p>No completed files have entered the register yet. Decisions will appear here as matters reach completion.</p></div>`}
 </section>
 
 <section class="card">
-  <h2>System</h2>
+  <h2>Workspace</h2>
   <div class="kv">
     <div><span>Gmail</span><b>${gmailConnected ? `connected${lastSync ? ` · synced ${esc(fmtDate(lastSync))}` : ""}` : "not connected"} <a class="small" href="/settings#connections">manage</a></b></div>
     <div><span>Document AI (Gemini)</span><b>${repo.hasSecret("gemini_api_key") ? "key saved · live" : "not set"} <a class="small" href="/settings#connections">manage</a></b></div>
-    <div><span>Automation</span><b>${globalMode === "draft" ? "draft-first" : "auto"} · <a class="small" href="/settings#automation">change</a></b></div>
-    <div><span>Team</span><b>${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">staff configuration</a></b></div>
+    <div><span>Automation</span><b>${globalMode === "draft" ? "draft first" : "auto"} · <a class="small" href="/settings#automation">change</a></b></div>
+    <div><span>Team</span><b>${team.filter((t) => t.active).length}/${team.length} active · <a class="small" href="/staff">Staff configuration</a></b></div>
     <div><span>Replies to date</span><b>${(() => { const ac = repo.accuracyStats(realm); return Number(ac.autoSends) + Number(ac.humanSends); })()}</b></div>
   </div>
 </section>`
@@ -344,11 +344,11 @@ function triageTile(t: { green: number; orange: number; red: number }): string {
     </div>`;
   return `<section class="card" id="triage">
     <h2>Triage right now</h2>
-    <p class="small muted" style="margin-top:-6px">Every case's current marking — Green needs nothing, Orange needs a look, Red needs action.</p>
+    <p class="small muted" style="margin-top:-6px">Each case carries a current assessment. Green requires no attention, orange invites review, and red calls for action.</p>
     <div style="display:flex;gap:34px;flex-wrap:wrap;padding-top:6px">
-      ${item(t.green, "Green", "clean — nothing needs a person", "green")}
+      ${item(t.green, "Green", "Clear, with no human action required", "green")}
       ${item(t.orange, "Orange", "needs a person to look", "orange")}
-      ${item(t.red, "Red", "a problem a person must act on", "red")}
+      ${item(t.red, "Red", "A matter requiring human attention", "red")}
     </div>
   </section>`;
 }
@@ -377,7 +377,7 @@ function officerDashboard(c: Ctx): string {
     { label: "cases past their response target", n: Number(s.overdue), href: "/queue?filter=overdue", tone: "red" },
     { label: "cases waiting for human review", n: Number(s.humanReview), href: "/queue", tone: "orange" },
     { label: "files incomplete (documents missing)", n: Number(s.incomplete), href: "/applicants?filter=awaiting_docs", tone: "blue" },
-    { label: "replies auto-processed to date", n: Number(s.autoHandled), href: "/queue", tone: "green" },
+    { label: "replies processed automatically to date", n: Number(s.autoHandled), href: "/queue", tone: "green" },
   ];
   const attentionRows = attention
     .map((b) => `<a class="attn-row" href="${b.href}"><span class="n t-${b.tone}">${b.n}</span><span class="l">${esc(b.label)}</span><span class="arrow">→</span></a>`)
@@ -389,10 +389,10 @@ function officerDashboard(c: Ctx): string {
       const overdue = r.sla_due_at && !r.sla_handled_at && r.sla_due_at < new Date().toISOString();
       return `<tr>
         <td class="mono"><a href="/case/${r.id}">${esc(r.ref_number)}</a></td>
-        <td><div class="nameline">${avatar(r.full_name ?? r.ref_number, 26)}<span>${esc(r.full_name ?? "—")}</span></div></td>
+        <td><div class="nameline">${avatar(r.full_name ?? r.ref_number, 26)}<span>${esc(r.full_name ?? "Not recorded")}</span></div></td>
         <td>${triageBadge(r.computed_status)} ${priorityBadge(r.priority)}</td>
-        <td class="small">${esc(r.flag_summary ? humanizeFlagSummary(r.flag_summary) : "—")}</td>
-        <td class="nowrap small ${overdue ? "overdue" : "muted"}">${esc(slaText(r.sla_due_at, r.sla_handled_at)) || "—"}</td>
+        <td class="small">${esc(r.flag_summary ? humanizeFlagSummary(r.flag_summary) : "Not recorded")}</td>
+        <td class="nowrap small ${overdue ? "overdue" : "muted"}">${esc(slaText(r.sla_due_at, r.sla_handled_at)) || "Not recorded"}</td>
       </tr>`;
     })
     .join("");
@@ -401,7 +401,7 @@ function officerDashboard(c: Ctx): string {
     .slice(0, 8)
     .map((u) => `<tr>
       <td class="mono"><a href="/case/${u.applicant.id}">${esc(u.applicant.ref_number)}</a></td>
-      <td>${esc(u.applicant.full_name ?? "—")}</td>
+      <td>${esc(u.applicant.full_name ?? "Not recorded")}</td>
       <td class="nowrap ${u.hours >= target ? "overdue" : "muted"} small">${u.hours}h waiting</td>
     </tr>`)
     .join("");
@@ -435,15 +435,15 @@ function officerDashboard(c: Ctx): string {
     </div>`)
     .join("");
 
-  // Alerts sit IMMEDIATELY after the gauges — the first thing after the
+  // Notices sit IMMEDIATELY after the gauges | the first thing after the
   // pipeline picture is what needs a human right now.
   const alertsCard = `<section class="card nopad" id="alerts">
-    <div class="card-head"><h2>Alerts${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
-      ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark all read</button></form>` : ""}
+    <div class="card-head"><h2>Notices${c.unread ? ` <span class="badge b-purple">${c.unread} new</span>` : ""}</h2>
+      ${c.unread ? `<form method="post" action="/notifications/read-all" style="margin:0"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><button class="btn small ghost">Mark every notice as read</button></form>` : ""}
     </div>
     ${alerts.length
       ? `<div class="feed">${alertRows}</div>`
-      : `<div class="empty"><p>No alerts. Escalations and auto-case intake appear here.</p></div>`}
+      : `<div class="empty"><p>There are no notices at present. Escalations and newly opened cases will appear here.</p></div>`}
   </section>`;
 
   return head(
@@ -453,27 +453,27 @@ function officerDashboard(c: Ctx): string {
     `
 <header class="overview-mast">
   <div class="mast-main">
-    <div class="mast-index"><span>a²</span><i> / </i>${esc(c.institution).toUpperCase()} · LIVE CASEWORK</div>
+    <div class="mast-index"><span>aᵃ</span><i> / </i>${esc(c.institution).toUpperCase()} · CASEWORK IN PROGRESS</div>
     <h1>${greeting()}${firstName(c.user.display_name) ? ", " + esc(firstName(c.user.display_name)) : ""}<b>.</b></h1>
     <p class="mast-sub">${activeCount} active applicant${activeCount === 1 ? "" : "s"} <span>·</span> all times East Africa</p>
   </div>
-  <div class="mast-time">${heroClock()}<span class="mast-live"><i></i> SYSTEM LIVE</span></div>
-  <span class="mast-watermark" aria-hidden="true">a²</span>
-  <span class="mast-folio">PRIVATE
+  <div class="mast-time">${heroClock()}<span class="mast-live"><i></i> SYSTEM IN OPERATION</span></div>
+  <span class="mast-watermark" aria-hidden="true">aᵃ</span>
+  <span class="mast-folio">PRIVATE RECORD
 CASEWORK
 NO. 01</span>
 </header>
 
 <section class="overview-flow">
-  <div class="flow-heading"><span class="flow-index">01</span><div><div class="kicker">THE REGISTER</div><h2>Cases in motion</h2><p>Every dial opens its live queue.</p></div><a class="flow-link" href="/cases">OPEN REGISTER <b>↗</b></a></div>
+  <div class="flow-heading"><span class="flow-index">01</span><div><div class="kicker">THE REGISTER</div><h2>Cases presently unfolding</h2><p>Every dial opens its live queue.</p></div><a class="flow-link" href="/cases">OPEN THE REGISTER <b>↗</b></a></div>
   <div class="gauge-band"><div class="band-label"><b>At a glance</b><span>WORKLOAD</span></div>
   ${gaugeRow([
     { n: stage.finished, label: "Finished", tone: "green", href: "/cases?stage=completed", caption: "completed files" },
-    { n: stage.unfinished, label: "Unfinished", tone: "orange", href: "/cases?stage=unfinished", caption: "still gathering documents" },
-    { n: stage.pending, label: "Pending review", tone: "purple", href: "/cases?stage=pending", caption: "waiting on a human" },
-    { n: stage.enquiries, label: "Enquiries today", tone: "blue", href: "/cases?stage=enquiries", caption: "fee · case · follow-ups" },
+    { n: stage.unfinished, label: "In progress", tone: "orange", href: "/cases?stage=unfinished", caption: "still gathering documents" },
+    { n: stage.pending, label: "Awaiting review", tone: "purple", href: "/cases?stage=pending", caption: "waiting on a human" },
+    { n: stage.enquiries, label: "Enquiries today", tone: "blue", href: "/cases?stage=enquiries", caption: "fee · case · follow ups" },
   ])}</div>
-  <div class="gauge-band levels-band"><div class="band-label"><b>By stage</b><span>PIPELINE</span></div>
+  <div class="gauge-band levels-band"><div class="band-label"><b>By stage</b><span>CASE PROGRESSION</span></div>
   ${gaugeRow([
     { n: stage.application_received, label: "Received", href: "/cases?stage=application_received" },
     { n: stage.documents_received, label: "Documents received", href: "/cases?stage=documents_received" },
@@ -489,7 +489,7 @@ ${alertsCard}
 ${missingDocs.length
   ? `<section class="card" id="missing-docs">
     <h2>Most requested missing documents</h2>
-    <p class="small muted" style="margin-top:-6px">Required documents the most open cases are still waiting on — work down the list.</p>
+    <p class="small muted" style="margin-top:-6px">These are the documents most frequently awaited by open cases. Begin with the matters at the top of the list.</p>
     <div class="kv">
       ${missingDocs.map((m) => `<div><span>${esc(docLabel(m.type as DocType))}</span><b>${m.count} case${m.count === 1 ? "" : "s"}</b></div>`).join("")}
     </div>
@@ -500,7 +500,7 @@ ${triageTile(triage)}
 
 <div class="cols wide">
   <section class="card nopad">
-    <div class="card-head"><h2>Needs attention</h2><a class="small" href="/applicants?queue=human_review">full queue →</a></div>
+    <div class="card-head"><h2>Needs attention</h2><a class="small" href="/applicants?queue=human_review">View the full queue →</a></div>
     <div>${attentionRows}</div>
   </section>
   <section class="card">
@@ -509,30 +509,30 @@ ${triageTile(triage)}
       <div><span>Emails today</span><b>${today.emailsToday}</b></div>
       <div><span>Documents today</span><b>${today.docsToday}</b></div>
       <div><span>Cases completed today</span><b>${today.completedToday}</b></div>
-      <div><span>Avg auto-response (7 days)</span><b>${esc(avgAuto)}</b></div>
+      <div><span>Avg automatic response (7 days)</span><b>${esc(avgAuto)}</b></div>
       <div><span>Avg review time</span><b>${esc(avgReview)}</b></div>
     </div>
   </section>
 </div>
 
 <section class="card nopad">
-  <div class="card-head"><h2>What needs my attention</h2><a class="small" href="/applicants?queue=human_review">open the Human Review queue →</a></div>
+  <div class="card-head"><h2>What needs my attention</h2><a class="small" href="/applicants?queue=human_review">Open the human review queue</a></div>
   ${queue.length
-    ? `<table><tr><th>Ref</th><th>Contact</th><th>Verdict</th><th>Flags</th><th>SLA</th></tr>${needsAttention}</table>`
-    : `<div class="empty"><p>Queue is empty — every case is handled.</p></div>`}
+    ? `<table><tr><th>Ref</th><th>Correspondent</th><th>Verdict</th><th>Flags</th><th>SLA</th></tr>${needsAttention}</table>`
+    : `<div class="empty"><p>The queue is clear. Every case is presently accounted for.</p></div>`}
 </section>
 
 <div class="cols wide">
   <section class="card nopad">
-    <div class="card-head"><h2>Unanswered emails <span class="muted small">(target ${target}h)</span></h2></div>
+    <div class="card-head"><h2>Correspondence awaiting reply <span class="muted small">(target ${target}h)</span></h2></div>
     ${unanswered.length
-      ? `<table><tr><th>Ref</th><th>Contact</th><th>Waiting</th></tr>${unansweredRows}</table>`
-      : `<div class="empty"><p>Every applicant email has a reply.</p></div>`}
+      ? `<table><tr><th>Ref</th><th>Correspondent</th><th>Awaiting reply</th></tr>${unansweredRows}</table>`
+      : `<div class="empty"><p>Every applicant message has received a reply.</p></div>`}
   </section>
   <section class="card">
     <h2>Where applicants get stuck</h2>
-    <p class="small muted" style="margin-top:-6px">Share of incoming email by category — the long bars are your bottlenecks.</p>
-    ${catRows ? `<table>${catRows}</table>` : `<p class="muted">No emails yet.</p>`}
+    <p class="small muted" style="margin-top:-6px">The distribution of incoming correspondence by category. Longer bars reveal where attention gathers.</p>
+    ${catRows ? `<table>${catRows}</table>` : `<p class="muted">No correspondence has been recorded yet.</p>`}
   </section>
 </div>
 
@@ -540,7 +540,7 @@ ${triageTile(triage)}
   <h2>Automation accuracy</h2>
   ${reviewed > 0
     ? `<p style="margin:2px 0 12px"><span style="font-family:var(--display);font-size:30px">${accuracyPct}%</span> <span class="muted small">of automation decisions stood uncorrected</span></p>`
-    : `<p class="muted">No automation decisions recorded yet — accuracy appears here once the engine has processed mail.</p>`}
+    : `<p class="muted">No automated decisions have been recorded yet. The measure will appear once correspondence has been processed.</p>`}
   <div class="kv">
     <div><span>Clean Greens</span><b>${accuracy.greenCases}</b></div>
     <div><span>Watcher catches</span><b>${accuracy.watcherCatches}</b></div>
@@ -561,7 +561,7 @@ const STAGE_TABS: Array<{ key: string; label: string }> = [
   { key: "documents_checked", label: "Documents checked" },
   { key: "awaiting_review", label: "Awaiting review" },
   { key: "verification", label: "Verification" },
-  { key: "pending", label: "Pending review" },
+  { key: "pending", label: "Awaiting review" },
   { key: "completed", label: "Completed" },
 ];
 
@@ -605,13 +605,13 @@ export function casesPage(c: Ctx, stage: string): string {
       return `<tr class="case-row b-${stageTone}">
         <td><a class="case-ref" href="/case/${a.id}">${esc(a.ref_number)}</a></td>
         <td><div class="case-person">${avatar(a.full_name ?? a.ref_number, 34)}<span><b>${esc(a.full_name ?? "Unknown")}</b><span class="muted small">${esc(a.email_address)}</span></span></div></td>
-        <td>${a.case_type_code ? `<b>${esc(a.case_type_code)}</b>` : `<span class="muted">—</span>`}<br><span class="muted small">${esc(a.intake ?? "no intake yet")}</span></td>
+        <td>${a.case_type_code ? `<b>${esc(a.case_type_code)}</b>` : `<span class="muted">Not recorded</span>`}<br><span class="muted small">${esc(a.intake ?? "awaiting intake")}</span></td>
         <td><span class="queue-state"><i class="state-dot" aria-hidden="true"></i>${esc(LIFECYCLE_LABELS[a.lifecycle])}</span></td>
-        <td class="small nowrap muted" title="Applied">${esc(fmtDate(a.created_at))}</td>
+        <td class="small nowrap muted" title="Received">${esc(fmtDate(a.created_at))}</td>
         <td class="small">${owner ? esc(owner) : legacyOwner ? `<span class="muted">case owner: ${esc(legacyOwner)}</span>` : `<span class="muted">unassigned</span>`}</td>
         <td class="nowrap">
           <a class="btn small ghost" href="/case/${a.id}">Open</a>
-          <a class="btn small" href="/case/${a.id}/compose?template=missing_documents" title="A ready-drafted request — edit if you like, then send">Request docs</a>
+          <a class="btn small" href="/case/${a.id}/compose?template=missing_documents" title="A prepared request | edit if you like, then send">Request documents</a>
         </td>
       </tr>`;
     })
@@ -623,19 +623,19 @@ export function casesPage(c: Ctx, stage: string): string {
     "cases",
     `
 <h1>Cases</h1>
-<div class="sub">Every applicant sits in exactly one level. Finished files are counted at Completed — everything still moving is counted where it stands. Open a case to work it.</div>
+<div class="sub">Each applicant occupies one stage of the register. Completed matters are recorded at completion, while active matters remain where their work currently stands. Open a case to continue.</div>
 
 <div style="margin-bottom:26px">
   ${gaugeRow([
     { n: counts.finished, label: "Finished", tone: "green", href: "/cases?stage=completed" },
-    { n: counts.unfinished, label: "Unfinished", tone: "orange", href: "/cases?stage=unfinished" },
-    { n: counts.pending, label: "Pending review", tone: "purple", href: "/cases?stage=pending" },
+    { n: counts.unfinished, label: "In progress", tone: "orange", href: "/cases?stage=unfinished" },
+    { n: counts.pending, label: "Awaiting review", tone: "purple", href: "/cases?stage=pending" },
     { n: enquiriesToday.length, label: "Enquiries today", tone: "blue", href: "/cases?stage=enquiries" },
   ])}
 </div>
 
 <div class="tabs">
-  ${STAGE_TABS.concat([{ key: "unfinished", label: "Unfinished" }, { key: "enquiries", label: "Enquiries" }])
+  ${STAGE_TABS.concat([{ key: "unfinished", label: "In progress" }, { key: "enquiries", label: "Enquiries" }])
     .map((t) => `<a href="/cases?stage=${t.key}" class="${active === t.key ? "on" : ""}">${esc(t.label)}<span class="cnt">${countFor(t.key)}</span></a>`)
     .join("")}
 </div>
@@ -643,10 +643,10 @@ export function casesPage(c: Ctx, stage: string): string {
 <section class="card nopad">
   ${rows.length
     ? `<table>
-        <tr><th>Ref</th><th>Contact</th><th>Applied for</th><th>Level</th><th>Applied</th><th>Handled by</th><th></th></tr>
+        <tr><th>Ref</th><th>Correspondent</th><th>Received for</th><th>Level</th><th>Received</th><th>Attended by</th><th></th></tr>
         ${tableRows}
       </table>`
-    : `<div class="empty">${flowLine(150, 26)}<p>Nobody at this level right now.</p><p class="small muted">New applications land at <b>Received</b> and move down the pipeline as your team works them.</p></div>`}
+    : `<div class="empty">${flowLine(150, 26)}<p>There are no matters at this stage.</p><p class="small muted">New applications begin at <b>Received</b> and progress as the team attends to them.</p></div>`}
 </section>`
   );
 }
@@ -671,7 +671,7 @@ const DECISION_BADGES: Record<string, [string, string]> = {
 };
 
 function resultBadge(result: string | null): string {
-  const [label, cls] = RESULT_BADGES[result ?? ""] ?? [result ?? "—", "b-gray"];
+  const [label, cls] = RESULT_BADGES[result ?? ""] ?? [result ?? "Not recorded", "b-gray"];
   return `<span class="badge ${cls}">${esc(label)}</span>`;
 }
 
@@ -703,7 +703,7 @@ export function applicantsPage(
       "Queues",
       "applicants",
       `<div class="empty" style="padding:56px 24px;text-align:center">
-        <p style="font-size:17px;font-weight:700;margin-bottom:6px">No cases yet.</p>
+        <p style="font-size:17px;font-weight:700;margin-bottom:6px">No cases have entered the register yet.</p>
         <p class="small muted">Configure a <a href="/config?tab=case-types">case type</a>, document checklist and routing before connecting mail.</p>
         ${c.user.role === "admin" && repo.listCaseTypes(c.user.organization_id ?? 1).length ? `<p style="margin-top:14px"><a class="btn" href="/intake/test">Submit a test message</a></p>` : ""}
       </div>`
@@ -764,7 +764,7 @@ export function applicantsPage(
       const tone = toneClass(rowQueue.tone);
       return `<tr class="case-row ${tone}">
       <td><a class="case-ref" href="/case/${r.id}">${esc(r.ref_number)}</a></td>
-      <td><div class="case-person">${avatar(r.full_name ?? r.ref_number, 34)}<span><b>${esc(r.full_name ?? "—")}</b><span class="muted small">${esc(r.email_address)}</span></span></div></td>
+      <td><div class="case-person">${avatar(r.full_name ?? r.ref_number, 34)}<span><b>${esc(r.full_name ?? "Not recorded")}</b><span class="muted small">${esc(r.email_address)}</span></span></div></td>
       <td class="small">${esc(repo.caseTypeForCase(r.id)?.name ?? r.category ?? "Unconfigured")}</td>
       <td class="small"><span class="queue-state"><i class="state-dot" aria-hidden="true"></i>${esc(SUB_LABELS[place.sub] ?? place.sub)}</span><br><span class="muted">${why}</span></td>
       <td>${resultBadge(r.req_result)}</td>
@@ -780,7 +780,7 @@ export function applicantsPage(
 
   return head(
     c,
-    searchMode ? "Search — Queues" : `${active.label} — Queues`,
+    searchMode ? "Search the queues" : `${active.label} | Queues`,
     "applicants",
     `
 <h1>Queues</h1>
@@ -792,11 +792,11 @@ export function applicantsPage(
 
 <form class="inline" method="get" action="/applicants">
   <input type="hidden" name="queue" value="${esc(activeKey)}">
-  <input name="q" value="${esc(q.search ?? "")}" placeholder="Search name, email, reference…">
-  <select name="case_type"><option value="">All case types</option>${caseTypes.map((p) => opt(p.code, p.name, q.caseType)).join("")}</select>
-  <select name="intake"><option value="">All batches</option>${intakes.map((i) => opt(i, i, q.intake)).join("")}</select>
-  <button class="btn ghost">Filter</button>
-  ${c.user.role === "admin" ? `<a class="btn small ghost" href="/applicants/export.csv">Export CSV</a>` : ""}
+  <input name="q" value="${esc(q.search ?? "")}" placeholder="Search by name, email, or reference">
+  <select name="case_type"><option value="">Every case type</option>${caseTypes.map((p) => opt(p.code, p.name, q.caseType)).join("")}</select>
+  <select name="intake"><option value="">Every intake</option>${intakes.map((i) => opt(i, i, q.intake)).join("")}</select>
+  <button class="btn ghost">Refine results</button>
+  ${c.user.role === "admin" ? `<a class="btn small ghost" href="/applicants/export.csv">Export records</a>` : ""}
   ${c.user.role === "admin" && repo.listCaseTypes(c.user.organization_id ?? 1).length ? `<a class="btn small ghost" href="/intake/test">Test intake</a>` : ""}
 </form>
 
@@ -804,12 +804,12 @@ export function applicantsPage(
   ${searchMode ? "" : `<div class="chips">${chips}</div>`}
   ${shown.length
     ? `<table>
-        <tr><th>Ref</th><th>Contact</th><th>Case type</th><th>Why it's here</th><th>Requirement result</th><th>Outcome</th><th>Opened</th><th></th></tr>
+        <tr><th>Ref</th><th>Correspondent</th><th>Case type</th><th>Reason for placement</th><th>Requirement assessment</th><th>Outcome</th><th>Opened</th><th></th></tr>
         ${trs}
       </table>`
     : searchMode
-      ? `<div class="empty"><h3>No matches</h3><p>Nothing matches that search in this dataset.</p></div>`
-      : `<div class="empty"><h3>Nothing in this queue</h3><p>Cases move here automatically as their situation changes.</p></div>`}
+      ? `<div class="empty"><h3>No matching records</h3><p>No record answers that search.</p></div>`
+      : `<div class="empty"><h3>This queue is presently clear</h3><p>Matters enter this queue as their circumstances change.</p></div>`}
 </section>`
   );
 }
@@ -889,7 +889,7 @@ export function terminologyFor(c: Ctx, a?: ApplicantRow): { case: string; contac
   const t = (caseType?.terminology ?? {}) as Record<string, string>;
   return {
     case: t.case || "Case",
-    contact: t.contact || "Contact",
+    contact: t.contact || "Correspondent",
     category: t.category || "Category",
     stage: t.stage || "Stage",
     outcome: t.outcome || "Outcome",
@@ -909,8 +909,8 @@ function evaluationPanel(c: Ctx, a: ApplicantRow): string {
   const evaluation = c.repo.latestEvaluation(a.id);
   const rows = requirements.map((requirement) => `<div class="field"><span class="lbl">${esc(requirement.label ?? docLabel(requirement.document_type))}</span><span class="val">${active.has(requirement.document_type) ? "On file" : requirement.required && requirement.blocking !== false ? "Outstanding" : "Optional"}</span></div>`).join("");
   const allowed = c.repo.hasPermission(c.user.id, "record_outcome");
-  const outcomeForm = allowed ? `<form method="post" action="/case/${a.id}/outcome"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><label for="case-outcome">Record outcome</label><select id="case-outcome" name="outcome"><option value="approved_after_review">Approved after review</option><option value="not_approved">Not approved</option><option value="undecided">Return to review</option></select><label for="outcome-reason">Reason (required)</label><textarea id="outcome-reason" name="reason" required maxlength="2000"></textarea><button class="btn small">Record human outcome</button></form>` : "";
-  return `<section class="sec"><div class="sec-head"><h2>Required information &amp; outcome</h2></div><div class="meta-grid">${rows || '<p class="small muted">No document checklist is configured. Configure this case type before enabling automation.</p>'}</div><p>Evidence: ${resultBadge(evaluation?.result ?? a.req_result)} · Outcome: ${decisionBadge(a.outcome ?? "undecided")}</p><p class="small muted">${esc(evaluation?.reason ?? "A person must review this case. No automated outcome is recorded.")}</p>${a.decision_reason ? '<p class="small">Last decision: ' + esc(a.decision_reason) + ' — ' + esc(a.decision_by ?? "unknown") + '</p>' : ""}${outcomeForm}</section>`;
+  const outcomeForm = allowed ? `<form method="post" action="/case/${a.id}/outcome"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><label for="case-outcome">Record outcome</label><select id="case-outcome" name="outcome"><option value="approved_after_review">Approved after review</option><option value="not_approved">Not approved</option><option value="undecided">Return to review</option></select><label for="outcome-reason">Reason</label><textarea id="outcome-reason" name="reason" required maxlength="2000"></textarea><button class="btn small">Record the considered outcome</button></form>` : "";
+  return `<section class="sec"><div class="sec-head"><h2>Required information &amp; outcome</h2></div><div class="meta-grid">${rows || '<p class="small muted">No document checklist has been established. Configure this case type before enabling automation.</p>'}</div><p>Evidence: ${resultBadge(evaluation?.result ?? a.req_result)} · Outcome: ${decisionBadge(a.outcome ?? "undecided")}</p><p class="small muted">${esc(evaluation?.reason ?? "This matter awaits human review. No automated outcome has been recorded.")}</p>${a.decision_reason ? '<p class="small">Last decision: ' + esc(a.decision_reason) + ' | ' + esc(a.decision_by ?? "unknown") + '</p>' : ""}${outcomeForm}</section>`;
 }
 
 
@@ -959,7 +959,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
   // ── Evidence requirements: needed vs supplied, at a glance ──────────────
   const reqByType = new Map(requirements.map((r) => [r.document_type, r]));
 
-  // ── Document checklist: every received document, expandable ──────────────
+  // ── Required documents: every received document, expandable ──────────────
   const docRowsHtml = allDocs
     .map((d, ix) => {
       const req = reqByType.get(d.document_type);
@@ -967,7 +967,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
         ? req.required
           ? `<span class="badge b-purple">Required</span>`
           : `<span class="badge b-gray">Optional</span>`
-        : `<span class="badge b-gray">—</span>`;
+        : `<span class="badge b-gray">Not recorded</span>`;
       const state = d.is_duplicate
         ? `<span class="badge b-gray">duplicate of #${d.duplicate_of}</span>`
         : d.superseded_by
@@ -996,9 +996,9 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
             <div><div class="k">Extraction</div><div class="v">${esc(d.extraction_method)} · ${esc(d.confidence)} confidence</div></div>
             ${d.extraction_note ? `<div><div class="k">Reading note</div><div class="v">${esc(d.extraction_note)}</div></div>` : ""}
           </div>
-          <div class="kv2" style="margin-bottom:14px">${fields || `<div><div class="k">Extracted fields</div><div class="v muted">no fields extracted</div></div>`}</div>
-          <div class="k" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);font-weight:800;margin-bottom:6px">Raw extraction</div>
-          ${raw ? `<pre class="raw">${esc(raw.slice(0, 1400))}</pre>` : `<p class="small muted" style="margin:0">No readable text extracted.</p>`}
+          <div class="kv2" style="margin-bottom:14px">${fields || `<div><div class="k">Fields recovered</div><div class="v muted">no fields extracted</div></div>`}</div>
+          <div class="k" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.11em;color:var(--muted);font-weight:800;margin-bottom:6px">Source extraction</div>
+          ${raw ? `<pre class="raw">${esc(raw.slice(0, 1400))}</pre>` : `<p class="small muted" style="margin:0">No readable text could be recovered from this document.</p>`}
         </td>
       </tr>`;
     })
@@ -1029,7 +1029,7 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
 
   // ── Activity & audit trail (tabbed) ────────────────────────────────────────
   const historyRows = history
-    .map((h) => `<tr><td class="small nowrap">${esc(fmtDate(h.at))}</td><td>${esc(LIFECYCLE_LABELS[(h.from_status as never)] ?? h.from_status ?? "—")} → <b>${esc(LIFECYCLE_LABELS[(h.to_status as never)] ?? h.to_status)}</b></td><td class="mono small">${esc(h.actor)}</td><td class="small">${esc(h.reason)}</td></tr>`)
+    .map((h) => `<tr><td class="small nowrap">${esc(fmtDate(h.at))}</td><td>${esc(LIFECYCLE_LABELS[(h.from_status as never)] ?? h.from_status ?? "Not recorded")} → <b>${esc(LIFECYCLE_LABELS[(h.to_status as never)] ?? h.to_status)}</b></td><td class="mono small">${esc(h.actor)}</td><td class="small">${esc(h.reason)}</td></tr>`)
     .join("");
   const auditRows = audit
     .map((ev) => `<div class="ev"><span class="t"><span data-rel="${esc(ev.at)}">${esc(fmtDate(ev.at))}</span> · ${esc(ev.actor)}</span><br><b>${esc(ev.event)}</b> — ${esc(ev.detail)}</div>`)
@@ -1039,9 +1039,9 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
     .reverse()
     .map((ev) => `<div style="padding:10px 0;border-bottom:1px dashed var(--line);font-size:13px">
       <span class="small muted">${esc(fmtDate(ev.at))} · ${esc(ev.actor)}</span><br>
-      <b>${esc(capFirst(ev.event.replace(/_/g, " ")))}</b>${ev.detail ? ` <span class="muted">— ${esc(ev.detail)}</span>` : ""}
+      <b>${esc(capFirst(ev.event.replace(/_/g, " ")))}</b>${ev.detail ? ` <span class="muted"> | ${esc(ev.detail)}</span>` : ""}
     </div>`)
-    .join("") || `<p class="muted">No activity yet.</p>`;
+    .join("") || `<p class="muted">No activity has been recorded yet.</p>`;
 
   const noteCards = notes
     .map((n) => `<div class="note"><div>${esc(n.body)}</div><div class="meta">${esc(n.display_name ?? "system")} · ${esc(fmtDate(n.at))}</div></div>`)
@@ -1095,7 +1095,7 @@ ${flash ? `<div class="flash">${esc(flash)}</div>` : ""}
     <button class="btn ghost small" onclick="window.print()">Print case brief</button>
     <form method="post" action="/case/${a.id}/assign" class="ops-inline" style="margin:0">
       <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-      <select name="staff_id" style="max-width:160px"><option value="">Assign to…</option>${staffOptions}</select>
+      <select name="staff_id" style="max-width:160px"><option value="">Assign to</option>${staffOptions}</select>
       <button class="btn small">Assign</button>
     </form>
   </div>
@@ -1114,9 +1114,9 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
     <section class="sec">
       <div class="sec-head"><h2>${esc(terms.case)} overview</h2></div>
       <div class="meta-grid">
-        <div class="field"><span class="lbl">Name</span><span class="val">${esc(a.full_name ?? "—")}</span></div>
+        <div class="field"><span class="lbl">Name</span><span class="val">${esc(a.full_name ?? "Not recorded")}</span></div>
         <div class="field"><span class="lbl">Email</span><span class="val"><a href="mailto:${esc(a.email_address)}">${esc(a.email_address)}</a></span></div>
-        <div class="field"><span class="lbl">Phone</span><span class="val">${esc(a.phone ?? "—")}</span></div>
+        <div class="field"><span class="lbl">Phone</span><span class="val">${esc(a.phone ?? "Not recorded")}</span></div>
         <div class="field"><span class="lbl">${esc(terms.contact)}</span><span class="val">${esc(a.full_name ?? a.email_address)}${a.phone ? ` · ${esc(a.phone)}` : ""}</span></div>
         <div class="field"><span class="lbl">${esc(terms.category)}</span><span class="val">${esc(repo.caseTypeForCase(a.id)?.name ?? a.category ?? "Unconfigured")}</span></div>
         <div class="field"><span class="lbl">Reference number</span><span class="val mono">${esc(a.ref_number)}</span></div>
@@ -1125,17 +1125,17 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       </div>
       <div class="op-strip">
         <div class="op"><span class="lbl">Threads</span><span class="val">${threads.length} linked conversation${threads.length === 1 ? "" : "s"}</span></div>
-        <div class="op"><span class="lbl">Follow-up ladder</span><span class="val">${a.followup_next_at ? `rung ${a.followup_rung} — next reminder ${esc(fmtDate(a.followup_next_at))}` : "not armed"}</span></div>
-        <div class="op"><span class="lbl">SLA</span><span class="val">${a.sla_due_at ? `${esc(slaText(a.sla_due_at, a.sla_handled_at))} (due ${esc(fmtDate(a.sla_due_at))})` : "—"}</span></div>
+        <div class="op"><span class="lbl">Reminder sequence</span><span class="val">${a.followup_next_at ? `rung ${a.followup_rung} | next reminder ${esc(fmtDate(a.followup_next_at))}` : "not armed"}</span></div>
+        <div class="op"><span class="lbl">SLA</span><span class="val">${a.sla_due_at ? `${esc(slaText(a.sla_due_at, a.sla_handled_at))} (due ${esc(fmtDate(a.sla_due_at))})` : "Not recorded"}</span></div>
         <div class="op"><span class="lbl">Assigned to</span><span class="val">${handledBy ? esc(handledBy) : "unassigned"}</span></div>
       </div>
     </section>
 
     ${evaluationPanel(c, a)}
 
-    <!-- Document checklist -->
+    <!-- Required documents -->
     <section class="sec">
-      <div class="sec-head"><h2>Document checklist</h2><span class="small muted">${allDocs.length} received · ${activeDocs.length} active</span></div>
+      <div class="sec-head"><h2>Required documents</h2><span class="small muted">${allDocs.length} received · ${activeDocs.length} active</span></div>
       <table class="doctable">
         <thead><tr><th>Document</th><th>Required</th><th>Status</th><th>Readability</th><th>Received</th></tr></thead>
         <tbody>${docRowsHtml || `<tr><td colspan="5" class="muted">No documents received yet.</td></tr>`}</tbody>
@@ -1151,11 +1151,11 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
 
     <!-- Activity & audit trail -->
     <section class="sec">
-      <div class="sec-head"><h2>Activity &amp; audit trail</h2></div>
+      <div class="sec-head"><h2>Activity and audit record</h2></div>
       <div class="mini-tabs" data-tabs>
         <button class="on" data-tab="act" type="button">Activity</button>
-        <button data-tab="stat" type="button">Status history</button>
-        <button data-tab="aud" type="button">Audit log</button>
+        <button data-tab="stat" type="button">History of status</button>
+        <button data-tab="aud" type="button">Audit record</button>
       </div>
       <div class="tabpane on" id="tab-act">${activityHtml}</div>
       <div class="tabpane" id="tab-stat">
@@ -1189,7 +1189,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
         <select name="priority" style="flex:1">${["normal", "high", "urgent"].map((p) => `<option value="${p}" ${a.priority === p ? "selected" : ""}>${p} priority</option>`).join("")}</select>
         <button class="btn small ghost">Set</button>
       </form>
-      <p class="small muted" style="margin:12px 0 0">Every action opens a <b>ready, pre-filled reply</b> — nothing is sent until you press Send.</p>
+      <p class="small muted" style="margin:12px 0 0">Every action opens a <b>ready, prepared reply</b> | nothing is sent until you press Send.</p>
     </div>
 
     <!-- Response composer -->
@@ -1209,7 +1209,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       </form>
       <p class="small muted" style="margin-top:12px">Or open any template in the full composer: ${templates.slice(0, 3).map((t) => `<a href="/case/${a.id}/compose?template=${esc(t.key)}">${esc(t.name)}</a>`).join(" · ")}</p>
       <p class="small muted" style="margin:6px 0 0"><a href="/case/${a.id}/compose">Open the composer for this ${esc(terms.contact.toLowerCase())}</a> — same tab; after sending you land back on this case file.</p>
-      <p class="small muted" style="margin:6px 0 0">Auto-response toggles per category live in <a href="/settings#automation">Settings → Automation</a>. Current modes: ${esc(autoSummary || "defaults")}</p>
+      <p class="small muted" style="margin:6px 0 0">Automatic response controls per category live in <a href="/settings#automation">Settings → Automation</a>. Current modes: ${esc(autoSummary || "defaults")}</p>
     </div>
 
     ${isMgr ? `<div class="ops-card" id="packs">
@@ -1278,13 +1278,13 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       <form method="post" action="/case/${a.id}/note">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
         <label>Add note</label>
-        <textarea name="body" style="min-height:60px" placeholder="e.g. Applicant called. Waiting for original certificate."></textarea>
+        <textarea name="body" style="min-height:60px" placeholder="e.g. Applicant called. Awaiting reply for original certificate."></textarea>
         <p style="margin-top:8px"><button class="btn small">Add note</button></p>
       </form>
     </div>
 
     ${isMgr ? `<div class="ops-card">
-      <h2>Re-categorise</h2>
+      <h2>Reclassify</h2>
       <p class="ops-sub">If triage put the newest incoming email in the wrong bucket, move it after your review. Recorded in the audit trail${latestIncoming ? ` — currently <b>${esc(latestIncoming.category ?? "uncategorised")}</b>` : ""}.</p>
       <form method="post" action="/case/${a.id}/category" class="ops-inline" style="align-items:center;margin:0">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -1319,7 +1319,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
       tr.classList.toggle("open", on);
     });
   });
-  // Activity / Status history / Audit log tabs.
+  // Activity / History of status / Audit record tabs.
   document.querySelectorAll("[data-tabs]").forEach(function (bar) {
     var btns = bar.querySelectorAll("button");
     btns.forEach(function (b) {
@@ -1338,7 +1338,7 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
   );
 }
 
-// ── Compose: a ready, pre-filled reply — one obvious path to Send ───────────
+// ── Compose: a ready, prepared reply | one obvious path to Send ───────────
 
 export function composePage(c: Ctx, a: ApplicantRow, tpl: { key: string; name: string; subject: string; body: string; include_banner: number; attach_pack?: string }, rendered: { subject: string; body: string }, error?: string): string {
   return head(
@@ -1464,7 +1464,7 @@ export function composeWindowPage(
 <div class="card" style="max-width:880px">
   ${opts.error ? `<div class="flash err" style="position:static;margin-bottom:16px">${esc(opts.error)}</div>` : ""}
   ${opts.flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(opts.flash)}</div>` : ""}
-  <p class="small muted" style="margin-top:0">Everything below is editable — nothing is sent until you press Send. Pick a template to pre-fill the draft:</p>
+  <p class="small muted" style="margin-top:0">Everything below is editable | nothing is sent until you press Send. Pick a template to prepare the draft:</p>
   <p style="margin:0 0 14px;line-height:2.1">${chips}</p>
   <form method="post" action="/compose">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -1528,7 +1528,7 @@ export function mailPage(
     const name = t.a_name ?? (parked ? (t.a_email ?? "Unknown sender") : (t.ref_number ?? "(no case)"));
     const threadUrl = `/mail/thread/${encodeURIComponent(t.tkey)}`;
     return `<tr style="cursor:pointer" onclick="location.href='${threadUrl}'">
-      <td style="width:26px;padding-right:0">${unread ? `<span title="Unread" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--wine)"></span>` : ""}</td>
+      <td style="width:26px;padding-right:0">${unread ? `<span title="Unread" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--plum)"></span>` : ""}</td>
       <td style="width:34px;padding-right:0">
         <form class="starform" method="post" action="${threadUrl}/action" onclick="event.stopPropagation()" style="margin:0">
           <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -1542,7 +1542,7 @@ export function mailPage(
       <td style="min-width:0">
         <span style="${unread ? "font-weight:700" : ""}">${esc(t.subject || "(no subject)")}</span>
         <span class="muted"> — ${esc(snippet.slice(0, 140))}${snippet.length > 140 ? "…" : ""}</span>
-        ${t.imp_n ? `<span title="Important" style="color:var(--wine)">${icon("flag", 12)}</span>` : ""}
+        ${t.imp_n ? `<span title="Important" style="color:var(--plum)">${icon("flag", 12)}</span>` : ""}
         ${parked ? `<span class="badge b-gray" title="No intake hotword matched — kept in Mail, never processed as an application">not linked to a case</span>` : ""}
       </td>
       <td class="muted small" style="white-space:nowrap">${t.thread_n > 1 ? `(${t.thread_n})` : ""}</td>
@@ -1629,11 +1629,11 @@ export function mailThreadPage(
     const out = e.direction === "out";
     let attached: string[] = [];
     try { attached = e.attachments ? (JSON.parse(e.attachments) as string[]) : []; } catch { attached = []; }
-    return `<div class="card" style="margin-bottom:14px;border-left:3px solid ${out ? "var(--wine)" : "var(--line)"}">
+    return `<div class="card" style="margin-bottom:14px;border-left:3px solid ${out ? "var(--plum)" : "var(--line)"}">
       <div class="row" style="justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div class="small muted">
           <span class="badge ${out ? "b-purple" : ""}">${out ? (e.auto ? "Sent · automatic" : "Sent") : "Received"}</span>
-          ${out ? `to <b>${esc(e.to_addr || a?.email_address || "—")}</b>` : `from <b>${esc(e.from_addr || a?.email_address || "—")}</b>`}
+          ${out ? `to <b>${esc(e.to_addr || a?.email_address || "Not recorded")}</b>` : `from <b>${esc(e.from_addr || a?.email_address || "Not recorded")}</b>`}
         </div>
         <div class="small muted">${esc(e.at.slice(0, 16).replace("T", " "))} UTC</div>
       </div>
@@ -1703,17 +1703,17 @@ ${connectionsSection(c, gmailRedirectUri)}
     <li>A known contact continues an existing case → same case and history.</li>
     <li>Unmatched mail is parked, not deleted. A blank organization has no implicit intake rules.</li>
   </ul>
-  <p class="small muted" style="margin-top:0">Everything else is <b>parked</b>: kept in <a href="/mail?f=all">All Mail</a> so nothing is ever lost, but no case number, queue entry or auto-reply is created for it. Add a word below whenever mail you wanted as a case gets parked.</p>
+  <p class="small muted" style="margin-top:0">Everything else is <b>parked</b>: kept in <a href="/mail?f=all">All Mail</a> so nothing is ever lost, but no case number, queue placement or automatic reply is created for it. Add a word below whenever mail you wanted as a case gets parked.</p>
   <form method="post" action="/settings/general">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
-    <div style="max-width:560px"><label>Intake hotwords (comma-separated — your words, always decisive)</label><input type="text" name="intake_hotwords" value="${esc(settings["intake_hotwords"] ?? "")}" style="width:100%"></div>
+    <div style="max-width:560px"><label>Intake hotwords (comma separated | your words, always decisive)</label><input type="text" name="intake_hotwords" value="${esc(settings["intake_hotwords"] ?? "")}" style="width:100%"></div>
     <p><button class="btn">Save hotwords</button></p>
   </form>
   ${(() => {
     const parked = c.repo.recentAudit(100).filter((a) => a.event === "email_parked_non_intake").slice(0, 5);
     if (parked.length === 0) return "";
     return `<details style="margin-top:10px">
-      <summary class="small"><b>Recently parked</b> <span class="muted">— the engine's score for each, so you can add a hotword when it misjudges</span></summary>
+      <summary class="small"><b>Recently parked</b> <span class="muted"> | the engine score for each, so you can add a hotword when it misjudges</span></summary>
       <ul class="small muted" style="margin:8px 0 4px 18px">
         ${parked.map((a) => `<li>${esc(a.detail)}<br><span style="opacity:.7">${esc(a.at)}</span></li>`).join("")}
       </ul>
@@ -1724,7 +1724,7 @@ ${connectionsSection(c, gmailRedirectUri)}
 ${categoriesCard(c)}
 
 <div class="card" id="automation">
-  <h2>Automation mode (draft-first)</h2>
+  <h2>Automation mode (draft first)</h2>
   <p class="small muted" style="margin-top:-6px">Two rules always apply. First, automated sending is reserved for <b>fully qualified</b> applicants — a Green verdict with no flags; everyone else gets the reply as a <b>suggested draft</b> for staff to review, edit or discard, because borderline files can still be admitted on special acceptance. Second, the rollout dial: the global mode starts on <b>draft</b> (every automated reply — including reminder rungs — waits for a human, whatever any rule says), and releasing it is not enough on its own: each category must then be <b>added to the allowlist</b> below. The allowlist starts empty, so nothing is ever sent automatically by accident.</p>
   <form method="post" action="/settings/automation/global" class="formrow" style="align-items:end">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -1739,7 +1739,7 @@ ${categoriesCard(c)}
       .map((cat) => {
         const mode = c.repo.automationMode(cat);
         return `<tr><td>${esc(cat.replace(/_/g, " "))}</td>
-        <td><span class="badge ${mode === "auto" ? "b-green" : "b-orange"}">${mode === "auto" ? "auto-send" : "draft for approval"}</span></td>
+        <td><span class="badge ${mode === "auto" ? "b-green" : "b-orange"}">${mode === "auto" ? "automatic sending" : "draft for approval"}</span></td>
         <td><form method="post" action="/settings/automation/category" style="margin:0">
           <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
           <input type="hidden" name="category" value="${esc(cat)}">
@@ -1748,7 +1748,7 @@ ${categoriesCard(c)}
       })
       .join("")}
   </table>
-  <p class="small muted">Note: with global mode set to draft, per-category switches take effect once global returns to auto.</p>
+  <p class="small muted">Note: with global mode set to draft, switches for each category take effect once global returns to auto.</p>
 </div>
 
 <div class="card" id="sla">
@@ -1762,7 +1762,7 @@ ${categoriesCard(c)}
       ${settingInput("unanswered_target_hours", "Unanswered target (hours)")}
     </div>
     <div class="formrow">
-      ${settingInput("followup_ladder_days", "Follow-up ladder (days between reminders, e.g. 3,7,10)")}
+      ${settingInput("followup_ladder_days", "Reminder sequence (days between reminders, e.g. 3,7,10)")}
     </div>
     <p><button class="btn">Save response targets</button></p>
     <p class="small muted" style="margin-bottom:0">Current ladder: <b>${esc(settings["followup_ladder_days"] ?? "3,7,10")}</b> days — reminders stop as soon as the case is complete. A response rule can switch the ladder off for its own path.</p>
@@ -1776,17 +1776,17 @@ ${categoriesCard(c)}
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
       ${organizationInput("organization_name", (c.user.organization_id ?? 1) === 1 ? "Organisation name" : "Organisation name", organization?.name ?? c.institution)}
-      ${organizationInput("primary_color", "Primary colour", organization ? organizationTheme(repo, organizationId).primary : "#650019")}
-      ${organizationInput("accent_color", "Accent colour", organization ? organizationTheme(repo, organizationId).accent : "#c89a4a")}
+      ${organizationInput("primary_color", "Primary colour", organization ? organizationTheme(repo, organizationId).primary : "#3b1d5f")}
+      ${organizationInput("accent_color", "Accent colour", organization ? organizationTheme(repo, organizationId).accent : "#9a78c7")}
       <div><label>Reference prefix</label><input name="ref_prefix" value="${esc(organization?.ref_prefix ?? repo.organizationRefPrefix(c.user.organization_id ?? 1))}" pattern="[A-Za-z]{1,8}" maxlength="8" required></div>
     </div>
     <div class="formrow">
       ${organizationInput("from_name", "From name on outgoing mail", organization?.from_name ?? "")}
-      ${organizationInput("reply_to", "Reply-to address", organization?.reply_to ?? "")}
+      ${organizationInput("reply_to", "Reply address address", organization?.reply_to ?? "")}
       ${organizationInput("locale", "Locale (dates & numbers)", organization?.locale ?? "en-KE")}
       ${organizationInput("timezone", "Timezone (IANA name)", organization?.timezone ?? "")}
     </div>
-    <p class="small muted">The From name and Reply-to are applied to every message the system sends. Empty From name keeps the sending mailbox's own name; empty Reply-to keeps replies on the sending mailbox.</p>
+    <p class="small muted">The From name and Reply address are applied to every message the system sends. Empty From name keeps the sending mailbox's own name; empty Reply address keeps replies on the sending mailbox.</p>
     <p><button class="btn">Save identity &amp; colours</button></p>
   </form>
   <div class="card" style="margin:14px 0 0;padding:14px;background:var(--card2)">
@@ -1805,7 +1805,7 @@ ${categoriesCard(c)}
       ${(() => {
         const org = c.repo.getOrganization(c.user.organization_id ?? 1);
         return `<div class="field"><span class="lbl">Inbound mailbox address for this organization</span>
-          <input name="inbound_address" type="email" value="${esc(org?.inbound_address ?? "")}" placeholder="intake@your-organization.example" autocomplete="off">
+          <input name="inbound_address" type="email" value="${esc(org?.inbound_address ?? "")}" placeholder="intake@yourorganization.example" autocomplete="off">
           <span class="small muted">Mail delivered to this address belongs to this organization. One shared mailbox can serve several tenants — without an address here, incoming mail falls back to the head office and the audit trail says so.</span></div>`;
       })()}
     </div>
@@ -1851,7 +1851,7 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh) || Boolean(c.gmailConfigured);
   // AUX-2: a plain-`http://` redirect URI on a NON-LOOPBACK host can never
   // be registered with a Google OAuth web client — the classic
-  // behind-a-proxy trap (the app sees the plain-http hop to the proxy,
+  // behind-a-proxy trap (the app sees the plain HTTP hop to the proxy,
   // not the public https address). Instead of letting the admin hit
   // Google's opaque 400, name it and point at the Public base URL field.
   let proxyUriWarning = "";
@@ -1860,7 +1860,7 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
       const u = new URL(gmailRedirectUri);
       const loopback = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(u.hostname);
       if (u.protocol === "http:" && !loopback && !(settings["gmail_public_base_url"] ?? "").trim()) {
-        proxyUriWarning = `<p class="small" style="color:var(--red);margin-top:10px"><b>You're behind a proxy — set the <i>Public base URL</i> below before connecting.</b><br>The app currently hands Google <span class="mono">http://${esc(u.host)}/settings/gmail/callback</span>, and Google's OAuth console refuses plain-http (non-localhost) redirect addresses for web clients. Enter your public address (e.g. <span class="mono">https://cases.example.ac.ke</span>), save, and step&nbsp;4 below will show the correct https URI to register.</p>`;
+        proxyUriWarning = `<p class="small" style="color:var(--red);margin-top:10px"><b>You're behind a proxy | set the <i>Public base URL</i> below before connecting.</b><br>The app currently hands Google <span class="mono">http://${esc(u.host)}/settings/gmail/callback</span>, and Google's OAuth console refuses plain HTTP (non local host) redirect addresses for web clients. Enter your public address (e.g. <span class="mono">https://cases.example.ac.ke</span>), save, and step&nbsp;4 below will show the correct https URI to register.</p>`;
       }
     } catch {
       /* unparseable URI — nothing to warn about */
@@ -1896,7 +1896,7 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
       <div><label>OAuth client secret</label><input type="password" name="gmail_client_secret" value="" placeholder="${gClientSecret ? "saved — enter a new value to replace" : "GOCSPX-…"}" autocomplete="new-password"></div>
     </div>
     <div class="formrow" style="margin-top:10px">
-      <div style="flex:2"><label>Public base URL <span class="muted small">(advanced — only for reverse-proxy / HTTPS deployments)</span></label><input type="text" name="gmail_public_base_url" value="${esc(settings["gmail_public_base_url"] ?? "")}" placeholder="https://cases.example.ac.ke"></div>
+      <div style="flex:2"><label>Public base URL <span class="muted small">(advanced | only for reverse proxy / HTTPS deployments)</span></label><input type="text" name="gmail_public_base_url" value="${esc(settings["gmail_public_base_url"] ?? "")}" placeholder="https://cases.example.ac.ke"></div>
       <div style="flex:2"><label>Refresh token (advanced — OAuth Playground / manual) ${gRefresh ? "<span class='muted small'>(saved)</span>" : ""}</label><input type="password" name="gmail_refresh_token_manual" value="" placeholder="1//…" autocomplete="new-password"></div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -1930,7 +1930,7 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
     const storedModel = settings["gemini_model"] ?? "";
     const dead = DEAD_GEMINI_MODELS.has(storedModel);
     return `<div><label>Model</label><input type="text" name="gemini_model" value="${esc(storedModel || DEFAULT_GEMINI_MODEL)}" placeholder="${esc(DEFAULT_GEMINI_MODEL)}"></div>
-    ${dead ? `<p class="small" style="color:var(--red)">Heads-up: <span class="mono">${esc(storedModel)}</span> no longer exists in the Gemini API — that is the 404 you are seeing. The current Flash model is <span class="mono">${esc(DEFAULT_GEMINI_MODEL)}</span> (GA 2026-09-02) — put it in the field and test again.</p>` : ""}`;
+    ${dead ? `<p class="small" style="color:var(--red)">Please note: <span class="mono">${esc(storedModel)}</span> no longer exists in the Gemini API | that is the 404 you are seeing. The current Flash model is <span class="mono">${esc(DEFAULT_GEMINI_MODEL)}</span> (GA 2026-09-02) | put it in the field and test again.</p>` : ""}`;
   })()}
       <div style="flex:0"><label>&nbsp;</label><button class="btn">Save &amp; test key</button></div>
     </div>
@@ -1950,7 +1950,7 @@ export function accountPage(c: Ctx, msg?: string): string {
     "account",
     `
 <h1>Account settings</h1>
-<div class="sub">Your sign-in and appearance. These apply only to your account.</div>
+<div class="sub">Your sign in and appearance. These apply only to your account.</div>
 ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(msg)}</div>` : ""}
 
 <div class="card" id="profile">
@@ -1970,7 +1970,7 @@ ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(
     <div class="formrow">
       <div><label>Current password</label><input type="password" name="current" required autocomplete="current-password"></div>
       <div><label>New password</label><input type="password" name="next" required minlength="8" autocomplete="new-password"></div>
-      <div><label>Confirm new password</label><input type="password" name="confirm" required minlength="8" autocomplete="new-password"></div>
+      <div><label>Confirm password</label><input type="password" name="confirm" required minlength="8" autocomplete="new-password"></div>
     </div>
     <p><button class="btn">Change password</button></p>
   </form>
@@ -2084,7 +2084,7 @@ function documentsPackCard(c: Ctx): string {
 
 
 /**
- * Message categories — the allow-list a message may be labelled with, and the
+ * Message categories | the allowed list a message may be labelled with, and the
  * list a Gemini key may choose from. ONE home (Settings), because it describes
  * how this organization reads its mail, not one case type's configuration.
  */
@@ -2097,7 +2097,7 @@ function categoriesCard(c: Ctx): string {
   <p class="small muted" style="margin-top:-6px">The labels an incoming message may be given. ${geminiKeySaved
     ? "A Gemini key is reachable, so each message is offered to the model with <b>this list only</b> — an answer that is not on it is rejected and the deterministic matcher decides instead."
     : "No Gemini key is saved (see Connections below), so categorization is deterministic keyword matching."}
-  A label is <b>routing metadata for people</b>: it never approves, rejects or decides anything. Only these eight keys drive workflow routing —
+  A label is <b>routing metadata for people</b>: it never approves, rejects or decides anything. Only these eight keys guide workflow routing |
   <span class="mono">application</span>, <span class="mono">document_submission</span>, <span class="mono">missing_document</span>,
   <span class="mono">fee_enquiry</span>, <span class="mono">general_enquiry</span>, <span class="mono">follow_up</span>,
   <span class="mono">complaint</span>, <span class="mono">other</span> — a custom label is still recorded on the message and routes as <span class="mono">other</span>.</p>
@@ -2135,7 +2135,7 @@ function requirementsTab(c: Ctx, _target?: string, _system?: string): string {
     <div><label>Closes</label><input type="date" name="deadline"></div>
     <div style="flex:0"><label>&nbsp;</label><button class="btn small">Add window</button></div>
   </form>`;
-  return `<section class="card"><h2>Configured requirements</h2><p>Document checklists and scalar AND / OR / NOT rules belong to each case type. Existing cases keep their frozen configuration until an explicit re-evaluation upgrade.</p>${types.length ? types.map((type) => '<h3>' + esc(type.name) + '</h3><p>' + esc(ruleTreeText(c.repo.caseTypeRules(type))) + '</p><p class="small">' + c.repo.listDocumentDefinitions(type.id).map((definition) => esc(definition.label) + (definition.required && definition.blocking ? ' (required)' : ' (optional)')).join(', ') + '</p>').join('') : '<p class="small muted">No case types configured.</p>'}<a class="btn ghost" href="/config?tab=case-types">Configure case types</a></section><section class="card" id="rules-ops"><h2>Rule operations</h2><form method="post" action="/config/reevaluate-open">${csrf}<button class="btn ghost">Re-evaluate all open cases</button></form></section><section class="card" id="categories-pointer"><h2>Message categories</h2><p class="small muted">Categories live in Settings: the labels an incoming message may be given — and the allow-list a Gemini key may choose from — are managed <a href="/settings#categories">there</a>.</p></section><section class="card" id="intakes"><h2>Submission windows</h2><p class="small muted">A window named in an incoming message is attached to its case. A deadline here turns an arrival after that date into a <span class="mono">late_submission</span> flag — a person decides whether to accept it; nothing is auto-rejected. Windows are inferred from real mail or added below.</p>${windows}${addWindow}</section><section class="card" id="deadletters"><h2>Parked mail</h2>${c.repo.listDeadLetters().map((letter) => '<p>' + esc(letter.subject) + ' — ' + esc(letter.error.slice(0,140)) + '</p><form method="post" action="/config/dead-letter/retry">' + csrf + '<input type="hidden" name="id" value="' + letter.id + '"><button class="btn small">Retry</button></form>').join('') || '<p>Nothing parked.</p>'}</section>`;
+  return `<section class="card"><h2>Configured requirements</h2><p>Required documents and scalar AND / OR / NOT rules belong to each case type. Existing cases keep their frozen configuration until an explicit explicit review upgrade.</p>${types.length ? types.map((type) => '<h3>' + esc(type.name) + '</h3><p>' + esc(ruleTreeText(c.repo.caseTypeRules(type))) + '</p><p class="small">' + c.repo.listDocumentDefinitions(type.id).map((definition) => esc(definition.label) + (definition.required && definition.blocking ? ' (required)' : ' (optional)')).join(', ') + '</p>').join('') : '<p class="small muted">No case types configured.</p>'}<a class="btn ghost" href="/config?tab=case-types">Configure case types</a></section><section class="card" id="rules-ops"><h2>Rule operations</h2><form method="post" action="/config/reevaluate-open">${csrf}<button class="btn ghost">Review all open cases</button></form></section><section class="card" id="categories-pointer"><h2>Message categories</h2><p class="small muted">Categories live in Settings: the labels an incoming message may be given | and the allowed list a Gemini key may choose from | are managed <a href="/settings#categories">there</a>.</p></section><section class="card" id="intakes"><h2>Submission windows</h2><p class="small muted">A window named in an incoming message is attached to its case. A deadline here turns an arrival after that date into a <span class="mono">late_submission</span> flag | a person decides whether to accept it; nothing is rejected automatically. Windows are inferred from real mail or added below.</p>${windows}${addWindow}</section><section class="card" id="deadletters"><h2>Parked mail</h2>${c.repo.listDeadLetters().map((letter) => '<p>' + esc(letter.subject) + ' | ' + esc(letter.error.slice(0,140)) + '</p><form method="post" action="/config/dead-letter/retry">' + csrf + '<input type="hidden" name="id" value="' + letter.id + '"><button class="btn small">Retry</button></form>').join('') || '<p>Nothing parked.</p>'}</section>`;
 }
 
 
@@ -2161,7 +2161,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
   const caseTypes = c.repo.listCaseTypes(organizationId);
   const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
   const orgPicker = `<form method="get" action="/config" class="inline" style="margin-bottom:16px">
-    <input type="hidden" name="tab" value="case-types">
+    <input type="hidden" name="tab" value="case types">
     <label class="small muted">Organization</label>
     <select name="organization" onchange="this.form.submit()">${organizations.map((o) => `<option value="${o.id}" ${o.id === organizationId ? "selected" : ""}>${esc(o.name)} · ${esc(o.ref_prefix)}</option>`).join("")}</select>
   </form>`;
@@ -2173,7 +2173,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
       <td>${d.required ? "required" : "optional"} · ${d.blocking ? "blocks gate" : "non-blocking"}</td>
       <td><form method="post" action="/config/case-types/document-delete" style="margin:0">${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}"><input type="hidden" name="key" value="${esc(d.key)}"><button class="btn small ghost">Remove</button></form></td>
     </tr>`).join("");
-    return `<details class="card type-card" id="case-type-${ct.id}">
+    return `<details class="card type-card" id="case type-${ct.id}">
       <summary class="type-card-summary"><span>${esc(ct.name)}</span><span class="mono small muted">${esc(ct.code)}</span><span class="type-card-hint">Edit CaseType</span></summary>
       <div class="type-content">
       <p class="small muted">Category: ${esc(ct.category)} · Every requirement below is this CaseType's own — nothing is inherited.</p>
@@ -2182,14 +2182,14 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
       <form method="post" action="/config/case-types/document" class="formrow" style="margin-top:10px">
         ${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}">
         <div><label>Document key</label><input name="key" placeholder="employee_id" required></div>
-        <div style="flex:2"><label>Contact-facing label</label><input name="label" placeholder="Signed employee ID" required></div>
+        <div style="flex:2"><label>Label shown to the correspondent</label><input name="label" placeholder="Signed employee ID" required></div>
         <div><label>Required</label><select name="required"><option value="1">Yes</option><option value="0">No</option></select></div>
         <div><label>Blocking</label><select name="blocking"><option value="1">Yes</option><option value="0">No</option></select></div>
         <div style="flex:0"><label>&nbsp;</label><button class="btn small">Save document slot</button></div>
       </form>
       <h3 style="margin-top:20px">Rule tree</h3>
       ${rules.length ? `<p class="rule-summary" style="font-family:monospace;background:var(--line2, rgba(127,127,127,.12));padding:8px 10px;border-radius:8px">${esc(ruleTreeText(rules))}</p>` : `<p class="small muted">Empty rule tree — every case is undecided and goes to a human.</p>`}
-      <p class="small muted">Use organization-defined fact keys. The evaluator supports nested AND, OR and NOT groups; a failed or incomplete tree routes to human review, never an automatic rejection.</p>
+      <p class="small muted">Use defined by the organization fact keys. The evaluator supports nested AND, OR and NOT groups; a failed or incomplete tree routes to human review, never an automatic rejection.</p>
       <form method="post" action="/config/case-types/rules" style="margin:0">
         ${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}">
         <textarea name="rules_json" style="min-height:180px;font-family:monospace" spellcheck="false">${esc(JSON.stringify(rules, null, 2))}</textarea>
@@ -2205,19 +2205,19 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
   const ownTenant = organizationId === (c.user.organization_id ?? 1);
   const aliasesCard = `<section class="card" id="aliases">
     <h2>Inbound addresses (routing aliases)</h2>
-    <p class="small muted">Mail delivered to one of these addresses opens the case type it points at: the sender chose the route by picking an address, so nothing is guessed. Matching is case-insensitive and honours plus-addressing (<span class="mono">intake+billing@your-organization.example</span> routes like <span class="mono">billing@your-organization.example</span>). An address belongs to ONE organization across the whole installation. If one message carries two of your addresses that point at different case types, the case is left unconfigured for a person to choose — the case page has a re-type control for exactly that. Precedence: a connector's declaration, then these addresses, then a tenant with exactly one case type.</p>
+    <p class="small muted">Mail delivered to one of these addresses opens the case type it points at: the sender chose the route by picking an address, so nothing is guessed. Matching is without regard to case and honours plus-addressing (<span class="mono">intake+billing@yourorganization.example</span> routes like <span class="mono">billing@yourorganization.example</span>). An address belongs to ONE organization across the whole installation. If one message carries two of your addresses that point at different case types, the case is left unconfigured for a person to choose | the case page has a change type control for exactly that. Precedence: a connector's declaration, then these addresses, then a tenant with exactly one case type.</p>
     ${aliases.length ? `<table><tr><th>Address</th><th>Case type</th><th>State</th>${ownTenant ? "<th></th>" : ""}</tr>${aliases.map((alias) => `<tr>
       <td class="mono small">${esc(alias.address)}</td>
       <td>${esc(alias.case_type_code ?? "(unknown)")}</td>
       <td class="small">${alias.active ? "routing" : "retired (kept for history)"}</td>
       ${ownTenant ? `<td>${alias.active ? `<form method="post" action="/config/case-type-aliases/retire" style="margin:0">${csrf}<input type="hidden" name="address" value="${esc(alias.address)}"><button class="btn small ghost" onclick="return confirm('Stop routing this address? The record is kept.')">Retire</button></form>` : ""}</td>` : ""}
-    </tr>`).join("")}</table>` : '<p class="small muted">No addresses configured — inbound mail falls back to the single-case-type default, or to a person.</p>'}
+    </tr>`).join("")}</table>` : '<p class="small muted">No addresses configured | inbound mail falls back to the single case type default, or to a person.</p>'}
     ${ownTenant ? `<form method="post" action="/config/case-type-aliases/create" class="formrow" style="margin-top:10px">
       ${csrf}
-      <div style="flex:2"><label>Inbound address</label><input name="address" type="email" placeholder="billing@your-organization.example" required></div>
+      <div style="flex:2"><label>Inbound address</label><input name="address" type="email" placeholder="billing@yourorganization.example" required></div>
       <div><label>Opens this CaseType</label><select name="case_type_id" required>${caseTypes.map((ct) => `<option value="${ct.id}">${esc(ct.name)} (${esc(ct.code)})</option>`).join("")}</select></div>
       <div style="flex:0"><label>&nbsp;</label><button class="btn small">Add address</button></div>
-    </form>` : '<p class="small muted">Another organization\u2019s addresses are read-only here.</p>'}
+    </form>` : '<p class="small muted">Another organization’s addresses can only be viewed here.</p>'}
   </section>`;
   const groupedCaseTypes = new Map<string, CaseType[]>();
   for (const ct of caseTypes) {
@@ -2228,7 +2228,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
     <summary><span class="type-group-name">${esc(category)}</span><span class="type-group-count">${types.length} CaseType${types.length === 1 ? "" : "s"}</span></summary>
     <div class="type-group-body">${types.map(typeCard).join("")}</div>
   </details>`).join("");
-  return `<div id="case-types">
+  return `<div id="case types">
     <section class="card">
       <h2>Organizations &amp; CaseTypes</h2>
       <p class="small muted">Organizations own their CaseTypes, document definitions, rule trees and reference prefixes. A new organization starts empty — nothing is copied from another tenant, and no configuration is bundled with the product.</p>
@@ -2263,7 +2263,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
  * PPR P0-4: Workflow rules — first-email and response behaviour as DATA.
  * The tab is the admin's control room: intake rules say which mail becomes a
  * case (create/attach/ignore/review); response rules say how the case replies
- * (send/draft/hold, which template, follow-up ladder, SLA, audit code).
+ * (send/draft/hold, which template, reminder sequence, SLA, audit code).
  * Rules are evaluated in order; the first match wins.
  */
 function workflowRulesTab(c: Ctx, editRuleId?: number): string {
@@ -2327,7 +2327,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
         </select></div>
       <div class=\"field\" style=\"flex:2;min-width:200px\"><span class=\"lbl\">Applies to profile</span>
         <select name=\"case_type_id\">
-          <option value=\"\">Organization-wide (every case type)</option>
+          <option value=\"\">Across the organization (every case type)</option>
           ${caseTypes.map((t) => `<option value=\"${t.id}\" ${editing?.case_type_id === t.id ? "selected" : ""}>${esc(t.name)} (${esc(t.code)})${""}</option>`).join("")}
         </select></div>
       <div class=\"field\" style=\"flex:1;min-width:120px\"><span class=\"lbl\">Position (order)</span>
@@ -2379,14 +2379,14 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     <div style=\"display:flex;gap:12px;flex-wrap:wrap\">
       <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">SLA target (hours)</span>
         <input name=\"sla_hours\" type=\"number\" min=\"1\" value=\"${esc(act.sla_hours ?? "")}\" placeholder=\"(profile default)\"></div>
-      <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">Follow-up policy</span>
+      <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">Reminder policy</span>
         <select name=\"followup\">
           <option value=\"\">none</option>
           <option value=\"ladder\" ${act.followup === "ladder" ? "selected" : ""}>reminder ladder (3/7/10 days)</option>
         </select></div>
-      <div class=\"field\" style=\"flex:1;min-width:170px\"><span class=\"lbl\">Follow-up rung response</span>
+      <div class=\"field\" style=\"flex:1;min-width:170px\"><span class=\"lbl\">Reminder response</span>
         <select name=\"followup_action\">
-          ${["hold", "send", "draft", "approve", "none"].map((d) => `<option value=\"${d}\" ${(act.followup_action ?? "hold") === d ? "selected" : ""}>${{ hold: "hold for staff (default)", send: "send (un-gated profiles)", draft: "draft for staff", approve: "draft for approval", none: "do nothing (cancel ladder)" }[d]}</option>`).join("")}
+          ${["hold", "send", "draft", "approve", "none"].map((d) => `<option value=\"${d}\" ${(act.followup_action ?? "hold") === d ? "selected" : ""}>${{ hold: "hold for staff (default)", send: "send (ungated profiles)", draft: "draft for staff", approve: "draft for approval", none: "do nothing (cancel ladder)" }[d]}</option>`).join("")}
         </select></div>
       <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">Attachment set</span>
         <input name=\"attachment_set\" value=\"${esc(act.attachment_set ?? "")}\" placeholder=\"(none)\"></div>
@@ -2458,7 +2458,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
           <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\"><input type=\"hidden\" name=\"id\" value=\"${r.id}\">
           <input type=\"checkbox\" ${r.enabled ? "checked" : ""} onchange=\"this.form.submit()\" aria-label=\"enable rule\"></form></td>
         <td><b>${esc(r.name)}</b></td>
-        <td class=\"small\">${r.case_type_id === null ? "organization-wide" : esc(caseTypes.find((t) => t.id === r.case_type_id)?.name ?? `type #${r.case_type_id}`)}</td>
+        <td class=\"small\">${r.case_type_id === null ? "organization wide" : esc(caseTypes.find((t) => t.id === r.case_type_id)?.name ?? `type #${r.case_type_id}`)}</td>
         <td class=\"small\">${esc(describeRule(r))}</td>
         <td style=\"white-space:nowrap\">
           <a class=\"btn small ghost\" href=\"/config?tab=rules&edit=${r.id}\">Edit</a>
@@ -2485,7 +2485,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
         <p class="small muted">Five surface words, defaulted to the current generic wording. Internal keys and database columns never move — only what staff and applicants read.</p>
         <div class="formrow">
           <div><label>Case</label><input name="term_case" value="${esc(term.case ?? "Case")}"></div>
-          <div><label>Contact</label><input name="term_contact" value="${esc(term.contact ?? "Contact")}"></div>
+          <div><label>Correspondent</label><input name="term_contact" value="${esc(term.contact ?? "Correspondent")}"></div>
           <div><label>Category</label><input name="term_category" value="${esc(term.category ?? "Category")}"></div>
           <div><label>Stage</label><input name="term_stage" value="${esc(term.stage ?? "Stage")}"></div>
           <div><label>Outcome</label><input name="term_outcome" value="${esc(term.outcome ?? "Outcome")}"></div>
@@ -2509,7 +2509,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
         <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\"><input type=\"hidden\" name=\"id\" value=\"${t.id}\">
         <select name=\"default_reply_action\">
           <option value=\"draft\" ${t.default_reply_action !== "auto" ? "selected" : ""}>draft (recommended)</option>
-          <option value=\"auto\" ${t.default_reply_action === "auto" ? "selected" : ""}>auto-send when a rule says so</option>
+          <option value=\"auto\" ${t.default_reply_action === "auto" ? "selected" : ""}>automatic sending when a rule says so</option>
         </select>
         <select name=\"evidence_gate\">
           <option value=\"1\" ${t.evidence_gate !== 0 ? "selected" : ""}>hold unverified replies</option>
@@ -2525,7 +2525,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
 
   return `<div class=\"card\">
   <h2>Workflow rules</h2>
-  <p class=\"small muted\" style=\"margin-top:-6px\">First-email and response behaviour lives here as <b>data</b> — create/attach/ignore/review, send/draft/hold, templates, follow-up and audit codes are all configurable. The migrated generic profile's rules reproduce the behaviour staff already know; edit freely.</p>
+  <p class=\"small muted\" style=\"margin-top:-6px\">Initial email and response behaviour lives here as <b>data</b> | create/attach/ignore/review, send/draft/hold, templates, follow up and audit codes are all configurable. The migrated generic profile's rules reproduce the behaviour staff already know; edit freely.</p>
 </div>
 ${profileCard}
 <div class=\"card\">
@@ -2537,7 +2537,7 @@ ${profileCard}
 ${form}`;
 }
 
-export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsSystem?: string, caseTypesOrganizationId?: number, editRuleId?: number): string {
+export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsWorkspace?: string, caseTypesOrganizationId?: number, editRuleId?: number): string {
 
   // Round 3: the legacy courses tab is gone — case types are configured under
   // Configuration; /config?tab=courses redirects to the staff area.
@@ -2556,14 +2556,14 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
   const replyHtml = `
 <div class="card" id="templates-home">
   <h2>Email templates</h2>
-  <p class="small muted" style="margin-top:-6px">OR-7: every outgoing email type — automated replies, reminders and staff messages — is edited in the dedicated <a href="/templates">Templates section</a>, with placeholders documented, a live preview, reset-to-default and optional pack attachments.</p>
+  <p class="small muted" style="margin-top:-6px">OR-7: every outgoing email type | automated replies, reminders and staff messages | is edited in the dedicated <a href="/templates">Templates section</a>, with placeholders documented, a live preview, return to the default and optional pack attachments.</p>
   <p><a class="btn" href="/templates">Open the Templates section →</a></p>
 </div>
 
 <div class="card" id="branding">
   <h2>Email branding</h2>
   <p class="small muted" style="margin-top:-6px">The banner below is placed at the top of <b>every</b> outgoing email — automated replies, template sends and document packs alike. Replace it any time; individual templates can also opt out in the editor above.</p>
-  <img id="banner-preview" src="/assets/email-banner" alt="Email banner" style="width:100%;max-width:720px;border:1px solid var(--wine-line);border-radius:8px;display:block">
+  <img id="banner-preview" src="/assets/email-banner" alt="Email banner" style="width:100%;max-width:720px;border:1px solid var(--plum-line);border-radius:8px;display:block">
   <p class="small" style="margin-top:12px">Change the banner — JPG or PNG, under 900 KB:
     <input type="file" id="banner-file" accept="image/jpeg,image/png" style="width:auto;display:inline-block;margin-left:8px"></p>
   <p class="small muted" id="banner-msg" role="status"></p>
@@ -2598,7 +2598,7 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
   <p style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 0">
     <a class="btn ghost small" href="/export/applicants.csv">Cases</a>
     <a class="btn ghost small" href="/export/queue.csv">Review queue</a>
-    <a class="btn ghost small" href="/export/audit.csv">Audit log</a>
+    <a class="btn ghost small" href="/export/audit.csv">Audit record</a>
   </p>
 </div>`;
 
@@ -2608,10 +2608,10 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
     "config",
     `
 <h1>Configuration</h1>
-<div class="sub">Requirements, deadlines and reply behaviour — case-type configuration (checklists, rules, windows) lives under <a href="/config?tab=case-types">Case types</a>. Changes apply to newly processed email immediately.</div>
+<div class="sub">Requirements, deadlines and reply behaviour | case type configuration (checklists, rules, windows) lives under <a href="/config?tab=case-types">Case types</a>. Changes apply to newly processed email immediately.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 ${tabBar}
-${tab === "rules" ? workflowRulesTab(c, editRuleId) : tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? attachmentSetsCard(c) + documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsSystem) : replyHtml}
+${tab === "rules" ? workflowRulesTab(c, editRuleId) : tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? attachmentSetsCard(c) + documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsWorkspace) : replyHtml}
 `
   );
 }
@@ -2633,7 +2633,7 @@ const TEMPLATE_USAGE: Record<string, string> = {
 
 const PLACEHOLDER_DOCS: Array<[string, string]> = [
   ["{ref}", "the case reference number"],
-  ["{name}", "full name (falls back to “Contact”)"],
+  ["{name}", "full name (falls back to “Correspondent”)"],
   ["{first_name}", "first name only"],
   ["{missing_docs}", "bulleted list of still-missing documents"],
   ["{missing_docs_section}", "the missing list wrapped in a polite paragraph"],
@@ -2710,10 +2710,10 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
     <div class="formrow" style="margin-top:10px">
       <div><label>Belongs to profile</label>
         <select name="case_type_id">
-          <option value="0" ${!tpl.case_type_id ? "selected" : ""}>Organization-wide (all profiles)</option>
+          <option value="0" ${!tpl.case_type_id ? "selected" : ""}>Across the organization (all profiles)</option>
           ${c.repo.listCaseTypes(c.user.organization_id ?? 1).map((t) => `<option value="${t.id}" ${tpl.case_type_id === t.id ? "selected" : ""}>${esc(t.name)} (${esc(t.code)})</option>`).join("")}
         </select></div>
-      <div style="flex:2"><label>&nbsp;</label><span class="small muted">A profile-bound template is used only for that profile's cases. Keys are not a fixed list — create whatever a profile needs below.</span></div>
+      <div style="flex:2"><label>&nbsp;</label><span class="small muted">A profile specific template is used only for that profile's cases. Keys are not a fixed list | create whatever a profile needs below.</span></div>
     </div>
   </form>
   <form method="post" action="/templates/reset" style="margin-top:10px" onsubmit="return confirm('Reset this template to its own saved default? Your edits will be lost.')">
@@ -2728,7 +2728,7 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
       <div class="field" style="min-width:180px"><span class="lbl">Display name</span><input name="name" required placeholder="e.g. Scholarship reply"></div>
       <div class="field" style="min-width:180px"><span class="lbl">Belongs to profile</span>
         <select name="case_type_id">
-          <option value="0">Organization-wide (all profiles)</option>
+          <option value="0">Across the organization (all profiles)</option>
           ${c.repo.listCaseTypes(c.user.organization_id ?? 1).map((t) => `<option value="${t.id}">${esc(t.name)} (${esc(t.code)})</option>`).join("")}
         </select></div>
       <button class="btn">Create template</button>
@@ -2738,7 +2738,7 @@ export function templatesPage(c: Ctx, selectedKey?: string, flash?: string): str
   const list = templates.map((t) => `<tr>
       <td><a href="/templates?template=${encodeURIComponent(t.key)}#tpl-${esc(t.key)}"><b>${esc(t.name)}</b></a><br><span class="mono small muted">${esc(t.key)}</span></td>
       <td class="small muted">${esc(TEMPLATE_USAGE[t.key] ?? "Manual staff reply.")}</td>
-      <td>${!t.attach_pack || t.attach_pack === "none" ? `<span class="muted small">—</span>` : `<span class="badge b-purple">${esc(t.attach_pack)} set</span>`}</td>
+      <td>${!t.attach_pack || t.attach_pack === "none" ? `<span class="muted small">Not recorded</span>` : `<span class="badge b-purple">${esc(t.attach_pack)} set</span>`}</td>
     </tr>`).join("");
 
   return head(
@@ -2797,8 +2797,8 @@ ${templates.length === 0 ? `<section class="card" id="templates-empty">
 
 // ── Staff (team performance + account management, merged) ──────────────────
 
-// OR-8: the ONE place visibility scopes are edited — a staff × case-type
-// matrix. Each row saves the member's ENTIRE case-type set in a single action;
+// OR-8: the ONE place visibility scopes are edited | a staff × case type
+// matrix. Each row saves the member's ENTIRE case type set in a single action;
 // tick nothing and save for no access, or press "Restore full visibility".
 function scopeMatrix(c: Ctx): string {
   const { repo } = c;
@@ -2833,12 +2833,12 @@ function scopeMatrix(c: Ctx): string {
   return `<section class="card nopad" id="scopes">
     <div class="card-head"><h2>Visibility scope</h2></div>
     <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the case types each officer handles and press <b>Save assigned case types</b> — one action per person. From then on they see only cases of those types, everywhere: queues, levels, search, direct links and the API. Saving an empty selection gives <b>no case access</b>; use <b>Restore full visibility</b> when that is intentional. Case types are managed in <a href="/config?tab=case-types">Configuration</a>.</p>
-    ${caseTypes.length ? `<table><tr><th>Staff member</th><th>Case types they may see</th></tr>${rows}</table>` : `<div class="empty"><p>Create a case type in Configuration first — scopes are case types.</p></div>`}
+    ${caseTypes.length ? `<table><tr><th>Member of staff</th><th>Case types they may see</th></tr>${rows}</table>` : `<div class="empty"><p>Create a case type in Configuration first | scopes are case types.</p></div>`}
   </section>`;
 }
 
 function workflowConfigHtml(c: Ctx): string {
-  return `<section class="card"><h2>Workflow configuration</h2><p class="small muted">Case types, document requirements, routing rules and stages are organization-owned.</p><a class="btn ghost" href="/config?tab=case-types">Configure case types</a><p>${c.repo.listCaseTypes(c.user.organization_id ?? 1).length} configured case types.</p></section>`;
+  return `<section class="card"><h2>Workflow configuration</h2><p class="small muted">Case types, document requirements, routing rules and stages are owned by the organization.</p><a class="btn ghost" href="/config?tab=case-types">Configure case types</a><p>${c.repo.listCaseTypes(c.user.organization_id ?? 1).length} configured case types.</p></section>`;
 }
 
 
@@ -2859,7 +2859,7 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
       <td>${r.assignedCases}</td>
       <td>${r.emailsReceived}</td>
       <td>${r.emailsSent}</td>
-      <td>${r.avgResponseMinutes === null ? `<span class="muted">—</span>` : esc(formatDuration(r.avgResponseMinutes))}</td>
+      <td>${r.avgResponseMinutes === null ? `<span class="muted">Not recorded</span>` : esc(formatDuration(r.avgResponseMinutes))}</td>
       <td>${r.casesCompleted}</td>
     </tr>`)
     .join("");
@@ -2899,7 +2899,7 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
         <td>
           <form method="post" action="/staff/toggle" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><button class="btn small ghost">${st.active ? "Disable" : "Enable"}</button></form>
           <form method="post" action="/staff/password" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><input type="password" name="password" placeholder="new password" style="width:150px;display:inline-block"><input type="password" name="confirm" placeholder="confirm" style="width:150px;display:inline-block"><button class="btn small ghost">Reset</button></form>
-          <form method="post" action="/staff/reset-code" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><button class="btn small ghost" title="Issue a one-time code the member can use on the public “Forgot password” page (no email involved)">Reset code</button></form>
+          <form method="post" action="/staff/reset-code" style="display:inline"><input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}"><button class="btn small ghost" title="Issue a single use code the member can use on the public “Forgot password” page (no email involved)">Reset code</button></form>
         </td>
       </tr>`)
       .join("")}
@@ -2933,24 +2933,24 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 ${resetCode ? `
 <div class="card" id="reset-code" style="position:static;margin-bottom:16px;border-left:4px solid var(--green)">
-  <b>One-time reset code issued</b>
+  <b>Single use access code issued</b>
   <div class="mono" style="font-size:1.5em;letter-spacing:0.2em;margin:8px 0;user-select:all">${esc(resetCode)}</div>
-  <span class="muted small">Works once, expires in 30 minutes. Give it to the member — they enter it on the public “Forgot password” page (linked under Sign in). A new issue voids this code. It is shown nowhere else and never appears in a URL.</span>
+  <span class="muted small">Works once, expires in 30 minutes. Give it to the member | they enter it on the public “Forgot password” page (linked under Enter the workspace). A new issue voids this code. It is shown nowhere else and never appears in a URL.</span>
 </div>` : ""}
 
 <div class="staff-performance">
   <section class="card">
     <h2>Team at a glance</h2>
     <div class="metric-ribbon">
-      <div class="stat"><div class="n">${stats.reduce((n, r) => n + r.assignedCases, 0)}</div><div class="l">Assigned cases</div><div class="context">Across ${stats.length} team member${stats.length === 1 ? "" : "s"}</div></div>
+      <div class="stat"><div class="n">${stats.reduce((n, r) => n + r.assignedCases, 0)}</div><div class="l">Cases entrusted</div><div class="context">Across ${stats.length} team member${stats.length === 1 ? "" : "s"}</div></div>
       <div class="stat"><div class="n">${totals.received}</div><div class="l">Emails received</div><div class="context">On currently assigned cases</div></div>
       <div class="stat"><div class="n">${totals.sent}</div><div class="l">Replies sent</div><div class="context">Human responses to contacts</div></div>
       <div class="stat"><div class="n">${totals.completed}</div><div class="l">Completed</div><div class="context">Cases closed by the team</div></div>
-      <div class="stat"><div class="n">${(() => { const values = stats.map((r) => r.avgResponseMinutes).filter((n): n is number => n !== null); return values.length ? esc(formatDuration(values.reduce((sum, n) => sum + n, 0) / values.length)) : "—"; })()}</div><div class="l">Avg response</div><div class="context">Average for measured staff</div></div>
+      <div class="stat"><div class="n">${(() => { const values = stats.map((r) => r.avgResponseMinutes).filter((n): n is number => n !== null); return values.length ? esc(formatDuration(values.reduce((sum, n) => sum + n, 0) / values.length)) : "Not recorded"; })()}</div><div class="l">Avg response</div><div class="context">Average for measured staff</div></div>
     </div>
     <h2>Performance by staff member</h2>
     <div class="table-scroll"><table>
-      <tr><th>Staff member</th><th>Assigned cases</th><th>Emails received</th><th>Replies sent</th><th>Avg response</th><th>Completed</th></tr>
+      <tr><th>Member of staff</th><th>Cases entrusted</th><th>Emails received</th><th>Replies sent</th><th>Avg response</th><th>Completed</th></tr>
       ${perfRows || `<tr><td colspan="6" class="muted">No staff yet.</td></tr>`}
     </table></div>
     <p class="small muted" style="margin:16px 0 0">“Emails received” counts incoming mail on cases currently assigned to the person. Response time is measured from an incoming email to the next outgoing reply on their cases.</p>
@@ -3052,15 +3052,15 @@ export function securityConsolePage(c: Ctx): string {
   return head(c, "Security Console", "security", `
 <div id="security-console">
   <h1>Security Console</h1>
-  <p class="sub">Read-only access, decision provenance, error and integration health for <b>${esc(c.institution)}</b>.</p>
-  <div class="card" style="border-left:4px solid var(--wine-mid)">
-    <b>Read-only operational view.</b> Activity is limited to this organization and its current live/demo realm. Integrations are shared by the running installation; this page shows stored status only and makes no Gmail or Gemini calls.
+  <p class="sub">View only access, decision provenance, error and integration health for <b>${esc(c.institution)}</b>.</p>
+  <div class="card" style="border-left:4px solid var(--plum-mid)">
+    <b>Operational view without editing.</b> Activity is limited to this organization and its current live/demo realm. Integrations are shared by the running installation; this page shows stored status only and makes no Gmail or Gemini calls.
   </div>
 
   <section class="card">
     <h2>Recent activity</h2>
     <div class="metric-ribbon">
-      ${metric(snapshot.logins.length, "Recent logins", "latest recorded sign-ins")}
+      ${metric(snapshot.logins.length, "Recent logins", "latest recorded sign ins")}
       ${metric(snapshot.activeSessions.length, "Active sessions", "valid staff sessions")}
       ${metric(snapshot.pipelineRuns.length, "Decision runs", "latest provenance records")}
       ${metric(snapshot.integritySignals.length, "Change signals", "review indicators, not proof")}
@@ -3070,7 +3070,7 @@ export function securityConsolePage(c: Ctx): string {
 
   <section class="card nopad">
     <div class="card-head"><h2>Gemini &amp; Gmail service health</h2><a class="small" href="/settings#connections">Settings → Connections</a></div>
-    <p class="small muted" style="padding:0 24px">These integrations are installation-wide in the current runtime. Status uses saved configuration and the latest recorded result; it is not a live connectivity test.</p>
+    <p class="small muted" style="padding:0 24px">These integrations are shared across the installation in the current runtime. Status uses saved configuration and the latest recorded result; it is not a live connectivity test.</p>
     <div class="kv" style="padding:0 24px 20px">
       <div><span>Gmail</span><b><span class="badge ${gmailPaused ? "b-orange" : gmailConfigured ? "b-green" : "b-gray"}">${gmailStatus}</span></b></div>
       <div><span>Last successful sync</span><b>${gmailLastSync ? esc(fmtDate(gmailLastSync)) : "Not recorded"}</b></div>
@@ -3082,29 +3082,29 @@ export function securityConsolePage(c: Ctx): string {
 
   <section class="card nopad">
     <div class="card-head"><h2>Successful staff logins</h2></div>
-    ${loginRows ? `<div class="table-scroll"><table><tr><th>Staff member</th><th>When</th></tr>${loginRows}</table></div>` : `<div class="empty"><p>No sign-ins are recorded for this organization and realm yet.</p></div>`}
+    ${loginRows ? `<div class="table-scroll"><table><tr><th>Member of staff</th><th>When</th></tr>${loginRows}</table></div>` : `<div class="empty"><p>No sign ins are recorded for this organization and realm yet.</p></div>`}
   </section>
 
   <section class="card nopad">
     <div class="card-head"><h2>Active staff sessions</h2></div>
-    ${sessionRows ? `<div class="table-scroll"><table><tr><th>Staff member</th><th>Started</th><th>Expires</th></tr>${sessionRows}</table></div>` : `<div class="empty"><p>No active staff sessions are recorded.</p></div>`}
+    ${sessionRows ? `<div class="table-scroll"><table><tr><th>Member of staff</th><th>Started</th><th>Expires</th></tr>${sessionRows}</table></div>` : `<div class="empty"><p>No active staff sessions are recorded.</p></div>`}
     <p class="small muted" style="padding:0 24px 18px;margin:0">Session tokens and CSRF values are never displayed.</p>
   </section>
 
   <section class="card nopad">
     <div class="card-head"><h2>Pipeline runs &amp; decision provenance</h2></div>
-    ${runRows ? `<div class="table-scroll"><table><tr><th>Case</th><th>Run / source email</th><th>Outcome</th><th>Recorded reasoning</th></tr>${runRows}</table></div>` : `<div class="empty"><p>No decision-log runs are recorded for this organization and realm yet.</p></div>`}
+    ${runRows ? `<div class="table-scroll"><table><tr><th>Case</th><th>Run / source email</th><th>Outcome</th><th>Recorded reasoning</th></tr>${runRows}</table></div>` : `<div class="empty"><p>No decision records are recorded for this organization and realm yet.</p></div>`}
   </section>
 
   <section class="card nopad">
     <div class="card-head"><h2>Case-tampering / decision-change signals</h2></div>
-    <p class="small muted" style="padding:0 24px">Human overrides/outcomes, case-type changes, configuration upgrades and staff status changes are surfaced beside the latest earlier decision-log snapshot. These are audit indicators for review, not proof of tampering.</p>
-    ${signalRows ? `<div class="table-scroll"><table><tr><th>Case / signal</th><th>Actor / time</th><th>Earlier decision provenance</th><th>Recorded change</th></tr>${signalRows}</table></div>` : `<div class="empty"><p>No decision-change indicators are recorded for this organization and realm.</p></div>`}
+    <p class="small muted" style="padding:0 24px">Human decisions and outcomes, changes to case type, configuration upgrades and staff status changes are surfaced beside the latest earlier decision record. These are audit indicators for review, not proof of tampering.</p>
+    ${signalRows ? `<div class="table-scroll"><table><tr><th>Case / signal</th><th>Actor / time</th><th>Earlier decision provenance</th><th>Recorded change</th></tr>${signalRows}</table></div>` : `<div class="empty"><p>No decision change indicators are recorded for this organization and realm.</p></div>`}
   </section>
 
   <section class="card nopad">
     <div class="card-head"><h2>Crashes, errors &amp; failed work</h2></div>
-    <p class="small muted" style="padding:0 24px">Shows persisted service, send, ingestion and unhandled web-request errors attributable to this organization. Fatal process exceptions are marked as shared-runtime events; forced shutdowns or failures before the database opens cannot be recorded. Mail failures without a persisted case/tenant link are excluded rather than shown across tenants.</p>
+    <p class="small muted" style="padding:0 24px">Shows recorded service, sending, intake, and unhandled web request errors attributable to this organization. Fatal process exceptions are marked as shared runtime events; forced shutdowns or failures before the database opens cannot be recorded. Mail failures without a persisted case or organization link are excluded rather than shown across tenants.</p>
     ${errorRows ? `<div class="table-scroll"><table><tr><th>Issue</th><th>Case</th><th>Actor / time</th><th>Recorded detail</th></tr>${errorRows}</table></div>` : `<div class="empty"><p>No attributable errors or failed work are recorded.</p></div>`}
   </section>
 </div>`);
@@ -3162,8 +3162,8 @@ ${opts.msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">$
   <input type="hidden" name="case_type" value="${esc(selected.code)}">
   <h2>${esc(selected.name)}</h2>
   <div class="formrow">
-    <div><label>Contact name</label><input name="from_name" value="Jordan Rivera" required maxlength="80"></div>
-    <div><label>Contact email</label><input name="from" type="email" value="jordan.rivera@example.test" required maxlength="120"></div>
+    <div><label>Correspondent name</label><input name="from_name" value="Jordan Rivera" required maxlength="80"></div>
+    <div><label>Correspondent email</label><input name="from" type="email" value="jordan.rivera@example.test" required maxlength="120"></div>
   </div>
   <div class="formrow"><div><label>Subject</label><input name="subject" value="${esc(selected.name)} — Jordan Rivera" required maxlength="200"></div></div>
   <div class="formrow"><div><label>Message body — "Field: value" lines become facts for the rule tree</label>
