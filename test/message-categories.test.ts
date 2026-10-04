@@ -134,7 +134,23 @@ describe("the allow-list is tenant data, edited through real routes", () => {
     expect(page).toContain("general_enquiry");
     expect(page).toContain("General enquiry");
     expect(page).toContain('action="/settings/categories/remove"');
+    expect(page).toContain('action="/settings/categories/edit"');
+    expect(page).toContain('value="General enquiry"');
     expect(page).not.toContain("No categories configured");
+
+    const edited = await post("/settings/categories/edit", { key: "general_enquiry", label: "General support" });
+    expect(edited.status).toBe(302);
+    expect(decodeURIComponent(edited.headers.get("location") ?? "")).toContain("existing message history are unchanged");
+    expect(repo.listEmailCategories(1)).toMatchObject([{ key: "general_enquiry", label: "General support" }, { key: "complaint", label: "Complaint" }]);
+    expect(repo.recentAudit(20).some((entry) => entry.event === "email_category_updated" && entry.detail.includes("General enquiry") && entry.detail.includes("General support"))).toBe(true);
+    const updatedPage = await (await fetch(`${base}/settings`, { headers: { cookie: admin.cookie } })).text();
+    expect(updatedPage).toContain('value="General support"');
+    expect(updatedPage).toContain('value="general_enquiry"'); // the stable routing key did not change
+    const blankEdit = await post("/settings/categories/edit", { key: "general_enquiry", label: "   " });
+    expect(decodeURIComponent(blankEdit.headers.get("location") ?? "")).toContain("label must be 1-60 characters");
+    expect(repo.listEmailCategories(1).find((row) => row.key === "general_enquiry")?.label).toBe("General support");
+    const unknownEdit = await post("/settings/categories/edit", { key: "not_there", label: "Renamed" });
+    expect(decodeURIComponent(unknownEdit.headers.get("location") ?? "")).toContain("Unknown category");
 
     // A key that cannot be a machine name is refused, loudly.
     const bad = await post("/settings/categories/create", { key: "No Spaces!", label: "" });
@@ -157,6 +173,12 @@ describe("the allow-list is tenant data, edited through real routes", () => {
     expect((await post("/settings/categories/create", { key: "follow_up", label: "Following up" }, other2)).status).toBe(302);
     expect(repo.listEmailCategories(other.id).map((r) => r.key)).toEqual(["follow_up"]);
     expect(repo.listEmailCategories(1)).toEqual([]); // nothing leaked into org 1
+
+    expect((await post("/settings/categories/create", { key: "general_enquiry", label: "General enquiry" }, admin)).status).toBe(302);
+    const foreignEdit = await post("/settings/categories/edit", { key: "general_enquiry", label: "Hijacked label" }, other2);
+    expect(decodeURIComponent(foreignEdit.headers.get("location") ?? "")).toContain("Unknown category for this organization");
+    expect(repo.listEmailCategories(1).find((row) => row.key === "general_enquiry")?.label).toBe("General enquiry");
+    expect(repo.listEmailCategories(other.id).find((row) => row.key === "general_enquiry")).toBeUndefined();
   });
 
   it("treats the model credential as installation-wide (head office only)", async () => {

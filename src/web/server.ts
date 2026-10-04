@@ -2187,6 +2187,23 @@ export function createApp(deps: WebDeps): Express {
       `${key} ("${label}")${routed ? "" : " — not a workflow category, so messages carrying it route as 'other'"}`);
     return res.redirect(back(`Category "${label}" (${key}) added.${routed ? "" : " Note: only the eight workflow categories drive routing; a custom label is recorded and routes as 'other'."}`));
   });
+  app.post("/settings/categories/edit", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const orgId = ownOrganizationId(req);
+    const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#categories`;
+    if (!repo.getOrganization(orgId)) return res.redirect(back("Unknown organization — complete setup first."));
+    const key = String(req.body.key ?? "").trim();
+    const label = String(req.body.label ?? "").trim();
+    const current = repo.listEmailCategories(orgId).find((row) => row.key === key);
+    if (!current) return res.redirect(back("Unknown category for this organization — nothing changed."));
+    if (!label || label.length > 60) return res.redirect(back("A category label must be 1-60 characters."));
+    if (label === current.label) return res.redirect(back(`Category "${key}" is unchanged.`));
+    if (!repo.updateEmailCategoryLabel(orgId, key, label)) {
+      return res.redirect(back("Category could not be updated — refresh the list and try again."));
+    }
+    repo.audit(null, req.staff!.username, "email_category_updated", `${key}: "${current.label}" → "${label}"`);
+    return res.redirect(back(`Category label updated to "${label}". Its key and existing message history are unchanged.`));
+  });
+
   app.post("/settings/categories/remove", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const orgId = ownOrganizationId(req);
     const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#categories`;

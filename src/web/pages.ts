@@ -2101,8 +2101,13 @@ function categoriesCard(c: Ctx): string {
   <span class="mono">application</span>, <span class="mono">document_submission</span>, <span class="mono">missing_document</span>,
   <span class="mono">fee_enquiry</span>, <span class="mono">general_enquiry</span>, <span class="mono">follow_up</span>,
   <span class="mono">complaint</span>, <span class="mono">other</span> — a custom label is still recorded on the message and routes as <span class="mono">other</span>.</p>
-  ${categoryRows.length ? `<table><tr><th>Key</th><th>Label</th><th></th></tr>${categoryRows.map((row) => `<tr>
-      <td class="mono small">${esc(row.key)}</td><td>${esc(row.label)}</td>
+  <p class="small muted">Keys are stable routing identifiers; edit the staff-facing label without changing existing message history.</p>
+  ${categoryRows.length ? `<table><tr><th>Key</th><th>Staff label</th><th></th></tr>${categoryRows.map((row) => `<tr>
+      <td class="mono small">${esc(row.key)}</td>
+      <td><form method="post" action="/settings/categories/edit" style="display:flex;gap:8px;align-items:center;margin:0">${csrf}
+        <input type="hidden" name="key" value="${esc(row.key)}">
+        <input name="label" value="${esc(row.label)}" required maxlength="60" aria-label="Label for ${esc(row.key)}">
+        <button class="btn small ghost">Save label</button></form></td>
       <td><form method="post" action="/settings/categories/remove" style="margin:0">${csrf}
         <input type="hidden" name="key" value="${esc(row.key)}">
         <button class="btn small ghost" onclick="return confirm('Retire this category? Messages already labelled keep it.')">Retire</button></form></td>

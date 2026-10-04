@@ -594,6 +594,15 @@ export class Repo {
       .run(active ? 1 : 0, organizationId, key.trim());
   }
 
+  /** Change the staff-facing label while keeping the machine key stable. */
+  updateEmailCategoryLabel(organizationId: number, key: string, label: string): boolean {
+    const cleanLabel = label.trim();
+    if (!cleanLabel) throw new Error("email category label cannot be blank");
+    const result = this.db.prepare("UPDATE organization_categories SET label = ? WHERE organization_id = ? AND key = ? AND active = 1")
+      .run(cleanLabel, organizationId, key.trim());
+    return result.changes === 1;
+  }
+
   addEmailCategory(organizationId: number, input: { key: string; label: string }): void {
     this.db.prepare("INSERT INTO organization_categories (organization_id, key, label) VALUES (?,?,?) ON CONFLICT(organization_id, key) DO UPDATE SET label=excluded.label, active=1")
       .run(organizationId, input.key.trim(), input.label.trim());
