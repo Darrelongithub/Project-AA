@@ -16,7 +16,7 @@ import { hashPassword } from "../src/util/password";
 import { createApp } from "../src/web/server";
 import type { PipelineContext } from "../src/pipeline/adapters";
 import { MockSender } from "../src/pipeline/adapters";
-import { webLogin } from "./helpers";
+import { configureTestOrganization, webLogin } from "./helpers";
 
 let repo: Repo;
 let sender: MockSender;
@@ -25,6 +25,7 @@ let server: ReturnType<ReturnType<typeof createApp>["listen"]>;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  configureTestOrganization(repo);
   repo.createStaff("admin", "Folder Admin", hashPassword("admin123"), "admin");
   sender = new MockSender();
 });
@@ -39,17 +40,15 @@ async function startServer(): Promise<{ base: string; cookie: string; csrf: stri
   return { base, cookie, csrf };
 }
 
-function mkApplicant(email: string, thread: string, name: string, opts: Record<string, unknown> = {}): number {
-  const a = repo.getOrCreateApplicant(email, thread, { fullName: name });
-  if (Object.keys(opts).length) repo.updateApplicant(a.id, opts);
-  return a.id;
+function mkCase(email: string, thread: string, name: string, caseTypeCode?: string): number {
+  return repo.createCase({ emailAddress: email, threadId: thread, organizationId: 1, fullName: name, caseTypeCode }).id;
 }
 
 function mail(applicantId: number, direction: "in" | "out", subject: string, body: string, thread: string, at: string): void {
   repo.insertEmail({
     applicant_id: applicantId, message_id: `m-${Math.random().toString(36).slice(2)}`, thread_id: thread,
-    direction, from_addr: direction === "in" ? "them@example.org" : "noreply@riara.ac.ke",
-    to_addr: direction === "in" ? "admissions@riara.ac.ke" : "them@example.org",
+    direction, from_addr: direction === "in" ? "them@example.org" : "noreply@example.org",
+    to_addr: direction === "in" ? "intake@example.org" : "them@example.org",
     subject, body, category: null, auto: 0, at,
   });
 }
@@ -64,7 +63,7 @@ async function act(base: string, cookie: string, csrf: string, tkey: string, act
 
 describe("gmail folders", () => {
   it("shows the gmail sidebar: Inbox, Unread, Starred, Important, Sent, All Mail, Spam, Bin with counts", async () => {
-    const aid = mkApplicant("folder@example.org", "thr-folder", "Folder Person");
+    const aid = mkCase("folder@example.org", "thr-folder", "Folder Person");
     mail(aid, "in", "Unread incoming", "hello", "thr-folder", "2026-09-19T07:00:00Z");
 
     const { base, cookie } = await startServer();
@@ -82,11 +81,11 @@ describe("gmail folders", () => {
   });
 
   it("incoming conversations live in Inbox; conversations with replies also live in Sent", async () => {
-    const aid = mkApplicant("both@example.org", "thr-both", "Both Ways");
+    const aid = mkCase("both@example.org", "thr-both", "Both Ways");
     mail(aid, "in", "Two-way conversation", "question", "thr-both", "2026-09-19T07:00:00Z");
     mail(aid, "out", "Two-way conversation", "answer", "thr-both", "2026-09-19T08:00:00Z");
     // an outgoing-only conversation (proactive contact) must NOT appear in Inbox
-    const oid = mkApplicant("outonly@example.org", "thr-outonly", "Outbound Contact");
+    const oid = mkCase("outonly@example.org", "thr-outonly", "Outbound Contact");
     mail(oid, "out", "Proactive outreach", "we wrote first", "thr-outonly", "2026-09-19T09:00:00Z");
 
     const { base, cookie } = await startServer();
@@ -100,7 +99,7 @@ describe("gmail folders", () => {
   });
 
   it("stars from the conversation list and surfaces starred mail in Starred — without leaving Inbox", async () => {
-    const aid = mkApplicant("star@example.org", "thr-star", "Star Person");
+    const aid = mkCase("star@example.org", "thr-star", "Star Person");
     mail(aid, "in", "Star this chat", "body", "thr-star", "2026-09-19T07:00:00Z");
 
     const { base, cookie, csrf } = await startServer();
@@ -122,7 +121,7 @@ describe("gmail folders", () => {
   });
 
   it("marks conversations important and lists them under Important", async () => {
-    const aid = mkApplicant("imp@example.org", "thr-imp", "Important Person");
+    const aid = mkCase("imp@example.org", "thr-imp", "Important Person");
     mail(aid, "in", "Priority matter", "body", "thr-imp", "2026-09-19T07:00:00Z");
 
     const { base, cookie, csrf } = await startServer();
@@ -136,7 +135,7 @@ describe("gmail folders", () => {
   });
 
   it("Bin hides a conversation from Inbox and All Mail — restore puts it back", async () => {
-    const aid = mkApplicant("bin@example.org", "thr-bin", "Bin Person");
+    const aid = mkCase("bin@example.org", "thr-bin", "Bin Person");
     mail(aid, "in", "Bin me softly", "body", "thr-bin", "2026-09-19T07:00:00Z");
 
     const { base, cookie, csrf } = await startServer();
@@ -159,7 +158,7 @@ describe("gmail folders", () => {
   });
 
   it("Report spam hides from Inbox; Not spam restores it", async () => {
-    const aid = mkApplicant("spam@example.org", "thr-spam", "Spam Person");
+    const aid = mkCase("spam@example.org", "thr-spam", "Spam Person");
     mail(aid, "in", "Maybe junk", "body", "thr-spam", "2026-09-19T07:00:00Z");
 
     const { base, cookie, csrf } = await startServer();
@@ -175,7 +174,7 @@ describe("gmail folders", () => {
   });
 
   it("the conversation view carries the full gmail action bar", async () => {
-    const aid = mkApplicant("bar@example.org", "thr-bar", "Action Bar");
+    const aid = mkCase("bar@example.org", "thr-bar", "Action Bar");
     mail(aid, "in", "Actionable thread", "body", "thr-bar", "2026-09-19T07:00:00Z");
 
     const { base, cookie } = await startServer();
@@ -186,7 +185,7 @@ describe("gmail folders", () => {
   });
 
   it("Mark unread puts a read conversation back into Unread", async () => {
-    const aid = mkApplicant("unread@example.org", "thr-unread", "Unread Person");
+    const aid = mkCase("unread@example.org", "thr-unread", "Unread Person");
     mail(aid, "in", "Flip me unread", "body", "thr-unread", "2026-09-19T07:00:00Z");
 
     const { base, cookie, csrf } = await startServer();
@@ -202,20 +201,14 @@ describe("gmail folders", () => {
 });
 
 describe("folder action security", () => {
-  it("action POSTs require CSRF and respect school scope", async () => {
-    const progs = repo.listProgrammes();
-    const schoolA = repo.listSchools()[0];
-    const progA = progs.find((p) => p.school === schoolA)!;
-    const otherSchool = repo.listSchools().find((s) => s !== schoolA)!;
-    const progB = progs.find((p) => p.school === otherSchool) ?? progs[progs.length - 1];
-
-    const mineId = mkApplicant("mine-f@example.org", "thr-minf", "Mine F", { programme: progA.code });
-    const theirsId = mkApplicant("theirs-f@example.org", "thr-thf", "Theirs F", { programme: progB.code });
+  it("action POSTs require CSRF and respect the case-type scope", async () => {
+    const mineId = mkCase("mine-f@example.org", "thr-minf", "Mine F", "SERVICE_REQUEST");
+    const theirsId = mkCase("theirs-f@example.org", "thr-thf", "Theirs F", "VENDOR_INTAKE");
     mail(mineId, "in", "Mine folder chat", "mine", "thr-minf", "2026-09-19T07:00:00Z");
     mail(theirsId, "in", "Their folder chat", "theirs", "thr-thf", "2026-09-19T07:00:00Z");
 
     repo.createStaff("scoped", "Scoped F", hashPassword("scoped-pass-1"), "user");
-    repo.setScopes(repo.getStaffByUsername("scoped")!.id, [schoolA]);
+    repo.setCaseTypeScopes(repo.getStaffByUsername("scoped")!.id, ["SERVICE_REQUEST"]);
 
     const ctx: PipelineContext = { repo, adapters: { vision: null as never, watcher: null as never, sender } };
     const app = createApp({ repo, ctx });

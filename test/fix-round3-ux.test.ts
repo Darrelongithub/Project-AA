@@ -3,22 +3,20 @@
  *
  *  U1  Mail / Compose must NEVER open a new browser tab — same-tab
  *      navigation on every surface (nav, mail page, case file).
- *  U2  Course setup = list courses → inside each, tick required items via
- *      checkboxes. The per-course document checklist becomes staff-
- *      configurable and actually drives what the engine requires.
- *  U3  Course configuration appears in ONE place — the staff area — not
- *      also on the Configuration page (old link redirects).
+ *  U2  Case-type setup lists each configured document slot with its
+ *      required/blocking state; the checklist is administrator-configurable
+ *      and actually drives what the engine requires.
+ *  U3  Case-type configuration appears in ONE place — Configuration.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { hashPassword } from "../src/util/password";
 import { createApp } from "../src/web/server";
 import type { PipelineContext } from "../src/pipeline/adapters";
 import { MockSender } from "../src/pipeline/adapters";
-import { webLogin } from "./helpers";
+import {webLogin, configureTestOrganization } from "./helpers";
 
 let repo: Repo;
 let server: ReturnType<ReturnType<typeof createApp>["listen"]> | undefined;
@@ -26,7 +24,7 @@ let server: ReturnType<ReturnType<typeof createApp>["listen"]> | undefined;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  configureTestOrganization(repo);
   repo.createStaff("admin", "Admin", hashPassword("admin123"), "admin");
 });
 afterEach(() => { server?.close(); server = undefined; });
@@ -40,15 +38,13 @@ async function boot(): Promise<{ base: string; cookie: string; csrf: string }> {
   return { base, cookie, csrf };
 }
 
-function mkApplicant(email: string, programme: string): number {
-  const a = repo.getOrCreateApplicant(email, `t-${email}`);
-  repo.updateApplicant(a.id, { programme });
-  return a.id;
+function mkCase(email: string, caseTypeCode = "SERVICE_REQUEST"): number {
+  return repo.createCase({ emailAddress: email, threadId: `t-${email}`, organizationId: 1, caseTypeCode }).id;
 }
 
 describe("U1 — no new browser tabs, ever, on mail/compose surfaces", () => {
   it("nav, mail, compose and case pages never emit target=_blank", async () => {
-    const a = mkApplicant("tabfree@example.org", "BNS");
+    const a = mkCase("tabfree@example.org");
     const { base, cookie } = await boot();
     for (const url of ["/", "/mail", `/compose?case=${a}`, `/case/${a}`]) {
       const page = await (await fetch(`${base}${url}`, { headers: { cookie } })).text();
@@ -57,135 +53,129 @@ describe("U1 — no new browser tabs, ever, on mail/compose surfaces", () => {
   });
 
   it("the case page still offers a composer link (same tab)", async () => {
-    const a = mkApplicant("still@example.org", "BNS");
+    const a = mkCase("still@example.org");
     const { base, cookie } = await boot();
     const page = await (await fetch(`${base}/case/${a}`, { headers: { cookie } })).text();
     expect(page).toContain(`/case/${a}/compose`);
   });
 });
 
-describe("U3 — course configuration lives in ONE place (the staff area)", () => {
-  it("/config?tab=courses redirects to the staff area", async () => {
+describe("U3 — case-type configuration lives in ONE place (Configuration)", () => {
+  it("the legacy courses tab redirects to the staff area", async () => {
     const { base, cookie } = await boot();
     const res = await fetch(`${base}/config?tab=courses`, { headers: { cookie }, redirect: "manual" });
     expect(res.status).toBe(302);
     expect(res.headers.get("location") ?? "").toContain("/staff");
   });
 
-  it("the Configuration page no longer offers a Course configuration tab", async () => {
+  it("the Configuration page no longer offers a legacy course tab", async () => {
     const { base, cookie } = await boot();
     const page = await (await fetch(`${base}/config`, { headers: { cookie } })).text();
     expect(page).not.toContain('/config?tab=courses');
     expect(page).not.toContain("Course configuration");
   });
 
-  it("the staff area now carries the full course configuration: schools, rename, details, ownership, enforced rules", async () => {
+  it("the staff area links to the one configuration home and hosts the visibility matrix", async () => {
+    repo.createStaff("officer", "Case Officer", "x".repeat(60), "user");
     const { base, cookie } = await boot();
     const page = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
-    for (const school of ["School of Law", "School of Business", "School of Nursing", "School of Computing Sciences"]) {
-      expect(page).toContain(school);
-    }
-    expect(page).toContain("LLB");
-    expect(page).toContain('action="/config/schools/rename"');
-    expect(page).toContain('action="/config/programme/edit"');
-    expect(page).toContain('action="/config/course-owner"');
-    expect(page).toContain('action="/settings/lists/add"'); // add a course
-    // display == enforce: the enforced rule trees are still printed here
-    expect(page).toContain("Enforced entry requirements");
+    expect(page).toContain("Workflow configuration");
+    expect(page).toContain('href="/config?tab=case-types"');
+    expect(page).toContain("3 configured case types");
+    // The scope matrix is the staff area's own job: case types × staff.
+    expect(page).toContain("Visibility scope");
+    expect(page).toContain('action="/staff/scopes"');
+    expect(page).toContain('name="case_types"');
+    // No second, stale configuration surface.
+    expect(page).not.toContain("Course configuration");
+    expect(page).not.toContain("Enforced entry requirements");
   });
 
-  it("school add/rename flows land back on the staff area, not Configuration", async () => {
+  it("saving a scope lands back on the staff area and is visible there", async () => {
     const { base, cookie, csrf } = await boot();
-    const res = await fetch(`${base}/config/schools/add`, {
+    repo.createStaff("officer", "Case Officer", "x".repeat(60), "user");
+    const officer = repo.getStaffByUsername("officer")!;
+    const res = await fetch(`${base}/staff/scopes`, {
       method: "POST", redirect: "manual",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${csrf}&name=School of Aviation`,
+      body: `_csrf=${csrf}&staff_id=${officer.id}&case_types=VENDOR_INTAKE`,
     });
     expect(res.status).toBe(302);
     expect(decodeURIComponent(res.headers.get("location") ?? "")).toContain("/staff");
+    expect(repo.caseTypeScopesFor(officer.id)).toEqual(["VENDOR_INTAKE"]);
     const page = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
-    expect(page).toContain("School of Aviation");
+    expect(page).toContain("vendor intake");
+    expect(page).toContain("assigned case types only");
   });
 });
 
-describe("U2 — per-course document checklists via checkboxes", () => {
-  it("lists every course with its required items as tickable boxes (defaults pre-ticked)", async () => {
+describe("U2 — per-case-type document checklists via Configuration", () => {
+  it("lists every configured slot with its required/blocking state", async () => {
     const { base, cookie } = await boot();
-    const page = await (await fetch(`${base}/staff`, { headers: { cookie } })).text();
-    expect(page).toContain('action="/staff/course-docs"');
-    // the defaults for a degree course are present as checked boxes
-    const llbBlock = /<details id="docs-LLB"[\s\S]*?<\/details>/.exec(page);
-    expect(llbBlock).toBeTruthy();
-    expect(llbBlock![0]).toContain('name="docs" value="application_form"');
-    expect(llbBlock![0]).toMatch(/name="docs" value="application_form"[^>]*checked/);
-    // a law-specific item is in LLB's list too
-    expect(llbBlock![0]).toContain('name="docs" value="law_personal_statement"');
+    const page = await (await fetch(`${base}/config?tab=case-types`, { headers: { cookie } })).text();
+    expect(page).toContain('action="/config/case-types/document"');
+    expect(page).toContain("SERVICE_REQUEST");
+    expect(page).toContain("Request form");
+    expect(page).toContain("Identity document");
   });
 
-  it("saving the checkboxes rewrites what the engine requires for that course only", async () => {
+  it("saving a slot rewrites what the engine requires for that case type only", async () => {
     const { base, cookie, csrf } = await boot();
-    const res = await fetch(`${base}/staff/course-docs`, {
+    const service = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    const vendor = repo.getCaseType("VENDOR_INTAKE", 1)!;
+    const res = await fetch(`${base}/config/case-types/document`, {
       method: "POST", redirect: "manual",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${csrf}&programme=LLB&docs=application_form&docs=exam_result_slip`,
+      body: `_csrf=${csrf}&organization_id=1&case_type_id=${service.id}&key=site_survey&label=Site survey&required=1&blocking=1`,
     });
     expect(res.status).toBe(302);
-    expect(decodeURIComponent(res.headers.get("location") ?? "")).toContain("/staff");
-    expect([...(repo.courseDocConfig("LLB") ?? [])].sort()).toEqual(["application_form", "exam_result_slip"]);
+    expect(repo.listDocumentDefinitions(service.id).map((row) => row.key)).toContain("site_survey");
 
-    const llb = repo.getApplicant(mkApplicant("conf-llb@example.org", "LLB"))!;
-    const required = repo.effectiveRequirements(llb).filter((e) => e.required).map((e) => e.document_type);
-    expect(required.sort()).toEqual(["application_form", "exam_result_slip"]);
-
-    // the other courses are untouched — still the full matrix checklist
-    const mba = repo.getApplicant(mkApplicant("conf-mba@example.org", "MBA"))!;
-    const mbaRequired = repo.effectiveRequirements(mba).filter((e) => e.required).map((e) => e.document_type);
-    expect(mbaRequired).toContain("application_form");
-    expect(mbaRequired.length).toBeGreaterThan(2);
+    const serviceCase = repo.getCase(mkCase("conf-service@example.test", "SERVICE_REQUEST"))!;
+    expect(repo.effectiveRequirements(serviceCase).map((row) => row.document_type)).toContain("site_survey");
+    const vendorCase = repo.getCase(mkCase("conf-vendor@example.test", "VENDOR_INTAKE"))!;
+    expect(repo.effectiveRequirements(vendorCase).map((row) => row.document_type)).not.toContain("site_survey");
+    expect(repo.listDocumentDefinitions(vendor.id).map((row) => row.key)).toEqual(["services_agreement", "insurance_certificate"]);
   });
 
-  it("adding a document not in the course's defaults is respected", async () => {
+  it("a slot can be removed again", async () => {
     const { base, cookie, csrf } = await boot();
-    const res = await fetch(`${base}/staff/course-docs`, {
+    const service = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    repo.upsertDocumentDefinition(service.id, { key: "site_survey", label: "Site survey", required: true, blocking: true });
+    const res = await fetch(`${base}/config/case-types/document-delete`, {
       method: "POST", redirect: "manual",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${csrf}&programme=MBA&docs=application_form&docs=undergraduate_transcript&docs=kcpe_cert`,
+      body: `_csrf=${csrf}&organization_id=1&case_type_id=${service.id}&key=site_survey`,
     });
     expect(res.status).toBe(302);
-    const mba = repo.getApplicant(mkApplicant("conf-add@example.org", "MBA"))!;
-    const required = repo.effectiveRequirements(mba).filter((e) => e.required).map((e) => e.document_type);
-    expect(required).toContain("kcpe_cert"); // staff added a non-default
+    expect(repo.listDocumentDefinitions(service.id).map((row) => row.key)).not.toContain("site_survey");
   });
 
-  it("reset returns the course to the generated defaults", async () => {
+  it("an invalid rule tree is refused and the previous configuration stays", async () => {
     const { base, cookie, csrf } = await boot();
-    await fetch(`${base}/staff/course-docs`, {
+    const service = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    const before = JSON.stringify(repo.caseTypeRules(service));
+    const res = await fetch(`${base}/config/case-types/rules`, {
       method: "POST", redirect: "manual",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${csrf}&programme=LLB&docs=application_form`,
-    });
-    const res = await fetch(`${base}/staff/course-docs/reset`, {
-      method: "POST", redirect: "manual",
-      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${csrf}&programme=LLB`,
+      body: `_csrf=${csrf}&organization_id=1&case_type_id=${service.id}&rules_json=${encodeURIComponent(JSON.stringify([{ kind: "condition", field: "__proto__", comparator: "=", value: "x" }]))}`,
     });
     expect(res.status).toBe(302);
-    expect(repo.courseDocConfig("LLB") ?? null).toBeNull(); // back to defaults
-    const llb = repo.getApplicant(mkApplicant("conf-reset@example.org", "LLB"))!;
-    const required = repo.effectiveRequirements(llb).filter((e) => e.required).map((e) => e.document_type);
-    expect(required.length).toBeGreaterThan(1);
+    expect(decodeURIComponent(res.headers.get("location") ?? "")).toContain("not saved");
+    expect(JSON.stringify(repo.caseTypeRules(service))).toBe(before);
   });
 
   it("non-admin staff cannot change checklists", async () => {
     repo.createStaff("officer", "Officer", hashPassword("officer123"), "user");
     const { base } = await boot();
     const { cookie, csrf } = await webLogin(base, "officer", "officer123");
-    const res = await fetch(`${base}/staff/course-docs`, {
+    const service = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    const res = await fetch(`${base}/config/case-types/document`, {
       method: "POST", redirect: "manual",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: `_csrf=${csrf}&programme=LLB&docs=application_form`,
+      body: `_csrf=${csrf}&organization_id=1&case_type_id=${service.id}&key=site_survey&label=Site survey&required=1&blocking=1`,
     });
     expect(res.status).toBe(403);
-    expect(repo.courseDocConfig("LLB") ?? null).toBeNull();
+    expect(repo.listDocumentDefinitions(service.id).map((row) => row.key)).not.toContain("site_survey");
   });
 });

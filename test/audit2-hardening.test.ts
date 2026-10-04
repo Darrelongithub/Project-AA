@@ -16,12 +16,11 @@ import type { Server } from "http";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { hashPassword } from "../src/util/password";
 import { createApp } from "../src/web/server";
 import { runFollowUpSweep } from "../src/followups";
 import type { PipelineContext } from "../src/pipeline/adapters";
-import { webLogin } from "./helpers";
+import {webLogin, configureTestOrganization } from "./helpers";
 
 let repo: Repo;
 let server: Server | undefined;
@@ -29,7 +28,7 @@ let server: Server | undefined;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  configureTestOrganization(repo);
 });
 afterEach(() => { server?.close(); server = undefined; });
 
@@ -79,7 +78,9 @@ describe("round 2 · finding 1 — held-draft approval race", () => {
 
 describe("round 2 · finding 2 — follow-up ladder concurrency", () => {
   function armDue(r: Repo, email: string): number {
-    const a = r.getOrCreateApplicant(email, `thr-${email}`);
+    // A configured case: an unconfigured one has no checklist to chase, so its
+    // ladder is (correctly) cancelled instead of held.
+    const a = r.createCase({ emailAddress: email, threadId: `thr-${email}`, organizationId: 1, caseTypeCode: "SERVICE_REQUEST" });
     r.setFollowup(a.id, 0, "2026-09-10T08:00:00Z", "2026-09-10T07:00:00Z"); // due since yesterday
     return a.id;
   }
@@ -99,7 +100,7 @@ describe("round 2 · finding 2 — follow-up ladder concurrency", () => {
     const file = `/tmp/followup-race-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
     const r1 = new Repo(openDb(file));
     seedDefaults(r1);
-    r1.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+    configureTestOrganization(r1);
     const r2 = new Repo(openDb(file));
     const ctx1: PipelineContext = { repo: r1, adapters: { vision: null as never, watcher: null as never, sender: null as never } };
     const ctx2: PipelineContext = { repo: r2, adapters: { vision: null as never, watcher: null as never, sender: null as never } };

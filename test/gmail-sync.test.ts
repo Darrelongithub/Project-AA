@@ -119,7 +119,7 @@ describe("backfill route + settings card", () => {
 
   it("the settings card shows the fetch window and a backfill control when connected", async () => {
     admin = await webLogin(base, "admin", "admin123");
-    repo.setSetting("gmail_address", "office@riara.ac.ke");
+    repo.setSetting("gmail_address", "office@example.org");
     repo.setSetting("gmail_client_id", "x");
     repo.setSecret("gmail_client_secret", "y");
     repo.setSecret("gmail_refresh_token", "z");
@@ -131,7 +131,7 @@ describe("backfill route + settings card", () => {
 
   it("a token-only connect warns about the exact missing credentials", async () => {
     admin = await webLogin(base, "admin", "admin123");
-    repo.setSetting("gmail_address", "office@riara.ac.ke");
+    repo.setSetting("gmail_address", "office@example.org");
     repo.setSecret("gmail_refresh_token", "z");
     const html = await (await fetch(`${base}/settings`, { headers: { cookie: admin.cookie } })).text();
     expect(html).toMatch(/missing/i);

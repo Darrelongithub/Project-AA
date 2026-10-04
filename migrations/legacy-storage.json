@@ -1,0 +1,30 @@
+{
+  "description": "Historical storage-name migration only. No presets, catalogue, identities, files, grades, or decision logic are loaded. `programme` held the case-type code and is renamed, not reinterpreted.",
+  "tables": {
+    "admission_rules": "legacy_rule_sets",
+    "admission_rule_nodes": "legacy_rule_nodes"
+  },
+  "columns": {
+    "applicants": {
+      "admission_decision": "legacy_outcome",
+      "admission_route": "outcome_route",
+      "admission_rules_frozen": "legacy_rule_snapshot",
+      "admission_rules_frozen_at": "legacy_rule_frozen_at",
+      "programme": "case_type_code"
+    },
+    "case_types": {
+      "education_module": "legacy_module",
+      "auto_admit": "legacy_auto_decision",
+      "qualification_gate": "evidence_gate"
+    },
+    "evaluations": {
+      "programme": "case_type_code"
+    }
+  },
+  "outcomes": {
+    "auto_admitted": "auto_approved",
+    "admitted_after_review": "approved_after_review",
+    "not_admitted": "not_approved",
+    "undecided": "undecided"
+  }
+}

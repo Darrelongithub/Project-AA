@@ -1,0 +1,4 @@
+id,subject,body,true_category,has_attachments
+EXAMPLE-1,"Quote request for a consignment","Hello, we need a quote for moving machinery next week. Please advise.",general_enquiry,0
+EXAMPLE-2,"Complaint about the last delivery","This is unacceptable. The delivery was two weeks late and nobody replied.",complaint,0
+EXAMPLE-3,"Signed form and ID","Please find attached my signed form and a copy of my ID.",document_submission,1

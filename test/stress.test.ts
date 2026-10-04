@@ -1,9 +1,9 @@
 /**
  * Stress harness smoke test (OR gate). The full 1,000-case run is
  * `npm run stress`; here a reduced slice runs under vitest so the CI loop
- * catches regressions in the volume invariants: no crashes, no auto-admit
- * with missing docs or below-floor grades, exact matrix-missing math,
- * KCPE never demanded, refs always valid, duplicates always skipped.
+ * catches regressions in the generic volume invariants: no crashes, no
+ * automated decisions, draft-first replies, exact organization-owned slot
+ * calculations, valid references and duplicate-message suppression.
  */
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";

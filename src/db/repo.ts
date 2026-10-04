@@ -7,8 +7,6 @@
 import * as crypto from "crypto";
 import type { Database } from "better-sqlite3";
 import type {
-  AdmissionRuleSet,
-  AdmissionSystem,
   ApplicantRow,
   Programme,
   Confidence,
@@ -23,12 +21,9 @@ import type {
   ExtractedFields,
   Flag,
   LifecycleStage,
-  RequirementRule,
   RequirementSetEntry,
   RuleNode,
   StaffUser,
-  SystemBlock,
-  CourseLevel,
   Organization,
   OrganizationTheme,
   CaseType,
@@ -40,39 +35,22 @@ import type {
 } from "../types";
 import { PERMISSIONS } from "../types";
 import type { WorkflowRule } from "../rules/workflow";
-import { documentRequirementsFor, fillSlots, type ApplicantNationality, type ProgrammeLevel } from "../documents/matrix";
+import { fillSlots } from "../documents/matrix";
+import { validateRuleTree } from "../rules/caseType";
 import type { VisionCacheStore } from "../extraction/gemini";
 import { isValidCachedVision } from "../extraction/gemini";
 import type { VisionExtraction } from "../types";
+import { retentionDue } from "./retention";
 
 const nowIso = () => new Date().toISOString();
 
 /** PPR P0-1: the only keys that may live in the secrets store. */
 export const SECRET_KEYS: readonly string[] = ["gemini_api_key", "gmail_client_secret", "gmail_refresh_token"];
-
-/** PPR P1-2: the current six lifecycle stages / five queues are the EDUCATION
- * preset — data now, not a core assumption. Stage ids stay stable (they are
- * the values the lifecycle column has always stored). */
-export const EDUCATION_STAGE_PRESET: Array<{ id: string; label: string }> = [
-  { id: "application_received", label: "Application Received" },
-  { id: "documents_received", label: "Documents Received" },
-  { id: "documents_checked", label: "Documents Checked" },
-  { id: "awaiting_review", label: "Awaiting Review" },
-  { id: "verification", label: "Verification" },
-  { id: "completed", label: "Completed" },
-];
 export const GENERIC_STAGE_PRESET: Array<{ id: string; label: string }> = [
   { id: "application_received", label: "Received" },
   { id: "documents_received", label: "Information received" },
   { id: "awaiting_review", label: "In review" },
   { id: "completed", label: "Completed" },
-];
-export const EDUCATION_QUEUE_PRESET: Array<{ id: string; label: string }> = [
-  { id: "completed", label: "Completed / Verification" },
-  { id: "waiting_documents", label: "Waiting for Documents" },
-  { id: "human_review", label: "Human Review Required" },
-  { id: "decision", label: "Admissions / Decision" },
-  { id: "enquiries", label: "Enquiries & Communication" },
 ];
 export const GENERIC_QUEUE_PRESET: Array<{ id: string; label: string }> = [
   { id: "new", label: "New" },
@@ -85,14 +63,15 @@ export const GENERIC_QUEUE_PRESET: Array<{ id: string; label: string }> = [
 export interface ApplicantSearchQuery {
   q?: string;
   filter?: "all" | "awaiting_docs" | "human_review" | "complete" | "overdue";
-  programme?: string;
+  /** Case-type code filter. (The column was named `programme` before C2.) */
+  caseTypeCode?: string;
   intake?: string;
   limit?: number;
   /** Realm scope: 0 = live only, 1 = demo only, undefined = all. */
   demo?: number;
-  /** OR-8: school visibility scope. null/undefined = unscoped; an empty
+  /** OR-8: case-type visibility scope. null/undefined = unscoped; an empty
    * list matches nothing. */
-  schools?: string[] | null;
+  caseTypes?: string[] | null;
 }
 
 /** Per-staff workload + responsiveness metrics for the Team page. */
@@ -107,34 +86,78 @@ export interface StaffStatsRow {
   emailsReceived: number;
   emailsSent: number;
   avgResponseMinutes: number | null;
-  admissionsCompleted: number;
+  casesCompleted: number;
 }
 
-type ScopeTag = string[] & { organizationId?: number; allSchools?: boolean };
-/** A tagged scope meaning "every school, but only in this organization". */
-function isAllSchools(s: string[] | null | undefined): boolean { return Boolean(s && (s as ScopeTag).allSchools); }
+/** Existing audit/session/decision data assembled for the read-only admin console. */
+export interface SecurityConsoleSnapshot {
+  logins: Array<{ id: number; at: string; username: string; display_name: string; role: string }>;
+  activeSessions: Array<{ username: string; display_name: string; role: string; created_at: string; expires_at: string }>;
+  pipelineRuns: Array<{ id: number; applicant_id: number; timestamp: string; ref_number: string; case_type_code: string | null; triggering_email_id: string; computed_status: string; reasoning: string; auto_sent: number }>;
+  errors: Array<{ id: number; applicant_id: number | null; at: string; actor: string; display_name: string; event: string; detail: string; ref_number: string | null; attempts: number | null; source: "audit" | "dead-letter" }>;
+  integritySignals: Array<{ id: number; applicant_id: number; at: string; actor: string; display_name: string; event: string; detail: string; ref_number: string; latest_computed_status: string | null; latest_reasoning: string | null; latest_decision_at: string | null }>;
+}
+
+type ScopeTag = string[] & { organizationId?: number; allCaseTypes?: boolean };
+
+export type ApplicantLookupSite =
+  | "repo.create"
+  | "repo.refreeze.requirements"
+  | "repo.refreeze.result"
+  | "pipeline.phone-enrichment"
+  | "pipeline.requirements-case"
+  | "pipeline.requirements"
+  | "pipeline.human-review"
+  | "pipeline.lifecycle"
+  | "pipeline.result";
+
+export class ApplicantNotFoundError extends Error {
+  readonly code = "APPLICANT_NOT_FOUND" as const;
+
+  constructor(readonly applicantId: number, readonly lookupSite: ApplicantLookupSite) {
+    super(`Case ${applicantId} no longer exists at ${lookupSite}`);
+    this.name = "ApplicantNotFoundError";
+  }
+}
+
+export interface RetentionArchiveRecord {
+  archived_at: string;
+  retention_days: number;
+  applicant: ApplicantRow;
+  [section: string]: unknown;
+}
+
+/** A tagged scope meaning "every case type, but only in this organization". */
+function isAllCaseTypes(s: string[] | null | undefined): boolean { return Boolean(s && (s as ScopeTag).allCaseTypes); }
 /** An explicit empty scope = deliberately no access. */
-function isNoAccess(s: string[] | null | undefined): boolean { return Boolean(s && s.length === 0 && !isAllSchools(s)); }
+function isNoAccess(s: string[] | null | undefined): boolean { return Boolean(s && s.length === 0 && !isAllCaseTypes(s)); }
 
 export class Repo {
   constructor(public db: Database) {}
 
+  primaryOrganizationId(): number {
+    const id = Number(this.getSetting("primary_organization_id", "1"));
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error("Invalid primary organization setting");
+    return id;
+  }
+
   // ── Organizations and generic case configuration ───────────────────────
 
   getOrganization(id: number): Organization | undefined {
-    const row = this.db.prepare("SELECT id, name, logo, ref_prefix, theme, from_name, reply_to, locale, timezone FROM organizations WHERE id = ?").get(id) as
-      | { id: number; name: string; logo: string | null; ref_prefix: string; theme: string; from_name: string | null; reply_to: string | null; locale: string | null; timezone: string | null }
+    const row = this.db.prepare("SELECT id, name, logo, ref_prefix, theme, from_name, reply_to, locale, timezone, inbound_address FROM organizations WHERE id = ?").get(id) as
+      | { id: number; name: string; logo: string | null; ref_prefix: string; theme: string; from_name: string | null; reply_to: string | null; locale: string | null; timezone: string | null; inbound_address: string | null }
       | undefined;
     if (!row) return undefined;
     let theme: OrganizationTheme = { primary: "#650019", accent: "#c89a4a" };
     try { theme = { ...theme, ...(JSON.parse(row.theme || "{}") as Partial<OrganizationTheme>) }; } catch { /* use safe defaults */ }
     return {
-      id: row.id, name: row.name, logo: row.logo, ref_prefix: row.ref_prefix || (id === 1 ? "RU" : "ORG"), theme,
+      id: row.id, name: row.name, logo: row.logo, ref_prefix: row.ref_prefix || "ORG", theme,
       from_name: row.from_name, reply_to: row.reply_to, locale: row.locale, timezone: row.timezone,
+      inbound_address: row.inbound_address,
     };
   }
 
-  /** Create a tenant with no inherited admissions content. */
+  /** Create a tenant with no inherited case content. */
   createOrganization(input: { name: string; logo?: string | null; refPrefix?: string; theme?: Partial<OrganizationTheme> }): Organization {
     const name = input.name.trim();
     if (!name) throw new Error("Organization name is required");
@@ -143,10 +166,35 @@ export class Repo {
       accent: input.theme?.accent ?? "#c89a4a",
     };
     const prefix = (input.refPrefix ?? "ORG").trim().toUpperCase();
-    if (!/^[A-Z]{1,8}$/.test(prefix)) throw new Error("Reference prefix must be 1–8 letters");
+    if (!/^[A-Z][A-Z0-9]{0,7}$/.test(prefix)) throw new Error("Reference prefix must be 1–8 characters and start with a letter");
     const result = this.db.prepare("INSERT INTO organizations (name, logo, ref_prefix, theme) VALUES (?,?,?,?)")
       .run(name, input.logo ?? null, prefix, JSON.stringify(theme));
     return this.getOrganization(Number(result.lastInsertRowid))!;
+  }
+
+  /**
+   * WHICH tenant does an inbound message belong to? Resolved from the address
+   * it was delivered to (Delivered-To/To, any of several recipients), matched
+   * against each organization's own inbound address.
+   *
+   * `matched: false` means the address named no tenant and this is a fallback:
+   * the only organization when there is exactly one, otherwise the head office.
+   * Callers surface that — silently filing another tenant's mail under
+   * organization 1 is how cases end up in the wrong workspace.
+   */
+  organizationForInboundAddress(recipients: string | Array<string | null | undefined> | null | undefined): { organizationId: number; matched: boolean } | null {
+    const addresses = ([] as Array<string | null | undefined>).concat(recipients ?? [])
+      .flatMap((raw) => String(raw ?? "").split(/[,;\s]+/))
+      .map((part) => part.replace(/^<|>$/g, "").trim().toLowerCase())
+      .filter((part) => part.includes("@"));
+    const rows = this.db.prepare("SELECT id, inbound_address FROM organizations").all() as Array<{ id: number; inbound_address: string | null }>;
+    for (const address of addresses) {
+      const hit = rows.find((row) => (row.inbound_address ?? "").toLowerCase() === address);
+      if (hit) return { organizationId: hit.id, matched: true };
+    }
+    if (rows.length === 1) return { organizationId: rows[0].id, matched: false };
+    if (rows.some((row) => row.id === 1)) return { organizationId: 1, matched: false };
+    return rows.length ? { organizationId: rows[0].id, matched: false } : null;
   }
 
   listOrganizations(): Organization[] {
@@ -155,10 +203,10 @@ export class Repo {
   }
 
   organizationRefPrefix(organizationId = 1): string {
-    return this.getOrganization(organizationId)?.ref_prefix || (organizationId === 1 ? "RU" : "ORG");
+    return this.getOrganization(organizationId)?.ref_prefix || "ORG";
   }
 
-  updateOrganization(id: number, patch: { name?: string; logo?: string | Buffer | null; refPrefix?: string; theme?: Partial<OrganizationTheme>; fromName?: string | null; replyTo?: string | null; locale?: string | null; timezone?: string | null }): void {
+  updateOrganization(id: number, patch: { name?: string; logo?: string | Buffer | null; refPrefix?: string; theme?: Partial<OrganizationTheme>; fromName?: string | null; replyTo?: string | null; locale?: string | null; timezone?: string | null; inboundAddress?: string | null }): void {
     const current = this.getOrganization(id);
     if (!current) return;
     const theme = { ...current.theme, ...(patch.theme ?? {}) };
@@ -168,39 +216,30 @@ export class Repo {
     if (!/^[A-Z]{1,8}$/.test(refPrefix)) throw new Error("Reference prefix must be 1–8 letters");
     const text = (v: string | null | undefined, prev: string | null | undefined): string | null =>
       v === undefined ? (prev ?? null) : v === null || v.trim() === "" ? null : v.trim().replace(/[\r\n]+/g, " ");
-    this.db.prepare("UPDATE organizations SET name = ?, logo = ?, ref_prefix = ?, theme = ?, from_name = ?, reply_to = ?, locale = ?, timezone = ? WHERE id = ?")
+    const inbound = text(patch.inboundAddress, current.inbound_address)?.toLowerCase() ?? null;
+    if (inbound && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(inbound)) throw new Error("Inbound address must be a valid email address");
+    this.db.prepare("UPDATE organizations SET name = ?, logo = ?, ref_prefix = ?, theme = ?, from_name = ?, reply_to = ?, locale = ?, timezone = ?, inbound_address = ? WHERE id = ?")
       .run(name, logo, refPrefix, JSON.stringify(theme),
         text(patch.fromName, current.from_name), text(patch.replyTo, current.reply_to),
-        text(patch.locale, current.locale), text(patch.timezone, current.timezone), id);
+        text(patch.locale, current.locale), text(patch.timezone, current.timezone), inbound, id);
     if (id === 1 && patch.name !== undefined) {
       this.db.prepare("INSERT INTO settings (key, value) VALUES ('institution_name', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(name);
     }
   }
 
-  createCaseType(organizationId: number, input: {
-    code: string; name: string; category?: string; config?: Record<string, unknown>;
-    /** PPR P0-2/P0-4: profile flags. New profiles are draft-first, no auto-decision. */
-    educationModule?: boolean; defaultReplyAction?: string; qualificationGate?: boolean; autoAdmit?: boolean;
-  }): CaseType {
-    this.db.prepare(
-      "INSERT INTO case_types (organization_id, code, name, category, config, education_module, default_reply_action, qualification_gate, auto_admit, stages, queues) " +
-      "VALUES (?,?,?,?,?,?,?,?,?,?,?) " +
-      "ON CONFLICT(organization_id, code) DO UPDATE SET name=excluded.name, category=excluded.category, config=excluded.config"
-    ).run(
-      organizationId, input.code.trim().toUpperCase(), input.name.trim(), input.category?.trim() || "general",
-      JSON.stringify(input.config ?? {}),
-      input.educationModule ? 1 : 0,
-      input.defaultReplyAction ?? "draft",
-      input.qualificationGate ? 1 : 0,
-      input.autoAdmit ? 1 : 0,
-      JSON.stringify(input.educationModule ? EDUCATION_STAGE_PRESET : GENERIC_STAGE_PRESET),
-      JSON.stringify(input.educationModule ? EDUCATION_QUEUE_PRESET : GENERIC_QUEUE_PRESET),
-    );
-    return this.getCaseType(input.code, organizationId)!;
+  createCaseType(organizationId: number, input: { code: string; name: string; category?: string; config?: Record<string, unknown>; defaultReplyAction?: string; evidenceGate?: boolean }): CaseType {
+    if (!this.getOrganization(organizationId)) throw new Error("Unknown organization");
+    const code = input.code.trim().toUpperCase();
+    const name = input.name.trim();
+    if (!/^[A-Z][A-Z0-9_:-]{0,63}$/.test(code) || !name || name.length > 200) throw new Error("A valid case-type code and name are required");
+    if (input.config?.rules !== undefined) validateRuleTree(input.config.rules);
+    this.db.prepare("INSERT INTO case_types (organization_id, code, name, category, config, default_reply_action, evidence_gate, stages, queues) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,code) DO NOTHING")
+      .run(organizationId, code, name, input.category?.trim() || "general", JSON.stringify(input.config ?? {}), input.defaultReplyAction ?? "draft", input.evidenceGate === false ? 0 : 1, JSON.stringify(GENERIC_STAGE_PRESET), JSON.stringify(GENERIC_QUEUE_PRESET));
+    return this.getCaseType(code, organizationId)!;
   }
 
   getCaseType(code: string, organizationId = 1): CaseType | undefined {
-    const row = this.db.prepare("SELECT id, organization_id, code, name, category, config, active, education_module, terminology, stages, queues, config_version, default_reply_action, qualification_gate, auto_admit FROM case_types WHERE organization_id = ? AND code = ? COLLATE NOCASE")
+    const row = this.db.prepare("SELECT id, organization_id, code, name, category, config, active, terminology, stages, queues, config_version, default_reply_action, evidence_gate FROM case_types WHERE organization_id = ? AND code = ? COLLATE NOCASE")
       .get(organizationId, code.trim()) as (Omit<CaseType, "config" | "terminology" | "stages" | "queues"> & { config: string; terminology: string; stages: string; queues: string }) | undefined;
     return row ? this.rowToCaseType(row) : undefined;
   }
@@ -276,6 +315,7 @@ export class Repo {
   }
 
   updateCaseTypeRules(caseTypeId: number, nodes: RuleNode[]): void {
+    validateRuleTree(nodes);
     const row = this.db.prepare("SELECT config FROM case_types WHERE id = ?").get(caseTypeId) as { config?: string } | undefined;
     let config: Record<string, unknown> = {};
     try { config = JSON.parse(row?.config || "{}"); } catch { /* replace corrupt config safely */ }
@@ -321,30 +361,27 @@ export class Repo {
   /** The frozen configuration snapshot of a case (null for legacy rows). */
   caseConfigFrozen(a: ApplicantRow): CaseConfigFrozen | null {
     if (!a.case_config_frozen) return null;
-    try { return JSON.parse(a.case_config_frozen) as CaseConfigFrozen; } catch { return null; }
+    try {
+      const parsed: unknown = JSON.parse(a.case_config_frozen);
+      if (!parsed || typeof parsed !== "object") throw new Error("not an object");
+      return parsed as CaseConfigFrozen;
+    } catch {
+      throw new Error("Frozen case configuration is corrupt — repair the case explicitly before processing");
+    }
   }
 
   /** Explicit, human-approved upgrade of a case to the profile's CURRENT
    * configuration version. Never happens implicitly (PPR P0-3). */
   reFreezeCaseConfig(a: ApplicantRow): CaseConfigFrozen {
-    this.db.prepare("UPDATE applicants SET case_config_frozen = NULL WHERE id = ?").run(a.id);
-    this.freezeCaseConfig({ ...a, case_config_frozen: null } as ApplicantRow);
-    return this.caseConfigFrozen(this.getApplicant(a.id)!)!;
-  }
-
-  /** PPR P0-2: is this case an education-module case? */
-  educationCaseFor(a: ApplicantRow): boolean {
-    if (a.case_type_id) {
-      const t = this.getCaseTypeById(a.case_type_id);
-      return t ? t.education_module === 1 : false;
-    }
-    return (a.organization_id ?? 1) === 1;
-  }
-
-  /** PPR P0-2: does this organization run any education-module profile? */
-  hasEducationModule(organizationId = 1): boolean {
-    const row = this.db.prepare("SELECT COUNT(*) AS n FROM case_types WHERE organization_id = ? AND education_module = 1").get(organizationId) as { n: number };
-    return row.n > 0;
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE applicants SET case_config_frozen = NULL, requirements_snapshot = NULL WHERE id = ?").run(a.id);
+      this.freezeCaseConfig({ ...a, case_config_frozen: null } as ApplicantRow);
+      this.freezeRequirementsSnapshot(this.requireApplicant(a.id, "repo.refreeze.requirements"));
+    })();
+    const refreshed = this.requireApplicant(a.id, "repo.refreeze.result");
+    const frozen = this.caseConfigFrozen(refreshed);
+    if (!frozen) throw new Error(`Case ${a.id} has no configuration snapshot after re-freeze`);
+    return frozen;
   }
 
   // ── PPR P0-4: workflow rules (intake + response behaviour as data) ───────
@@ -392,11 +429,17 @@ export class Repo {
     const name = input.name.trim();
     if (!name) throw new Error("Rule name is required");
     const kind = input.kind ?? "intake";
-    if (input.id) {
+    // Saving a rule that already exists in this scope updates it: a repeated
+    // POST (retry, double submit) must never duplicate a published rule.
+    const duplicate = input.id ? undefined : this.db.prepare(
+      "SELECT id FROM workflow_rules WHERE organization_id = ? AND COALESCE(case_type_id, -1) = ? AND kind = ? AND name = ?"
+    ).get(input.organizationId, input.caseTypeId ?? null, kind, name) as { id: number } | undefined;
+    const targetId = input.id ?? duplicate?.id;
+    if (targetId) {
       this.db.prepare(
         "UPDATE workflow_rules SET name = ?, kind = ?, case_type_id = ?, position = ?, enabled = ?, conditions = ?, action = ?, updated_at = datetime('now') WHERE id = ? AND organization_id = ?"
       ).run(name, kind, input.caseTypeId ?? null, input.position ?? 0, input.enabled === false ? 0 : 1,
-        JSON.stringify(input.conditions ?? []), JSON.stringify(input.action ?? {}), input.id, input.organizationId);
+        JSON.stringify(input.conditions ?? []), JSON.stringify(input.action ?? {}), targetId, input.organizationId);
     } else {
       const nextPos = input.position ?? ((this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM workflow_rules WHERE organization_id = ?").get(input.organizationId) as { p: number }).p);
       this.db.prepare(
@@ -404,10 +447,13 @@ export class Repo {
       ).run(input.organizationId, input.caseTypeId ?? null, kind, name, nextPos, input.enabled === false ? 0 : 1,
         JSON.stringify(input.conditions ?? []), JSON.stringify(input.action ?? {}));
     }
-    const saved = this.db.prepare("SELECT id FROM workflow_rules WHERE organization_id = ? AND name = ? ORDER BY id DESC").get(input.organizationId, name) as { id: number };
+    const savedId = targetId ?? Number((this.db.prepare("SELECT id FROM workflow_rules WHERE organization_id = ? AND name = ? AND kind = ? AND COALESCE(case_type_id, -1) = COALESCE (?, -1) ORDER BY id DESC")
+      .get(input.organizationId, name, kind, input.caseTypeId ?? null) as { id: number } | undefined)?.id ?? 0);
     // Rule edits are configuration publishes (PPR P0-3).
     if (input.caseTypeId) this.bumpCaseTypeConfigVersion(input.caseTypeId);
-    return this.listWorkflowRules(input.organizationId, {}).find((r) => r.id === saved.id)!;
+    const saved = this.getWorkflowRule(savedId);
+    if (!saved) throw new Error("Workflow rule could not be saved");
+    return saved;
   }
 
   deleteWorkflowRule(id: number, organizationId = 1): void {
@@ -416,15 +462,11 @@ export class Repo {
     if (row?.case_type_id) this.bumpCaseTypeConfigVersion(row.case_type_id);
   }
 
-  /** PPR P0-4/P1: profile-level automation defaults (workflow profile card). */
-  updateCaseTypeProfile(id: number, patch: { default_reply_action?: "auto" | "draft"; qualification_gate?: 0 | 1; auto_admit?: 0 | 1 }): void {
-    const sets: string[] = [];
-    const params: unknown[] = [];
-    if (patch.default_reply_action !== undefined) { sets.push("default_reply_action = ?"); params.push(patch.default_reply_action); }
-    if (patch.qualification_gate !== undefined) { sets.push("qualification_gate = ?"); params.push(patch.qualification_gate); }
-    if (patch.auto_admit !== undefined) { sets.push("auto_admit = ?"); params.push(patch.auto_admit); }
-    if (!sets.length) return;
-    this.db.prepare(`UPDATE case_types SET ${sets.join(", ")} WHERE id = ?`).run(...params, id);
+  updateCaseTypeProfile(id: number, patch: { default_reply_action?: "auto" | "draft"; evidence_gate?: 0 | 1 }): void {
+    if (!this.caseTypeById(id)) throw new Error("Unknown case type");
+    if (patch.default_reply_action !== undefined) this.db.prepare("UPDATE case_types SET default_reply_action = ? WHERE id = ?").run(patch.default_reply_action, id);
+    if (patch.evidence_gate !== undefined) this.db.prepare("UPDATE case_types SET evidence_gate = ? WHERE id = ?").run(patch.evidence_gate, id);
+    this.bumpCaseTypeConfigVersion(id);
   }
 
   /** PPR P1-1/P1-2: profile vocabulary (five surface words) + stage/queue sets.
@@ -495,7 +537,7 @@ export class Repo {
    * PPR P0-5: resolve an attachment reference to the exact files that ride
    * along. A reference is a set name owned by the organization (or `set:<id>`).
    * Only the sending organization's own sets resolve — there is no global or
-   * bundled fallback (the migrated education profile's sets were seeded from
+   * bundled fallback (earlier installations seeded their sets from
    * its own migration data at setup time).
    */
   attachmentSetFiles(organizationId: number, ref: string | null | undefined): { label: string; files: Array<{ filename: string; mimeType: string; content: Buffer }>; issues: string[] } {
@@ -545,22 +587,20 @@ export class Repo {
     return this.db.prepare("SELECT id, organization_id, key, label, active FROM organization_categories WHERE organization_id = ? AND active = 1 ORDER BY id").all(organizationId) as never[];
   }
 
+  /** Retire a label without deleting history: messages already carrying it
+   *  keep it, and Gemini stops being offered it. */
+  setEmailCategoryActive(organizationId: number, key: string, active: boolean): void {
+    this.db.prepare("UPDATE organization_categories SET active = ? WHERE organization_id = ? AND key = ?")
+      .run(active ? 1 : 0, organizationId, key.trim());
+  }
+
   addEmailCategory(organizationId: number, input: { key: string; label: string }): void {
     this.db.prepare("INSERT INTO organization_categories (organization_id, key, label) VALUES (?,?,?) ON CONFLICT(organization_id, key) DO UPDATE SET label=excluded.label, active=1")
       .run(organizationId, input.key.trim(), input.label.trim());
   }
 
   listOrganizationPackSlots(organizationId = 1): Array<{ organization_id: number; key: string; filename: string | null; mime: string | null; content: Buffer | null }> {
-    const keys = [
-      "application-form", "brochure-2026", "student-medical-form", "data-protection-form",
-      "next-of-kin-form", "hostels-list", "fee-structure-2026", "sponsorship-form",
-      "orientation-programme-2026", "credit-transfer-form",
-      // Compatibility aliases for pre-WLR uploads; new UI writes concrete slots.
-      "application", "admission", "brochure", "transfer",
-    ];
-    const rows = this.db.prepare("SELECT organization_id, key, filename, mime, content FROM organization_pack_slots WHERE organization_id = ? ORDER BY key").all(organizationId) as Array<{ organization_id: number; key: string; filename: string | null; mime: string | null; content: Buffer | null }>;
-    const byKey = new Map(rows.map((r) => [r.key, r]));
-    return keys.map((key) => byKey.get(key) ?? { organization_id: organizationId, key, filename: null, mime: null, content: null });
+    return this.db.prepare("SELECT organization_id,key,filename,mime,content FROM organization_pack_slots WHERE organization_id = ? ORDER BY key").all(organizationId) as Array<{ organization_id: number; key: string; filename: string | null; mime: string | null; content: Buffer | null }>;
   }
 
   setOrganizationPackSlot(organizationId: number, key: string, file: { filename: string; mime: string; content: Buffer }): void {
@@ -597,51 +637,23 @@ export class Repo {
     return ((this.db.prepare("SELECT COUNT(*) AS n FROM staff_users").get() as { n: number }).n);
   }
 
-  getOrCreateApplicant(
-    emailAddress: string,
-    threadId: string,
-    opts: { fullName?: string; refPrefix?: string; organizationId?: number; caseTypeCode?: string } = {}
-  ): ApplicantRow {
+  getOrCreateApplicant(emailAddress: string, threadId: string, opts: { fullName?: string; refPrefix?: string; organizationId?: number; caseTypeCode?: string } = {}): ApplicantRow {
     const addr = emailAddress.trim().toLowerCase();
-    const organizationId = opts.organizationId ?? 1;
-    const refPrefix = opts.refPrefix ?? this.organizationRefPrefix(organizationId);
-    // Check-then-insert WITHOUT a transaction races: two parallel first emails
-    // from the same sender can both miss the row and one dies on
-    // UNIQUE(email_address, thread_id). Insert-or-ignore inside a transaction,
-    // then read whatever won.
-    const insert = this.db.prepare(
-      `INSERT OR IGNORE INTO applicants (ref_number, email_address, thread_id, full_name)
-       VALUES (?, ?, ?, ?)`
-    );
-    const select = this.db.prepare(
-      "SELECT * FROM applicants WHERE email_address = ? AND thread_id = ?"
-    );
-    let row: ApplicantRow | undefined;
-    let created = false;
-    this.db.transaction(() => {
-      const existing = select.get(addr, threadId) as ApplicantRow | undefined;
-      if (existing) {
-        row = existing;
-        return;
-      }
-      const ref = this.nextRefNumber(refPrefix, new Date().getFullYear());
-      insert.run(ref, addr, threadId, opts.fullName ?? null);
-      row = select.get(addr, threadId) as ApplicantRow;
-      created = true;
+    const organizationId = opts.organizationId ?? this.primaryOrganizationId();
+    if (!this.getOrganization(organizationId)) throw new Error("Unknown organization — complete setup first");
+    const type = opts.caseTypeCode ? this.getCaseType(opts.caseTypeCode, organizationId) : undefined;
+    if (opts.caseTypeCode && !type) throw new Error("Unknown case type for this organization");
+    return this.db.transaction(() => {
+      const existing = this.db.prepare("SELECT * FROM applicants WHERE organization_id = ? AND email_address = ? AND thread_id = ?").get(organizationId, addr, threadId) as ApplicantRow | undefined;
+      if (existing) return existing;
+      const ref = this.nextRefNumber(opts.refPrefix ?? this.organizationRefPrefix(organizationId), new Date().getFullYear());
+      const created = this.db.prepare("INSERT INTO applicants (ref_number,email_address,thread_id,full_name,organization_id,case_type_id,case_type_code,category) VALUES (?,?,?,?,?,?,?,?)").run(ref, addr, threadId, opts.fullName ?? null, organizationId, type?.id ?? null, type?.code ?? null, type?.category ?? null);
+      const row = this.requireApplicant(Number(created.lastInsertRowid), "repo.create");
+      this.audit(row.id, "system", "case_created", `Case ${row.ref_number} opened for ${addr}`);
+      return row;
     })();
-    // The transaction ran synchronously; row is always set here.
-    let applicant = row as ApplicantRow;
-    const caseType = opts.caseTypeCode ? this.getCaseType(opts.caseTypeCode, organizationId) : this.getCaseType("GENERAL", organizationId);
-    if (caseType && (!applicant.organization_id || !applicant.case_type_id)) {
-      this.db.prepare("UPDATE applicants SET organization_id = ?, case_type_id = ? WHERE id = ?")
-        .run(organizationId, caseType.id, applicant.id);
-      applicant = this.getApplicant(applicant.id)!;
-    }
-    if (created) {
-      this.audit(applicant.id, "system", "applicant_created", `Case ${applicant.ref_number} opened for ${addr}`);
-    }
-    return applicant;
   }
+
 
   /** Canonical generic entry point; Applicant terminology is retained only
    * in the compatibility implementation above. */
@@ -653,6 +665,13 @@ export class Repo {
     return this.db.prepare("SELECT * FROM applicants WHERE id = ?").get(id) as ApplicantRow | undefined;
   }
 
+  /** Re-read a case at a critical boundary and fail with typed context if it vanished. */
+  requireApplicant(id: number, lookupSite: ApplicantLookupSite): ApplicantRow {
+    const applicant = this.getApplicant(id);
+    if (!applicant) throw new ApplicantNotFoundError(id, lookupSite);
+    return applicant;
+  }
+
   updateApplicant(
     id: number,
     patch: Partial<
@@ -660,7 +679,7 @@ export class Repo {
         ApplicantRow,
         | "full_name"
         | "phone"
-        | "programme"
+        | "case_type_code"
         | "intake"
         | "priority"
         | "assigned_to"
@@ -675,8 +694,8 @@ export class Repo {
         | "req_result"
         | "routing"
         | "routing_reason"
-        | "admission_decision"
-        | "admission_route"
+        | "outcome"
+        | "outcome_route"
         | "decision_by"
         | "decision_reason"
         | "decision_at"
@@ -686,10 +705,10 @@ export class Repo {
     // Column names are interpolated into SQL — only ever from this allow-list,
     // never from caller-provided strings.
     const ALLOWED = new Set([
-      "full_name", "phone", "programme", "intake", "priority", "assigned_to",
+      "full_name", "phone", "case_type_code", "intake", "priority", "assigned_to",
       "lifecycle", "triage", "queue", "sla_due_at", "sla_handled_at", "escalated",
       "transfer", "nationality", "req_result", "routing", "routing_reason",
-      "admission_decision", "admission_route", "decision_by", "decision_reason",
+      "outcome", "outcome_route", "decision_by", "decision_reason",
       "decision_at",
     ]);
     const keys = Object.keys(patch) as Array<keyof typeof patch>;
@@ -700,25 +719,29 @@ export class Repo {
     const setSql = keys.map((k) => `${k} = ?`).join(", ");
     const vals = keys.map((k) => patch[k] ?? null);
     this.db.prepare(`UPDATE applicants SET ${setSql}, updated_at = ? WHERE id = ?`).run(...vals, nowIso(), id);
-    if (Object.prototype.hasOwnProperty.call(patch, "admission_decision")) {
-      const decision = patch.admission_decision;
-      const outcome = decision === "auto_admitted" ? "auto_approved" : decision === "admitted_after_review" ? "approved_after_review" : decision === "not_admitted" ? "not_approved" : "undecided";
-      this.db.prepare("UPDATE applicants SET outcome = ? WHERE id = ?").run(outcome, id);
-    }
-    if (Object.prototype.hasOwnProperty.call(patch, "programme")) {
-      this.db.prepare("UPDATE applicants SET category = programme WHERE id = ?").run(id);
+    if (Object.prototype.hasOwnProperty.call(patch, "case_type_code")) {
+      this.db.prepare("UPDATE applicants SET category = case_type_code WHERE id = ?").run(id);
     }
   }
 
   updateCase(id: number, patch: { category?: string | null; outcome?: CaseOutcome; case_type_id?: number | null }): void {
-    const allowed = Object.keys(patch);
-    if (allowed.some((key) => !["category", "outcome", "case_type_id"].includes(key))) throw new Error("updateCase: refusing unknown column");
-    if (patch.category !== undefined) this.db.prepare("UPDATE applicants SET category = ? WHERE id = ?").run(patch.category, id);
-    if (patch.case_type_id !== undefined) this.db.prepare("UPDATE applicants SET case_type_id = ? WHERE id = ?").run(patch.case_type_id, id);
-    if (patch.outcome !== undefined) {
-      const legacy = patch.outcome === "auto_approved" ? "auto_admitted" : patch.outcome === "approved_after_review" ? "admitted_after_review" : patch.outcome === "not_approved" ? "not_admitted" : "undecided";
-      this.db.prepare("UPDATE applicants SET outcome = ?, admission_decision = ?, updated_at = ? WHERE id = ?").run(patch.outcome, legacy, nowIso(), id);
-    }
+    if (Object.keys(patch).some((key) => !["category", "outcome", "case_type_id"].includes(key))) throw new Error("updateCase: refusing unknown column");
+    const current = this.getCase(id);
+    if (!current) throw new Error("Unknown case");
+    if (patch.case_type_id != null && this.caseTypeById(patch.case_type_id)?.organization_id !== current.organization_id) throw new Error("Case type belongs to another organization");
+    this.db.transaction(() => {
+      if (patch.category !== undefined) this.db.prepare("UPDATE applicants SET category = ? WHERE id = ?").run(patch.category,id);
+      if (patch.case_type_id !== undefined) {
+        this.db.prepare("UPDATE applicants SET case_type_id = ? WHERE id = ?").run(patch.case_type_id,id);
+        // Keep the denormalised columns coherent with the type: the code and
+        // the category are read all over the console, and a case whose
+        // case_type_id and case_type_code disagreed would be two cases at once.
+        const type = patch.case_type_id === null ? undefined : this.caseTypeById(patch.case_type_id);
+        this.db.prepare("UPDATE applicants SET case_type_code = ?, category = ?, updated_at = ? WHERE id = ?")
+          .run(type?.code ?? null, type?.category ?? null, nowIso(), id);
+      }
+      if (patch.outcome !== undefined) this.db.prepare("UPDATE applicants SET outcome = ?, updated_at = ? WHERE id = ?").run(patch.outcome,nowIso(),id);
+    })();
   }
 
   // ── Lifecycle + status history (features 15, 16) ─────────────────────────
@@ -741,10 +764,24 @@ export class Repo {
 
   // ── Audit log (feature 17) ───────────────────────────────────────────────
 
-  audit(applicantId: number | null, actor: string, event: string, detail = ""): void {
-    this.db
+  audit(applicantId: number | null, actor: string, event: string, detail = ""): number {
+    const result = this.db
       .prepare("INSERT INTO audit_log (applicant_id, actor, event, detail) VALUES (?,?,?,?)")
       .run(applicantId, actor, event, detail);
+    return Number(result.lastInsertRowid);
+  }
+
+  /** Attach pre-routing audit rows (written before a case exists) to the case
+   *  that the intake rules subsequently opened. Updating the foreign key keeps
+   *  their original audit ids/timestamps, so the case history preserves the
+   *  true classifier-before-routing order. Parked mail leaves these rows
+   *  case-less and searchable in the global audit log by message_id. */
+  attachAuditRowsToApplicant(auditIds: number[], applicantId: number): void {
+    const ids = [...new Set(auditIds)].filter((id) => Number.isSafeInteger(id) && id > 0);
+    if (!ids.length) return;
+    this.db
+      .prepare(`UPDATE audit_log SET applicant_id = ? WHERE applicant_id IS NULL AND id IN (${ids.map(() => "?").join(",")})`)
+      .run(applicantId, ...ids);
   }
 
   auditForApplicant(applicantId: number): Array<{ at: string; actor: string; event: string; detail: string }> {
@@ -758,6 +795,104 @@ export class Repo {
     return this.db
       .prepare("SELECT at, actor, event, detail, applicant_id FROM audit_log ORDER BY id DESC LIMIT ?")
       .all(limit) as never[];
+  }
+
+  /**
+   * Read-only security-console view assembled from existing records. Every
+   * tenant-bearing query is constrained to both the acting organization and
+   * the existing live/demo realm. System-level service configuration is read
+   * separately by the page; this method never exposes credentials or tokens.
+   */
+  securityConsoleSnapshot(organizationId: number, demo: 0 | 1): SecurityConsoleSnapshot {
+    const logins = this.db.prepare(
+      `SELECT al.id, al.at, s.username, s.display_name, s.role
+       FROM audit_log al
+       JOIN staff_users s ON s.username = al.actor COLLATE NOCASE
+       WHERE al.event = 'staff_login'
+         AND COALESCE(s.organization_id, 1) = ? AND COALESCE(s.demo, 0) = ?
+       ORDER BY al.id DESC LIMIT 20`
+    ).all(organizationId, demo) as SecurityConsoleSnapshot["logins"];
+
+    const activeSessions = this.db.prepare(
+      `SELECT s.username, s.display_name, s.role, se.created_at, se.expires_at
+       FROM sessions se
+       JOIN staff_users s ON s.id = se.staff_id
+       WHERE COALESCE(s.organization_id, 1) = ? AND COALESCE(s.demo, 0) = ?
+         AND s.active = 1 AND se.expires_at > ?
+       ORDER BY se.created_at DESC LIMIT 20`
+    ).all(organizationId, demo, nowIso()) as SecurityConsoleSnapshot["activeSessions"];
+
+    const pipelineRuns = this.db.prepare(
+      `SELECT d.id, a.id AS applicant_id, d.timestamp, a.ref_number, a.case_type_code, d.triggering_email_id,
+              d.computed_status, d.reasoning, d.auto_sent
+       FROM decision_logs d
+       JOIN applicants a ON a.id = d.applicant_id
+       WHERE COALESCE(a.organization_id, 1) = ? AND COALESCE(a.demo, 0) = ?
+       ORDER BY d.id DESC LIMIT 20`
+    ).all(organizationId, demo) as SecurityConsoleSnapshot["pipelineRuns"];
+
+    const auditErrors = this.db.prepare(
+      `SELECT al.id, a.id AS applicant_id, al.at, al.actor,
+              CASE WHEN al.event = 'process_crash' THEN 'Shared runtime' ELSE COALESCE(s.display_name, al.actor) END AS display_name,
+              al.event, al.detail, a.ref_number, NULL AS attempts, 'audit' AS source
+       FROM audit_log al
+       LEFT JOIN applicants a ON a.id = al.applicant_id
+       LEFT JOIN staff_users s ON s.username = al.actor COLLATE NOCASE
+       WHERE al.event IN (
+           'send_failed', 'email_not_delivered', 'followup_send_failed',
+           'gmail_sync_failed', 'gmail_test_failed', 'gemini_test_failed', 'server_error', 'process_crash'
+         )
+         AND (
+           (a.id IS NOT NULL AND COALESCE(a.organization_id, 1) = ? AND COALESCE(a.demo, 0) = ?)
+           OR (al.applicant_id IS NULL AND s.id IS NOT NULL
+               AND COALESCE(s.organization_id, 1) = ? AND COALESCE(s.demo, 0) = ?)
+           OR (al.applicant_id IS NULL AND al.event = 'process_crash' AND al.actor = 'system')
+         )
+       ORDER BY al.id DESC LIMIT 40`
+    ).all(organizationId, demo, organizationId, demo) as SecurityConsoleSnapshot["errors"];
+
+    // Dead letters do not carry a tenant column. Include only failures that
+    // already have a persisted email/case link; unknown-tenant fetch failures
+    // are intentionally not attributed to any organization.
+    const deadLetterErrors = this.db.prepare(
+      `SELECT d.id, a.id AS applicant_id, d.updated_at AS at, 'ingestion' AS actor, 'Mail pipeline' AS display_name,
+              'ingestion_dead_letter' AS event, d.error AS detail, a.ref_number,
+              d.attempts, 'dead-letter' AS source
+       FROM dead_letters d
+       JOIN emails e ON e.message_id = d.message_id
+       JOIN applicants a ON a.id = e.applicant_id
+       WHERE COALESCE(a.organization_id, 1) = ? AND COALESCE(a.demo, 0) = ?
+         AND e.organization_id = ?
+       ORDER BY d.updated_at DESC, d.id DESC LIMIT 40`
+    ).all(organizationId, demo, organizationId) as SecurityConsoleSnapshot["errors"];
+    const utcMillis = (value: string): number => Date.parse(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
+    const errors = [...auditErrors, ...deadLetterErrors]
+      .sort((a, b) => utcMillis(b.at) - utcMillis(a.at))
+      .slice(0, 20);
+
+    const integritySignals = this.db.prepare(
+      `SELECT al.id, a.id AS applicant_id, al.at, al.actor, COALESCE(s.display_name, al.actor) AS display_name,
+              al.event, al.detail, a.ref_number,
+              d.computed_status AS latest_computed_status,
+              d.reasoning AS latest_reasoning,
+              d.timestamp AS latest_decision_at
+       FROM audit_log al
+       JOIN applicants a ON a.id = al.applicant_id
+       LEFT JOIN staff_users s ON s.username = al.actor COLLATE NOCASE
+       LEFT JOIN decision_logs d ON d.id = (
+         SELECT d2.id FROM decision_logs d2
+         WHERE d2.applicant_id = a.id AND datetime(d2.timestamp) <= datetime(al.at)
+         ORDER BY d2.id DESC LIMIT 1
+       )
+       WHERE COALESCE(a.organization_id, 1) = ? AND COALESCE(a.demo, 0) = ?
+         AND (
+           al.event IN ('human_outcome_recorded', 'human_override', 'case_type_changed', 'case_config_upgraded')
+           OR (al.event = 'status_changed' AND al.actor <> 'system')
+         )
+       ORDER BY al.id DESC LIMIT 20`
+    ).all(organizationId, demo) as SecurityConsoleSnapshot["integritySignals"];
+
+    return { logins, activeSessions, pipelineRuns, errors, integritySignals };
   }
 
   // ── Programmes & intakes ─────────────────────────────────────────────────
@@ -813,7 +948,7 @@ export class Repo {
     return row?.owner_id ?? null;
   }
 
-  addProgramme(code: string, name: string, school = "", entry = "", level: CourseLevel = "degree"): void {
+  addProgramme(code: string, name: string, school = "", entry = "", level = "general"): void {
     this.db
       .prepare(
         `INSERT INTO programmes (code, name, school, entry_requirements, level) VALUES (?, ?, ?, ?, ?)
@@ -830,227 +965,129 @@ export class Repo {
     this.db.prepare("UPDATE programmes SET owner_id = ? WHERE code = ?").run(staffId, code);
   }
 
-  listIntakes(): string[] {
-    return (this.db.prepare("SELECT name FROM intakes ORDER BY rowid").all() as Array<{ name: string }>).map((r) => r.name);
-  }
+  // ── Phase D3 (Q7 step 2): inbound address -> case type ───────────────────
 
-  addIntake(name: string): void {
-    this.db.prepare("INSERT OR IGNORE INTO intakes (name) VALUES (?)").run(name);
-  }
-
-  // ── Requirements (features 8, 36, 37) ────────────────────────────────────
-
-  /**
-   * SQLite treats NULLs as DISTINCT in UNIQUE constraints, so
-   * `ON CONFLICT(programme, intake, document_type)` can never fire for base
-   * rules (programme=NULL, intake=NULL) — every "upsert" silently inserted a
-   * duplicate. Rules are therefore upserted as delete-then-insert matched
-   * with `IS`, which treats NULL as equal to NULL.
-   */
-  private upsertRuleRow(programme: string | null, intake: string | null, documentType: string, required: boolean, meanGrade: string | null, subjectGrades: string | null): void {
-    this.db
-      .prepare("DELETE FROM requirement_rules WHERE programme IS ? AND intake IS ? AND document_type = ?")
-      .run(programme, intake, documentType);
-    this.db
-      .prepare("INSERT INTO requirement_rules (programme, intake, document_type, required, mean_grade, subject_grades) VALUES (?,?,?,?,?,?)")
-      .run(programme, intake, documentType, required ? 1 : 0, meanGrade, subjectGrades);
-  }
-
-  seedBaseRequirements(entries: RequirementSetEntry[]): void {
-    const tx = this.db.transaction(() => {
-      for (const e of entries) {
-        this.upsertRuleRow(null, null, e.document_type, e.required, e.meanGrade ?? null, e.subjectGrades ?? null);
-      }
-    });
-    tx();
-  }
-
-  /** Remove duplicate rule rows left behind by the old NULL-broken upsert. Idempotent. */
-  dedupeRules(): number {
-    const res = this.db
-      .prepare(
-        `DELETE FROM requirement_rules
-         WHERE id NOT IN (
-           SELECT MAX(id) FROM requirement_rules
-           GROUP BY coalesce(programme,''), coalesce(intake,''), document_type
-         )`
-      )
-      .run();
-    return res.changes;
-  }
-
-  listRules(): RequirementRule[] {
-    const rows = this.db
-      .prepare("SELECT * FROM requirement_rules ORDER BY programme IS NULL DESC, intake IS NULL DESC, rowid")
-      .all() as any[];
-    return rows.map((r) => ({
-      id: r.id,
-      programme: r.programme,
-      intake: r.intake,
-      document_type: r.document_type,
-      required: r.required === 1,
-      meanGrade: r.mean_grade ?? null,
-      subjectGrades: r.subject_grades ?? null,
-    }));
-  }
-
-  upsertRule(rule: { programme: string | null; intake: string | null; document_type: DocType; required: boolean; meanGrade?: string | null; subjectGrades?: string | null }): void {
-    // See seedBaseRequirements: ON CONFLICT cannot see NULL programme/intake,
-    // so upsert is delete-then-insert with IS-matching.
-    this.db.transaction(() => {
-      this.upsertRuleRow(rule.programme, rule.intake, rule.document_type, rule.required, rule.meanGrade ?? null, rule.subjectGrades ?? null);
-    })();
-  }
-
-  deleteRule(id: number): void {
-    this.db.prepare("DELETE FROM requirement_rules WHERE id = ?").run(id);
-  }
-
-  // ── Structured entry requirements (per qualification system) ──────────────
-
-  private rowToBlock(r: Record<string, unknown>): SystemBlock {
-    let subjects: SystemBlock["subjects"] = [];
-    if (typeof r.subjects === "string" && r.subjects) {
-      try { subjects = JSON.parse(r.subjects) as NonNullable<SystemBlock["subjects"]>; } catch { subjects = []; }
+  /** Every candidate spelling of a recipient header value: the address as
+   *  written, and (Q9, PROVISIONAL) its plus-addressing base. Lower-cased and
+   *  trimmed, display names and angle brackets stripped. */
+  aliasKeyCandidates(raw: string): string[] {
+    const addresses = String(raw ?? "")
+      .split(/[,;\s]+/)
+      .map((part) => part.replace(/^<|>$/g, "").trim().toLowerCase())
+      .filter((part) => part.includes("@"));
+    const candidates = new Set<string>();
+    for (const address of addresses) {
+      candidates.add(address);
+      const plus = address.indexOf("+");
+      if (plus > 0 && plus < address.indexOf("@")) candidates.add(`${address.slice(0, plus)}@${address.slice(address.indexOf("@") + 1)}`);
     }
-    return {
-      system: String(r.system) as SystemBlock["system"],
-      enabled: r.enabled === 1,
-      overall: (r.overall as string | null) ?? null,
-      minCredits: (r.min_credits as number | null) ?? null,
-      minPrincipals: (r.min_principals as number | null) ?? null,
-      minSubsidiaries: (r.min_subsidiaries as number | null) ?? null,
-      minPoints: (r.min_points as number | null) ?? null,
-      minGpa: (r.min_gpa as number | null) ?? null,
-      minClass: (r.min_class as string | null) ?? null,
-      subjects,
-    };
+    return [...candidates];
   }
 
-  listSystemBlocks(programme: string | null): Array<SystemBlock & { level: string }> {
-    const rows = this.db
-      .prepare("SELECT * FROM course_requirements WHERE programme IS ? ORDER BY system")
-      .all(programme) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({ ...this.rowToBlock(r), level: String(r.level) }));
+  listCaseTypeAliases(organizationId: number, opts: { includeRetired?: boolean } = {}): Array<{ id: number; organization_id: number; case_type_id: number; address: string; active: number; case_type_code: string | null }> {
+    return this.db.prepare(
+      `SELECT a.id, a.organization_id, a.case_type_id, a.address, a.active, t.code AS case_type_code
+         FROM case_type_aliases a LEFT JOIN case_types t ON t.id = a.case_type_id
+        WHERE a.organization_id = ?${opts.includeRetired ? "" : " AND a.active = 1"}
+        ORDER BY a.address`
+    ).all(organizationId) as never[];
   }
 
-  /** Delete-then-insert (NULL programme cannot take part in ON CONFLICT). */
-  upsertSystemBlock(programme: string | null, level: CourseLevel, block: SystemBlock): void {
-    this.db.transaction(() => {
-      this.db
-        .prepare("DELETE FROM course_requirements WHERE programme IS ? AND level = ? AND system = ?")
-        .run(programme, level, block.system);
-      this.db
-        .prepare(
-          `INSERT INTO course_requirements
-           (programme, level, system, enabled, overall, min_credits, min_principals, min_subsidiaries, min_points, min_gpa, min_class, subjects)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
-        )
-        .run(
-          programme, level, block.system, block.enabled ? 1 : 0,
-          block.overall ?? null, block.minCredits ?? null, block.minPrincipals ?? null,
-          block.minSubsidiaries ?? null, block.minPoints ?? null, block.minGpa ?? null,
-          block.minClass ?? null, JSON.stringify(block.subjects ?? [])
-        );
-    })();
-  }
-
-  deleteSystemBlock(programme: string | null, system: string, level?: CourseLevel): void {
-    if (programme === null) {
-      this.db
-        .prepare("DELETE FROM course_requirements WHERE programme IS NULL AND level = ? AND system = ?")
-        .run(level ?? "degree", system);
-    } else {
-      this.db
-        .prepare("DELETE FROM course_requirements WHERE programme IS ? AND system = ?")
-        .run(programme, system);
+  /**
+   * Claim an inbound address for one of THIS organization's case types.
+   * Addresses are unique installation-wide, so an address another organization
+   * already holds is refused rather than silently shared.
+   */
+  addCaseTypeAlias(organizationId: number, caseTypeId: number, address: string): { ok: true; address: string } | { ok: false; reason: string } {
+    const normalized = address.trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized)) return { ok: false, reason: "that is not a valid email address" };
+    const type = this.caseTypeById(caseTypeId);
+    if (!type || type.organization_id !== organizationId) return { ok: false, reason: "unknown case type for this organization" };
+    const existing = this.db.prepare("SELECT organization_id FROM case_type_aliases WHERE address = ?").get(normalized) as { organization_id: number } | undefined;
+    if (existing && existing.organization_id !== organizationId) {
+      return { ok: false, reason: "that address is already used by another organization — an address can only belong to one tenant" };
     }
+    this.db.prepare(
+      `INSERT INTO case_type_aliases (organization_id, case_type_id, address, active) VALUES (?,?,?,1)
+       ON CONFLICT(address) DO UPDATE SET organization_id = excluded.organization_id, case_type_id = excluded.case_type_id, active = 1`
+    ).run(organizationId, caseTypeId, normalized);
+    return { ok: true, address: normalized };
+  }
+
+  /** Retiring keeps the row (history, and the address stays reserved for this
+   *  tenant) but stops it routing anything. */
+  retireCaseTypeAlias(organizationId: number, address: string): boolean {
+    const normalized = address.trim().toLowerCase();
+    const row = this.db.prepare("SELECT id FROM case_type_aliases WHERE organization_id = ? AND address = ?").get(organizationId, normalized) as { id: number } | undefined;
+    if (!row) return false;
+    this.db.prepare("UPDATE case_type_aliases SET active = 0 WHERE id = ?").run(row.id);
+    return true;
   }
 
   /**
-   * Effective entry-requirement blocks for a course: the course's own block
-   * for a system wins; otherwise the university-wide default for the course's
-   * level applies. Unknown programmes fall back to the degree defaults.
+   * Which case type do the addresses this message was delivered to select?
+   * Only this tenant's own ACTIVE aliases are considered — an alias belonging
+   * to another organization can never route this tenant's mail. Two aliases
+   * pointing at different case types are AMBIGUOUS: the caller must not guess.
    */
-  resolveBlocks(programme: string | null): SystemBlock[] {
-    const row = programme
-      ? (this.db.prepare("SELECT level FROM programmes WHERE code = ?").get(programme.toUpperCase()) as { level?: string } | undefined)
-      : undefined;
-    const level = (row?.level ?? "degree") as CourseLevel;
-    const base = this.listSystemBlocks(null).filter((b) => b.level === level);
-    const course = programme ? this.listSystemBlocks(programme.toUpperCase()) : [];
-    const merged = new Map<string, SystemBlock>();
-    for (const b of base) merged.set(b.system, b);
-    for (const b of course) merged.set(b.system, b);
-    return [...merged.values()];
-  }
-
-  /** Structured blocks as they apply to THIS applicant (snapshot wins). */
-  effectiveBlocks(a: ApplicantRow): SystemBlock[] {
-    if (a.requirements_structured) {
-      try {
-        return JSON.parse(a.requirements_structured) as SystemBlock[];
-      } catch {
-        this.audit(a.id, "system", "structured_snapshot_corrupt",
-          "frozen structured requirements failed to parse — fell back to live rules; human should verify");
-      }
+  resolveInboundAlias(
+    organizationId: number,
+    recipients: string | Array<string | null | undefined> | null | undefined
+  ): { status: "match"; caseTypeId: number; caseTypeCode: string; alias: string }
+    | { status: "ambiguous"; aliases: Array<{ alias: string; caseTypeCode: string | null }> }
+    | { status: "none" } {
+    const candidates = ([] as Array<string | null | undefined>).concat(recipients ?? []).flatMap((raw) => this.aliasKeyCandidates(String(raw ?? "")));
+    if (candidates.length === 0) return { status: "none" };
+    const rows = this.db.prepare(
+      `SELECT a.address, a.case_type_id, t.code AS case_type_code
+         FROM case_type_aliases a LEFT JOIN case_types t ON t.id = a.case_type_id
+        WHERE a.organization_id = ? AND a.active = 1`
+    ).all(organizationId) as Array<{ address: string; case_type_id: number; case_type_code: string | null }>;
+    const hits = rows.filter((row) => candidates.includes(row.address));
+    if (hits.length === 0) return { status: "none" };
+    const distinct = [...new Set(hits.map((h) => h.case_type_id))];
+    if (distinct.length > 1) {
+      return { status: "ambiguous", aliases: hits.map((h) => ({ alias: h.address, caseTypeCode: h.case_type_code })) };
     }
-    return this.resolveBlocks(a.programme);
-  }
-
-  /** Freeze the current structured blocks onto the applicant on first triage. */
-  freezeStructuredSnapshot(a: ApplicantRow): void {
-    if (a.requirements_structured) return;
-    const blocks = this.resolveBlocks(a.programme);
-    this.db
-      .prepare("UPDATE applicants SET requirements_structured = ? WHERE id = ?")
-      .run(JSON.stringify(blocks), a.id);
+    return { status: "match", caseTypeId: hits[0].case_type_id, caseTypeCode: hits[0].case_type_code ?? "", alias: hits[0].address };
   }
 
   /**
-   * Resolve the effective requirement set for an applicant.
-   * Specificity ladder: base → intake-only → programme-only → programme+intake.
-   * More specific rules override (or add to) less specific ones.
+   * Inbound messages for labelling (Phase D1), most recent first, for ONE
+   * organization only. Parked (case-less) mail is included on purpose: the
+   * messages a classifier must learn to refuse are part of the measurement.
    */
-  /**
-   * Requirement set as it applies to THIS applicant (feature 19): if a
-   * snapshot was frozen when the file was first triaged, that snapshot wins —
-   * applicants are judged by the rules that were in force when they applied,
-   * not by rules that changed afterwards.
-   */
+  labelableMessages(organizationId: number, limit: number): Array<{ id: string; subject: string; body: string; category: string | null; from_addr: string; at: string }> {
+    return this.db.prepare(
+      // The ORDER BY is qualified: an unqualified "id" resolves to the
+      // message_id alias and would sort alphabetically, not newest-first.
+      `SELECT message_id AS id, subject, body, category, from_addr, at
+         FROM emails
+        WHERE organization_id = ? AND direction = 'in'
+        ORDER BY emails.id DESC
+        LIMIT ?`
+    ).all(organizationId, Math.max(1, Math.floor(limit))) as never[];
+  }
+
+  /** Submission windows are tenant data: the same name in two organizations is
+   *  two different windows with two different deadlines. */
+  listIntakes(organizationId = 1): string[] {
+    return (this.db.prepare("SELECT name FROM intakes WHERE organization_id = ? ORDER BY rowid").all(organizationId) as Array<{ name: string }>).map((r) => r.name);
+  }
+
+  addIntake(name: string, organizationId = 1): void {
+    this.db.prepare("INSERT OR IGNORE INTO intakes (organization_id, name) VALUES (?,?)").run(organizationId, name);
+  }
+
   effectiveRequirements(a: ApplicantRow): RequirementSetEntry[] {
     if (a.requirements_snapshot) {
-      try {
-        return JSON.parse(a.requirements_snapshot) as RequirementSetEntry[];
-      } catch {
-        // Corrupt snapshot: falling back to LIVE rules silently would re-judge
-        // this applicant by rules that changed after they applied — the exact
-        // thing the snapshot exists to prevent. Make it visible.
-        this.audit(
-          a.id,
-          "system",
-          "requirements_snapshot_corrupt",
-          "frozen requirement snapshot failed to parse — fell back to live rules; human should verify"
-        );
-      }
+      try { const snapshot: unknown = JSON.parse(a.requirements_snapshot); if (!Array.isArray(snapshot)) throw new Error("Invalid document snapshot"); return snapshot as RequirementSetEntry[]; }
+      catch { throw new Error("Frozen document requirements are corrupt — restore or explicitly re-freeze this case before processing"); }
     }
-    const caseType = this.caseTypeForCase(a.id);
-    // PPR P0-2: the education_module flag is the switch. A profile without
-    // the module NEVER sees the academic document matrix (audit F1/E4); it
-    // uses only organization-owned document slots. Untyped legacy cases of
-    // the migrated Organization #1 keep the academic compatibility path.
-    const education = caseType ? caseType.education_module === 1 : (a.organization_id ?? 1) === 1;
-    if (!education) {
-      return caseType
-        ? this.listDocumentDefinitions(caseType.id).map((d) => ({
-            document_type: d.key as DocType, required: d.required, blocking: d.blocking,
-          }))
-        : [];
-    }
-    return this.resolveRequirements(a.programme, a.intake, {
-      transfer: a.transfer === 1,
-      nationality: (a as { nationality?: string | null }).nationality ?? null,
-    });
+    const frozen = this.caseConfigFrozen(a);
+    const type = this.caseTypeForCase(a.id);
+    const definitions = frozen?.documents ?? (type ? this.listDocumentDefinitions(type.id) : []);
+    return definitions.map((definition) => ({ document_type: definition.key, label: definition.label, required: definition.required, blocking: definition.blocking }));
   }
 
   /** Freeze the current requirement set onto the applicant on first triage.
@@ -1065,77 +1102,9 @@ export class Repo {
       .run(JSON.stringify(snapshot), a.id);
   }
 
-  /**
-   * OR-5: document requirements come from the DETERMINISTIC generator
-   * (level × curriculum × nationality × route + KCPE constant), sourced from
-   * the official application-form checklist. The legacy requirement_rules
-   * table is no longer read — requirements are not staff-configurable.
-   */
-  resolveRequirements(
-    programme: string | null,
-    _intake: string | null,
-    opts?: { transfer?: boolean; nationality?: string | null }
-  ): RequirementSetEntry[] {
-    const p = programme ? this.programmeByCode(programme) : undefined;
-    // CourseLevel "postgrad" maps onto the matrix's "masters" tier (the
-    // PhD tier applies only to programmes explicitly recorded as PhD).
-    const rawLevel = (p?.level ?? "degree") as string;
-    // legacy "postgrad" rows behave as masters until the migration rewrites them
-    const level: ProgrammeLevel = rawLevel === "postgrad" ? "masters" : (rawLevel as ProgrammeLevel);
-    const nationality: ApplicantNationality =
-      opts?.nationality === "kenyan" || opts?.nationality === "international" ? opts.nationality : "unknown";
-    return this.applyCourseDocOverrides(programme, documentRequirementsFor({
-      level,
-      route: opts?.transfer ? "transfer" : "fresh",
-      nationality,
-      programmeCode: programme,
-    }).map((spec) => ({ document_type: spec.document_type, required: spec.required })));
-  }
-
-  /**
-   * Round 3 — per-course document configuration. The generated matrix stays
-   * the default; once a course is explicitly configured, REQUIRED entries
-   * outside the configured set drop out and configured types missing from
-   * the matrix are added as plain required entries. Conditional
-   * (required:false) entries are never touched — they are asked for, never
-   * assumed, exactly as before.
-   */
-  private applyCourseDocOverrides(programme: string | null, entries: RequirementSetEntry[]): RequirementSetEntry[] {
-    if (!programme) return entries;
-    const configured = this.courseDocConfig(programme);
-    if (configured === null) return entries; // not configured → generated defaults
-    const kept = entries.filter((e) => !e.required || configured.has(e.document_type));
-    const known = new Set(entries.map((e) => e.document_type));
-    const added: RequirementSetEntry[] = [...configured]
-      .filter((t) => !known.has(t as DocType))
-      .sort()
-      .map((t) => ({ document_type: t as DocType, required: true }));
-    return [...kept, ...added];
-  }
-
-  /**
-   * The explicitly configured required document types for a course — or
-   * null when the course is unconfigured (generated matrix defaults apply).
-   */
-  courseDocConfig(programme: string): Set<DocType> | null {
-    const rows = this.db
-      .prepare("SELECT document_type FROM course_doc_requirements WHERE programme = ?")
-      .all(programme.toUpperCase()) as Array<{ document_type: string }>;
-    if (rows.length === 0) return null;
-    return new Set(rows.map((r) => r.document_type as DocType));
-  }
-
-  /** Save a course's configured required document types (replaces the set). */
-  saveCourseDocConfig(programme: string, types: DocType[]): void {
-    const code = programme.toUpperCase();
-    this.db.prepare("DELETE FROM course_doc_requirements WHERE programme = ?").run(code);
-    const ins = this.db.prepare("INSERT OR IGNORE INTO course_doc_requirements (programme, document_type) VALUES (?, ?)");
-    for (const t of new Set(types)) ins.run(code, t);
-  }
-
-  /** Remove a course's configuration — it falls back to the matrix defaults. */
-  deleteCourseDocConfig(programme: string): void {
-    this.db.prepare("DELETE FROM course_doc_requirements WHERE programme = ?").run(programme.toUpperCase());
+  resolveRequirements(code: string | null, _intake: string | null, organizationId = 1): RequirementSetEntry[] {
+    const type = code ? this.getCaseType(code, organizationId) : undefined;
+    return type ? this.listDocumentDefinitions(type.id).map((definition) => ({ document_type: definition.key, label: definition.label, required: definition.required, blocking: definition.blocking })) : [];
   }
 
   // ── Documents (features 5, 6, 9, 22) ─────────────────────────────────────
@@ -1306,10 +1275,11 @@ export class Repo {
   insertEmail(e: Omit<EmailRecord, "id" | "attachments"> & { channel?: string; attachments?: string[] }): number {
     const res = this.db
       .prepare(
-        `INSERT INTO emails (applicant_id, message_id, thread_id, direction, from_addr, to_addr, subject, body, category, auto, channel, at, attachments)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO emails (organization_id, applicant_id, message_id, thread_id, direction, from_addr, to_addr, subject, body, category, auto, channel, at, attachments)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
+        e.applicant_id ? this.getApplicant(e.applicant_id)?.organization_id ?? this.primaryOrganizationId() : e.organization_id ?? this.primaryOrganizationId(),
         e.applicant_id,
         e.message_id,
         e.thread_id,
@@ -1377,7 +1347,7 @@ export class Repo {
 
   /**
    * Conversation list for the mail window: one row per thread (the latest
-   * email), with message count and unread count. Scoped by school, realm-
+   * email), with message count and unread count. Scoped by case type, realm-
    * filtered by demo, optionally searched and limited to unread threads.
    * One aggregate query — no N+1.
    */
@@ -1397,26 +1367,28 @@ export class Repo {
   };
 
   mailThreads(opts: {
-    schools?: string[] | null; demo?: number; q?: string; unreadOnly?: boolean; page?: number; folder?: string;
-  }): Array<EmailRecord & { tkey: string; thread_n: number; unread_n: number; star_n: number; imp_n: number; a_name: string | null; a_email: string | null; ref_number: string | null; programme: string | null; lifecycle: string | null }> {
-    // Parked applicant-less mail has no school to match. It must not bypass
+    caseTypes?: string[] | null; demo?: number; q?: string; unreadOnly?: boolean; page?: number; folder?: string;
+  }): Array<EmailRecord & { tkey: string; thread_n: number; unread_n: number; star_n: number; imp_n: number; a_name: string | null; a_email: string | null; ref_number: string | null; case_type_code: string | null; lifecycle: string | null }> {
+    // Parked case-less mail has no case type to match. It must not bypass
     // an explicitly empty staff scope and become a data leak in All Mail.
-    if (isNoAccess(opts.schools)) return [];
+    if (isNoAccess(opts.caseTypes)) return [];
     const where: string[] = [];
     const params: unknown[] = [];
-    // Round 9: applicant rows are realm- and school-scoped through the join;
+    // Round 9: case rows are realm- and case-type-scoped through the join;
     // PARKED rows (applicant_id NULL — the intake hotword gate) carry no
-    // school of their own, so they are visible to live accounts only.
+    // case type of their own, so they are visible to live accounts only.
     const demo = opts.demo ?? 0;
     const appConds: string[] = [];
     if (opts.demo !== undefined) { appConds.push("a.demo = ?"); params.push(opts.demo); }
-    const scope = this.scopePred("a", opts.schools);
+    const scope = this.scopePred("a", opts.caseTypes);
     if (scope.sql) { appConds.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
     const appCondSql = appConds.length ? appConds.join(" AND ") : "1=1";
     // DEMO: parked (caseless) mail arrives on Organization #1's mailbox —
     // it is never shown inside another organization's workspace.
-    const parkedOrgOk = ((opts.schools as ScopeTag | null | undefined)?.organizationId ?? 1) === 1 ? 1 : 0;
-    where.push(`((e.applicant_id IS NOT NULL AND ${appCondSql}) OR (e.applicant_id IS NULL AND ${demo} = 0 AND ${parkedOrgOk} = 1))`);
+    const organizationId = (opts.caseTypes as ScopeTag | null | undefined)?.organizationId;
+    const parked = organizationId === undefined ? "1=1" : "e.organization_id = ?";
+    if (organizationId !== undefined) params.push(organizationId);
+    where.push(`((e.applicant_id IS NOT NULL AND ${appCondSql}) OR (e.applicant_id IS NULL AND ${demo} = 0 AND ${parked}))`);
     if (opts.q) {
       const escaped = opts.q.replace(/[\\%_]/g, (ch) => `\\${ch}`);
       const like = `%${escaped}%`;
@@ -1430,7 +1402,7 @@ export class Repo {
       WITH keyed AS (
         SELECT e.*, COALESCE(NULLIF(e.thread_id, ''), 'email-' || e.id) AS tkey,
                a.full_name AS a_name, a.email_address AS a_email, a.ref_number AS ref_number,
-               a.programme AS programme, a.lifecycle AS lifecycle
+               a.case_type_code AS case_type_code, a.lifecycle AS lifecycle
         FROM emails e LEFT JOIN applicants a ON a.id = e.applicant_id
         ${whereSql}
       ),
@@ -1454,29 +1426,29 @@ export class Repo {
   }
 
   /** Every email in one conversation, oldest first. */
-  emailsForThread(tkey: string): EmailRecord[] {
+  emailsForThread(tkey: string, organizationId = this.primaryOrganizationId()): EmailRecord[] {
     return this.db
-      .prepare(`SELECT e.* FROM emails e WHERE ${Repo.threadKeySql("e")} = ? ORDER BY e.at, e.id`)
-      .all(tkey) as EmailRecord[];
+      .prepare(`SELECT e.* FROM emails e WHERE ${Repo.threadKeySql("e")} = ? AND e.organization_id = ? ORDER BY e.at, e.id`)
+      .all(tkey, organizationId) as EmailRecord[];
   }
 
   /** Opening a conversation reads its incoming mail. */
-  markThreadRead(tkey: string): void {
+  markThreadRead(tkey: string, organizationId = this.primaryOrganizationId()): void {
     this.db
-      .prepare(`UPDATE emails SET read = 1 WHERE direction = 'in' AND ${Repo.threadKeySql("emails")} = ?`)
-      .run(tkey);
+      .prepare(`UPDATE emails SET read = 1 WHERE direction = 'in' AND ${Repo.threadKeySql("emails")} = ? AND organization_id = ?`)
+      .run(tkey, organizationId);
   }
 
   /** Marking a conversation unread returns it to the Unread filter. */
-  markThreadUnread(tkey: string): void {
+  markThreadUnread(tkey: string, organizationId = this.primaryOrganizationId()): void {
     this.db
-      .prepare(`UPDATE emails SET read = 0 WHERE direction = 'in' AND ${Repo.threadKeySql("emails")} = ?`)
-      .run(tkey);
+      .prepare(`UPDATE emails SET read = 0 WHERE direction = 'in' AND ${Repo.threadKeySql("emails")} = ? AND organization_id = ?`)
+      .run(tkey, organizationId);
   }
 
   /** Sidebar counts per folder (conversations), one aggregate query. */
-  mailFolderCounts(opts: { schools?: string[] | null; demo?: number }): Record<string, number> {
-    if (isNoAccess(opts.schools)) {
+  mailFolderCounts(opts: { caseTypes?: string[] | null; demo?: number }): Record<string, number> {
+    if (isNoAccess(opts.caseTypes)) {
       return Object.fromEntries(Object.keys(Repo.MAIL_FOLDER_WHERE).map((folder) => [folder, 0]));
     }
     const where: string[] = [];
@@ -1486,13 +1458,15 @@ export class Repo {
     const demo = opts.demo ?? 0;
     const appConds: string[] = [];
     if (opts.demo !== undefined) { appConds.push("a.demo = ?"); params.push(opts.demo); }
-    const scope = this.scopePred("a", opts.schools);
+    const scope = this.scopePred("a", opts.caseTypes);
     if (scope.sql) { appConds.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
     const appCondSql = appConds.length ? appConds.join(" AND ") : "1=1";
     // DEMO: parked (caseless) mail arrives on Organization #1's mailbox —
     // it is never shown inside another organization's workspace.
-    const parkedOrgOk = ((opts.schools as ScopeTag | null | undefined)?.organizationId ?? 1) === 1 ? 1 : 0;
-    where.push(`((e.applicant_id IS NOT NULL AND ${appCondSql}) OR (e.applicant_id IS NULL AND ${demo} = 0 AND ${parkedOrgOk} = 1))`);
+    const organizationId = (opts.caseTypes as ScopeTag | null | undefined)?.organizationId;
+    const parked = organizationId === undefined ? "1=1" : "e.organization_id = ?";
+    if (organizationId !== undefined) params.push(organizationId);
+    where.push(`((e.applicant_id IS NOT NULL AND ${appCondSql}) OR (e.applicant_id IS NULL AND ${demo} = 0 AND ${parked}))`);
     const whereSql = where.length ? "WHERE " + where.join(" AND ") : "";
     const row = this.db.prepare(`
       WITH keyed AS (
@@ -1530,8 +1504,8 @@ export class Repo {
    * labels live on the conversation). Restore = strip bin AND spam so the
    * conversation lands back in Inbox/Sent exactly where it came from.
    */
-  setThreadLabel(tkey: string, label: string, on: boolean): void {
-    const rows = this.emailsForThread(tkey);
+  setThreadLabel(tkey: string, label: string, on: boolean, organizationId = this.primaryOrganizationId()): void {
+    const rows = this.emailsForThread(tkey, organizationId);
     const update = this.db.prepare("UPDATE emails SET labels = ? WHERE id = ?");
     for (const e of rows) {
       let arr: string[] = [];
@@ -1545,8 +1519,8 @@ export class Repo {
   }
 
   /** Aggregate label state of a conversation (any message labelled = labelled). */
-  threadLabelState(tkey: string): { starred: boolean; important: boolean; spam: boolean; bin: boolean } {
-    const rows = this.emailsForThread(tkey);
+  threadLabelState(tkey: string, organizationId = this.primaryOrganizationId()): { starred: boolean; important: boolean; spam: boolean; bin: boolean } {
+    const rows = this.emailsForThread(tkey, organizationId);
     const has = (l: string) => rows.some((e) => (e.labels || "").includes(`"${l}"`));
     return { starred: has("starred"), important: has("important"), spam: has("spam"), bin: has("bin") };
   }
@@ -1780,7 +1754,7 @@ export class Repo {
 
   getTemplate(key: string, organizationId = 1, caseTypeId?: number): { key: string; name: string; subject: string; body: string; include_banner: number; attach_pack: string; case_type_id: number } | undefined {
     // PPR P0-6 precedence: the profile's own row → organization-wide row →
-    // the migrated education profile's legacy store. A template key is not a
+    // the shared legacy store. A template key is not a
     // closed enum — any key a profile needs can exist and shadow freely.
     const rows = this.db.prepare(
       "SELECT key, name, subject, body, include_banner, attach_pack, case_type_id FROM organization_templates WHERE organization_id = ? AND key = ?"
@@ -1837,28 +1811,36 @@ export class Repo {
     }
     const bannerVal = includeBanner === undefined ? 1 : includeBanner ? 1 : 0;
     const snapshot = JSON.stringify({ name, subject, body, include_banner: bannerVal, attach_pack: pack ?? "none" });
-    if (organizationId !== 1 || caseTypeId > 0) {
-      const current = this.getTemplate(key, organizationId, caseTypeId);
-      this.db.prepare(
-        `INSERT INTO organization_templates (organization_id, key, name, subject, body, include_banner, attach_pack, case_type_id, default_snapshot) VALUES (?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(organization_id, key) DO UPDATE SET name=excluded.name, subject=excluded.subject, body=excluded.body,
-           include_banner=COALESCE(?, organization_templates.include_banner), attach_pack=COALESCE(?, organization_templates.attach_pack),
-           case_type_id=excluded.case_type_id, updated_at=datetime('now')`
-      ).run(organizationId, key, name, subject, body, includeBanner === undefined ? current?.include_banner ?? 1 : bannerVal,
-        pack ?? current?.attach_pack ?? "none", caseTypeId, snapshot,
-        includeBanner === undefined ? null : bannerVal, pack);
-      return;
-    }
+    const current = this.getTemplate(key, organizationId, caseTypeId);
+    // All new writes use the organization-owned store, including organization
+    // 1. A legacy fallback may still supply `current` while an old database is
+    // transitioning; preserve its original default snapshot on that first
+    // modern write rather than redefining the administrator's edit as default.
+    const priorDefault = this.templateDefaultSnapshot(key, organizationId);
+    const initialSnapshot = priorDefault ? JSON.stringify(priorDefault) : snapshot;
     this.db.prepare(
-      `INSERT INTO templates (key, organization_id, name, subject, body, include_banner, attach_pack, default_snapshot) VALUES (?,?,?,?,?,?,?,?)
-       ON CONFLICT(key) DO UPDATE SET organization_id = excluded.organization_id, name = excluded.name, subject = excluded.subject, body = excluded.body,
-         include_banner = COALESCE(?, templates.include_banner), attach_pack = COALESCE(?, templates.attach_pack), updated_at = datetime('now')`
-    ).run(key, organizationId, name, subject, body, bannerVal, pack ?? "none", snapshot,
+      `INSERT INTO organization_templates (organization_id, key, name, subject, body, include_banner, attach_pack, case_type_id, default_snapshot) VALUES (?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(organization_id, key) DO UPDATE SET name=excluded.name, subject=excluded.subject, body=excluded.body,
+         include_banner=COALESCE(?, organization_templates.include_banner), attach_pack=COALESCE(?, organization_templates.attach_pack),
+         case_type_id=excluded.case_type_id, updated_at=datetime('now')`
+    ).run(organizationId, key, name, subject, body, includeBanner === undefined ? current?.include_banner ?? 1 : bannerVal,
+      pack ?? current?.attach_pack ?? "none", caseTypeId, initialSnapshot,
       includeBanner === undefined ? null : bannerVal, pack);
   }
 
-  setTemplateBanner(key: string, include: boolean): void {
-    this.db.prepare("UPDATE templates SET include_banner = ? WHERE key = ?").run(include ? 1 : 0, key);
+  setTemplateBanner(key: string, include: boolean, organizationId = 1): void {
+    const current = this.getTemplate(key, organizationId);
+    if (!current) return;
+    this.upsertTemplate(
+      current.key,
+      current.name,
+      current.subject,
+      current.body,
+      include,
+      current.attach_pack,
+      organizationId,
+      current.case_type_id
+    );
   }
 
   // ── Settings ─────────────────────────────────────────────────────────────
@@ -1915,11 +1897,11 @@ export class Repo {
    * shown to demo accounts, and vice versa (broadcasts without an applicant
    * are visible to everyone).
    */
-  notificationsFor(staffId: number, limit = 50, demo?: number, schools?: string[] | null): Array<{ id: number; kind: string; message: string; read: number; at: string; applicant_id: number | null }> {
+  notificationsFor(staffId: number, limit = 50, demo?: number, caseTypes?: string[] | null): Array<{ id: number; kind: string; message: string; read: number; at: string; applicant_id: number | null }> {
     const realmSql = demo === undefined ? "" : " AND (n.applicant_id IS NULL OR a.demo = ?)";
-    // OR-8: scoped staff never see alerts about cases outside their schools
+    // OR-8: scoped staff never see alerts about cases outside their caseTypes
     // (broadcast alerts without an applicant stay visible to everyone).
-    const scope = this.scopePred("a", schools);
+    const scope = this.scopePred("a", caseTypes);
     const scopeSql = scope.sql ? ` AND (n.applicant_id IS NULL OR 1=1${scope.sql})` : "";
     const params: unknown[] = demo === undefined ? [staffId, limit] : [staffId, demo, limit];
     return this.db
@@ -1932,10 +1914,10 @@ export class Repo {
       .all(demo === undefined ? [params[0], ...scope.params, params[1]] : [params[0], params[1], ...scope.params, params[2]]) as never[];
   }
 
-  unreadCount(staffId: number, demo?: number, schools?: string[] | null): number {
-    if (isNoAccess(schools)) return 0;
+  unreadCount(staffId: number, demo?: number, caseTypes?: string[] | null): number {
+    if (isNoAccess(caseTypes)) return 0;
     const realmSql = demo === undefined ? "" : " AND (n.applicant_id IS NULL OR a.demo = ?)";
-    const scope = this.scopePred("a", schools);
+    const scope = this.scopePred("a", caseTypes);
     const scopeSql = scope.sql ? ` AND (n.applicant_id IS NULL OR 1=1${scope.sql})` : "";
     const params: unknown[] = demo === undefined
       ? [staffId, ...scope.params]
@@ -2129,15 +2111,15 @@ export class Repo {
 
   /**
    * Applicants who received an enquiry-style incoming email today (one SQL
-   * query — the admissions page must not do one query per applicant).
+   * query — the case page must not do one query per applicant).
    */
-  enquiryApplicantIdsToday(startISO: string, schools?: string[] | null): Set<number> {
-    const scope = this.scopePred("a", schools);
+  enquiryApplicantIdsToday(startISO: string, caseTypes?: string[] | null): Set<number> {
+    const scope = this.scopePred("a", caseTypes);
     const rows = this.db
       .prepare(
         `SELECT DISTINCT e.applicant_id AS id FROM emails e JOIN applicants a ON a.id = e.applicant_id
          WHERE e.direction = 'in' AND e.at >= ?
-           AND e.category IN ('fee_enquiry','admission_enquiry','follow_up','complaint','other')${scope.sql}`
+           AND e.category IN ('fee_enquiry','case_enquiry','follow_up','complaint','other')${scope.sql}`
       )
       .all(startISO, ...scope.params) as Array<{ id: number }>;
     return new Set(rows.map((r) => r.id));
@@ -2148,7 +2130,7 @@ export class Repo {
   // finished / unfinished / pending are the three buckets staff think in;
   // awaiting_review inside pending is the classic "human queue".
 
-  stageCounts(demo?: number, schools?: string[] | null): {
+  stageCounts(demo?: number, caseTypes?: string[] | null): {
     finished: number;
     unfinished: number;
     pending: number;
@@ -2164,7 +2146,7 @@ export class Repo {
     const where: string[] = [];
     const params: unknown[] = [];
     if (demo !== undefined) { where.push("demo = ?"); params.push(demo); }
-    const scope = this.scopePred("applicants", schools);
+    const scope = this.scopePred("applicants", caseTypes);
     if (scope.sql) { where.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
     const rows = this.db
       .prepare(`SELECT lifecycle, COUNT(*) AS n FROM applicants${where.length ? " WHERE " + where.join(" AND ") : ""} GROUP BY lifecycle`)
@@ -2177,7 +2159,7 @@ export class Repo {
     const total = rows.reduce((n, r) => n + r.n, 0);
     const start = new Date();
     start.setHours(0, 0, 0, 0);
-    const enquiries = this.enquiryApplicantIdsToday(start.toISOString(), schools).size;
+    const enquiries = this.enquiryApplicantIdsToday(start.toISOString(), caseTypes).size;
     return {
       finished: g("completed"),
       unfinished: g("application_received") + g("documents_received") + g("documents_checked"),
@@ -2203,7 +2185,7 @@ export class Repo {
       .get(applicantId) as { actor: string; at: string } | undefined;
   }
 
-  todayStats(demo?: number, schools?: string[] | null): { emailsToday: number; docsToday: number; completedToday: number } {
+  todayStats(demo?: number, caseTypes?: string[] | null): { emailsToday: number; docsToday: number; completedToday: number } {
     // date('now') is UTC — in UTC+3 the "today" counters would reset at 03:00
     // local. Compute THIS machine's local day boundaries instead.
     const start = new Date();
@@ -2212,7 +2194,7 @@ export class Repo {
     const lo = start.toISOString();
     const hi = end.toISOString();
     const dp: unknown[] = demo === undefined ? [] : [demo];
-    const scope = this.scopePred("a", schools);
+    const scope = this.scopePred("a", caseTypes);
     const pred = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
     const one = (sql: string) => (this.db.prepare(sql).get(lo, hi, ...dp, ...scope.params) as { n: number }).n;
     return {
@@ -2223,8 +2205,8 @@ export class Repo {
   }
 
   /** The human work queue (feature 11): cases whose latest decision wasn't auto-resolved. */
-  queueView(demo?: number, schools?: string[] | null): Array<ApplicantRow & { computed_status: string; reasoning: string; auto_sent: boolean; decided_at: string; flag_summary: string }> {
-    const scope = this.scopePred("a", schools);
+  queueView(demo?: number, caseTypes?: string[] | null): Array<ApplicantRow & { computed_status: string; reasoning: string; auto_sent: boolean; decided_at: string; flag_summary: string }> {
+    const scope = this.scopePred("a", caseTypes);
     const demoSql = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
     const demoParams: unknown[] = demo === undefined ? [...scope.params] : [demo, ...scope.params];
     const rows = this.db
@@ -2301,15 +2283,15 @@ export class Repo {
       const like = `%${escaped}%`;
       params.push(like, like, like, like, like, like);
     }
-    if (opts.programme) {
-      where.push("programme = ?");
-      params.push(opts.programme);
+    if (opts.caseTypeCode) {
+      where.push("case_type_code = ?");
+      params.push(opts.caseTypeCode);
     }
     if (opts.intake) {
       where.push("intake = ?");
       params.push(opts.intake);
     }
-    const scope = this.scopePred("applicants", opts.schools);
+    const scope = this.scopePred("applicants", opts.caseTypes);
     if (scope.sql) {
       where.push(scope.sql.replace(/^ AND /, ""));
       params.push(...scope.params);
@@ -2337,11 +2319,11 @@ export class Repo {
 
   // ── Dashboard analytics (feature 30) ─────────────────────────────────────
 
-  dashboardStats(demo?: number, schools?: string[] | null): Record<string, number | string> {
+  dashboardStats(demo?: number, caseTypes?: string[] | null): Record<string, number | string> {
     // Realm scope: every applicant-derived count filters by the caller's demo
     // flag so live admins never see seeded (mock) data and vice versa.
-    // OR-8: school scope applies to every count too.
-    const scope = this.scopePred("a", schools);
+    // OR-8: the case-type scope applies to every count too.
+    const scope = this.scopePred("a", caseTypes);
     const pred = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
     const dp: unknown[] = demo === undefined ? [...scope.params] : [demo, ...scope.params];
     const one = (sql: string, p: unknown[] = []) => (this.db.prepare(sql).get(...p) as { n: number }).n;
@@ -2396,19 +2378,19 @@ export class Repo {
 
   /**
    * Most common MISSING required documents across OPEN (not completed, not
-   * in verification) cases — scoped by realm + schools like every other
+   * in verification) cases — scoped by realm + caseTypes like every other
    * admin number. Each applicant counts once per missing type, judged by
    * the frozen requirement snapshot where present (else live rules), minus
    * their active (non-superseded) documents.
    */
-  commonMissingDocs(demo?: number, schools?: string[] | null, limit = 5): Array<{ type: string; count: number }> {
+  commonMissingDocs(demo?: number, caseTypes?: string[] | null, limit = 5): Array<{ type: string; count: number }> {
     const counts = new Map<string, number>();
-    for (const a of this.allApplicants(demo, schools)) {
+    for (const a of this.allApplicants(demo, caseTypes)) {
       if (a.lifecycle === "completed" || a.lifecycle === "verification") continue;
-      // The SAME slot semantics as decide(): a generic academic upload fills
-      // an academic slot (fillSlots), so the tile must not count as missing
-      // a document the pipeline already considers present. A literal
-      // type-set difference used to show complete files as short.
+      // The SAME slot semantics as decide(): fillSlots decides what counts as
+      // present, so the tile must not count as missing a document the pipeline
+      // already considers received. A literal type-set difference used to show
+      // complete files as short.
       const present = this.listDocuments(a.id, { activeOnly: true }).map((d) => d.document_type);
       const { missing } = fillSlots(this.effectiveRequirements(a), present);
       for (const m of missing) counts.set(m.document_type, (counts.get(m.document_type) ?? 0) + 1);
@@ -2421,11 +2403,11 @@ export class Repo {
 
   // ── Export (feature 38) ──────────────────────────────────────────────────
 
-  allApplicants(demo?: number, schools?: string[] | null): ApplicantRow[] {
+  allApplicants(demo?: number, caseTypes?: string[] | null): ApplicantRow[] {
     const where: string[] = [];
     const params: unknown[] = [];
     if (demo !== undefined) { where.push("demo = ?"); params.push(demo); }
-    const scope = this.scopePred("applicants", schools);
+    const scope = this.scopePred("applicants", caseTypes);
     if (scope.sql) { where.push(scope.sql.replace(/^ AND /, "")); params.push(...scope.params); }
     return this.db
       .prepare(`SELECT * FROM applicants${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY id`)
@@ -2487,11 +2469,26 @@ export class Repo {
 
   // ── Automation config (features 17, 18) ──────────────────────────────────
 
+  /**
+   * May this category's automated reply go out by itself?
+   *
+   * Two switches, both off by default:
+   *  1. the global `automation_mode` — while it is `draft`, EVERY automated
+   *     reply waits for a human whatever any rule or case type says;
+   *  2. an explicit per-category ALLOWLIST. A category sends only when it was
+   *     deliberately added (`mode = 'auto'`); an empty allowlist means nothing
+   *     is ever sent automatically. This used to be a blocklist, so switching
+   *     the global mode to `auto` released every category at once.
+   */
   automationMode(category: string): "auto" | "draft" {
-    const globalDraft = this.getSetting("automation_mode", "auto") === "draft";
-    if (globalDraft) return "draft";
+    if (!this.automationAllowedGlobally()) return "draft";
     const row = this.db.prepare("SELECT mode FROM automation_config WHERE category = ?").get(category) as { mode: string } | undefined;
-    return row?.mode === "draft" ? "draft" : "auto";
+    return row?.mode === "auto" ? "auto" : "draft";
+  }
+
+  /** The single global switch: is automated sending released at all? */
+  automationAllowedGlobally(): boolean {
+    return this.getSetting("automation_mode", "draft") !== "draft";
   }
 
   setAutomationMode(category: string, mode: "auto" | "draft"): void {
@@ -2527,7 +2524,7 @@ export class Repo {
    * - emailsSent: replies they personally approved/sent (audit trail)
    * - avgResponseMinutes: mean gap between an incoming email and the next
    *   outgoing reply on their assigned cases
-   * - admissionsCompleted: distinct cases they moved to "completed"
+   * - casesCompleted: distinct cases they moved to "completed"
    */
   staffStats(demo?: number, organizationId?: number): StaffStatsRow[] {
     const staff = this.listStaff(organizationId);
@@ -2575,30 +2572,26 @@ export class Repo {
         emailsReceived: received,
         emailsSent: sent,
         avgResponseMinutes: avg.mins === null || avg.mins === undefined ? null : Math.round(avg.mins),
-        admissionsCompleted: completed,
+        casesCompleted: completed,
       };
     });
   }
 
   // ── Intakes with deadlines (features 20, 21) ─────────────────────────────
 
-  listIntakeRows(): Array<{ name: string; deadline: string | null }> {
-    return this.db.prepare("SELECT name, deadline FROM intakes ORDER BY rowid").all() as never[];
+  listIntakeRows(organizationId = 1): Array<{ name: string; deadline: string | null }> {
+    return this.db.prepare("SELECT name, deadline FROM intakes WHERE organization_id = ? ORDER BY rowid").all(organizationId) as never[];
   }
 
-  addIntakeWithDeadline(name: string, deadline: string | null): void {
+  addIntakeWithDeadline(name: string, deadline: string | null, organizationId = 1): void {
     this.db
-      .prepare("INSERT INTO intakes (name, deadline) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET deadline = excluded.deadline")
-      .run(name, deadline);
+      .prepare("INSERT INTO intakes (organization_id, name, deadline) VALUES (?, ?, ?) ON CONFLICT(organization_id, name) DO UPDATE SET deadline = excluded.deadline")
+      .run(organizationId, name, deadline);
   }
 
-  setIntakeDeadline(name: string, deadline: string | null): void {
-    this.db.prepare("UPDATE intakes SET deadline = ? WHERE name = ?").run(deadline, name);
-  }
-
-  intakeDeadline(intake: string | null): string | null {
+  intakeDeadline(intake: string | null, organizationId = 1): string | null {
     if (!intake) return null;
-    const row = this.db.prepare("SELECT deadline FROM intakes WHERE name = ?").get(intake) as { deadline: string | null } | undefined;
+    const row = this.db.prepare("SELECT deadline FROM intakes WHERE organization_id = ? AND name = ?").get(organizationId, intake) as { deadline: string | null } | undefined;
     return row?.deadline ?? null;
   }
 
@@ -2654,7 +2647,7 @@ export class Repo {
 
   // ── Unanswered email detection (feature 1) ───────────────────────────────
 
-  unansweredCases(schools?: string[] | null): Array<{ applicant: ApplicantRow; lastInAt: string; hours: number }> {
+  unansweredCases(caseTypes?: string[] | null): Array<{ applicant: ApplicantRow; lastInAt: string; hours: number }> {
     // Any outgoing email (automated or human) counts as "answered" — that is
     // the specified behavior (a factual auto-reply IS a reply). Batched into
     // one query; previously this ran one query per applicant (N+1).
@@ -2663,10 +2656,10 @@ export class Repo {
         `SELECT a.id AS aid, MAX(e.at) AS last_in
          FROM applicants a
          JOIN emails e ON e.applicant_id = a.id AND e.direction = 'in'
-         WHERE a.lifecycle NOT IN ('completed')${this.scopePred("a", schools).sql}
+         WHERE a.lifecycle NOT IN ('completed')${this.scopePred("a", caseTypes).sql}
          GROUP BY a.id`
       )
-      .all(...this.scopePred("a", schools).params) as Array<{ aid: number; last_in: string }>;
+      .all(...this.scopePred("a", caseTypes).params) as Array<{ aid: number; last_in: string }>;
     if (rows.length === 0) return [];
     const replies = this.db
       .prepare(
@@ -2691,8 +2684,8 @@ export class Repo {
 
   // ── Analytics (features 28–31) ───────────────────────────────────────────
 
-  categoryCounts(schools?: string[] | null): Array<{ category: string; n: number }> {
-    const scope = this.scopePred("a", schools);
+  categoryCounts(caseTypes?: string[] | null): Array<{ category: string; n: number }> {
+    const scope = this.scopePred("a", caseTypes);
     return this.db
       .prepare(
         `SELECT coalesce(e.category,'other') AS category, COUNT(*) AS n
@@ -2703,9 +2696,9 @@ export class Repo {
   }
 
   /** Round 10: the three current markings per case (applicants.triage),
-   *  realm- and school-scoped like every other dashboard number. */
-  triageCounts(demo?: number, schools?: string[] | null): { green: number; orange: number; red: number } {
-    const scope = this.scopePred("a", schools);
+   *  realm- and case-type-scoped like every other dashboard number. */
+  triageCounts(demo?: number, caseTypes?: string[] | null): { green: number; orange: number; red: number } {
+    const scope = this.scopePred("a", caseTypes);
     const dp: unknown[] = demo === undefined ? [...scope.params] : [demo, ...scope.params];
     const pred = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
     const one = (sql: string) => (this.db.prepare(sql).get(...dp) as { n: number }).n;
@@ -2716,8 +2709,8 @@ export class Repo {
     };
   }
 
-  accuracyStats(demo?: number, schools?: string[] | null): Record<string, number> {
-    const scope = this.scopePred("a", schools);
+  accuracyStats(demo?: number, caseTypes?: string[] | null): Record<string, number> {
+    const scope = this.scopePred("a", caseTypes);
     const dp: unknown[] = demo === undefined ? [...scope.params] : [demo, ...scope.params];
     const pred = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
     const one = (sql: string) => (this.db.prepare(sql).get(...dp) as { n: number }).n;
@@ -2735,6 +2728,43 @@ export class Repo {
 
   // ── Data retention (feature 38) ──────────────────────────────────────────
 
+  /**
+   * Build a complete archive snapshot and delete its live rows under one
+   * IMMEDIATE transaction. The writer must persist/verify the snapshot before
+   * returning; a thrown file/encryption error rolls the database transaction
+   * back. Re-checking the lifecycle and cutoff here prevents a stale candidate
+   * list from deleting a case changed while the sweep was in progress.
+   */
+  archiveAndDeleteDueApplicant(
+    applicantId: number,
+    cutoffIso: string,
+    retentionDays: number,
+    writeArchive: (record: RetentionArchiveRecord) => void,
+  ): string | undefined {
+    const tx = this.db.transaction(() => {
+      const applicant = this.getApplicant(applicantId);
+      if (!applicant || applicant.lifecycle !== "completed" || !retentionDue(applicant.updated_at, cutoffIso)) {
+        return undefined;
+      }
+      const record: RetentionArchiveRecord = {
+        archived_at: nowIso(),
+        retention_days: retentionDays,
+        applicant,
+        documents: this.listDocuments(applicantId, { activeOnly: false }),
+        emails: this.emailsForApplicant(applicantId),
+        flags: this.activeFlags(applicantId),
+        notes: this.notesForApplicant(applicantId),
+        status_history: this.statusHistory(applicantId),
+        decision_logs: this.decisionLogs(applicantId),
+        audit: this.auditForApplicant(applicantId),
+      };
+      writeArchive(record);
+      this.deleteApplicantFull(applicantId);
+      return applicant.ref_number;
+    });
+    return tx.immediate();
+  }
+
   /** Fully remove an applicant's data (used after archiving). */
   deleteApplicantFull(applicantId: number): void {
     const tx = this.db.transaction(() => {
@@ -2746,32 +2776,31 @@ export class Repo {
     tx();
   }
 
-  // ═══ Admissions rules engine (round 18) ══════════════════════════════════
+  // ═══ Evidence rules engine (round 18) ══════════════════════════════════
 
   // ── OR-8: visibility scoping — the ONLY place scope is decided ─────────
 
-  /** The schools a staff member may see.
+  /** The case types a staff member may see.
    *
    * null = deliberately unscoped/full visibility (the default), a non-empty
-   * array = assigned schools, and [] = deliberately no access. Keeping the
+   * array = assigned case types, and [] = deliberately no access. Keeping the
    * last state in staff_users makes an empty scope real instead of silently
    * turning it into unrestricted access.
    */
-  visibleSchoolsFor(staff: { id: number; role: string }): string[] | null {
+  visibleCaseTypesFor(staff: { id: number; role: string }): string[] | null {
     if (staff.role === "admin") return null;
-    const rows = this.scopesFor(staff.id);
+    const rows = this.caseTypeScopesFor(staff.id);
     if (rows.length) return rows;
-    const mode = (this.db.prepare("SELECT scope_mode FROM staff_users WHERE id = ?").get(staff.id) as { scope_mode?: string } | undefined)?.scope_mode;
-    return mode === "none" ? [] : null;
+    return this.caseTypeScopeModeFor(staff.id) === "none" ? [] : null;
   }
 
-  /** DEMO: the case-list scope for a staff member — their school scope
-   *  (visibleSchoolsFor) PLUS their ACTIVE organization, so queues,
-   *  dashboards, mail and search never mix tenants. Pass it anywhere a
-   *  `schools` scope is accepted. */
+  /** The case-list scope for a staff member — their case-type scope
+   *  (visibleCaseTypesFor) PLUS their organization, so queues, dashboards,
+   *  mail and search never mix tenants. Pass it anywhere a `caseTypes` scope
+   *  is accepted. */
   caseScopeFor(staff: { id: number; role: string; organization_id?: number | null }): string[] {
-    const schools = this.visibleSchoolsFor(staff);
-    return Object.assign(schools ? [...schools] : [], { organizationId: staff.organization_id ?? 1, allSchools: schools === null });
+    const caseTypes = this.visibleCaseTypesFor(staff);
+    return Object.assign(caseTypes ? [...caseTypes] : [], { organizationId: staff.organization_id ?? 1, allCaseTypes: caseTypes === null });
   }
 
   /** Switch an admin's active organization (the sidebar switcher). */
@@ -2780,90 +2809,59 @@ export class Repo {
     this.db.prepare("UPDATE staff_users SET active_organization_id = ? WHERE id = ?").run(organizationId, staffId);
   }
 
-  /** Would this staff member see this applicant anywhere in the console?
-   * Scoped staff only see cases whose programme belongs to one of their
-   * schools; a case with no programme is never shared with scoped staff. */
+  /** Would this staff member see this case anywhere in the console? A case is
+   * only visible inside its own organization, and scoped staff only see the
+   * case types assigned to them; a case with no case type is never shared with
+   * scoped staff. */
   applicantVisibleTo(staff: { id: number; role: string; organization_id?: number | null }, a: ApplicantRow): boolean {
-    // DEMO: a case is only visible inside its own organization.
-    if ((a.organization_id ?? 1) !== (staff.organization_id ?? 1)) return false;
-    const scope = this.visibleSchoolsFor(staff);
-    if (!scope) return true;
-    if (!a.programme) return false;
-    const school = this.programmeByCode(a.programme)?.school;
-    return Boolean(school) && scope.includes(school as string);
+    return this.caseTypeVisibleTo(staff, a);
   }
 
-  /** SQL predicate restricting applicant rows to the given schools.
-   * `schools === null/undefined` = full visibility; an EMPTY scoped list
-   * matches nothing (never accidentally everything). */
-  private scopePred(alias: string, schools?: string[] | null): { sql: string; params: string[] } {
-    if (schools === undefined || schools === null) return { sql: "", params: [] };
-    const org = (schools as ScopeTag).organizationId;
+  /** SQL predicate restricting case rows to the given case-type codes.
+   * `caseTypes === null/undefined` = full visibility; an EMPTY scoped list
+   * matches nothing (never accidentally everything); a case with no case type
+   * is never shared with scoped staff. */
+  private scopePred(alias: string, caseTypes?: string[] | null): { sql: string; params: string[] } {
+    if (caseTypes === undefined || caseTypes === null) return { sql: "", params: [] };
+    const org = (caseTypes as ScopeTag).organizationId;
     const orgSql = org !== undefined ? ` AND COALESCE(${alias}.organization_id, 1) = ${Number(org)}` : "";
-    if (isAllSchools(schools)) return { sql: orgSql, params: [] };
-    if (schools.length === 0) return { sql: " AND 0 = 1", params: [] };
-    const marks = schools.map(() => "?").join(",");
+    if (isAllCaseTypes(caseTypes)) return { sql: orgSql, params: [] };
+    if (caseTypes.length === 0) return { sql: " AND 0 = 1", params: [] };
+    const marks = caseTypes.map(() => "?").join(",");
     return {
-      sql: `${orgSql} AND EXISTS (SELECT 1 FROM programmes p WHERE p.code = ${alias}.programme AND p.school IN (${marks}))`,
-      params: [...schools],
+      sql: `${orgSql} AND EXISTS (SELECT 1 FROM case_types ct WHERE ct.id = ${alias}.case_type_id AND UPPER(ct.code) IN (${marks}))`,
+      params: caseTypes.map((code) => code.toUpperCase()),
     };
   }
 
-  // ── Subject catalogue (centrally managed, never duplicated per course) ──
+  // ── Staff visibility scopes (OR-8: case type × staff matrix) ────────────
 
-  listSubjectCatalogue(system?: string): Array<{ id: number; system: string; name: string; active: number }> {
-    const rows = system === undefined
-      ? this.db.prepare("SELECT * FROM subject_catalogue ORDER BY system, name").all()
-      : this.db.prepare("SELECT * FROM subject_catalogue WHERE system = ? ORDER BY name").all(system);
-    return rows as never[];
-  }
 
-  /** OR-6: returns false when the subject already exists — callers must
-   * refuse loudly; nothing is ever swallowed silently. */
-  addCatalogueSubject(system: string, name: string): boolean {
-    const res = this.db
-      .prepare("INSERT OR IGNORE INTO subject_catalogue (system, name) VALUES (?, ?)")
-      .run(system, name.trim());
-    return res.changes > 0;
-  }
-
-  /** OR-6: rename a catalogue subject (keeps its active status). Returns
-   * false when the new name already exists in that system. */
-  renameCatalogueSubject(id: number, name: string): boolean {
-    const row = this.db.prepare("SELECT system FROM subject_catalogue WHERE id = ?").get(id) as { system?: string } | undefined;
-    if (!row?.system) return false;
-    const clash = this.db
-      .prepare("SELECT id FROM subject_catalogue WHERE system = ? AND name = ? AND id <> ?")
-      .get(row.system, name.trim(), id);
-    if (clash) return false;
-    this.db.prepare("UPDATE subject_catalogue SET name = ? WHERE id = ?").run(name.trim(), id);
-    return true;
-  }
-
-  setCatalogueActive(id: number, active: boolean): void {
-    this.db.prepare("UPDATE subject_catalogue SET active = ? WHERE id = ?").run(active ? 1 : 0, id);
-  }
-
-  seedCatalogue(entries: Array<{ system: string; name: string }>): void {
-    const tx = this.db.transaction(() => {
-      for (const e of entries) this.addCatalogueSubject(e.system, e.name);
-    });
-    tx();
-  }
-
-  // ── Staff visibility scopes (OR-8: school × staff matrix) ───────────────
-
-  scopesFor(staffId: number): string[] {
-    const rows = this.db.prepare("SELECT school FROM staff_scopes WHERE staff_id = ? ORDER BY school").all(staffId) as Array<{ school: string }>;
-    return rows.map((x) => x.school);
-  }
-
+  /** Replace a staff member's whole case-type set in ONE action. An empty set
+   * is an explicit no-access scope; use clearCaseTypeScopes() to restore full
+   * visibility. */
   setCaseTypeScopes(staffId: number, caseTypes: string[]): void {
+    const clean = [...new Set(caseTypes.map((x) => x.trim().toUpperCase()).filter(Boolean))];
     this.db.transaction(() => {
       this.db.prepare("DELETE FROM staff_case_type_scopes WHERE staff_id = ?").run(staffId);
+      this.db.prepare("UPDATE staff_users SET case_type_scope_mode = ? WHERE id = ?").run(clean.length ? "scoped" : "none", staffId);
       const insert = this.db.prepare("INSERT OR IGNORE INTO staff_case_type_scopes (staff_id, case_type_code) VALUES (?,?)");
-      for (const code of [...new Set(caseTypes.map((x) => x.trim().toUpperCase()).filter(Boolean))]) insert.run(staffId, code);
+      for (const code of clean) insert.run(staffId, code);
     })();
+  }
+
+  /** Restore an officer's default full visibility explicitly. */
+  clearCaseTypeScopes(staffId: number): void {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM staff_case_type_scopes WHERE staff_id = ?").run(staffId);
+      this.db.prepare("UPDATE staff_users SET case_type_scope_mode = 'unscoped' WHERE id = ?").run(staffId);
+    })();
+  }
+
+  caseTypeScopeModeFor(staffId: number): "unscoped" | "scoped" | "none" {
+    const row = this.db.prepare("SELECT case_type_scope_mode FROM staff_users WHERE id = ?").get(staffId) as { case_type_scope_mode?: string } | undefined;
+    if (row?.case_type_scope_mode === "none" || row?.case_type_scope_mode === "scoped") return row.case_type_scope_mode;
+    return "unscoped";
   }
 
   caseTypeScopesFor(staffId: number): string[] {
@@ -2871,336 +2869,29 @@ export class Repo {
     return rows.map((r) => r.case_type_code);
   }
 
+  /** Row-level twin of scopePred. */
   caseTypeVisibleTo(staff: { id: number; role: string; organization_id?: number | null }, a: ApplicantRow): boolean {
-    if (staff.role === "admin") return true;
-    const scopes = this.caseTypeScopesFor(staff.id);
-    if (scopes.length === 0) return true;
-    const code = a.case_type_id ? this.caseTypeForCase(a.id)?.code : (a.programme ?? null);
-    return !!code && scopes.includes(code.toUpperCase());
+    if ((a.organization_id ?? 1) !== (staff.organization_id ?? 1)) return false;
+    const scope = this.visibleCaseTypesFor(staff);
+    if (!scope) return true;
+    if (!a.case_type_id) return false;
+    const code = this.caseTypeForCase(a.id)?.code;
+    return Boolean(code) && scope.map((x) => x.toUpperCase()).includes(String(code).toUpperCase());
   }
 
-  /** Replace a staff member's whole school set in ONE action.
-   * An empty set is an explicit no-access scope; use clearScopes() when an
-   * administrator wants to restore full visibility. */
-  setScopes(staffId: number, schools: string[]): void {
-    const clean = [...new Set(schools.map((x) => x.trim()).filter(Boolean))];
-    const tx = this.db.transaction(() => {
-      this.db.prepare("DELETE FROM staff_scopes WHERE staff_id = ?").run(staffId);
-      this.db.prepare("UPDATE staff_users SET scope_mode = ? WHERE id = ?").run(clean.length ? "scoped" : "none", staffId);
-      const ins = this.db.prepare("INSERT OR IGNORE INTO staff_scopes (staff_id, school) VALUES (?, ?)");
-      for (const s of clean) ins.run(staffId, s);
-    });
-    tx();
-  }
 
-  /** Restore an officer's default full visibility explicitly. */
-  clearScopes(staffId: number): void {
-    this.db.transaction(() => {
-      this.db.prepare("DELETE FROM staff_scopes WHERE staff_id = ?").run(staffId);
-      this.db.prepare("UPDATE staff_users SET scope_mode = 'unscoped' WHERE id = ?").run(staffId);
-    })();
-  }
 
-  scopeModeFor(staffId: number): "unscoped" | "scoped" | "none" {
-    const row = this.db.prepare("SELECT scope_mode FROM staff_users WHERE id = ?").get(staffId) as { scope_mode?: string } | undefined;
-    if (row?.scope_mode === "none" || row?.scope_mode === "scoped") return row.scope_mode;
-    return "unscoped";
-  }
 
-  // ── Schools (OR-6: first-class, editable, shared with courses page) ─────
 
-  /** Every school: the schools catalogue UNION the schools programmes use. */
-  listSchools(): string[] {
-    const rows = this.db
-      .prepare("SELECT name FROM schools UNION SELECT DISTINCT school FROM programmes WHERE school <> '' ORDER BY name")
-      .all() as Array<{ name: string }>;
-    return rows.map((x) => x.name);
-  }
 
-  /** Add a school. Returns false when it already exists. */
-  addSchool(name: string): boolean {
-    const res = this.db.prepare("INSERT OR IGNORE INTO schools (name) VALUES (?)").run(name.trim());
-    return res.changes > 0;
-  }
-
-  /** Rename a school, moving every course with it. Returns the number of
-   * courses moved, or -1 when the target name already exists. */
-  renameSchool(from: string, to: string): number {
-    const clash =
-      this.db.prepare("SELECT name FROM schools WHERE name = ?").get(to.trim()) ??
-      this.db.prepare("SELECT school FROM programmes WHERE school = ?").get(to.trim());
-    if (clash) return -1;
-    const moved = this.db.prepare("UPDATE programmes SET school = ? WHERE school = ?").run(to.trim(), from).changes;
-    this.db.prepare("UPDATE schools SET name = ? WHERE name = ?").run(to.trim(), from);
-    return moved;
-  }
-
-  // ── Requirement sets (versioned trees per programme × system) ────────────
-
-  private rowToSet(r: Record<string, unknown>): AdmissionRuleSet {
-    return {
-      id: r.id as number,
-      programme: (r.programme as string | null) ?? null,
-      level: (r.level ?? "degree") as CourseLevel,
-      system: r.system as AdmissionSystem,
-      version: r.version as number,
-      status: r.status as AdmissionRuleSet["status"],
-      created_by: r.created_by as string,
-      created_at: r.created_at as string,
-    };
-  }
-
-  listRuleSets(filter: { programme?: string | null; status?: string; system?: string } = {}): AdmissionRuleSet[] {
-    const where: string[] = [];
-    const params: unknown[] = [];
-    if (filter.programme !== undefined) {
-      if (filter.programme === null) where.push("programme IS NULL");
-      else { where.push("programme = ?"); params.push(filter.programme); }
-    }
-    if (filter.status) { where.push("status = ?"); params.push(filter.status); }
-    if (filter.system) { where.push("system = ?"); params.push(filter.system); }
-    const rows = this.db
-      .prepare(`SELECT * FROM admission_rules ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY programme IS NULL, programme, system, version DESC`)
-      .all(...params) as Array<Record<string, unknown>>;
-    return rows.map((r) => this.rowToSet(r));
-  }
-
-  getRuleSet(id: number): AdmissionRuleSet | undefined {
-    const r = this.db.prepare("SELECT * FROM admission_rules WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-    if (!r) return undefined;
-    return this.rowToSet(r);
-  }
-
-  getRuleSetNodes(setId: number): RuleNode[] {
-    const rows = this.db
-      .prepare("SELECT * FROM admission_rule_nodes WHERE set_id = ? ORDER BY position, id")
-      .all(setId) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({
-      id: r.id as number,
-      set_id: r.set_id as number,
-      parent_id: (r.parent_id as number | null) ?? null,
-      kind: r.kind as RuleNode["kind"],
-      logic: (r.logic as RuleNode["logic"]) ?? undefined,
-      field: (r.field as RuleNode["field"]) ?? undefined,
-      subject: (r.subject as string | null) ?? null,
-      comparator: ">=",
-      value: (r.value as string | null) ?? null,
-      position: r.position as number,
-    }));
-  }
-
-  /** Assemble the node rows of one set into a tree (children arrays). */
-  getRuleTree(setId: number): RuleNode[] {
-    const flat = this.getRuleSetNodes(setId);
-    const byId = new Map<number, RuleNode>();
-    for (const n of flat) byId.set(n.id!, { ...n, children: n.kind === "group" ? [] : undefined });
-    const roots: RuleNode[] = [];
-    for (const n of flat) {
-      const node = byId.get(n.id!)!;
-      const pid = n.parent_id;
-      if (typeof pid === "number" && byId.has(pid)) byId.get(pid)!.children!.push(node);
-      else roots.push(node);
-    }
-    return roots;
-  }
-
-  /**
-   * The active requirement sets for a programme: course-specific sets win
-   * per qualification system; otherwise the university-wide defaults for the
-   * programme's level apply.
-   */
-  activeSetsForProgramme(programme: string | null): AdmissionRuleSet[] {
-    const row = programme
-      ? (this.db.prepare("SELECT level FROM programmes WHERE code = ?").get(programme.toUpperCase()) as { level?: string } | undefined)
-      : undefined;
-    const level = (row?.level ?? "degree") as CourseLevel;
-    const base = this.listRuleSets({ programme: null, status: "active" }).filter((s) => s.level === level);
-    const course = programme ? this.listRuleSets({ programme: programme.toUpperCase(), status: "active" }) : [];
-    const merged = new Map<string, AdmissionRuleSet>();
-    for (const s of base) merged.set(s.system, s);
-    for (const s of course) merged.set(s.system, s);
-    for (const s of merged.values()) s.nodes = this.getRuleTree(s.id);
-    return [...merged.values()];
-  }
-
-  /** The draft set for editing ( programme | level | system ), if any. */
-  getDraftSet(programme: string | null, level: CourseLevel, system: string): AdmissionRuleSet | undefined {
-    const r = programme === null
-      ? this.db.prepare("SELECT * FROM admission_rules WHERE programme IS NULL AND level = ? AND system = ? AND status = 'draft'").get(level, system)
-      : this.db.prepare("SELECT * FROM admission_rules WHERE programme = ? AND level = ? AND system = ? AND status = 'draft'").get(programme, level, system);
-    return r ? this.rowToSet(r as Record<string, unknown>) : undefined;
-  }
-
-  private copyNodes(fromSetId: number, toSetId: number): void {
-    const flat = this.getRuleSetNodes(fromSetId);
-    const idMap = new Map<number, number>();
-    const insert = this.db.prepare(
-      "INSERT INTO admission_rule_nodes (set_id, parent_id, kind, logic, field, subject, comparator, value, position) VALUES (?,?,?,?,?,?,?,?,?)"
-    );
-    // First pass: create rows with parent NULL; second pass: relink parents.
-    for (const n of flat) {
-      const res = insert.run(toSetId, null, n.kind, n.logic ?? null, n.field ?? null, n.subject ?? null, n.comparator ?? ">=", n.value ?? null, n.position ?? 0);
-      idMap.set(n.id!, Number(res.lastInsertRowid));
-    }
-    const relink = this.db.prepare("UPDATE admission_rule_nodes SET parent_id = ? WHERE id = ?");
-    for (const n of flat) {
-      const pid = n.parent_id;
-      const newParent = typeof pid === "number" ? idMap.get(pid) : undefined;
-      const newSelf = idMap.get(n.id!);
-      if (newParent !== undefined && newSelf !== undefined) relink.run(newParent, newSelf);
-    }
-  }
-
-  /**
-   * Get (or create) the editable draft for one route. Creating copies the
-   * currently active rules so staff always edit a full, working set — the
-   * ACTIVE set keeps judging applicants until the draft is activated.
-   */
-  ensureDraftSet(programme: string | null, level: CourseLevel, system: AdmissionSystem, user: string): AdmissionRuleSet {
-    const existing = this.getDraftSet(programme, level, system);
-    if (existing) return existing;
-    const active = this.listRuleSets({ programme, status: "active", system }).find((s) => s.level === level);
-    const nextVersion = active ? active.version + 1 : 1;
-    const res = this.db
-      .prepare("INSERT INTO admission_rules (programme, level, system, version, status, created_by) VALUES (?,?,?,?, 'draft', ?)")
-      .run(programme, level, system, nextVersion, user);
-    const id = Number(res.lastInsertRowid);
-    if (active) this.copyNodes(active.id, id);
-    return this.getRuleSet(id)!;
-  }
-
-  addRuleNode(setId: number, parentId: number | null, kind: "group" | "condition", logic?: "AND" | "OR" | "NOT"): number {
-    const pos = (this.db
-      .prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM admission_rule_nodes WHERE set_id = ? AND parent_id IS ?")
-      .get(setId, parentId) as { p: number }).p;
-    const res = this.db
-      .prepare(
-        "INSERT INTO admission_rule_nodes (set_id, parent_id, kind, logic, field, comparator, position) VALUES (?,?,?,?,?,?,?)"
-      )
-      .run(setId, parentId, kind, kind === "group" ? (logic ?? "AND") : null, kind === "condition" ? "mean_grade" : null, kind === "condition" ? ">=" : null, pos);
-    return Number(res.lastInsertRowid);
-  }
-
-  updateRuleNode(nodeId: number, patch: Partial<Pick<RuleNode, "logic" | "field" | "subject" | "comparator" | "value">>): void {
-    const cur = this.db.prepare("SELECT logic, field, subject, comparator, value FROM admission_rule_nodes WHERE id = ?").get(nodeId) as
-      | { logic: string | null; field: string | null; subject: string | null; comparator: string; value: string | null }
-      | undefined;
-    if (!cur) return;
-    this.db
-      .prepare("UPDATE admission_rule_nodes SET logic = ?, field = ?, subject = ?, comparator = ?, value = ? WHERE id = ?")
-      .run(
-        patch.logic ?? cur.logic,
-        patch.field ?? cur.field,
-        patch.subject !== undefined ? patch.subject : cur.subject,
-        patch.comparator ?? cur.comparator,
-        patch.value !== undefined ? patch.value : cur.value,
-        nodeId
-      );
-  }
-
-  moveRuleNode(nodeId: number, parentId: number | null): void {
-    this.db.prepare("UPDATE admission_rule_nodes SET parent_id = ? WHERE id = ?").run(parentId, nodeId);
-  }
-
-  deleteRuleNode(nodeId: number): void {
-    // FK ON DELETE CASCADE handles descendants.
-    this.db.prepare("DELETE FROM admission_rule_nodes WHERE id = ?").run(nodeId);
-  }
-
-  /** The rule set that owns a node (any status), or undefined. */
-  ruleNodeSet(nodeId: number): AdmissionRuleSet | undefined {
-    const row = this.db
-      .prepare("SELECT set_id FROM admission_rule_nodes WHERE id = ?")
-      .get(nodeId) as { set_id: number } | undefined;
-    return row ? this.getRuleSet(Number(row.set_id)) : undefined;
-  }
-
-  /**
-   * True only when the node belongs to the DRAFT set for (programme, level,
-   * system). The draft-flow routes must route writes through this: a raw
-   * node id from a form body must not reach an ACTIVE or RETIRED set
-   * (published rules change only via draft → activate) or another course's
-   * set (a tampered or stale `node=` must never cross courses).
-   */
-  private nodeInDraftSet(nodeId: number, programme: string | null, level: CourseLevel, system: AdmissionSystem): boolean {
-    const set = this.ruleNodeSet(nodeId);
-    return (
-      !!set &&
-      set.status === "draft" &&
-      (set.programme ?? null) === (programme ?? null) &&
-      set.level === level &&
-      set.system === system
-    );
-  }
-
-  /** updateRuleNode, refused (false) unless the node is in the target's draft. */
-  updateRuleNodeIfDraft(
-    nodeId: number,
-    programme: string | null,
-    level: CourseLevel,
-    system: AdmissionSystem,
-    patch: Partial<Pick<RuleNode, "logic" | "field" | "subject" | "comparator" | "value">>
-  ): boolean {
-    if (!this.nodeInDraftSet(nodeId, programme, level, system)) return false;
-    this.updateRuleNode(nodeId, patch);
-    return true;
-  }
-
-  /** deleteRuleNode, refused (false) unless the node is in the target's draft. */
-  deleteRuleNodeIfDraft(nodeId: number, programme: string | null, level: CourseLevel, system: AdmissionSystem): boolean {
-    if (!this.nodeInDraftSet(nodeId, programme, level, system)) return false;
-    this.deleteRuleNode(nodeId);
-    return true;
-  }
-
-  /** Activate a draft: it becomes the new version; the old active retires. */
-  activateDraftSet(setId: number): AdmissionRuleSet | undefined {
-    const set = this.getRuleSet(setId);
-    if (!set || set.status !== "draft") return undefined;
-    const tx = this.db.transaction(() => {
-      this.db
-        .prepare(
-          `UPDATE admission_rules SET status = 'retired'
-           WHERE status = 'active' AND system = ? AND level = ?
-             AND (programme IS ?)`
-        )
-        .run(set.system, set.level, set.programme);
-      this.db.prepare("UPDATE admission_rules SET status = 'active', created_at = datetime('now') WHERE id = ?").run(setId);
-    });
-    tx();
-    return this.getRuleSet(setId);
-  }
-
-  discardDraftSet(setId: number): void {
-    const set = this.getRuleSet(setId);
-    if (!set || set.status !== "draft") return;
-    this.db.prepare("DELETE FROM admission_rules WHERE id = ?").run(setId); // cascades nodes
-  }
-
-  /** Freeze the current rule sets onto the applicant on first evaluation. */
-  freezeAdmissionSets(a: ApplicantRow): AdmissionRuleSet[] {
-    if (a.admission_rules_frozen) {
-      try {
-        return JSON.parse(a.admission_rules_frozen) as AdmissionRuleSet[];
-      } catch {
-        this.audit(a.id, "system", "admission_rules_snapshot_corrupt", "frozen rule sets failed to parse — re-frozen from live rules; human should verify");
-      }
-    }
-    const sets = this.activeSetsForProgramme(a.programme);
-    // E1: record WHEN the goalposts froze — audit/replay needs a real time,
-    // and the FIRST freeze wins (a later corrupt re-parse must not move it).
-    this.db
-      .prepare("UPDATE applicants SET admission_rules_frozen = ?, admission_rules_frozen_at = COALESCE(admission_rules_frozen_at, ?) WHERE id = ?")
-      .run(JSON.stringify(sets), new Date().toISOString(), a.id);
-    return sets;
-  }
 
   // ── Evaluations ────────────────────────────────────────────────────────────
 
   insertEvaluation(row: {
     applicant_id: number;
     set_id: number | null;
-    programme: string | null;
+    /** The case type this evaluation ran against (column renamed by C2). */
+    case_type_code: string | null;
     system: string | null;
     set_version: number | null;
     result: string;
@@ -3212,10 +2903,10 @@ export class Repo {
   }): number {
     const res = this.db
       .prepare(
-        `INSERT INTO evaluations (applicant_id, set_id, programme, system, set_version, result, routing, reason, reason_code, detail, rule_snapshot)
+        `INSERT INTO evaluations (applicant_id, set_id, case_type_code, system, set_version, result, routing, reason, reason_code, detail, rule_snapshot)
          VALUES (?,?,?,?,?,?,?,?,?,?,?)`
       )
-      .run(row.applicant_id, row.set_id, row.programme, row.system, row.set_version, row.result, row.routing, row.reason, row.reason_code, row.detail, row.rule_snapshot);
+      .run(row.applicant_id, row.set_id, row.case_type_code, row.system, row.set_version, row.result, row.routing, row.reason, row.reason_code, row.detail, row.rule_snapshot);
     return Number(res.lastInsertRowid);
   }
 
@@ -3391,21 +3082,21 @@ export class Repo {
   // ── Case routing helpers (round 19) ──────────────────────────────────────
 
   /**
-   * Open cases for a programme that have NO human owner yet. When a course
-   * owner changes, these can flow to the new owner automatically — but a
-   * case somebody already picked up is never re-routed behind their back.
+   * Open cases of one case type that have NO human owner yet. When ownership
+   * changes these can flow to the new owner automatically — but a case somebody
+   * already picked up is never re-routed behind their back.
    */
-  openUnassignedCasesForProgramme(programme: string, demo: 0 | 1): ApplicantRow[] {
-    // Realm-scoped: an owner change in the live console must never re-route
-    // demo cases (and vice versa) — programme codes are shared across realms.
+  openUnassignedCasesForCaseType(caseTypeCode: string, demo: 0 | 1): ApplicantRow[] {
+    // Realm-scoped: an ownership change in the live console must never re-route
+    // demo cases (and vice versa) — case-type codes are shared across realms.
     const rows = this.db
       .prepare(
         `SELECT * FROM applicants
-         WHERE programme = ? AND assigned_to IS NULL AND lifecycle <> 'completed'
+         WHERE case_type_code = ? AND assigned_to IS NULL AND lifecycle <> 'completed'
            AND IFNULL(demo, 0) = ?
          ORDER BY id`
       )
-      .all(programme, demo) as ApplicantRow[];
+      .all(caseTypeCode, demo) as ApplicantRow[];
     return rows;
   }
 

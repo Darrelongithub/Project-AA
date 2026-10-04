@@ -7,6 +7,8 @@ import type { GmailClient } from "./gmailClient";
 import type { EmailSender, SendExtras } from "../pipeline/adapters";
 
 export class GmailSender implements EmailSender {
+  /** This is the sender that actually reaches Gmail's API. */
+  readonly delivers = true;
   constructor(private gmail: Pick<GmailClient, "sendReply">) {}
   async send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void> {
     await this.gmail.sendReply(to, subject, body, threadId, extras);

@@ -17,7 +17,7 @@ import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
 import { createApp } from "../src/web/server";
 import { hashPassword } from "../src/util/password";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization } from "./helpers";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
 
@@ -26,6 +26,7 @@ let server: Server;
 let base = "";
 let org1: { cookie: string; csrf: string };
 let org2: { cookie: string; csrf: string };
+let org1Id = 0;
 let org2Id = 0;
 
 function fakePdf(): Buffer {
@@ -56,10 +57,14 @@ async function post(
 beforeAll(async () => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.createStaff("admin", "Org One Admin", hashPassword("admin123"), "admin");
-  const org = repo.createOrganization({ name: "Lanterne College", refPrefix: "LC" });
-  org2Id = org.id;
-  repo.createStaff("admin2", "Org Two Admin", hashPassword("admin2pass99"), "admin", false, org.id);
+  // Both tenants exist BEFORE any account is created, and every account is
+  // told which one it belongs to — an account created before its organization
+  // silently resolves to whichever tenant happens to exist first.
+  configureTestOrganization(repo); // organization 1, fully configured
+  org1Id = repo.getOrganization(1)!.id;
+  org2Id = repo.createOrganization({ name: "Hillcrest Cooperative", refPrefix: "HLC" }).id;
+  repo.createStaff("admin", "Org One Admin", hashPassword("admin123"), "admin", false, org1Id);
+  repo.createStaff("admin2", "Org Two Admin", hashPassword("admin2pass99"), "admin", false, org2Id);
 
   const sender = new MockSender();
   const ctx: PipelineContext = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
@@ -82,7 +87,7 @@ afterAll(() => {
 
 describe("attachment-set upload is org-scoped", () => {
   it("an org-2 admin cannot inject files into an org-1 pack", async () => {
-    const set1 = repo.createAttachmentSet(1, "Org One Pack", "");
+    const set1 = repo.createAttachmentSet(org1Id, "Org One Pack", "");
     const res = await post(org2, `/config/attachment-sets/upload?set=${set1.id}&filename=evil.pdf`, {}, fakePdf());
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("Unknown attachment set.");
@@ -100,7 +105,7 @@ describe("attachment-set upload is org-scoped", () => {
 
 describe("workflow rules are org-scoped", () => {
   it("an org-2 admin cannot toggle an org-1 rule", async () => {
-    const rule = repo.db.prepare("SELECT id, enabled FROM workflow_rules WHERE organization_id = 1 ORDER BY id LIMIT 1").get() as { id: number; enabled: number };
+    const rule = repo.db.prepare("SELECT id, enabled FROM workflow_rules WHERE organization_id = ? ORDER BY id LIMIT 1").get(org1Id) as { id: number; enabled: number };
     expect(rule).toBeTruthy();
     const res = await post(org2, "/config/workflow-rules/toggle", { id: String(rule.id) });
     expect(res.status).toBe(302);
@@ -109,23 +114,23 @@ describe("workflow rules are org-scoped", () => {
   });
 
   it("an org-2 admin cannot hang a rule on an org-1 CaseType", async () => {
-    const ct1 = repo.getCaseType("GENERAL", 1)!;
-    const before = repo.db.prepare("SELECT COUNT(*) AS n FROM workflow_rules WHERE organization_id = 1").get() as { n: number };
+    const ct1 = repo.getCaseType("SERVICE_REQUEST", org1Id)!;
+    const before = repo.db.prepare("SELECT COUNT(*) AS n FROM workflow_rules WHERE organization_id = ?").get(org1Id) as { n: number };
     const res = await post(org2, "/config/workflow-rules/save", {
       name: "Foreign rule", kind: "intake", case_type_id: String(ct1.id), position: "9",
       cond_field_0: "text", cond_value_0: "free form", decision: "create", audit_code: "rule_foreign", fallback: "human_draft",
     });
     expect(res.status).toBe(302);
     expect(res.headers.get("location") || "").toContain("another%20organization");
-    const after = repo.db.prepare("SELECT COUNT(*) AS n FROM workflow_rules WHERE organization_id = 1").get() as { n: number };
+    const after = repo.db.prepare("SELECT COUNT(*) AS n FROM workflow_rules WHERE organization_id = ?").get(org1Id) as { n: number };
     expect(after.n).toBe(before.n);
   });
 
   it("own-org rules still save and toggle", async () => {
-    const ct2 = repo.createCaseType(org2Id, { code: "LC-INTAKE", name: "Lanterne Intake", category: "general" });
+    const ct2 = repo.createCaseType(org2Id, { code: "HLC_INTAKE", name: "Hillcrest intake", category: "general" });
     const res = await post(org2, "/config/workflow-rules/save", {
       name: "Own intake rule", kind: "intake", case_type_id: String(ct2.id), position: "0",
-      cond_field_0: "text", cond_value_0: "apply", decision: "create", audit_code: "rule_lc_intake", fallback: "human_draft",
+      cond_field_0: "text", cond_value_0: "help", decision: "create", audit_code: "rule_hlc_intake", fallback: "human_draft",
     });
     expect(res.status).toBe(302);
     expect(res.headers.get("location") || "").toContain("saved%20and%20enabled");

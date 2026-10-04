@@ -1,19 +1,5 @@
-/**
- * Intake hotwords (round 9) — which emails become application cases.
- *
- * The inbox receives more than applications: service promos, newsletters,
- * the odd stray message. A case (reference number, queue entry, auto-reply)
- * is only worth opening for admissions intake. The gate is two-pronged:
- *   1. the email carries one of the configured hotwords (subject or body),
- *   2. OR it targets an applicant we already know — a quoted reference
- *      number or a known sender (conversation continuity).
- * Everything else is PARKED, not dropped: it is kept in the Mail window
- * without an applicant, so a human can still find it.
- */
-
-/** Sensible defaults for a Kenyan university admissions inbox. */
-export const DEFAULT_INTAKE_HOTWORDS =
-  "application, admission, admissions, apply, applicant, prospective, enrol, enroll, matric, intake, prospectus, readmission, upgrade, transfer, entry requirements";
+/** Intake triggers are configured by the organization; no domain comes preselected. */
+export const DEFAULT_INTAKE_HOTWORDS = "";
 
 const ESC_RE = /[.*+?^${}()|[\]\\]/g;
 

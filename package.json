@@ -2,9 +2,9 @@
   "name": "email-sorter",
   "version": "0.1.0",
   "private": true,
-  "description": "Document-intake email triage: deterministic rules engine (Green/Orange/Red), tiered PDF extraction (pdf-parse -> Tesseract -> Gemini), human queue for anything uncertain. Never makes the final admission decision.",
+  "description": "General-purpose document-intake console: tenant-configured case types, deterministic rules engine (Green/Orange/Red), tiered PDF extraction (pdfjs -> Tesseract -> Gemini), human queue for anything uncertain. Outcomes are recorded by people, never by the machine.",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').copyFileSync('src/extraction/pdfjs-esm.mjs','dist/src/extraction/pdfjs-esm.mjs')\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "simulate": "tsx src/cli/simulate.ts",
@@ -14,6 +14,8 @@
     "escalate": "tsx src/cli/escalate.ts",
     "followups": "tsx src/cli/followups.ts",
     "retain": "tsx src/cli/retain.ts",
+    "archive:migrate": "tsx src/cli/archiveMigrate.ts",
+    "archive:decrypt": "tsx src/cli/archiveDecrypt.ts",
     "backup": "tsx src/cli/backup.ts",
     "restore": "tsx src/cli/restore.ts",
     "start": "node dist/src/cli/serve.js",
@@ -28,8 +30,8 @@
     "canvas": "^3.2.3",
     "dotenv": "^16.4.5",
     "express": "^4.22.3",
-    "googleapis": "^144.0.0",
-    "pdfjs-dist": "^3.11.174",
+    "googleapis": "^182.0.0",
+    "pdfjs-dist": "^6.3.289",
     "pdfkit": "^0.15.0",
     "sharp": "^0.35.4",
     "tesseract.js": "^5.1.1"
@@ -45,6 +47,11 @@
     "vitest": "^2.1.1"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
+  },
+  "overrides": {
+    "pdfjs-dist": {
+      "canvas": "$canvas"
+    }
   }
 }

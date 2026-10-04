@@ -16,25 +16,24 @@ import type { PipelineContext } from "../pipeline/adapters";
 import type { Adapters } from "../pipeline/adapters";
 import type { ApplicantRow, LifecycleStage, Permission } from "../types";
 import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS, type EmailCategory } from "../types";
-import { checklistText, renderTemplate } from "../drafting";
+import { checklistText, inspectTemplate, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import { fillSlots } from "../documents/matrix";
-import { autoAdmitPolicy, evaluateAdmission, evaluateCaseTypeRules } from "../admissions/evaluate";
-import { ADMISSION_SYSTEMS, DOC_TYPES, type AdmissionSystem, type DocType, type RuleField } from "../types";
+import { validateRuleTree } from "../rules/caseType";
+import { evaluateStoredCase } from "../rules/evaluate";
 import type { RuleAction, RuleCondition, WorkflowRule } from "../rules/workflow";
 import { describeRule, firstMatchingRule, rulesForCaseScope, ruleMatches } from "../rules/workflow";
-import { categorizeEmail } from "../categorize";
+import { categorizeEmail, geminiCategoryLabeler } from "../categorize";
 
-type LegacyAcademicLevel = "degree" | "diploma" | "certificate" | "masters" | "phd";
 import {
-  accountPage, admissionsPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, mailPage, mailThreadPage, resetPasswordPage, setupPage,
-  replayPage, settingsPage, staffPage, templatesPage, intakeTestPage,
+  accountPage, casesPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, mailPage, mailThreadPage, resetPasswordPage, setupPage,
+  replayPage, securityConsolePage, settingsPage, staffPage, templatesPage, intakeTestPage,
 } from "./pages";
-import { TEMPLATE_DEFAULTS } from "../db/seed";
+import { TEMPLATE_DEFAULTS, seedStarterTemplates } from "../db/seed";
 import { processEmail } from "../pipeline";
 import { makeTextPdf } from "../simulation/pdfFactory";
 import { avatar, layout } from "./views";
-import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, parseCookies, requireLogin, requireRole, sessionCookie } from "./auth";
+import { authMiddleware, clearSessionCookie, csrfCheck, loginAttempt, requireLogin, requireRole, sessionCookie } from "./auth";
 import { GmailClient } from "../ingestion/gmailClient";
 import { BudgetedVisionAdapter, GeminiVisionAdapter, MockVisionAdapter } from "../extraction/gemini";
 import { GeminiWatcher, makeHeuristicWatcher } from "../watcher";
@@ -45,10 +44,7 @@ import { normalizeUsername, USERNAME_RE } from "../util/username";
 import { gmailRedirectUri } from "./oauth";
 import { LoginThrottle } from "./throttle";
 import { emailBanner, organizationName, organizationSender, organizationTheme } from "../branding";
-import { PACK_DIR, PACK_SLOTS, type PackFile } from "../pack";
-import { EXAM_SYSTEMS } from "../config";
-import * as fs from "fs";
-import * as path from "path";
+import type { PackFile } from "../pack";
 
 export interface WebDeps {
   repo: Repo;
@@ -68,6 +64,8 @@ export function createApp(deps: WebDeps): Express {
   const { repo, ctx, gmailSync, gmailBackfill, gmailConfigured } = deps;
   const app = express();
   const organizationId = (req?: Request): number => req?.staff?.organization_id ?? 1;
+  /** The acting staff member's own tenant — the only one configuration writes may touch. */
+  const ownOrganizationId = (req: Request): number => organizationId(req);
   const instName = (req?: Request): string => organizationName(repo, organizationId(req));
   // PPR P1-5: every outgoing send carries the organization's sender identity
   // (From display name / Reply-To) — one wrapper so no send path can forget it.
@@ -106,7 +104,20 @@ export function createApp(deps: WebDeps): Express {
     } : undefined,
     gmailConfigured: Boolean(gmailConfigured) && repo.getSetting("gmail_disabled", "") !== "1",
     gmailAddress: deps.gmailAddress,
+    // Honesty about delivery: MockSender records, GmailSender sends. Only an
+    // explicit "does not deliver" raises the banner (a test double says nothing).
+    // Defensive: a context built for a test may pass no sender at all.
+    mailDelivers: ctx.adapters?.sender?.delivers,
+    // Is a model credential reachable at all (console secret or environment)?
+    geminiAvailable: geminiCredentials() !== null,
   });
+
+  const settingsBack = (message: string) => `/settings?msg=${encodeURIComponent(message)}#connections`;
+  const requireCase = (req: Request, res: Response, id: number): ApplicantRow | null => {
+    const row = repo.getCase(id);
+    if (!row || !repo.applicantVisibleTo(req.staff!, row)) { res.status(404).send("Case not found."); return null; }
+    return row;
+  };
 
   const backToCase = (id: string | number, msg: string) => `/case/${id}?msg=${encodeURIComponent(msg)}`;
 
@@ -219,6 +230,10 @@ export function createApp(deps: WebDeps): Express {
     for (const [k, exp] of setupTokens) if (exp < Date.now()) setupTokens.delete(k);
     return t;
   };
+  const setNoStore = (res: Response): void => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+  };
 
   app.use((req, res, next) => {
     if (repo.staffCount() === 0 && req.path !== "/setup" && req.path !== "/healthz" && req.path !== "/theme") {
@@ -230,24 +245,33 @@ export function createApp(deps: WebDeps): Express {
 
   app.get("/setup", (req, res) => {
     if (repo.staffCount() > 0) {
-      res.status(404).send("Not found");
+      res.redirect(`/login?msg=${encodeURIComponent("Setup is already complete. Sign in with your account.")}`);
       return;
     }
+    setNoStore(res);
     res.send(setupPage(newSetupToken(), undefined, req.theme, authName()));
   });
 
   app.post("/setup", (req, res) => {
     if (repo.staffCount() > 0) {
-      res.status(404).send("Not found");
+      // Setup may have succeeded even if the browser lost its session cookie or
+      // a double-submit raced the first POST. Never create another admin here;
+      // guide the owner to sign in instead of showing a confusing 404.
+      res.redirect(`/login?msg=${encodeURIComponent("Setup is already complete. Sign in with your account.")}`);
       return;
     }
-    const fail = (msg: string) => res.status(200).send(setupPage(newSetupToken(), msg, req.theme, authName()));
+    const fail = (msg: string) => {
+      setNoStore(res);
+      return res.status(200).send(setupPage(newSetupToken(), msg, req.theme, authName()));
+    };
     const token = String(req.body._setup ?? "");
     const exp = setupTokens.get(token);
     setupTokens.delete(token);
     if (!exp || exp < Date.now()) return fail("That setup link expired — reload the page and try again.");
     // M-2: one shared rule — normalizeUsername() + USERNAME_RE — used by
     // /setup, /staff/add and /account/username alike.
+    const organizationName = String(req.body.organization_name ?? "").trim();
+    if (organizationName.length < 2 || organizationName.length > 120) return fail("Organization name must be 2–120 characters.");
     const username = normalizeUsername(req.body.username);
     const displayName = String(req.body.display_name ?? "").trim();
     const password = String(req.body.password ?? "");
@@ -257,24 +281,43 @@ export function createApp(deps: WebDeps): Express {
     if (password.length < 8) return fail("Password must be at least 8 characters.");
     if (password !== confirm) return fail("The passwords do not match.");
     if (repo.getStaffByUsername(username)) return fail("That username is already taken.");
-    repo.createStaff(username, displayName, hashPassword(password), "admin");
-    const created = repo.getStaffByUsername(username);
-    if (!created) return fail("Could not create the account — please try again.");
-    const session = repo.createSession(created.id);
-    repo.audit(null, username, "first_run_setup", "Administrator account created on first run");
-    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies));
+    const session = repo.db.transaction(() => {
+      if (repo.staffCount() !== 0) throw new Error("Setup was already completed");
+      const organization = repo.createOrganization({ name: organizationName });
+      // Neutral starter reply wording, owned by this organization and editable
+      // or resettable afterwards. Without it no automated reply can render at
+      // all — the pipeline would have nothing to say. Case types, checklists,
+      // rules and files stay blank: those are the tenant's to describe.
+      seedStarterTemplates(repo, organization.id);
+      repo.createStaff(username, displayName, hashPassword(password), "admin", false, organization.id);
+      const created = repo.getStaffByUsername(username)!;
+      repo.audit(null, username, "first_run_setup", "Blank organization and administrator created together (starter reply templates included)");
+      return repo.createSession(created.id);
+    })();
+    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies, partitionedCookies));
     res.redirect("/");
   });
 
-  // Login-CSRF defence (double-submit): the sign-in form echoes a token the
-  // server also sets as a cookie. A cross-site forged login POST cannot read
-  // that cookie, so it cannot supply the matching field. Set `COOKIE_SECURE=1`
-  // behind TLS so the session cookie is never sent over plain HTTP.
+  // The preview may be embedded cross-site. Secure cookie deployments can
+  // opt into CHIPS partitioning so the session survives browsers that block
+  // unpartitioned third-party cookies. Local HTTP keeps the Lax defaults.
   const secureCookies = process.env.COOKIE_SECURE === "1";
-  const newLoginCsrf = (res: Response): string => {
-    const t = crypto.randomBytes(16).toString("hex");
-    res.setHeader("Set-Cookie", `lcsrf=${t}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600`);
-    return t;
+  const partitionedCookies = secureCookies && process.env.COOKIE_PARTITIONED === "1";
+
+  // Login-CSRF tokens are one-time, server-side values in the form, not a
+  // double-submit cookie. This avoids browsers/proxies dropping the CSRF cookie
+  // in an embedded preview, while cross-site forms still cannot read the token.
+  const loginCsrfTokens = new Map<string, number>();
+  const newLoginCsrf = (): string => {
+    const token = crypto.randomBytes(24).toString("hex");
+    loginCsrfTokens.set(token, Date.now() + 10 * 60_000);
+    for (const [key, expires] of loginCsrfTokens) if (expires < Date.now()) loginCsrfTokens.delete(key);
+    return token;
+  };
+  const consumeLoginCsrf = (token: string): boolean => {
+    const expires = loginCsrfTokens.get(token);
+    loginCsrfTokens.delete(token);
+    return expires !== undefined && expires >= Date.now();
   };
 
   app.get("/login", (req, res) => {
@@ -282,8 +325,9 @@ export function createApp(deps: WebDeps): Express {
       res.redirect("/setup");
       return;
     }
+    setNoStore(res);
     // ?msg= carries the one success notice (password just reset via code).
-    res.send(loginPage(undefined, req.theme, authName(), newLoginCsrf(res), req.query.msg ? String(req.query.msg) : undefined));
+    res.send(loginPage(undefined, req.theme, authName(), newLoginCsrf(), req.query.msg ? String(req.query.msg) : undefined));
   });
 
   /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
@@ -319,26 +363,28 @@ export function createApp(deps: WebDeps): Express {
   app.post("/login", (req, res) => {
     const ip = req.ip ?? "?";
     if (loginBlocked(ip)) {
-      res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, authName(), newLoginCsrf(res)));
+      setNoStore(res);
+      res.status(429).send(loginPage("Too many failed sign-ins from this address — please wait a minute.", req.theme, authName(), newLoginCsrf()));
       return;
     }
-    // Login-CSRF: the token the page rendered must come back in the body AND
-    // match the cookie. A mismatch means the form was forged or stale.
+    // The one-time form token is checked server-side. Multiple open login tabs
+    // remain valid independently; missing/expired/forged tokens fail closed.
     const provided = String(req.body._lcsrf ?? "");
-    const cookieToken = parseCookies(req.headers.cookie)["lcsrf"] ?? "";
-    if (!provided || provided !== cookieToken) {
-      res.status(403).send(loginPage("That sign-in page expired — please try again.", req.theme, authName(), newLoginCsrf(res)));
+    if (!consumeLoginCsrf(provided)) {
+      setNoStore(res);
+      res.status(403).send(loginPage("That sign-in page expired — please try again.", req.theme, authName(), newLoginCsrf()));
       return;
     }
     const staff = loginAttempt(repo, String(req.body.username ?? ""), String(req.body.password ?? ""));
     if (!staff) {
       loginRecordFail(ip);
-      res.status(401).send(loginPage("Invalid username or password.", req.theme, authName(), newLoginCsrf(res)));
+      setNoStore(res);
+      res.status(401).send(loginPage("Invalid username or password.", req.theme, authName(), newLoginCsrf()));
       return;
     }
     const session = repo.createSession(staff.id);
     repo.audit(null, staff.username, "staff_login", "");
-    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies));
+    res.setHeader("Set-Cookie", sessionCookie(session.token, 8 * 3600, secureCookies, partitionedCookies));
     res.redirect("/");
   });
 
@@ -346,7 +392,7 @@ export function createApp(deps: WebDeps): Express {
   // otherwise a cross-site 1-pixel form could sign staff out mid-crisis.
   app.post("/logout", csrfCheck, (req, res) => {
     if (req.sessionId) repo.deleteSession(req.sessionId);
-    res.setHeader("Set-Cookie", clearSessionCookie());
+    res.setHeader("Set-Cookie", clearSessionCookie(secureCookies, partitionedCookies));
     res.redirect("/login");
   });
 
@@ -361,21 +407,27 @@ export function createApp(deps: WebDeps): Express {
   const resetThrottle = new LoginThrottle({ windowMs: 10 * 60_000, maxFails: 5 });
 
   app.get("/reset-password", (req, res) => {
-    res.send(resetPasswordPage(undefined, req.theme, authName(), newLoginCsrf(res)));
+    setNoStore(res);
+    res.send(resetPasswordPage(undefined, req.theme, authName(), newLoginCsrf()));
   });
 
   app.post("/reset-password", (req, res) => {
     const ip = req.ip ?? "?";
     if (!resetThrottle.allowed(ip)) {
-      return res.status(429).send(resetPasswordPage("Too many reset attempts from this address — please wait a few minutes.", req.theme, authName(), newLoginCsrf(res)));
+      setNoStore(res);
+      return res.status(429).send(resetPasswordPage("Too many reset attempts from this address — please wait a few minutes.", req.theme, authName(), newLoginCsrf()));
     }
-    // Same anonymous double-submit CSRF as /login.
+    // The same one-time server-side form token used by /login works without
+    // relying on an anonymous cookie in the hosted preview.
     const provided = String(req.body._lcsrf ?? "");
-    const cookieToken = parseCookies(req.headers.cookie)["lcsrf"] ?? "";
-    if (!provided || provided !== cookieToken) {
-      return res.status(403).send(resetPasswordPage("That page expired — please try again.", req.theme, authName(), newLoginCsrf(res)));
+    if (!consumeLoginCsrf(provided)) {
+      setNoStore(res);
+      return res.status(403).send(resetPasswordPage("That page expired — please try again.", req.theme, authName(), newLoginCsrf()));
     }
-    const refuse = (m: string) => res.send(resetPasswordPage(m, req.theme, authName(), newLoginCsrf(res)));
+    const refuse = (m: string) => {
+      setNoStore(res);
+      return res.send(resetPasswordPage(m, req.theme, authName(), newLoginCsrf()));
+    };
     const GENERIC = "We couldn't verify that username and code. Check both, or ask your admin for a fresh code.";
     const username = String(req.body.username ?? "").trim();
     const code = String(req.body.code ?? "").trim();
@@ -467,24 +519,12 @@ export function createApp(deps: WebDeps): Express {
         search: req.query.q ? String(req.query.q) : undefined,
         queue: req.query.queue ? String(req.query.queue) : undefined,
         sub: req.query.sub ? String(req.query.sub) : undefined,
-        programme: req.query.programme ? String(req.query.programme) : undefined,
+        // The public filter parameter is case_type; it resolves against
+        // applicants.case_type_code (renamed from `programme` by C2).
+        caseType: req.query.case_type ? String(req.query.case_type) : undefined,
         intake: req.query.intake ? String(req.query.intake) : undefined,
       })
     );
-  });
-
-  // ── Case file ────────────────────────────────────────────────────────────
-
-  // ── Admissions: the whole pipeline, split into its levels ─────────────────
-  // Every gauge on the dashboard opens this page at its own stage; the stage
-  // tabs show live counts. Staff act on cases right here.
-  // PPR P0-2: the whole section exists only when an education-module profile
-  // is enabled for this organization. Old bookmarks redirect, never break.
-  app.get("/admissions", requireLogin, (req, res) => {
-    if (!repo.hasEducationModule(organizationId(req))) {
-      return res.redirect("/applicants?msg=" + encodeURIComponent("Admissions is off — this organization has no education-module profile."));
-    }
-    res.send(admissionsPage(c(req), String(req.query.stage ?? "all")));
   });
 
   // Realm guard: a case is only visible to accounts in the SAME realm —
@@ -518,14 +558,14 @@ export function createApp(deps: WebDeps): Express {
     }
     if (!a || !repo.applicantVisibleTo(req.staff!, a)) {
       res.status(403).send(layout({
-        title: "Outside your schools",
+        title: "Outside your case types",
         institution: instName(req),
         user: req.staff,
         unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.caseScopeFor(req.staff!)),
         csrf: req.csrfToken,
         content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
-          <h1>This case is outside your assigned schools</h1>
-          <p class="sub">You can only open cases that belong to a school you handle. If this should be yours, ask an administrator to update your visibility scope.</p>
+          <h1>This case is outside your assigned case types</h1>
+          <p class="sub">You can only open cases whose case type you handle. If this should be yours, ask an administrator to update your visibility scope.</p>
           <p><a class="btn" href="/applicants">← Back to your queues</a></p>
         </div>`,
       }));
@@ -654,7 +694,7 @@ export function createApp(deps: WebDeps): Express {
         // INTO a stage whose list is not yet satisfied is refused with the
         // missing items named — staff decide what to collect; the console
         // refuses to pretend the stage is ready. Empty list (the default) =
-        // no enforcement; the education profile keeps its generated matrix
+        // no enforcement; the generic profile keeps its generated matrix
         // as the richer requirements source.
         const stageCfg = repo.caseTypeForCase(id)?.stages?.find((s) => s.id === to);
         const requires = stageCfg?.requires ?? [];
@@ -776,8 +816,7 @@ export function createApp(deps: WebDeps): Express {
     if (!kind || kind === "none" || resolved.issues.some((i) => i.includes("does not exist"))) {
       return res.redirect(backToCase(id, "Unknown attachment set — nothing sent."));
     }
-    const isAdmission = kind === "admission";
-    const tpl = repo.getTemplate(isAdmission ? "admission_letter" : "docs_request", organizationId(req));
+    const tpl = repo.getTemplate("docs_request", organizationId(req));
     if (!tpl) return res.redirect(backToCase(id, "Template missing — nothing sent."));
     const rendered = renderTemplate(tpl.subject, tpl.body, {
       ref: a.ref_number,
@@ -786,9 +825,7 @@ export function createApp(deps: WebDeps): Express {
       missingLabels: [],
       checklist: "",
       statusLabel: LIFECYCLE_LABELS[a.lifecycle],
-      programme: a.programme ? (repo.listProgrammes().find((p) => p.code === a.programme)?.name ?? a.programme) : undefined,
-      regDate: repo.getSetting("reg_date", ""),
-      orientationDates: repo.getSetting("orientation_dates", ""),
+      caseType: repo.caseTypeForCase(a.id)?.name,
     });
     const pack = resolved;
     // Missing pack files must never be a silent gap in a real send.
@@ -810,12 +847,12 @@ export function createApp(deps: WebDeps): Express {
       at: new Date().toISOString(),
       attachments: pack.files.map((f) => f.filename),
     });
-    staffAction(req, id, isAdmission ? "admission_pack_sent" : "application_pack_sent",
+    staffAction(req, id, "attachment_set_sent",
       `${pack.files.length} document(s): "${rendered.subject}"`);
     const packWarn = pack.issues.length
       ? ` ⚠ ${pack.issues.length} pack file(s) missing — see audit.`
       : "";
-    res.redirect(backToCase(id, `${isAdmission ? "Admission" : "Attachment"} set “${pack.label}” sent — ${pack.files.length} document(s) attached.${packWarn}`));
+    res.redirect(backToCase(id, `Attachment set “${pack.label}” sent — ${pack.files.length} document(s) attached.${packWarn}`));
   });
 
   // Compose: an action (e.g. "Request missing documents") or any template
@@ -835,15 +872,13 @@ export function createApp(deps: WebDeps): Express {
         presentTypes: repo.listDocuments(a.id, { activeOnly: true }).map((d) => d.document_type),
       }),
       statusLabel: LIFECYCLE_LABELS[a.lifecycle],
-      programme: a.programme ? (repo.programmeByCode(a.programme)?.name ?? a.programme) : undefined,
-      regDate: repo.getSetting("reg_date", ""),
-      orientationDates: repo.getSetting("orientation_dates", ""),
+      caseType: repo.caseTypeForCase(a.id)?.name,
     });
 
   // ── Gmail-style mail window ─────────────────────────────────────────────────
   // Every conversation (received AND sent), grouped by thread, newest first.
   // Incoming mail arrives unread; opening a conversation reads it. Scoped by
-  // school and demo realm exactly like every other case surface.
+  // case-type scope and demo realm exactly like every other case surface.
   const MAIL_FOLDERS = new Set(["inbox", "unread", "starred", "important", "sent", "all", "spam", "bin"]);
   /** Only local /mail… paths ever go into the `back` round-trip — open-redirect guard. */
   const mailBack = (raw: unknown, fallback: string): string =>
@@ -858,7 +893,7 @@ export function createApp(deps: WebDeps): Express {
     // not just the new. Invalid/missing page numbers clamp to page one.
     const pageRaw = Number(req.query.page ?? 1);
     const page = Number.isInteger(pageRaw) && pageRaw >= 1 ? pageRaw : 1;
-    const baseOpts = { schools: repo.caseScopeFor(req.staff!), demo: req.staff!.demo };
+    const baseOpts = { caseTypes: repo.caseScopeFor(req.staff!), demo: req.staff!.demo };
     const threads = repo.mailThreads({ ...baseOpts, q: q || undefined, unreadOnly, folder, page });
     const counts = repo.mailFolderCounts(baseOpts);
     const backUrl = `/mail?f=${unreadOnly ? "unread" : folder}${q ? `&q=${encodeURIComponent(q)}` : ""}`;
@@ -939,14 +974,14 @@ export function createApp(deps: WebDeps): Express {
   // chosen template, attachments recorded on the case history.
   const refuseScope = (req: Request, res: Response, backHref = "/compose", backLabel = "← Back to the composer"): void => {
     res.status(403).send(layout({
-      title: "Outside your schools",
+      title: "Outside your case types",
       institution: instName(req),
       user: req.staff,
       unread: repo.unreadCount(req.staff!.id, req.staff!.demo, repo.caseScopeFor(req.staff!)),
       csrf: req.csrfToken,
       content: `<div class="card" style="max-width:560px;margin:60px auto;text-align:center">
-        <h1>This case is outside your assigned schools</h1>
-        <p class="sub">You can only reach cases that belong to a school you handle. If this should be yours, ask an administrator to update your visibility scope.</p>
+        <h1>This case is outside your assigned case types</h1>
+        <p class="sub">You can only reach cases whose case type you handle. If this should be yours, ask an administrator to update your visibility scope.</p>
         <p><a class="btn" href="${backHref}">${backLabel}</a></p>
       </div>`,
     }));
@@ -978,7 +1013,7 @@ export function createApp(deps: WebDeps): Express {
     const scope = repo.caseScopeFor(req.staff!);
     const q = req.query.q !== undefined ? String(req.query.q).trim() : undefined;
     const matches = repo.searchApplicants({
-      q: q || undefined, demo: req.staff!.demo, schools: scope, limit: 8,
+      q: q || undefined, demo: req.staff!.demo, caseTypes: scope, limit: 8,
     });
     res.send(composeWindowPage(c(req), { matches, q, templateKey }));
   });
@@ -1074,6 +1109,8 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/case/:id/assign", requireLogin, csrfCheck, (req, res) => {
     const id = Number(req.params.id);
+    const existing = requireCase(req, res, id);
+    if (!existing) return;
     const staffId = req.body.staff_id ? Number(req.body.staff_id) : null;
     // An unknown staff id violates the assigned_to FK and would 500 —
     // validate before writing.
@@ -1081,12 +1118,11 @@ export function createApp(deps: WebDeps): Express {
       return res.redirect(backToCase(id, "Unknown staff member — not assigned."));
     }
     repo.updateApplicant(id, { assigned_to: staffId });
+    const updated = requireCase(req, res, id);
+    if (!updated) return;
     const who = staffId ? repo.getStaff(staffId)?.display_name : "nobody";
     staffAction(req, id, "case_assigned", `assigned to ${who}`);
-    if (staffId) {
-      const a = repo.getApplicant(id)!;
-      repo.notify("assignment", `${a.ref_number} assigned to you`, id, staffId);
-    }
+    if (staffId) repo.notify("assignment", `${updated.ref_number} assigned to you`, id, staffId);
     res.redirect(backToCase(id, `Assigned to ${who ?? "nobody"}.`));
   });
 
@@ -1120,124 +1156,6 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(backToCase(id, `Latest email re-categorised as ${EMAIL_CATEGORY_LABELS[cat as EmailCategory]}.`));
   });
 
-  /**
-   * Human review resolution (round 18): a person decides a case the automated
-   * path could not — special consideration, an approved exception, an
-   * alternative qualification, or a decline. Recorded as a HUMAN decision,
-   * always separately from anything automated.
-   */
-  app.post("/case/:id/admission-decision", requireLogin, requirePermission("record_outcome"), csrfCheck, (req, res) => {
-    const id = Number(req.params.id);
-    const a = repo.getApplicant(id);
-    if (!a || !sameRealm(req, a)) return res.status(404).send("Case not found.");
-    // PPR P0-2: outcome vocabulary and the decision form exist only for
-    // education-module cases. Non-academic cases have no admission decision.
-    if (!repo.educationCaseFor(a)) {
-      return res.redirect(backToCase(id, "This case type has no admission decision — outcomes are recorded through its own workflow."));
-    }
-    const decision = String(req.body.decision ?? "");
-    const reason = String(req.body.reason ?? "").trim();
-    if (decision !== "admit" && decision !== "decline") {
-      return res.redirect(backToCase(id, "Choose admit or decline — nothing was recorded."));
-    }
-    if (!reason) {
-      return res.redirect(backToCase(id, "A reason is required for every human admission decision — it goes on the audit trail."));
-    }
-    const ROUTES: Record<string, string> = {
-      alternative_qualification: "Alternative qualification",
-      approved_exception: "Approved exception",
-      special_consideration: "Special consideration",
-      documented_pathway: "Documented pathway",
-      standard_review: "Standard review",
-    };
-    const route = decision === "admit" ? (ROUTES[String(req.body.route ?? "")] ?? "Standard review") : "Standard review";
-    const outcome = decision === "admit" ? "admitted_after_review" : "not_admitted";
-    repo.updateApplicant(id, {
-      admission_decision: outcome,
-      admission_route: "human",
-      decision_by: req.staff!.username,
-      decision_reason: `${route}: ${reason}`,
-      decision_at: new Date().toISOString(),
-    });
-    // The file is closed either way; the decision field says HOW it closed.
-    repo.setLifecycle(id, "completed", req.staff!.username,
-      decision === "admit" ? `admitted after human review (${route})` : "not admitted after human review");
-    repo.audit(id, req.staff!.username, "human_admission_decision",
-      `${decision === "admit" ? "Admitted after Human Review" : "Not Admitted after Human Review"} · reviewer: ${req.staff!.display_name} · ${route} · reason: ${reason}`);
-    repo.notify("review_needed", `${a.ref_number}: ${decision === "admit" ? "admitted" : "not admitted"} after human review by ${req.staff!.display_name}`, id);
-    res.redirect(backToCase(id, decision === "admit"
-      ? `Recorded: Admitted after Human Review (${route}).`
-      : "Recorded: Not Admitted after Human Review."));
-  });
-
-  /** Re-run the admissions evaluation on demand (new documents arrived etc.).
-   *  PPR P0-3: every re-evaluation states WHICH configuration version it
-   *  re-applied (the case's frozen version). Upgrading an open case to the
-   *  profile's CURRENT version is only possible by explicit request
-   *  (`reapply=current`) and is audited as a human decision. */
-  app.post("/case/:id/reevaluate", requireLogin, csrfCheck, (req, res) => {
-    const id = Number(req.params.id);
-    const a = repo.getApplicant(id);
-    if (!a || !sameRealm(req, a)) return res.status(404).send("Case not found.");
-    let versionNote = "";
-    if (String(req.body.reapply ?? "") === "current") {
-      const upgraded = repo.reFreezeCaseConfig(a);
-      repo.audit(id, req.staff!.username, "config_version_upgraded", `case explicitly re-applied on CURRENT profile configuration version ${upgraded.config_version} by staff request`);
-      versionNote = ` — explicitly re-applied on CURRENT configuration version ${upgraded.config_version}`;
-    }
-    const frozen = repo.caseConfigFrozen(repo.getApplicant(id)!);
-    const version = frozen?.config_version ?? repo.getApplicant(id)!.config_version_frozen ?? 1;
-    if (!repo.educationCaseFor(a)) {
-      // Generic profile: re-run the configured rule tree from the FROZEN
-      // rules — outcome stays undecided, human review always.
-      const caseType = repo.caseTypeForCase(id);
-      const facts: Record<string, unknown> = {};
-      for (const doc of repo.listDocuments(id, { activeOnly: true })) Object.assign(facts, doc.extracted_fields ?? {});
-      const rules = frozen?.rules ?? (caseType ? repo.caseTypeRules(caseType) : []);
-      const result = caseType ? evaluateCaseTypeRules(repo, caseType, rules, facts) : { result: "undetermined" as const, routing: "human_review" as const };
-      repo.audit(id, req.staff!.username, "evaluation_rerun", `re-applied frozen configuration version ${version} → rules ${result.result}; outcome remains undecided`);
-      return res.redirect(backToCase(id, `Evaluation re-run under configuration version ${version} (the version this case was opened under): rules ${String(result.result).replace(/_/g, " ")} — outcome remains undecided${versionNote}`));
-    }
-    const flags = repo.activeFlags(id).filter((f) => f.type !== "duplicate_submission");
-    // M-3: a re-run keeps the profile's auto-admit posture, so a manual
-    // re-evaluation can neither invent nor silently downgrade a provisional
-    // admission (the watcher + gates still apply on the next intake pass).
-    const result = evaluateAdmission(repo, id, flags, { autoAdmit: autoAdmitPolicy(repo, id) });
-    repo.syncFlags(id, [...flags, ...result.derivedFlags]);
-    repo.audit(id, req.staff!.username, "evaluation_rerun", `re-applied frozen configuration version ${version} → ${result.report.result}/${result.report.routing}`);
-    res.redirect(backToCase(id, `Evaluation re-run under configuration version ${version} (the version this case was opened under): ${result.report.result.replace(/_/g, " ")} → ${result.report.routing.replace(/_/g, " ")}.${versionNote}`));
-  });
-
-  /**
-   * Round 19: after a rule change, re-run the evaluation across every OPEN
-   * case in one click instead of opening them one by one. Cases keep the
-   * requirement set they were frozen under — this simply re-applies it.
-   */
-  app.post("/config/reevaluate-open", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#rules`;
-    let done = 0;
-    let failed = 0;
-    for (const id of repo.openApplicantIds()) {
-      const a = repo.getApplicant(id);
-      if (!a || !sameRealm(req, a)) continue;
-      try {
-        const flags = repo.activeFlags(id).filter((f) => f.type !== "duplicate_submission");
-        const result = evaluateAdmission(repo, id, flags, { autoAdmit: autoAdmitPolicy(repo, id) });
-        repo.syncFlags(id, [...flags, ...result.derivedFlags]);
-        repo.audit(id, req.staff!.username, "evaluation_rerun", `bulk re-evaluation → ${result.report.result}/${result.report.routing}`);
-        done++;
-      } catch (e) {
-        // One pathological case must not abort the whole batch.
-        failed++;
-        repo.audit(id, req.staff!.username, "evaluation_rerun_failed", (e as Error).message.slice(0, 200));
-      }
-    }
-    repo.audit(null, req.staff!.username, "bulk_reevaluation", `${done} open case(s) re-evaluated${failed ? `, ${failed} failed` : ""}`);
-    res.redirect(back(
-      `Re-evaluated ${done} open case(s) against their frozen rule sets.${failed ? ` ${failed} case(s) failed — see their audit trails.` : ""}`
-    ));
-  });
-
   // Dead-letter queue: retry puts a parked message back in front of the next
   // sync; drop removes it for good (the sender will have to email again).
   app.post("/config/dead-letter/retry", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
@@ -1257,6 +1175,85 @@ export function createApp(deps: WebDeps): Express {
     repo.removeDeadLetter(d.id);
     repo.audit(null, req.staff!.username, "dead_letter_dropped", `message ${d.message_id} ("${d.subject}") dropped by staff`);
     res.redirect(back(`"${d.subject || d.message_id}" was dropped.`));
+  });
+
+  app.get("/cases", requireLogin, (req, res) => res.send(casesPage(c(req), String(req.query.stage ?? "all"))));
+
+  app.post("/case/:id/outcome", requireLogin, requirePermission("record_outcome"), csrfCheck, (req, res) => {
+    const id = Number(req.params.id);
+    const a = requireCase(req, res, id);
+    if (!a) return;
+    const outcome = String(req.body.outcome ?? "");
+    const reason = String(req.body.reason ?? "").trim();
+    if (!["approved_after_review", "not_approved", "undecided"].includes(outcome)) return res.redirect(backToCase(id, "Unknown outcome — nothing changed."));
+    if (!reason || reason.length > 2000) return res.redirect(backToCase(id, "A reason of 1–2000 characters is required for every human outcome."));
+    repo.db.transaction(() => {
+      repo.updateCase(id, { outcome: outcome as "approved_after_review" | "not_approved" | "undecided" });
+      repo.updateApplicant(id, { outcome_route: "human", decision_by: req.staff!.username, decision_reason: reason, decision_at: new Date().toISOString() });
+      repo.setLifecycle(id, outcome === "undecided" ? "awaiting_review" : "completed", req.staff!.username, reason);
+      staffAction(req, id, "human_outcome_recorded", `${outcome}: ${reason}`);
+    })();
+    res.redirect(backToCase(id, "Human outcome recorded."));
+  });
+
+  /**
+   * Phase D2 (Q7 step 1) — the routing safety valve: a person moves a case to
+   * the right case type when the sender or the machine put it in the wrong one.
+   *
+   * It changes configuration context and nothing else. No mail is sent, no
+   * workflow rule fires, and no verdict is recomputed: the case adopts the new
+   * type's checklist and rules (re-frozen, so what staff see and what the next
+   * evaluation uses agree), while the recorded verdict stays exactly as a human
+   * or the pipeline left it until somebody presses Re-evaluate. The settled
+   * owner choice is freeze-only: do not re-evaluate automatically (see
+   * BUGS.md#resolved-product-decisions).
+   */
+  app.post("/case/:id/case-type", requireLogin, csrfCheck, (req, res) => {
+    const id = Number(req.params.id);
+    const a = requireCase(req, res, id);
+    if (!a) return;
+    // The target must be one of THIS case's organization's types: a forged id
+    // must never move a case into another tenant's configuration.
+    const caseOrg = a.organization_id ?? organizationId(req);
+    const target = repo.listCaseTypes(caseOrg).find((t) => t.id === Number(req.body.case_type_id));
+    if (!target) return res.redirect(backToCase(id, "Unknown case type for this organization — nothing changed."));
+    const before = repo.caseTypeForCase(id);
+    if (before?.id === target.id) return res.redirect(backToCase(id, `This case is already ${target.name} — nothing changed.`));
+    repo.updateCase(id, { case_type_id: target.id });
+    const updated = requireCase(req, res, id);
+    if (!updated) return;
+    repo.reFreezeCaseConfig(updated);
+    repo.audit(id, req.staff!.username, "case_type_changed",
+      `${before?.code ?? "unconfigured"} → ${target.code}; checklist re-frozen, verdict unchanged, nothing sent`);
+    res.redirect(backToCase(id, `Moved to ${target.name}. Its checklist and rules apply from here; the recorded verdict predates the change — use Re-evaluate to recompute it. Nothing was sent.`));
+  });
+
+  app.post("/case/:id/reevaluate", requireLogin, csrfCheck, (req, res) => {
+    const id = Number(req.params.id);
+    const a = requireCase(req, res, id);
+    if (!a) return;
+    if (String(req.body.upgrade ?? "") === "1") {
+      if (!repo.hasPermission(req.staff!.id, "publish_rules")) return res.status(403).send("Publishing permission is required to upgrade a case configuration.");
+      repo.reFreezeCaseConfig(a);
+      repo.audit(id, req.staff!.username, "case_config_upgraded", "Explicitly adopted current configuration; outcomes are unchanged");
+    }
+    try {
+      const report = evaluateStoredCase(repo, id);
+      res.redirect(backToCase(id, `Evidence re-evaluated: ${report.result}. Outcome unchanged.`));
+    } catch (error) {
+      res.redirect(backToCase(id, `Could not evaluate: ${(error as Error).message}`));
+    }
+  });
+
+  app.post("/config/reevaluate-open", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    let checked = 0;
+    let failed = 0;
+    for (const row of repo.listCasesForStaff(req.staff!).filter((a) => a.lifecycle !== "completed")) {
+      try { evaluateStoredCase(repo, row.id); checked++; }
+      catch { failed++; }
+    }
+    repo.audit(null, req.staff!.username, "cases_reevaluated", `checked=${checked}; failed=${failed}; organization=${organizationId(req)}`);
+    res.redirect(`/config?tab=requirements&msg=${encodeURIComponent(`Re-evaluated ${checked} open cases; ${failed} require configuration repair. No outcomes changed.`)}`);
   });
 
   // ── Team performance (staff listener) ────────────────────────────────────
@@ -1320,6 +1317,19 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(accountMsg(`Theme set to ${t} mode.`));
   });
 
+  // ── Admin security console (strictly the active tenant; read-only) ────────
+  app.get("/admin/security", requireLogin, requireRole("admin"), (req, res) => {
+    const ownOrganizationId = organizationId(req);
+    const requestedOrganizationId = req.query.organization_id;
+    // There is deliberately no tenant selector on this page. Reject an
+    // attempted cross-organization override instead of trusting a URL value.
+    if (requestedOrganizationId !== undefined
+      && (!/^\d+$/.test(String(requestedOrganizationId)) || Number(requestedOrganizationId) !== ownOrganizationId)) {
+      return res.status(404).send("Security records not found.");
+    }
+    return res.send(securityConsolePage(c(req)));
+  });
+
   // ── Settings (manager+) ──────────────────────────────────────────────────
 
   // 'it' role: cases + configuration, but not staff management.
@@ -1354,8 +1364,9 @@ export function createApp(deps: WebDeps): Express {
     if (!name || !/^[A-Z]{1,8}$/.test(refPrefix)) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("Organization name and a 1–8 letter reference prefix are required.")}`);
     try {
       const organization = repo.createOrganization({ name, refPrefix });
+      seedStarterTemplates(repo, organization.id);
       repo.audit(null, req.staff!.username, "organization_created", `${organization.name} (${organization.ref_prefix})`);
-      return res.redirect(`/config?tab=case-types&organization=${organization.id}&msg=${encodeURIComponent(`Organization ${organization.name} created with an empty CaseType catalogue.`)}`);
+      return res.redirect(`/config?tab=case-types&organization=${organization.id}&msg=${encodeURIComponent(`Organization ${organization.name} created — an empty CaseType catalogue, with the neutral starter reply templates ready to edit.`)}`);
     } catch (e) {
       return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent(`Organization was not created: ${(e as Error).message}`)}`);
     }
@@ -1378,7 +1389,7 @@ export function createApp(deps: WebDeps): Express {
       else if (field === "sender_state") out.push({ field: "sender_state", value: value.toLowerCase() === "known" ? "known" : "unknown" });
       else if (field === "has_attachments") out.push({ field: "has_attachments", value: ["yes", "true", "1"].includes(value.toLowerCase()) });
       else if (field === "body_is_ref") out.push({ field: "body_is_ref", value: true });
-      else if (field === "signals") out.push({ field: "signals", value: "education_intake" });
+      else if (field === "signals") out.push({ field: "signals", value: "configured_intake" });
       else if (field === "category") out.push({ field: "category", op: "in", values: value.split(",").map((s) => s.trim()).filter(Boolean) });
       else if (field === "docs_state") {
         const values = value.split(",").map((s) => s.trim()).filter(Boolean);
@@ -1431,6 +1442,13 @@ export function createApp(deps: WebDeps): Express {
       }
       const conditions = parseRuleConditions(req.body);
       const action = parseRuleAction(req.body);
+      // Refuse to arm a rule that names wording this organization does not
+      // have: a rule pointing at a missing template silently produces no reply
+      // at all, which reads to staff as "the system ignored the message".
+      const wantedTemplate = typeof action.template_key === "string" ? action.template_key.trim() : "";
+      if (wantedTemplate && !repo.getTemplate(wantedTemplate, orgId, caseTypeId ?? undefined)) {
+        return res.redirect(`/config?tab=rules&msg=${encodeURIComponent(`Rule was not saved: this organization has no template '${wantedTemplate}' — create it under Templates first.`)}`);
+      }
       const saved = repo.saveWorkflowRule({
         id: req.body.id ? Number(req.body.id) : undefined,
         organizationId: orgId,
@@ -1484,7 +1502,7 @@ export function createApp(deps: WebDeps): Express {
         hasAttachments: body.sample_attachments === "1",
         category: categorizeEmail(sampleSubject, sampleBody, body.sample_attachments === "1"),
         bodyIsRef: /^[A-Z]{1,6}-\d{4}-\d{1,8}$/i.test(sampleBody.trim()),
-        educationSignals: "open" as const,
+        intakeSignals: "open" as const,
         docsState,
         docsOnFile: docsState === "empty" ? 0 : 3,
       };
@@ -1544,8 +1562,9 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/config/case-types/vocabulary", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const id = Number(req.body.id);
-    const ct = repo.listCaseTypes(req.staff!.organization_id ?? 1).find((x) => x.id === id)
-      ?? repo.caseTypeById(id);
+    // Tenant guard: only this administrator's own profiles are addressable —
+    // a foreign id is indistinguishable from an unknown one.
+    const ct = repo.listCaseTypes(ownOrganizationId(req)).find((x) => x.id === id);
     if (!ct) return res.redirect(`/config?tab=rules&msg=${encodeURIComponent("Unknown profile.")}`);
     const parseIdLabels = (text: string): Array<{ id: string; label: string; requires?: string[] }> =>
       String(text ?? "").split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
@@ -1560,11 +1579,11 @@ export function createApp(deps: WebDeps): Express {
     const b = req.body as Record<string, string>;
     repo.updateCaseTypeVocabulary(id, {
       terminology: {
-        case: b.term_case?.trim() || "Applicant",
+        case: b.term_case?.trim() || "Case",
         contact: b.term_contact?.trim() || "Contact",
         category: b.term_category?.trim() || "Category",
-        stage: b.term_stage?.trim() || "Current level",
-        outcome: b.term_outcome?.trim() || "Admission decision",
+        stage: b.term_stage?.trim() || "Stage",
+        outcome: b.term_outcome?.trim() || "Outcome",
       },
       stages: parseIdLabels(b.stages_text ?? ""),
       queues: parseIdLabels(b.queues_text ?? ""),
@@ -1579,14 +1598,17 @@ export function createApp(deps: WebDeps): Express {
     if (!ct) return res.redirect("/config?tab=rules&msg=Unknown+profile");
     repo.updateCaseTypeProfile(id, {
       default_reply_action: String(req.body.default_reply_action) === "auto" ? "auto" : "draft",
-      qualification_gate: String(req.body.qualification_gate) === "0" ? 0 : 1,
+      evidence_gate: String(req.body.evidence_gate) === "0" ? 0 : 1,
     });
-    repo.audit(null, req.staff!.username, "workflow_profile_saved", `${ct.code}: default_reply_action=${String(req.body.default_reply_action)}, qualification_gate=${String(req.body.qualification_gate)}`);
+    repo.audit(null, req.staff!.username, "workflow_profile_saved", `${ct.code}: default_reply_action=${String(req.body.default_reply_action)}, evidence_gate=${String(req.body.evidence_gate)}`);
     res.redirect(`/config?tab=rules&msg=${encodeURIComponent(`Profile “${ct.name}” updated.`)}`);
   });
 
   app.post("/config/case-types/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
+    // Tenant guard: configuration writes only ever reach the acting
+    // administrator's own organization, whatever the form claims.
+    if (organizationId !== ownOrganizationId(req)) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("That configuration belongs to another organization — nothing was saved.")}`);
     const code = String(req.body.code ?? "").trim();
     const name = String(req.body.name ?? "").trim();
     const category = String(req.body.category ?? "general").trim() || "general";
@@ -1598,6 +1620,9 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/config/case-types/document", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
+    // Tenant guard: configuration writes only ever reach the acting
+    // administrator's own organization, whatever the form claims.
+    if (organizationId !== ownOrganizationId(req)) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("That configuration belongs to another organization — nothing was saved.")}`);
     const caseTypeId = Number(req.body.case_type_id);
     const ct = repo.listCaseTypes(organizationId).find((x) => x.id === caseTypeId);
     const key = String(req.body.key ?? "").trim();
@@ -1610,6 +1635,9 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/config/case-types/document-delete", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
+    // Tenant guard: configuration writes only ever reach the acting
+    // administrator's own organization, whatever the form claims.
+    if (organizationId !== ownOrganizationId(req)) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("That configuration belongs to another organization — nothing was saved.")}`);
     const caseTypeId = Number(req.body.case_type_id);
     const ct = repo.listCaseTypes(organizationId).find((x) => x.id === caseTypeId);
     if (ct) repo.deleteDocumentDefinition(caseTypeId, String(req.body.key ?? ""));
@@ -1618,15 +1646,16 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/config/case-types/rules", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
+    // Tenant guard: configuration writes only ever reach the acting
+    // administrator's own organization, whatever the form claims.
+    if (organizationId !== ownOrganizationId(req)) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("That configuration belongs to another organization — nothing was saved.")}`);
     const caseTypeId = Number(req.body.case_type_id);
     const ct = repo.listCaseTypes(organizationId).find((x) => x.id === caseTypeId);
     if (!ct) return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent("Unknown CaseType — no rules saved.")}`);
     try {
       const parsed: unknown = JSON.parse(String(req.body.rules_json ?? "[]"));
-      if (!Array.isArray(parsed) || parsed.length > 100) throw new Error("rule tree must be an array of at most 100 nodes");
-      const valid = (n: any): boolean => n && (n.kind === "condition" || n.kind === "group") && (!n.children || (Array.isArray(n.children) && n.children.every(valid))) && (n.kind !== "group" || ["AND", "OR", "NOT"].includes(n.logic ?? "AND"));
-      if (!parsed.every(valid)) throw new Error("invalid rule node or group logic");
-      repo.updateCaseTypeRules(caseTypeId, parsed as any[]);
+      validateRuleTree(parsed);
+      repo.updateCaseTypeRules(caseTypeId, parsed);
       repo.audit(null, req.staff!.username, "case_type_rules_saved", `${ct.code}: ${parsed.length} top-level nodes`);
       return res.redirect(`/config?tab=case-types&organization=${organizationId}#case-type-${caseTypeId}`);
     } catch (e) {
@@ -1636,6 +1665,9 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/config/case-types/axes", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
+    // Tenant guard: configuration writes only ever reach the acting
+    // administrator's own organization, whatever the form claims.
+    if (organizationId !== ownOrganizationId(req)) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("That configuration belongs to another organization — nothing was saved.")}`);
     if (!repo.getOrganization(organizationId)) return res.redirect("/config?tab=case-types&msg=Unknown+organization");
     try {
       const parsed: unknown = JSON.parse(String(req.body.axes_json ?? "[]"));
@@ -1646,265 +1678,6 @@ export function createApp(deps: WebDeps): Express {
     } catch (e) {
       return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent(`Axes were not saved: ${(e as Error).message}`)}`);
     }
-  });
-
-  // Assign who handles a course (configured in the staff area).
-  app.post("/config/course-owner", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    if ((req.staff!.organization_id ?? 1) !== 1) return res.redirect("/config?tab=case-types&msg=Academic+compatibility+routes+are+Organization+1+only");
-    const programme = String(req.body.programme ?? "").trim();
-    const ownerRaw = String(req.body.owner ?? "").trim();
-    const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#courses`;
-    if (!programme) return res.redirect(back("No course selected."));
-    const ownerId = ownerRaw ? Number(ownerRaw) : null;
-    if (ownerId !== null && (!Number.isInteger(ownerId) || !repo.getStaff(ownerId))) {
-      return res.redirect(back("Unknown staff member."));
-    }
-    repo.assignProgrammeOwner(programme, ownerId);
-    const who = ownerId !== null ? repo.getStaff(ownerId)?.display_name ?? `#${ownerId}` : "nobody (unassigned)";
-    repo.audit(null, req.staff!.username, "course_owner_changed", `${programme} → ${who}`);
-
-    // Round 19: an owner change should not leave open, unowned cases behind.
-    // Cases a human already picked up are never re-routed automatically.
-    let routed = 0;
-    if (ownerId !== null) {
-      const realm: 0 | 1 = req.staff!.demo ? 1 : 0;
-      for (const c of repo.openUnassignedCasesForProgramme(programme, realm)) {
-        repo.updateApplicant(c.id, { assigned_to: ownerId });
-        repo.audit(c.id, req.staff!.username, "case_routed", `assigned to ${who} — new owner of ${programme}`);
-        repo.notify("assignment", `${programme} ownership changed: case ${c.ref_number} routed to you`, c.id, ownerId);
-        routed++;
-      }
-    }
-    res.redirect(back(`Case ${programme} now handled by ${who}.${routed ? ` ${routed} open case(s) routed over.` : ""}`));
-  });
-
-  // Editable course fields: entry requirements (and name/school) change over
-  // time — they are data, not code. New applicants are judged by the rules in
-  // force when THEY applied (requirement snapshots); edits affect new cases.
-  app.post("/config/programme/edit", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    if ((req.staff!.organization_id ?? 1) !== 1) return res.redirect("/config?tab=case-types&msg=Academic+compatibility+routes+are+Organization+1+only");
-    const programme = String(req.body.programme ?? "").trim();
-    const back = (m: string) => `/config?msg=${encodeURIComponent(m)}#courses`;
-    if (!programme || !repo.programmeByCode(programme)) return res.redirect(back("Unknown course."));
-    repo.updateProgramme(programme, {
-      name: String(req.body.name ?? ""),
-      school: String(req.body.school ?? ""),
-      entry_requirements: String(req.body.entry_requirements ?? ""),
-    });
-    repo.audit(null, req.staff!.username, "programme_updated", `${programme}: catalogue fields edited`);
-    res.redirect(back(`Case ${programme} saved.`));
-  });
-
-  // Structured entry requirements — one qualification-system block per save.
-  // OR-6: the legacy per-system block editor wrote to course_requirements,
-  // a table the engine does NOT enforce — editing it would change what staff
-  // see without changing what applicants are judged by (display ≠ enforce).
-  // It is gone; the structured Requirements tab is the single source. A stale
-  // POST gets an explicit refusal, never a silent write.
-  app.post("/config/entry-requirements", requireLogin, requireRole("admin"), csrfCheck, (_req, res) => {
-    res.redirect("/config?tab=requirements&msg=" + encodeURIComponent("Entry requirements are edited in the Requirements tab — that old form no longer saves anything."));
-  });
-
-  // ══ Requirements Configuration (round 18) ════════════════════════════════
-  // Machine-evaluable rule trees per (programme × qualification system),
-  // edited visually — no code, no raw expressions. Draft → preview → activate.
-
-  // OR-6: grade values are picked from ladders, never typed freehand. This
-  // server-side check mirrors exactly what the pickers offer, so the value
-  // that gets stored is always one the UI could have displayed.
-  const GRADE_FIELDS = new Set(["mean_grade", "subject"]);
-  const NUMERIC_FIELDS: Record<string, { int: boolean; min: number; max: number; what: string }> = {
-    credits: { int: true, min: 0, max: 99, what: "credit count" },
-    principals: { int: true, min: 0, max: 9, what: "principal-pass count" },
-    subsidiaries: { int: true, min: 0, max: 9, what: "subsidiary-pass count" },
-    points: { int: true, min: 0, max: 45, what: "point total" },
-    gpa: { int: false, min: 0, max: 4, what: "GPA" },
-  };
-  const CLASS_LADDERS: Record<string, string[]> = {
-    degree: ["Pass", "Second Class Honours (Lower Division)", "Second Class Honours (Upper Division)", "First Class Honours"],
-    diploma: ["Pass", "Credit", "Distinction"],
-  };
-  const validConditionValue = (
-    system: AdmissionSystem,
-    level: LegacyAcademicLevel,
-    field: string | undefined,
-    v: string
-  ): { ok: true } | { ok: false; msg: string } => {
-    if (!field) return { ok: true };
-    if (field === "class") {
-      const ladder = CLASS_LADDERS[level === "diploma" || level === "certificate" ? "diploma" : "degree"];
-      return ladder.includes(v) ? { ok: true } : { ok: false, msg: `"${v}" is not a degree class on the ${level} ladder — pick one from the list.` };
-    }
-    if (GRADE_FIELDS.has(field)) {
-      const ladder = EXAM_SYSTEMS.find((m) => m.system === system)?.gradeOptions ?? null;
-      if (!ladder) return { ok: true }; // system has no grade ladder (e.g. DEGREE) — class/numbers apply
-      return ladder.includes(v) ? { ok: true } : { ok: false, msg: `"${v}" is not a ${system} grade — pick one from the ladder.` };
-    }
-    const num = NUMERIC_FIELDS[field];
-    if (num) {
-      const n = Number(v);
-      if (!Number.isFinite(n) || (num.int && !Number.isInteger(n)) || n < num.min || n > num.max) {
-        return { ok: false, msg: `The ${num.what} must be ${num.int ? "a whole number" : "a number"} between ${num.min} and ${num.max}.` };
-      }
-      return { ok: true };
-    }
-    return { ok: true };
-  };
-
-  /** Parse a `reqs` target ("BASE:degree" | programme code) + system. */
-  const reqsTarget = (req: Request): { programme: string | null; level: LegacyAcademicLevel; system: AdmissionSystem; back: (m: string) => string } | null => {
-    const target = String(req.body.target ?? req.query.target ?? "").trim();
-    const system = String(req.body.system ?? req.query.system ?? "").trim() as AdmissionSystem;
-    const isBase = target.startsWith("BASE:");
-    const level = (isBase ? target.slice(5) : repo.programmeByCode(target)?.level ?? "degree") as LegacyAcademicLevel;
-    const programme = isBase ? null : target.toUpperCase();
-    const back = (m: string) =>
-      `/config?tab=requirements&msg=${encodeURIComponent(m)}&reqs=${encodeURIComponent(target)}&system=${encodeURIComponent(system)}#reqbuilder`;
-    if (!ADMISSION_SYSTEMS.includes(system)) return null;
-    // OR-6: Master's and PhD are separate levels. A stale "postgrad" form
-    // repost is normalised to masters instead of being dropped silently.
-    const normalized: LegacyAcademicLevel = (level === ("postgrad" as LegacyAcademicLevel) ? "masters" : level) as LegacyAcademicLevel;
-    if (!["degree", "diploma", "certificate", "masters", "phd"].includes(normalized)) return null;
-    if (!isBase && !repo.programmeByCode(programme!)) return null;
-    return { programme, level: normalized, system, back };
-  };
-
-  app.post("/config/requirements/node-add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const t = reqsTarget(req);
-    if (!t) return res.redirect("/config?tab=requirements");
-    const set = repo.ensureDraftSet(t.programme, t.level, t.system, req.staff!.username);
-    const kind = String(req.body.kind) === "group" ? "group" : "condition";
-    const parentId = req.body.parent ? Number(req.body.parent) : null;
-    repo.addRuleNode(set.id, parentId && parentId > 0 ? parentId : null, kind, "AND");
-    repo.audit(null, req.staff!.username, "requirements_draft_changed", `${t.programme ?? "base"} ${t.system}: ${kind} added (draft v${set.version})`);
-    res.redirect(t.back(kind === "group" ? "Group added — set its AND/OR/NOT and conditions." : "Condition added — pick the field and minimum."));
-  });
-
-  app.post("/config/requirements/node-save", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const t = reqsTarget(req);
-    if (!t) return res.redirect("/config?tab=requirements");
-    const nodeId = Number(req.body.node);
-    const logicRaw = String(req.body.logic ?? "");
-    const patch: Parameters<Repo["updateRuleNode"]>[1] = {};
-    if (["AND", "OR", "NOT"].includes(logicRaw)) patch.logic = logicRaw as "AND" | "OR" | "NOT";
-    if (typeof req.body.field === "string" && req.body.field) patch.field = req.body.field as RuleField;
-    if (typeof req.body.subject === "string") patch.subject = req.body.subject.trim() || null;
-    if (typeof req.body.value === "string") {
-      const v = req.body.value.trim();
-      // OR-6: values must come from the picker ladders the UI offers — a
-      // hand-typed grade outside the ladder would display one thing and
-      // enforce another. Reject loudly instead of storing junk.
-      const field = (typeof req.body.field === "string" && req.body.field ? req.body.field : undefined) ?? undefined;
-      if (v) {
-        const verdict = validConditionValue(t.system, t.level, field, v);
-        if (!verdict.ok) return res.redirect(t.back(verdict.msg));
-      }
-      patch.value = v || null;
-    }
-    if (Object.keys(patch).length === 0) return res.redirect(t.back("Nothing to save."));
-    // The node id comes from the form body — verify it belongs to THIS
-    // target's DRAFT set before writing. Without this, a tampered or stale
-    // `node=` reached ACTIVE and other courses' published rule sets, bypass-
-    // ing the draft → activate versioning flow.
-    if (!repo.updateRuleNodeIfDraft(nodeId, t.programme, t.level, t.system, patch)) {
-      return res.redirect(t.back("That rule does not belong to this course's draft — nothing was changed."));
-    }
-    res.redirect(t.back("Rule updated in the draft — preview it, then activate."));
-  });
-
-  app.post("/config/requirements/node-delete", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const t = reqsTarget(req);
-    if (!t) return res.redirect("/config?tab=requirements");
-    const nodeId = Number(req.body.node);
-    // Same ownership check as node-save: the body's node id may be stale or
-    // hostile — only the target's own DRAFT set is deletable.
-    if (!repo.deleteRuleNodeIfDraft(nodeId, t.programme, t.level, t.system)) {
-      return res.redirect(t.back("That rule does not belong to this course's draft — nothing was changed."));
-    }
-    res.redirect(t.back("Rule removed from the draft."));
-  });
-
-  app.post("/config/requirements/activate", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const t = reqsTarget(req);
-    if (!t) return res.redirect("/config?tab=requirements");
-    const draft = repo.getDraftSet(t.programme, t.level, t.system);
-    if (!draft) return res.redirect(t.back("No draft to activate."));
-    if ((repo.getRuleSetNodes(draft.id)).length === 0) {
-      return res.redirect(t.back("The draft has no rules — add at least one condition before activating."));
-    }
-    const activated = repo.activateDraftSet(draft.id)!;
-    repo.audit(null, req.staff!.username, "requirements_activated",
-      `${t.programme ?? `${t.level} (university-wide)`} · ${t.system} · requirement set v${activated.version} activated`);
-    res.redirect(t.back(`Requirement set v${activated.version} is now ACTIVE for ${t.programme ?? `all ${t.level} programmes`} (${t.system}). New evaluations use it; historical cases keep their frozen version.`));
-  });
-
-  app.post("/config/requirements/discard", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const t = reqsTarget(req);
-    if (!t) return res.redirect("/config?tab=requirements");
-    const draft = repo.getDraftSet(t.programme, t.level, t.system);
-    if (draft) repo.discardDraftSet(draft.id);
-    res.redirect(t.back("Draft discarded — the active requirement set is unchanged."));
-  });
-
-  app.post("/config/requirements/catalogue-add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const system = String(req.body.system ?? "").trim();
-    const name = String(req.body.name ?? "").trim();
-    const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#catalogue`;
-    if (!ADMISSION_SYSTEMS.includes(system as AdmissionSystem)) return res.redirect(back("Unknown qualification system."));
-    if (!name) return res.redirect(back("Subject name was empty."));
-    // OR-6: duplicates are refused explicitly — never swallowed by INSERT OR IGNORE.
-    if (!repo.addCatalogueSubject(system, name)) {
-      return res.redirect(back(`"${name}" is already in the ${system} catalogue — nothing added.`));
-    }
-    repo.audit(null, req.staff!.username, "catalogue_changed", `${system}: subject "${name}" added`);
-    res.redirect(back(`Subject "${name}" added to the ${system} catalogue.`));
-  });
-
-  app.post("/config/requirements/catalogue-rename", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const id = Number(req.body.id);
-    const name = String(req.body.name ?? "").trim();
-    const back = (m: string) => `/config?tab=requirements&msg=${encodeURIComponent(m)}#catalogue`;
-    const row = repo.listSubjectCatalogue().find((r) => r.id === id);
-    if (!row) return res.redirect(back("Unknown subject — nothing renamed."));
-    if (!name) return res.redirect(back("Subject name was empty."));
-    if (!repo.renameCatalogueSubject(id, name)) {
-      return res.redirect(back(`"${name}" already exists in the ${row.system} catalogue — nothing renamed.`));
-    }
-    repo.audit(null, req.staff!.username, "catalogue_changed", `${row.system}: "${row.name}" renamed to "${name}"`);
-    res.redirect(back(`Subject renamed to "${name}".`));
-  });
-
-  // OR-6: schools & courses live on ONE page — schools are first-class so a
-  // faculty exists before its first course and renames cascade to courses.
-  app.post("/config/schools/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const name = String(req.body.name ?? "").trim();
-    const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#schools`;
-    if (!name) return res.redirect(back("School name was empty — nothing added."));
-    if (!repo.addSchool(name)) return res.redirect(back(`"${name}" already exists — nothing added.`));
-    repo.audit(null, req.staff!.username, "school_changed", `school "${name}" added`);
-    res.redirect(back(`School "${name}" added — assign courses to it below.`));
-  });
-
-  app.post("/config/schools/rename", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const from = String(req.body.from ?? "").trim();
-    const to = String(req.body.to ?? "").trim();
-    const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#schools`;
-    if (!from || !to) return res.redirect(back("Rename needs a current name and a new name."));
-    if (from === to) return res.redirect(back("The new name is the same as the old one — nothing changed."));
-    const moved = repo.renameSchool(from, to);
-    if (moved < 0) return res.redirect(back(`"${to}" already exists — nothing renamed.`));
-    repo.audit(null, req.staff!.username, "school_changed", `school "${from}" renamed to "${to}" (${moved} course(s) moved)`);
-    res.redirect(back(`"${from}" renamed to "${to}" — ${moved} course(s) moved with it.`));
-  });
-
-  app.post("/config/requirements/catalogue-toggle", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const id = Number(req.body.id);
-    const row = repo.listSubjectCatalogue().find((r) => r.id === id);
-    if (row) {
-      repo.setCatalogueActive(id, row.active !== 1);
-      repo.audit(null, req.staff!.username, "catalogue_changed", `${row.system}: "${row.name}" ${row.active !== 1 ? "restored" : "retired"}`);
-    }
-    res.redirect(`/config?tab=requirements#catalogue`);
   });
 
   // PPR P0-5: attachment sets — organization-owned groups of sendable files.
@@ -1969,45 +1742,12 @@ export function createApp(deps: WebDeps): Express {
 
   // Official pack files: download (staff) + replace (raw PDF upload).
   app.get("/pack/:key", requireLogin, (req, res) => {
-    const slot = PACK_SLOTS.find((x) => x.key === req.params.key);
-    if (!slot) return res.status(404).send("Unknown pack file.");
-    const owned = repo.listOrganizationPackSlots(organizationId(req)).find((x) => x.key === slot.key);
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="${owned?.filename || slot.pretty}"`);
-    if (owned?.content) return res.send(owned.content);
-    // Only the migrated Organization #1 dataset may read bundled PDFs.
-    if (organizationId(req) !== 1) return res.status(404).send("Pack file missing.");
-    const file = path.join(PACK_DIR, slot.file);
-    if (!fs.existsSync(file)) return res.status(404).send("Pack file missing.");
-    res.sendFile(file);
+    const slot = repo.listOrganizationPackSlots(organizationId(req)).find((candidate) => candidate.key === req.params.key);
+    if (!slot?.content || !slot.filename) return res.status(404).send("Organization file not found");
+    res.setHeader("Content-Type", slot.mime ?? "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${slot.filename.replace(/[\r\n"\\]/g, "_")}"`);
+    res.send(slot.content);
   });
-  app.post(
-    "/config/pack/replace",
-    requireLogin,
-    requireRole("admin"),
-    csrfCheck,
-    express.raw({ type: "application/pdf", limit: "12mb" }),
-    (req, res) => {
-      const slot = PACK_SLOTS.find((x) => x.key === String(req.query.slot ?? ""));
-      if (!slot) return res.status(400).send("Unknown pack slot.");
-      const body = req.body as Buffer;
-      if (!Buffer.isBuffer(body) || body.length < 512 || body.subarray(0, 5).toString() !== "%PDF-") {
-        return res.status(400).send("Not a PDF.");
-      }
-      repo.setOrganizationPackSlot(organizationId(req), slot.key, {
-        filename: slot.pretty,
-        mime: "application/pdf",
-        content: body,
-      });
-      repo.audit(null, req.staff!.username, "pack_file_replaced", `${slot.key} replaced (${body.length} bytes)`);
-      res.status(200).send("saved");
-    }
-  );
-
-  // ── Gmail connect (OAuth code flow; tokens stored in Settings) ───────────
-
-  // OR-4: connection controls have ONE home — Settings → Connections.
-  const settingsBack = (msg: string) => `/settings?msg=${encodeURIComponent(msg)}#connections`;
 
   app.post("/settings/gmail/credentials", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     // Saving credentials is an explicit reconnect/enable action.
@@ -2038,7 +1778,17 @@ export function createApp(deps: WebDeps): Express {
     url.searchParams.set("client_id", clientId);
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("response_type", "code");
-    url.searchParams.set("scope", "https://www.googleapis.com/auth/gmail.modify");
+    // The narrowest scope set that covers every call this product makes:
+    //   gmail.readonly -> users.messages.list / .get / .attachments.get
+    //   gmail.send     -> users.messages.send (including the stale-thread retry)
+    // gmail.modify is deliberately NOT requested: it would also grant delete,
+    // label and read/unread writes on the mailbox, and nothing here performs
+    // them. If archiving or labelling processed mail is ever added, that is a
+    // deliberate re-widening — not a default.
+    url.searchParams.set(
+      "scope",
+      "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send"
+    );
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("prompt", "consent");
     url.searchParams.set("state", state);
@@ -2190,9 +1940,20 @@ export function createApp(deps: WebDeps): Express {
   // The key is stored in the secret store (PPR P0-1), used by the extraction
   // pipeline AT ONCE (no restart, no env file). "Test key" performs a real
   // round-trip and reports exactly what happened.
+  /** The model credential the console knows: the stored secret first (that is
+   *  what Settings manages), then the environment — an infrastructure-as-code
+   *  deployment sets GEMINI_API_KEY and has no secret row at all. Reading only
+   *  the secret used to downgrade an env-configured installation to mock
+   *  reading on every boot, moments after buildAdapters had wired the real one. */
+  const geminiCredentials = (): { apiKey: string; model: string } | null => {
+    const apiKey = repo.getSecret("gemini_api_key").trim() || (process.env.GEMINI_API_KEY ?? "").trim();
+    if (!apiKey) return null;
+    const model = repo.getSetting("gemini_model", "").trim() || (process.env.GEMINI_MODEL ?? "").trim() || DEFAULT_GEMINI_MODEL;
+    return { apiKey, model };
+  };
   const rebuildAdapters = () => {
-    const key = repo.getSecret("gemini_api_key").trim();
-    if (!key) {
+    const credentials = geminiCredentials();
+    if (!credentials) {
       // N1: no key means MOCK reading — say so by actually rebuilding. The
       // old early-return left stale live Gemini adapters in place after a
       // key removal: the dead-key watcher fails closed on every Green file
@@ -2203,15 +1964,21 @@ export function createApp(deps: WebDeps): Express {
         ...ctx.adapters,
         vision: new MockVisionAdapter(),
         watcher: makeHeuristicWatcher(),
+        // No key: classification stays deterministic (the tenant's labels are
+        // still honoured by the keyword matcher).
+        categorizer: undefined,
       };
       return;
     }
-    const model = repo.getSetting("gemini_model", DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
+    const { apiKey, model } = credentials;
     try {
       const next: Adapters = {
         ...ctx.adapters,
-        vision: new BudgetedVisionAdapter(new GeminiVisionAdapter(key, model), repo.visionCacheStore()),
-        watcher: ((w) => (input) => w.watch(input))(new GeminiWatcher(key, model)),
+        vision: new BudgetedVisionAdapter(new GeminiVisionAdapter(apiKey, model), repo.visionCacheStore()),
+        watcher: ((w) => (input) => w.watch(input))(new GeminiWatcher(apiKey, model)),
+        // The same credential also powers message classification for tenants
+        // that define their own labels.
+        categorizer: geminiCategoryLabeler({ apiKey, model }),
       };
       ctx.adapters = next;
       repo.setSetting("gemini_last_error", "");
@@ -2225,6 +1992,13 @@ export function createApp(deps: WebDeps): Express {
 
   app.post("/settings/gemini", requireLogin, requireRole("admin"), csrfCheck, async (req, res) => {
     const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#connections`;
+    // The model credential is installation-wide (one key powers document
+    // reading, the watcher and classification for every tenant), and it is
+    // stored on organization 1. A second tenant's administrator must not
+    // silently rewrite — or believe they own — the whole installation's key.
+    if (ownOrganizationId(req) !== 1) {
+      return res.redirect(back("Gemini credentials are installation-wide and can only be changed from the head-office tenant."));
+    }
     const key = String(req.body.gemini_api_key ?? "").trim();
     const model = String(req.body.gemini_model ?? DEFAULT_GEMINI_MODEL).trim() || DEFAULT_GEMINI_MODEL;
     if (req.body.clear !== undefined) {
@@ -2233,8 +2007,12 @@ export function createApp(deps: WebDeps): Express {
       // N1: the message below is only true if the adapters actually go
       // back to mock — rebuild before claiming it.
       rebuildAdapters();
-      repo.audit(null, req.staff!.username, "gemini_disabled", "API key removed — back to mock reading");
-      return res.redirect(back("Gemini key removed. Document reading falls back to text/OCR only."));
+      const envStill = Boolean((process.env.GEMINI_API_KEY ?? "").trim());
+      repo.audit(null, req.staff!.username, "gemini_disabled",
+        envStill ? "API key removed from the console — the environment key is still in use" : "API key removed — back to text/OCR reading");
+      return res.redirect(back(envStill
+        ? "Gemini key removed from the console. The environment key (GEMINI_API_KEY) is still in use."
+        : "Gemini key removed. Document reading falls back to text/OCR only."));
     }
     if (!key && !repo.hasSecret("gemini_api_key")) {
       return res.redirect(back("Paste a Gemini API key first (get one free at aistudio.google.com/apikey)."));
@@ -2271,12 +2049,17 @@ export function createApp(deps: WebDeps): Express {
     }
     // PPR P1-5: sender identity + locale are organization-owned and now
     // actually applied to outgoing mail (From display name / Reply-To).
+    const inboundAddress = String(req.body.inbound_address ?? "").trim();
+    if (inboundAddress && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(inboundAddress)) {
+      return res.redirect(`/settings?msg=${encodeURIComponent("The inbound address must be a valid email address.")}#letters`);
+    }
     repo.updateOrganization(organizationId(req), {
       name, refPrefix, theme: { primary, accent },
       fromName: String(req.body.from_name ?? ""),
       replyTo: String(req.body.reply_to ?? ""),
       locale: String(req.body.locale ?? ""),
       timezone: String(req.body.timezone ?? ""),
+      inboundAddress,
     });
     repo.audit(null, req.staff!.username, "organization_identity_changed", `${name} (${primary}, ${accent})`);
     res.redirect(`/settings?msg=${encodeURIComponent("Organization identity saved.")}#letters`);
@@ -2291,7 +2074,7 @@ export function createApp(deps: WebDeps): Express {
     for (const key of [
       "institution_name", "sla_target_hours", "escalation_hours",
       "unanswered_target_hours", "followup_ladder_days", "retention_days",
-      "reg_date", "orientation_dates", "intake_hotwords",
+      "intake_hotwords",
     ]) {
       if (typeof req.body[key] !== "string") continue;
       const v = String(req.body[key]).trim();
@@ -2333,6 +2116,62 @@ export function createApp(deps: WebDeps): Express {
     res.redirect("/settings");
   });
 
+  // ── Message categories: the ONLY labels Gemini may return ───────────────
+  // Classification is a sensor: the model is handed this tenant's allow-list
+  // and its answer is rejected unless it is on it. With no labels configured,
+  // categorization stays deterministic keyword matching.
+  const WORKFLOW_CATEGORY_KEYS = [
+    "application", "document_submission", "missing_document", "fee_enquiry",
+    "general_enquiry", "follow_up", "complaint", "other",
+  ];
+  // ── Phase D3 (Q7 step 2): inbound address -> case type ───────────────────
+  // Tenant-guarded like every other configuration write: the acting admin can
+  // only ever claim an address for their OWN organization's case types, and an
+  // address another tenant already holds is refused rather than shared.
+  app.post("/config/case-type-aliases/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const orgId = ownOrganizationId(req);
+    const back = (m: string) => `/config?tab=case-types&organization=${orgId}&msg=${encodeURIComponent(m)}#aliases`;
+    const caseTypeId = Number(req.body.case_type_id);
+    const result = repo.addCaseTypeAlias(orgId, caseTypeId, String(req.body.address ?? ""));
+    if (!result.ok) return res.redirect(back(`Address was not added: ${result.reason}.`));
+    repo.audit(null, req.staff!.username, "case_type_alias_added",
+      `${result.address} → ${repo.caseTypeById(caseTypeId)?.code ?? `case type #${caseTypeId}`} (organization ${orgId})`);
+    return res.redirect(back(`Mail to ${result.address} now opens ${repo.caseTypeById(caseTypeId)?.code ?? "that case type"}.`));
+  });
+  app.post("/config/case-type-aliases/retire", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const orgId = ownOrganizationId(req);
+    const back = (m: string) => `/config?tab=case-types&organization=${orgId}&msg=${encodeURIComponent(m)}#aliases`;
+    const address = String(req.body.address ?? "").trim().toLowerCase();
+    if (!repo.retireCaseTypeAlias(orgId, address)) return res.redirect(back("Unknown address for this organization — nothing changed."));
+    repo.audit(null, req.staff!.username, "case_type_alias_retired", `${address} (record kept; it stops routing)`);
+    return res.redirect(back(`${address} no longer routes mail. The record is kept.`));
+  });
+
+  app.post("/settings/categories/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const orgId = ownOrganizationId(req);
+    const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#categories`;
+    if (!repo.getOrganization(orgId)) return res.redirect(back("Unknown organization — complete setup first."));
+    const key = String(req.body.key ?? "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 40);
+    const label = String(req.body.label ?? "").trim().slice(0, 60);
+    if (!/^[a-z0-9_]{2,40}$/.test(key)) return res.redirect(back("A category key is 2-40 characters: lowercase letters, digits, underscores."));
+    if (!label) return res.redirect(back("A category needs a label staff can read."));
+    repo.addEmailCategory(orgId, { key, label });
+    const routed = WORKFLOW_CATEGORY_KEYS.includes(key);
+    repo.audit(null, req.staff!.username, "email_category_added",
+      `${key} ("${label}")${routed ? "" : " — not a workflow category, so messages carrying it route as 'other'"}`);
+    return res.redirect(back(`Category "${label}" (${key}) added.${routed ? "" : " Note: only the eight workflow categories drive routing; a custom label is recorded and routes as 'other'."}`));
+  });
+  app.post("/settings/categories/remove", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const orgId = ownOrganizationId(req);
+    const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#categories`;
+    const key = String(req.body.key ?? "").trim();
+    if (!repo.listEmailCategories(orgId).some((row) => row.key === key)) return res.redirect(back("Unknown category — nothing changed."));
+    // Retired, not deleted: messages already labelled keep their label.
+    repo.setEmailCategoryActive(orgId, key, false);
+    repo.audit(null, req.staff!.username, "email_category_removed", `${key} (messages already labelled keep it)`);
+    return res.redirect(back(`Category "${key}" retired — it is no longer offered to the classifier.`));
+  });
+
   app.post("/settings/intake-deadline", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const name = String(req.body.name ?? "").trim();
     const deadline = String(req.body.deadline ?? "").trim();
@@ -2341,45 +2180,15 @@ export function createApp(deps: WebDeps): Express {
       // throws → 500. Validate first.
       const parsed = deadline ? new Date(`${deadline}T23:59:59Z`) : null;
       if (deadline && (parsed === null || isNaN(parsed.getTime()))) {
-        return res.redirect("/config?msg=invalid-deadline#intakes");
+        return res.redirect("/config?tab=requirements&msg=invalid-deadline#intakes");
       }
-      repo.setIntakeDeadline(name, parsed ? parsed.toISOString() : null);
+      // Upsert: a window named in mail (or typed here) may not have a row yet.
+      // An UPDATE-only write silently discarded the administrator's deadline
+      // on any installation that had no pre-seeded windows.
+      repo.addIntakeWithDeadline(name, parsed ? parsed.toISOString() : null, ownOrganizationId(req));
       repo.audit(null, req.staff!.username, "intake_deadline_changed", `${name} → ${deadline || "none"}`);
     }
-    res.redirect("/config#intakes");
-  });
-
-  // Requirement rules now speak GRADES (mean grade + subject lines) — the way
-  // the university actually publishes entry requirements. No numeric points.
-  // OR-5: document requirements are generated deterministically from the
-  // official application-form checklist — they are NOT staff-configurable.
-  // The old add/delete endpoints are gone; a stale POST (bookmark, old
-  // tab, replayed request) must get an explicit refusal, never a silent
-  // success and never a hidden write.
-  app.post("/settings/rules/add", requireLogin, requireRole("admin"), csrfCheck, (_req, res) => {
-    res.redirect("/config?msg=" + encodeURIComponent("Document requirements are generated deterministically from the application-form checklist — they cannot be added by hand. See the Requirements tab.") + "#courses");
-  });
-  app.post("/settings/rules/delete", requireLogin, requireRole("admin"), csrfCheck, (_req, res) => {
-    res.redirect("/config?msg=" + encodeURIComponent("Document requirements are generated deterministically from the application-form checklist — they cannot be removed by hand. See the Requirements tab.") + "#courses");
-  });
-
-  app.post("/settings/lists/add", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    if ((req.staff!.organization_id ?? 1) !== 1 && (req.body.prog_code || req.body.prog_name)) return res.redirect("/config?tab=case-types&msg=Use+CaseTypes+for+this+organization");
-    const added: string[] = [];
-    if (req.body.prog_code && req.body.prog_name) {
-      const school = String(req.body.prog_school ?? "").trim();
-      // OR-6: Master's and PhD are distinct levels; anything unknown
-      // falls back to "degree" rather than storing junk.
-      const lvlRaw = String(req.body.prog_level ?? "degree");
-      const level: LegacyAcademicLevel = ["degree", "diploma", "certificate", "masters", "phd"].includes(lvlRaw)
-        ? (lvlRaw as LegacyAcademicLevel)
-        : "degree";
-      repo.addProgramme(String(req.body.prog_code), String(req.body.prog_name), school, "", level);
-      added.push("programme");
-    }
-    if (req.body.intake) { repo.addIntake(String(req.body.intake)); added.push("intake"); }
-    repo.audit(null, req.staff!.username, "lists_changed", "programmes/intakes updated");
-    res.redirect("/config?msg=" + encodeURIComponent(added.length ? `Added ${added.join(" and ")}.` : "Nothing to add — fill in a programme code and name, or an intake.") + "#courses");
+    res.redirect("/config?tab=requirements#intakes");
   });
 
   // OR-7: templates moved to their own section (/templates). A stale POST to
@@ -2392,15 +2201,6 @@ export function createApp(deps: WebDeps): Express {
   // ── OR-7: Templates section — every outgoing type, one home ──────────────
   const tplBack = (key: string, m: string) =>
     `/templates?template=${encodeURIComponent(key)}&msg=${encodeURIComponent(m)}#tpl-${key}`;
-  const KNOWN_PLACEHOLDERS = [
-    "{ref}", "{name}", "{first_name}", "{missing_docs}", "{missing_docs_section}",
-    "{checklist}", "{status}", "{institution}", "{programme}", "{reg_date}",
-    "{orientation_dates}", "{read_back}", "{document_issues}",
-  ];
-  const unknownPlaceholders = (text: string): string[] => {
-    const found = text.match(/\{[a-z_]+\}/g) ?? [];
-    return [...new Set(found.filter((p) => !KNOWN_PLACEHOLDERS.includes(p)))];
-  };
 
   app.get("/templates", requireLogin, requireRole("admin"), (req, res) => {
     const key = String(req.query.template ?? "");
@@ -2418,6 +2218,14 @@ export function createApp(deps: WebDeps): Express {
     if (!name || !subject || !body) return res.redirect(tplBack(key, "Template needs a name, a subject and a body — nothing saved."));
     const packRaw = String(req.body.attach_pack ?? "none").trim() || "none";
     const caseTypeId = req.body.case_type_id !== undefined ? Number(req.body.case_type_id) || 0 : existing.case_type_id;
+    const inspection = inspectTemplate(`${subject}\n${body}`);
+    if (inspection.malformedIncludes.length || inspection.unknownPartials.length) {
+      const problems = [
+        ...inspection.unknownPartials.map((partial) => `unknown partial {{> ${partial}}}`),
+        ...inspection.malformedIncludes,
+      ];
+      return res.redirect(tplBack(key, `Template not saved: ${problems.join("; ")}. Use one of the documented partial includes.`));
+    }
     try {
       // PPR P0-5 (E3 close): upsertTemplate validates the reference against
       // this organization's OWN attachment sets — unknown refs are refused.
@@ -2426,14 +2234,14 @@ export function createApp(deps: WebDeps): Express {
       return res.redirect(tplBack(key, `Template not saved: ${(e as Error).message}`));
     }
     repo.audit(null, req.staff!.username, "template_changed", `${key}${packRaw !== "none" ? ` (+${packRaw} set)` : ""}${caseTypeId ? ` [profile #${caseTypeId}]` : ""}`);
-    const unknown = unknownPlaceholders(subject + " " + body);
+    const unknown = inspection.unknownTokens.map((token) => `{${token}}`);
     const warn = unknown.length
-      ? ` ⚠ Unknown placeholder${unknown.length === 1 ? "" : "s"} left in the text: ${unknown.join(", ")} — it will reach applicants as literal text.`
+      ? ` ⚠ Unknown placeholder${unknown.length === 1 ? "" : "s"} left in the text: ${unknown.join(", ")} — it will reach contacts as literal text.`
       : "";
     res.redirect(tplBack(key, `Template “${name}” saved.${warn}`));
   });
 
-  // PPR P0-6: templates are not a closed enum — a profile can create the
+  // PPR P0-6: templates are not a closed enum — a case type can create the
   // keys it needs. The key is a stable machine name (like a variable name).
   app.post("/templates/create", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const key = String(req.body.key ?? "").trim().toLowerCase().replace(/[^a-z0-9_]/g, "_");
@@ -2450,12 +2258,28 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(`/templates?template=${encodeURIComponent(key)}&msg=${encodeURIComponent(`Template “${name}” created — its first version is its saved default.`)}`);
   });
 
+  // Recovery for an organization created before starter templates were seeded
+  // with it (or one whose templates were deleted): idempotent, own tenant only.
+  app.post("/templates/seed-starters", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const orgId = ownOrganizationId(req);
+    if (!repo.getOrganization(orgId)) {
+      return res.redirect(`/templates?msg=${encodeURIComponent("Unknown organization — complete setup first.")}`);
+    }
+    const before = repo.listTemplates(orgId).length;
+    seedStarterTemplates(repo, orgId);
+    const added = repo.listTemplates(orgId).length - before;
+    repo.audit(null, req.staff!.username, "templates_seeded", `${added} starter template(s) added; ${before} already present`);
+    return res.redirect(`/templates?msg=${encodeURIComponent(added
+      ? `Added ${added} starter template(s) — edit the wording before anything goes out.`
+      : "Every starter template is already present — nothing was overwritten.")}`);
+  });
+
   app.post("/templates/reset", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const key = String(req.body.key ?? "");
-    // PPR P0-6: "Reset to default" restores the profile's OWN default —
+    // PPR P0-6: "Reset to default" restores the case type's OWN default —
     // the snapshot captured when the template was created — not a shared
-    // global wording. Legacy rows without a snapshot fall back to the
-    // migrated education profile's official defaults.
+    // global wording. Rows without a snapshot fall back to the shipped
+    // operational defaults.
     const snap = repo.templateDefaultSnapshot(key, organizationId(req));
     const def = snap ?? TEMPLATE_DEFAULTS[key];
     if (!def) return res.redirect(`/templates?msg=${encodeURIComponent("No default exists for that template — nothing to reset.")}`);
@@ -2467,7 +2291,7 @@ export function createApp(deps: WebDeps): Express {
 
   // ── Staff management (admin) ─────────────────────────────────────────────
 
-  // OR-8: save a staff member's ENTIRE school scope in one action.
+  // OR-8: save a staff member's ENTIRE case-type scope in one action.
   // H-3: every /staff/* route resolves its target only inside the acting
   // administrator's own organization — an org-1 admin can never act on an
   // org-2 account by guessing its id.
@@ -2475,25 +2299,25 @@ export function createApp(deps: WebDeps): Express {
     const staffId = Number(req.body.staff_id);
     const member = repo.staffInOrganization(staffId, organizationId(req));
     if (!member) return res.redirect("/staff?msg=" + encodeURIComponent("Unknown staff member — nothing saved."));
-    const raw = req.body.schools;
-    const schools = (Array.isArray(raw) ? raw : raw ? [raw] : []).map((x) => String(x).trim()).filter(Boolean);
-    // Only real schools can be scoped — a typo'd school name would silently
-    // hide cases forever otherwise.
-    const known = new Set(repo.listSchools());
-    const unknown = schools.filter((x) => !known.has(x));
+    const raw = req.body.case_types;
+    const requested = (Array.isArray(raw) ? raw : raw ? [raw] : []).map((x) => String(x).trim().toUpperCase()).filter(Boolean);
+    // Only real case types of THIS organization can be scoped — a typo'd code
+    // would silently hide cases forever otherwise.
+    const known = new Set(repo.listCaseTypes(organizationId(req)).map((t) => t.code.toUpperCase()));
+    const unknown = requested.filter((x) => !known.has(x));
     if (unknown.length) {
-      return res.redirect(`/staff?msg=${encodeURIComponent(`Unknown school(s): ${unknown.join(", ")} — nothing saved.`)}#scopes`);
+      return res.redirect(`/staff?msg=${encodeURIComponent(`Unknown case type(s): ${unknown.join(", ")} — nothing saved.`)}#scopes`);
     }
     const restoreFull = String(req.body.scope_mode ?? "") === "unscoped";
-    if (restoreFull) repo.clearScopes(staffId);
-    else repo.setScopes(staffId, schools);
+    if (restoreFull) repo.clearCaseTypeScopes(staffId);
+    else repo.setCaseTypeScopes(staffId, requested);
     repo.audit(null, req.staff!.username, "scope_changed",
-      `${member.username}: ${restoreFull ? "scope cleared (full visibility)" : schools.length ? schools.join(", ") : "no access"}`);
+      `${member.username}: ${restoreFull ? "scope cleared (full visibility)" : requested.length ? requested.join(", ") : "no access"}`);
     res.redirect(`/staff?msg=${encodeURIComponent(restoreFull
-      ? `${member.display_name}'s scope cleared — they see all schools again.`
-      : schools.length
-        ? `${member.display_name} now sees: ${schools.join(", ")}.`
-        : `${member.display_name} now has no school access until an administrator assigns one.`)}#scopes`);
+      ? `${member.display_name}'s scope cleared — they see every case type again.`
+      : requested.length
+        ? `${member.display_name} now sees: ${requested.join(", ")}.`
+        : `${member.display_name} now has no case access until an administrator assigns a case type.`)}#scopes`);
   });
 
   app.get("/staff", requireLogin, requireRole("admin"), (req, res) =>
@@ -2573,38 +2397,9 @@ export function createApp(deps: WebDeps): Express {
     res.send(staffPage(c(req), `Reset code issued for “${target.username}”.`, code));
   });
 
-  // Round 3 — per-course document checklists (checkboxes on the staff page).
-  // Saving replaces the course's configured set; a course with no rows runs
-  // on the generated matrix checklist. New applicants are checked against the
-  // live list; cases that already froze a requirement snapshot keep theirs.
-  app.post("/staff/course-docs", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    if ((req.staff!.organization_id ?? 1) !== 1) return res.redirect("/config?tab=case-types&msg=Use+CaseTypes+for+this+organization");
-    const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#courses`;
-    const programme = String(req.body.programme ?? "").trim().toUpperCase();
-    if (!repo.programmeByCode(programme)) return res.redirect(back("Unknown course — nothing changed."));
-    const raw = req.body.docs;
-    const all = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw];
-    const valid = new Set<string>(DOC_TYPES);
-    const types = all.map((x) => String(x)).filter((x) => valid.has(x) && x !== "unknown");
-    repo.saveCourseDocConfig(programme, types as DocType[]);
-    repo.audit(null, req.staff!.username, "course_docs_configured",
-      `${programme}: ${types.join(", ") || "none"}`);
-    res.redirect(back(`Required documents saved for ${programme}. New applicants are checked against this list; cases with a frozen requirement set keep theirs.`));
-  });
-
-  app.post("/staff/course-docs/reset", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    if ((req.staff!.organization_id ?? 1) !== 1) return res.redirect("/config?tab=case-types&msg=Use+CaseTypes+for+this+organization");
-    const back = (m: string) => `/staff?msg=${encodeURIComponent(m)}#courses`;
-    const programme = String(req.body.programme ?? "").trim().toUpperCase();
-    if (!repo.programmeByCode(programme)) return res.redirect(back("Unknown course — nothing changed."));
-    repo.deleteCourseDocConfig(programme);
-    repo.audit(null, req.staff!.username, "course_docs_reset", `${programme}: back to the generated checklist`);
-    res.redirect(back(`${programme} is back on the generated document checklist.`));
-  });
-
   // ── Exports (feature 38) ─────────────────────────────────────────────────
 
-  const csv = (res: Response, filename: string, header: string[], rows: Array<Array<string | number | null>>) => {
+  const csv = (res: Response, filename: string, header: string[], rows: Array<Array<string | number | null>>, opts: { note?: string } = {}) => {
     // Quote doubling for CSV, plus a leading apostrophe for cells that begin
     // with formula characters — otherwise a name like "=HYPERLINK(...)"
     // executes when staff open the export in Excel (CSV formula injection).
@@ -2613,28 +2408,33 @@ export function createApp(deps: WebDeps): Express {
       if (/^[=+\-@\t]/.test(s)) s = `'${s}`;
       return `"${s.replace(/"/g, '""')}"`;
     };
-    const body = [header, ...rows].map((r) => r.map(q).join(",")).join("\r\n");
+    const lines = [header, ...rows].map((r) => r.map(q).join(","));
+    // A leading "#" note keeps the warning INSIDE the file that leaves the
+    // building (headers are invisible once someone forwards the CSV). The
+    // evaluation harness skips comment lines before the header row.
+    const body = [...(opts.note ? [`#${opts.note}`] : []), ...lines].join("\r\n");
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.send(body);
   };
 
   app.get("/export/applicants.csv", requireLogin, requireRole("admin"), (req, res) => {
-    // Realm + school scope, like every other admin list — an admin in one
+    // Realm + case-type scope, like every other admin list — an admin in one
     // realm must not be able to pull the whole other realm's PII to CSV.
     const demo = req.staff!.demo ?? 0;
-    const schools = repo.caseScopeFor(req.staff!);
-    const rows = repo.allApplicants(demo, schools);
+    const scope = repo.caseScopeFor(req.staff!);
+    const rows = repo.allApplicants(demo, scope);
     // Two aggregate queries for the whole export — never 2N per-applicant
     // lookups on a synchronous connection.
+    const caseTypeCodes = new Map(repo.listCaseTypes(organizationId(req)).map((t) => [t.id, t.code] as [number, string]));
     const docCounts = repo.documentCountsByApplicant();
     const flagTypes = repo.activeFlagTypesByApplicant();
     csv(
       res,
       "applicants.csv",
-      ["ref_number", "name", "email", "phone", "programme", "intake", "lifecycle", "triage", "priority", "assigned_to", "active_docs", "flags", "created_at"],
+      ["ref_number", "name", "email", "phone", "case_type", "window", "lifecycle", "triage", "priority", "assigned_to", "active_docs", "flags", "created_at"],
       rows.map((a) => [
-        a.ref_number, a.full_name, a.email_address, a.phone, a.programme, a.intake, a.lifecycle, a.triage,
+        a.ref_number, a.full_name, a.email_address, a.phone, caseTypeCodes.get(a.case_type_id ?? 0) ?? "", a.intake, a.lifecycle, a.triage,
         a.priority, a.assigned_to ? repo.getStaff(a.assigned_to)?.username ?? "" : "",
         docCounts.get(a.id) ?? 0,
         (flagTypes.get(a.id) ?? []).join("; "),
@@ -2643,10 +2443,38 @@ export function createApp(deps: WebDeps): Express {
     );
   });
 
+  // Phase D1 (Q6): the labelled-measurement input for scripts/eval-classifier.ts.
+  // Admin-only, this organization's mail only, capped, audited, and marked as
+  // the personal data it is — an export of message bodies is the most sensitive
+  // file this console can produce.
+  const LABELS_DEFAULT_LIMIT = 200;
+  const LABELS_MAX_LIMIT = 1000;
+  app.get("/export/labels.csv", requireLogin, requireRole("admin"), (req, res) => {
+    const orgId = ownOrganizationId(req);
+    const requested = Number(req.query.limit ?? LABELS_DEFAULT_LIMIT);
+    const limit = Number.isFinite(requested) && requested > 0
+      ? Math.min(Math.floor(requested), LABELS_MAX_LIMIT)
+      : LABELS_DEFAULT_LIMIT;
+    const rows = repo.labelableMessages(orgId, limit);
+    repo.audit(null, req.staff!.username, "labels_exported",
+      `${rows.length} inbound message(s) of organization ${orgId} (limit ${limit}) — the file contains message text, i.e. personal data`);
+    // Header values must stay ASCII (Node rejects anything else).
+    res.setHeader("X-Personal-Data", "real message subjects and bodies - handle per README.md#classifier-evaluation-and-personal-data-handling");
+    csv(
+      res,
+      "labels.csv",
+      ["id", "subject", "body", "true_category"],
+      rows.map((r) => [r.id, r.subject, r.body, ""]),
+      {
+        note: " PERSONAL DATA: real subjects and bodies. Remove names, phone numbers, addresses, ID/reference numbers and account numbers before this file leaves your machine; keep it out of version control (labels/ and *.labels.csv are git-ignored) and delete it after labelling. Fill true_category with one of the eight keys using the tie-breaks in README.md#classifier-evaluation-and-personal-data-handling, then score it with scripts/eval-classifier.ts. true_category is deliberately blank: labelling before reading the machine's answer is what makes the measurement honest.",
+      }
+    );
+  });
+
   app.get("/export/queue.csv", requireLogin, requireRole("admin"), (req, res) => {
     const demo = req.staff!.demo ?? 0;
-    const schools = repo.caseScopeFor(req.staff!);
-    const rows = repo.queueView(demo, schools);
+    const scope = repo.caseScopeFor(req.staff!);
+    const rows = repo.queueView(demo, scope);
     csv(
       res,
       "review-queue.csv",
@@ -2660,8 +2488,8 @@ export function createApp(deps: WebDeps): Express {
     // are institution-level and always included; applicant rows must belong
     // to an applicant visible to this realm.
     const demo = req.staff!.demo ?? 0;
-    const schools = repo.caseScopeFor(req.staff!);
-    const visible = new Set(repo.allApplicants(demo, schools).map((a) => a.id));
+    const scope = repo.caseScopeFor(req.staff!);
+    const visible = new Set(repo.allApplicants(demo, scope).map((a) => a.id));
     const rows = repo
       .recentAudit(10000)
       .filter((r) => r.applicant_id === null || visible.has(r.applicant_id));
@@ -2676,7 +2504,7 @@ export function createApp(deps: WebDeps): Express {
     const q = String(req.query.q ?? "").trim();
     if (!q) return res.json({ applicants: [] });
     res.json({
-      applicants: repo.searchApplicants({ q, limit: 8, demo: req.staff!.demo, schools: repo.caseScopeFor(req.staff!) }).map((a) => ({
+      applicants: repo.searchApplicants({ q, limit: 8, demo: req.staff!.demo, caseTypes: repo.caseScopeFor(req.staff!) }).map((a) => ({
         id: a.id,
         ref_number: a.ref_number,
         name: a.full_name ?? "",
@@ -2711,6 +2539,13 @@ export function createApp(deps: WebDeps): Express {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: unknown, req: Request, res: Response, _next: unknown) => {
     log(`unhandled error on ${req.method} ${req.path}: ${(err as Error)?.stack ?? err}`, "error");
+    // Persist only a minimal, tenant-attributable incident marker. The full
+    // stack/message stays in the process log and is never copied into the
+    // shared tenant audit surface where it could contain secrets or PII.
+    try {
+      const errorName = err instanceof Error ? err.name : "UnknownError";
+      repo.audit(null, req.staff?.username ?? "system", "server_error", `${req.method} ${req.path} — ${errorName}`);
+    } catch { /* the console log above remains authoritative if the DB is down */ }
     if (res.headersSent) return;
     if (req.path.startsWith("/api/")) {
       return res.status(500).json({ ok: false, error: "internal error" });
@@ -2728,7 +2563,36 @@ export function createApp(deps: WebDeps): Express {
     }));
   });
 
+  guardAsyncRoutes(app);
   return app;
+}
+
+type AnyHandler = (req: never, res: never, next: never) => unknown;
+interface RouteEntry { handle: AnyHandler }
+interface RouterLayer { route?: { stack: RouteEntry[] }; handle?: AnyHandler }
+
+/**
+ * Express 4 never forwards a REJECTED PROMISE from an `async` handler to the
+ * error middleware: the request simply hangs until the client gives up (a
+ * three-minute spinner for a one-line SQL mistake, and no log line). Wrapping
+ * every registered async handler turns any throw into a normal error response
+ * — the last-resort handler above still decides what the user sees.
+ */
+export function guardAsyncRoutes(app: Express): void {
+  const router = (app as unknown as { _router?: { stack?: RouterLayer[] } })._router;
+  const wrap = (handle: AnyHandler): AnyHandler =>
+    ((req, res, next) => { Promise.resolve(handle(req, res, next)).catch(next); }) as AnyHandler;
+  for (const layer of router?.stack ?? []) {
+    if (layer.route) {
+      for (const entry of layer.route.stack) {
+        if (entry.handle?.constructor?.name === "AsyncFunction") entry.handle = wrap(entry.handle);
+      }
+      continue;
+    }
+    // Plain middleware (app.use) — error handlers take four arguments and must
+    // stay untouched, or Express stops recognising them as error handlers.
+    if (layer.handle?.constructor?.name === "AsyncFunction" && layer.handle.length <= 3) layer.handle = wrap(layer.handle);
+  }
 }
 
 /** Escalation sweep (feature 29) — runs on an interval in serve mode. */

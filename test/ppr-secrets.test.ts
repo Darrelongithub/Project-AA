@@ -96,6 +96,7 @@ describe("PPR P0-1: secrets never flow through settings", () => {
 describe("PPR P1-5: sender identity is wired into outgoing mail", () => {
   it("applies the organization From name and Reply-To on every send", async () => {
     const repo = fresh();
+    repo.createOrganization({ name: "People Operations", refPrefix: "HR" });
     repo.updateOrganization(1, { fromName: "People Operations Desk", replyTo: "intake@example.test" });
     const sender = new MockSender();
     const identity = organizationSender(repo, 1);

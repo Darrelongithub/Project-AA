@@ -14,7 +14,7 @@ import { hashPassword } from "../src/util/password";
 import { createApp } from "../src/web/server";
 import type { PipelineContext } from "../src/pipeline/adapters";
 import { MockSender } from "../src/pipeline/adapters";
-import { webLogin } from "./helpers";
+import { configureTestOrganization, webLogin } from "./helpers";
 
 let repo: Repo;
 let sender: MockSender;
@@ -23,6 +23,7 @@ let server: ReturnType<ReturnType<typeof createApp>["listen"]>;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  configureTestOrganization(repo);
   repo.createStaff("admin", "Mail Admin", hashPassword("admin123"), "admin");
   sender = new MockSender();
 });
@@ -37,17 +38,15 @@ async function startServer(): Promise<{ base: string; cookie: string; csrf: stri
   return { base, cookie, csrf };
 }
 
-function mkApplicant(email: string, thread: string, name: string, opts: Record<string, unknown> = {}): number {
-  const a = repo.getOrCreateApplicant(email, thread, { fullName: name });
-  if (Object.keys(opts).length) repo.updateApplicant(a.id, opts);
-  return a.id;
+function mkCase(email: string, thread: string, name: string, caseTypeCode?: string): number {
+  return repo.createCase({ emailAddress: email, threadId: thread, organizationId: 1, fullName: name, caseTypeCode }).id;
 }
 
 function mail(applicantId: number, direction: "in" | "out", subject: string, body: string, thread: string, at: string, attachments: string[] = []): void {
   repo.insertEmail({
     applicant_id: applicantId, message_id: `m-${Math.random().toString(36).slice(2)}`, thread_id: thread,
-    direction, from_addr: direction === "in" ? "them@example.org" : "noreply@riara.ac.ke",
-    to_addr: direction === "in" ? "admissions@riara.ac.ke" : "them@example.org",
+    direction, from_addr: direction === "in" ? "them@example.org" : "noreply@example.org",
+    to_addr: direction === "in" ? "intake@example.org" : "them@example.org",
     subject, body, category: null, auto: 0, at, attachments,
   });
 }
@@ -62,29 +61,29 @@ describe("the Gmail-style mail window", () => {
   });
 
   it("groups conversations by thread like Gmail: latest subject, snippet, message count", async () => {
-    const aid = mkApplicant("amara@example.org", "thr-amara", "Amara Nurse");
-    mail(aid, "in", "Application enquiry", "Hello, I would like to apply for nursing. Here is my question about entry requirements.", "thr-amara", "2026-09-18T09:00:00Z");
-    mail(aid, "out", "Re: Application enquiry", "Thank you for your enquiry — please find the requirements attached.", "thr-amara", "2026-09-18T10:00:00Z");
-    mail(aid, "in", "Re: Application enquiry", "Thanks so much, sending my documents today.", "thr-amara", "2026-09-19T08:00:00Z");
-    const bid = mkApplicant("biko@example.org", "thr-biko", "Biko Otieno");
-    mail(bid, "in", "Transfer question", "I want to transfer into your IT programme.", "thr-biko", "2026-09-17T09:00:00Z");
+    const aid = mkCase("amara@example.org", "thr-amara", "Amara Njoki");
+    mail(aid, "in", "Service enquiry", "Hello, I would like to request a service. Here is my question about what you need from me.", "thr-amara", "2026-09-18T09:00:00Z");
+    mail(aid, "out", "Re: Service enquiry", "Thank you for your enquiry — please find the requirements attached.", "thr-amara", "2026-09-18T10:00:00Z");
+    mail(aid, "in", "Re: Service enquiry", "Thanks so much, sending my documents today.", "thr-amara", "2026-09-19T08:00:00Z");
+    const bid = mkCase("biko@example.org", "thr-biko", "Biko Otieno");
+    mail(bid, "in", "Schedule question", "I want to move my service to a different schedule.", "thr-biko", "2026-09-17T09:00:00Z");
 
     const { base, cookie } = await startServer();
     const page = await (await fetch(`${base}/mail`, { headers: { cookie } })).text();
     // thread 1 collapsed to ONE row carrying the latest subject + count of 3
-    expect(page).toContain("Re: Application enquiry");
+    expect(page).toContain("Re: Service enquiry");
     expect(page).toContain("Thanks so much, sending my documents today.");
     expect(page).toMatch(/\(3\)/);
     // the older first subject must not appear as its own row
-    expect(page.split("Application enquiry").length - 1).toBeLessThanOrEqual(3); // subject mentions only inside the one row
+    expect(page.split("Service enquiry").length - 1).toBeLessThanOrEqual(3); // subject mentions only inside the one row
     // thread 2 present
-    expect(page).toContain("Transfer question");
+    expect(page).toContain("Schedule question");
     // newest conversation first
-    expect(page.indexOf("thr-amara-link") !== -1 ? true : page.indexOf("Re: Application enquiry")).toBeLessThan(page.indexOf("Transfer question"));
+    expect(page.indexOf("thr-amara-link") !== -1 ? true : page.indexOf("Re: Service enquiry")).toBeLessThan(page.indexOf("Schedule question"));
   });
 
   it("treats new incoming mail as unread until the conversation is opened", async () => {
-    const aid = mkApplicant("fresh@example.org", "thr-fresh", "Fresh Applicant");
+    const aid = mkCase("fresh@example.org", "thr-fresh", "Fresh Contact");
     mail(aid, "in", "Brand new unread message", "I just wrote in.", "thr-fresh", "2026-09-19T07:00:00Z");
 
     const { base, cookie } = await startServer();
@@ -104,16 +103,16 @@ describe("the Gmail-style mail window", () => {
   });
 
   it("shows the whole conversation both directions, attachments, and a same-tab reply", async () => {
-    const aid = mkApplicant("convo@example.org", "thr-convo", "Convo Person");
+    const aid = mkCase("convo@example.org", "thr-convo", "Convo Person");
     mail(aid, "in", "Documents attached?", "Are my documents there?", "thr-convo", "2026-09-18T09:00:00Z");
-    mail(aid, "out", "Yes — admission letter sent", "Please find everything attached.", "thr-convo", "2026-09-18T09:30:00Z", ["Admission-Letter.pdf", "Hostels-List.pdf"]);
+    mail(aid, "out", "Yes — the information pack went out", "Please find everything attached.", "thr-convo", "2026-09-18T09:30:00Z", ["Information-Pack.pdf", "Price-List.pdf"]);
 
     const { base, cookie } = await startServer();
     const page = await (await fetch(`${base}/mail/thread/thr-convo`, { headers: { cookie } })).text();
     expect(page).toContain("Are my documents there?");
     expect(page).toContain("Please find everything attached.");
-    expect(page).toContain("Admission-Letter.pdf");
-    expect(page).toContain("Hostels-List.pdf");
+    expect(page).toContain("Information-Pack.pdf");
+    expect(page).toContain("Price-List.pdf");
     // reply affordance opens the composer for this case in the same tab
     const reply = page.match(/<a[^>]*href="\/compose\?case=\d+"[^>]*>/);
     expect(reply).toBeTruthy();
@@ -123,9 +122,9 @@ describe("the Gmail-style mail window", () => {
   });
 
   it("searches across conversations", async () => {
-    const aid = mkApplicant("s1@example.org", "thr-s1", "Search One");
+    const aid = mkCase("s1@example.org", "thr-s1", "Search One");
     mail(aid, "in", "Needle in haystack", "unique-needle-token appears here", "thr-s1", "2026-09-18T09:00:00Z");
-    const bid = mkApplicant("s2@example.org", "thr-s2", "Search Two");
+    const bid = mkCase("s2@example.org", "thr-s2", "Search Two");
     mail(bid, "in", "Nothing relevant", "plain ordinary text", "thr-s2", "2026-09-18T09:00:00Z");
 
     const { base, cookie } = await startServer();
@@ -136,21 +135,15 @@ describe("the Gmail-style mail window", () => {
 });
 
 describe("mail window scoping", () => {
-  it("scoped staff see only their own schools' mail and cannot open other threads", async () => {
-    const progs = repo.listProgrammes();
-    const schoolA = repo.listSchools()[0];
-    const progA = progs.find((p) => p.school === schoolA)!;
-    const otherSchool = repo.listSchools().find((s) => s !== schoolA)!;
-    const progB = progs.find((p) => p.school === otherSchool) ?? progs[progs.length - 1];
-
-    const mineId = mkApplicant("mine-mail@example.org", "thr-mine", "Mine Person", { programme: progA.code });
-    const theirsId = mkApplicant("theirs-mail@example.org", "thr-theirs", "Theirs Person", { programme: progB.code });
+  it("scoped staff see only their own case types' mail and cannot open other threads", async () => {
+    const mineId = mkCase("mine-mail@example.org", "thr-mine", "Mine Person", "SERVICE_REQUEST");
+    const theirsId = mkCase("theirs-mail@example.org", "thr-theirs", "Theirs Person", "VENDOR_INTAKE");
     mail(mineId, "in", "Our conversation", "mine body", "thr-mine", "2026-09-18T09:00:00Z");
     mail(theirsId, "in", "Their secret conversation", "theirs body", "thr-theirs", "2026-09-18T09:00:00Z");
 
     repo.createStaff("scoped", "Scoped Mailer", hashPassword("scoped-pass-1"), "user");
     const officer = repo.getStaffByUsername("scoped")!;
-    repo.setScopes(officer.id, [schoolA]);
+    repo.setCaseTypeScopes(officer.id, ["SERVICE_REQUEST"]);
 
     const ctx: PipelineContext = { repo, adapters: { vision: null as never, watcher: null as never, sender } };
     const app = createApp({ repo, ctx });
@@ -164,7 +157,7 @@ describe("mail window scoping", () => {
 
     const peek = await fetch(`${base}/mail/thread/thr-theirs`, { headers: { cookie } });
     expect(peek.status).toBe(403);
-    expect(await peek.text()).toMatch(/outside your assigned schools/i);
+    expect(await peek.text()).toMatch(/outside your assigned case types/i);
 
     const own = await fetch(`${base}/mail/thread/thr-mine`, { headers: { cookie } });
     expect(own.status).toBe(200);

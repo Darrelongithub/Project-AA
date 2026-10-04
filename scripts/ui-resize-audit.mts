@@ -40,7 +40,7 @@ async function main() {
   await Promise.all([page.waitForNavigation(), page.click('button.btn')]);
 
   const caseId = repo.searchApplicants({})[0]?.id;
-  const routes = ["/", "/applicants", "/admissions", "/staff", "/config", "/settings", "/account", caseId ? `/case/${caseId}` : "/"];
+  const routes = ["/", "/applicants", "/mail", "/staff", "/config", "/settings", "/account", caseId ? `/case/${caseId}` : "/"];
   const widths = [1280, 1024, 768, 480, 360];
   let failures = 0;
 

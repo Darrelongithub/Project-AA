@@ -9,7 +9,7 @@ import { hashPassword } from "../src/util/password";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
-import { evaluateCaseTypeRules } from "../src/admissions/evaluate";
+import { evaluateCaseTypeRules } from "../src/rules/caseType";
 import { classifyWithConfiguredCategories } from "../src/categorize";
 import { processEmail } from "../src/pipeline";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
@@ -26,12 +26,15 @@ function fresh(): Repo {
 describe("CTR — CaseType round", () => {
   it("keeps references and template preview data organization-owned", () => {
     const repo = fresh();
+    // A fresh boot has no tenants at all: both organizations are created here.
+    const primary = repo.createOrganization({ name: "Example Service Cooperative", refPrefix: "ORG" });
+    repo.createCaseType(primary.id, { code: "GENERAL", name: "General", category: "general" });
     const org = repo.createOrganization({ name: "People Operations", refPrefix: "HR" });
     const hr = repo.createCaseType(org.id, { code: "HR_ONBOARDING", name: "HR onboarding", category: "people" });
     const a = repo.createCase({ emailAddress: "a@example.test", threadId: "a", organizationId: org.id, caseTypeCode: hr.code });
-    const b = repo.createCase({ emailAddress: "b@example.test", threadId: "b", organizationId: 1, caseTypeCode: "GENERAL" });
+    const b = repo.createCase({ emailAddress: "b@example.test", threadId: "b", organizationId: primary.id, caseTypeCode: "GENERAL" });
     expect(a.ref_number).toMatch(/^HR-\d{4}-\d{6}$/);
-    expect(b.ref_number).toMatch(/^RU-\d{4}-\d{6}$/);
+    expect(b.ref_number).toMatch(/^ORG-\d{4}-\d{6}$/);
     expect(repo.organizationRefPrefix(org.id)).toBe("HR");
   });
 

@@ -20,16 +20,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { hashPassword } from "../src/util/password";
 import { createApp } from "../src/web/server";
 import { processEmail } from "../src/pipeline";
 import { GeminiWatcher } from "../src/watcher";
 import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
-import { makeTextPdf, docLines } from "../src/simulation/pdfFactory";
+import {makeTextPdf } from "../src/simulation/pdfFactory";
 import type { Attachment, IncomingEmail, WatcherInput } from "../src/types";
-import { webLogin } from "./helpers";
+import {webLogin, configureTestOrganization, docLines } from "./helpers";
 
 let repo: Repo;
 let sender: MockSender;
@@ -39,7 +38,7 @@ let server: ReturnType<ReturnType<typeof createApp>["listen"]>;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  configureTestOrganization(repo);
   sender = new MockSender();
   ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
 });
@@ -47,7 +46,7 @@ beforeEach(() => {
 afterEach(() => { server?.close(); });
 
 const mkEmail = (id: string, from: string, attachments: Attachment[]): IncomingEmail => ({
-  id, threadId: `thread-${from}`, from, subject: "Application documents", body: "Please find attached.",
+  id, threadId: `thread-${from}`, from, subject: "Service request documents", body: "Please find my request form attached.",
   receivedAt: "2026-09-18T09:00:00Z", attachments,
 });
 
@@ -69,7 +68,7 @@ describe("finding 1 — gemini watcher timeout", () => {
 
 describe("finding 2 — processed-claim race", () => {
   it("two concurrent runs of the same email process it EXACTLY ONCE", async () => {
-    const att = await mkAtt("a.pdf", "academic_cert", "Race Person");
+    const att = await mkAtt("a.pdf", "request_form", "Race Person");
     const email = mkEmail("race-email-1", "race@example.org", [att]);
     const [r1, r2] = await Promise.all([processEmail(email, ctx), processEmail(email, ctx)]);
     const processed = [r1, r2].filter((r) => !r.skipped);
@@ -88,7 +87,7 @@ describe("finding 2 — processed-claim race", () => {
     (repo as unknown as { insertEmail: typeof original }).insertEmail = () => {
       throw new Error("disk exploded mid-pipeline");
     };
-    const att = await mkAtt("a.pdf", "academic_cert", "Crash Person");
+    const att = await mkAtt("a.pdf", "request_form", "Crash Person");
     const email = mkEmail("crash-email-1", "crash@example.org", [att]);
     await expect(processEmail(email, ctx)).rejects.toThrow("disk exploded mid-pipeline");
     expect(repo.isProcessed("crash-email-1")).toBe(false); // claim released → next poll retries
@@ -97,7 +96,7 @@ describe("finding 2 — processed-claim race", () => {
 
 describe("finding 3 — no -1 sentinel", () => {
   it("a skipped result carries NO applicant handle at all", async () => {
-    const att = await mkAtt("a.pdf", "academic_cert", "Skip Person");
+    const att = await mkAtt("a.pdf", "request_form", "Skip Person");
     const email = mkEmail("skip-email-1", "skip@example.org", [att]);
     const first = await processEmail(email, ctx);
     expect(first.skipped ?? false).toBe(false); // processed; the union says skipped is absent on success

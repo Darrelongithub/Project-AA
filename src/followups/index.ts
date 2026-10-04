@@ -10,9 +10,9 @@
  * Every reminder is factual (the checklist is recomputed from reality at rung
  * time) — if the file became complete meanwhile, the ladder quietly stops.
  *
- * Reminders are never auto-sent: an applicant with outstanding documents is
- * not fully qualified, so each rung produces a SUGGESTED reply held for staff
- * (special acceptance may apply). Returns the number of rungs processed.
+ * Reminders are never auto-sent unless a rule says so and the case type's
+ * evidence gate is off: outstanding information always produces a SUGGESTED
+ * reply held for staff by default. Returns the number of rungs processed.
  */
 import type { Repo } from "../db/repo";
 import type { PipelineContext, SendExtras } from "../pipeline/adapters";
@@ -68,15 +68,18 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
         continue;
       }
       const organizationId = a.organization_id ?? 1;
-      // PPR P1-3: the RULE that armed the ladder decided how each rung responds
-      // (send / draft / approve / hold / none). Default "hold" preserves the
-      // migrated education behaviour; "send" is additionally subject to the
-      // profile's qualification gate — gate-on profiles keep holding.
+      // PPR P1-3: the RULE that armed the ladder decides how each rung responds
+      // (send / draft / approve / hold / none). Default "hold" keeps every rung
+      // with a person; "send" is additionally subject to the case type's
+      // evidence gate — gate-on types keep holding.
       const rungAction = (a as { followup_action?: string }).followup_action ?? "hold";
       const caseType = repo.caseTypeForCase(a.id);
-      const gateOn = (caseType?.qualification_gate ?? 1) !== 0;
-      // P1-9: the rung wording comes from the case's own profile templates —
-      // a generic profile never inherits the education template vocabulary.
+      const gateOn = (caseType?.evidence_gate ?? 1) !== 0;
+      // The global draft-first switch governs EVERY outgoing reply, including
+      // reminder rungs: a rule that says "send" cannot outvote it.
+      const globalAuto = repo.automationAllowedGlobally();
+      // P1-9: the rung wording comes from the case's own templates — a case
+      // type never inherits another type's vocabulary.
       const tpl = repo.getTemplate("missing_documents", organizationId, caseType?.id);
       if (rungAction === "none") {
         repo.audit(a.id, "system", "followup_action_none", `rung ${rung}/${ladder.length - 1} skipped (rule follow-up action = do nothing)`);
@@ -93,13 +96,17 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
           statusLabel: LIFECYCLE_LABELS[a.lifecycle],
         });
         const subject = rung === ladder.length - 1 ? `[FINAL REMINDER] ${rendered.subject}` : `[REMINDER] ${rendered.subject}`;
-        if (rungAction === "send" && !gateOn) {
-          // Explicit rule action + un-gated profile: the reminder goes out.
+        if (rungAction === "send" && !gateOn && globalAuto) {
+          // Explicit rule action + un-gated case type + the global switch
+          // released: the reminder goes out.
           const extras: SendExtras = { banner: emailBanner(repo, organizationId), attachments: [], ...organizationSender(repo, organizationId) };
           try {
             await ctx.adapters.sender.send(a.email_address, subject, rendered.body, "", extras);
             repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "auto", template_key: "missing_documents" });
             repo.audit(a.id, "system", "followup_sent", `rung ${rung}/${ladder.length - 1} reminder sent (${subject})`);
+            if (ctx.adapters.sender.delivers === false) {
+              repo.audit(a.id, "system", "email_not_delivered", `recorded only — no mail connection is configured, so "${subject}" was NOT delivered to ${a.email_address}`);
+            }
             log(`followups: ${a.ref_number} rung ${rung} reminder sent`);
           } catch (e) {
             repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
@@ -117,7 +124,7 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
           repo.audit(a.id, "system", "followup_awaiting_approval", `rung ${rung}/${ladder.length - 1} queued for approval (${subject})`);
           log(`followups: ${a.ref_number} rung ${rung} reminder awaiting approval`);
         } else {
-          // "hold" (education default) or "send" on a gate-on profile: anyone
+          // "hold" (generic default) or "send" on a gate-on profile: anyone
           // on the reminder ladder still has documents outstanding — by
           // definition NOT fully qualified. Held as a staff suggestion.
           repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
@@ -135,7 +142,7 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
         continue;
       }
       repo.setLifecycle(a.id, "awaiting_review", "system", "follow-up ladder exhausted — documents still outstanding");
-      repo.notify("review_needed", `${a.ref_number}: applicant did not respond to ${ladder.length - 1} reminders — staff follow-up needed`, a.id);
+      repo.notify("review_needed", `${a.ref_number}: no response to ${ladder.length - 1} reminders — staff follow-up needed`, a.id);
       repo.audit(a.id, "system", "followup_exhausted", "escalated to staff after full reminder ladder");
       log(`followups: ${a.ref_number} ladder exhausted → human review`, "warn");
     }

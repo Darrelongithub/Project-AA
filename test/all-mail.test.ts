@@ -17,7 +17,7 @@ import { hashPassword } from "../src/util/password";
 import { createApp } from "../src/web/server";
 import type { PipelineContext } from "../src/pipeline/adapters";
 import { MockSender } from "../src/pipeline/adapters";
-import { webLogin } from "./helpers";
+import { webLogin, configureTestOrganization } from "./helpers";
 
 let repo: Repo;
 let server: ReturnType<ReturnType<typeof createApp>["listen"]>;
@@ -27,6 +27,7 @@ let admin: { cookie: string; csrf: string };
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
+  configureTestOrganization(repo);
   repo.createStaff("admin", "Mail Admin", hashPassword("admin123"), "admin");
   const sender = new MockSender();
   const ctx: PipelineContext = { repo, adapters: { vision: null as never, watcher: null as never, sender } };
@@ -55,7 +56,7 @@ function historyThreads(count: number): void {
       thread_id: `hist-th-${nn}`,
       direction: "in",
       from_addr: "history@students.ac.ke",
-      to_addr: "admissions@riara.ac.ke",
+      to_addr: "intake@example.org",
       subject: `History ${nn}`,
       body: `Convo ${nn}`,
       category: "other",
@@ -72,7 +73,7 @@ function park(subject: string, tkey: string, from = "parked@stranger.com"): void
     thread_id: tkey,
     direction: "in",
     from_addr: from,
-    to_addr: "admissions@riara.ac.ke",
+    to_addr: "intake@example.org",
     subject,
     body: "Parked non-intake mail.",
     category: "other",

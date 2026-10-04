@@ -22,10 +22,9 @@ import * as http from "node:http";
 import { Repo } from "../src/db/repo";
 import { openDb } from "../src/db/db";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { createApp } from "../src/web/server";
 import { hashPassword } from "../src/util/password";
-import { webLogin } from "./helpers";
+import {webLogin, configureTestOrganization } from "./helpers";
 import type { PipelineContext } from "../src/pipeline/adapters";
 import type { Server } from "http";
 
@@ -35,7 +34,7 @@ let server: Server | undefined;
 beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  configureTestOrganization(repo);
   repo.createStaff("admin", "OAuth Admin", hashPassword("admin123"), "admin");
 });
 afterEach(() => { server?.close(); server = undefined; });
@@ -60,12 +59,12 @@ describe("D1 — OAuth redirect_uri is never a bare bind address", () => {
     expect(await redirectUri("http", "[::]:8080")).toBe("http://localhost:8080/settings/gmail/callback");
     expect(await redirectUri("http", "localhost:8080")).toBe("http://localhost:8080/settings/gmail/callback");
     expect(await redirectUri("http", "127.0.0.1:8080")).toBe("http://127.0.0.1:8080/settings/gmail/callback");
-    expect(await redirectUri("https", "admissions.example.ke")).toBe("https://admissions.example.ke/settings/gmail/callback");
+    expect(await redirectUri("https", "intake.example.org")).toBe("https://intake.example.org/settings/gmail/callback");
   });
 
   it("helper: a configured public base URL wins (reverse proxy / HTTPS), trailing slashes trimmed", async () => {
-    repo.setSetting("gmail_public_base_url", "https://admissions.riara.ac.ke/");
-    expect(await redirectUri("http", "0.0.0.0:8080")).toBe("https://admissions.riara.ac.ke/settings/gmail/callback");
+    repo.setSetting("gmail_public_base_url", "https://intake.example.org/");
+    expect(await redirectUri("http", "0.0.0.0:8080")).toBe("https://intake.example.org/settings/gmail/callback");
   });
 
   it("route: connecting from a 0.0.0.0 visit hands Google a localhost redirect_uri", async () => {
@@ -108,5 +107,41 @@ describe("D2 — the mailbox-label field is gone; the watcher always reads the i
     expect(res.status).toBe(302);
     expect(repo.getSetting("gmail_client_id", "")).toBe("cid");
     expect(repo.getSetting("gmail_label", "")).toBe(""); // ← ignored from now on
+  });
+});
+
+describe("D3 — the connect flow requests the narrowest scope that works", () => {
+  it("asks Google for gmail.readonly + gmail.send, and never gmail.modify", async () => {
+    repo.setSetting("gmail_client_id", "pilot-client-id");
+    repo.setSecret("gmail_client_secret", "GOCSPX-not-a-real-secret");
+    const base = await boot();
+    const { cookie } = await webLogin(base, "admin", "admin123");
+    const res = await fetch(`${base}/settings/gmail/connect`, { headers: { cookie }, redirect: "manual" });
+    expect(res.status).toBe(302);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.origin + location.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
+    expect(location.searchParams.get("scope")).toBe(
+      "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send"
+    );
+    expect(location.searchParams.get("scope")).not.toContain("gmail.modify");
+    // A refresh token requires both of these; losing either breaks ingestion.
+    expect(location.searchParams.get("access_type")).toBe("offline");
+    expect(location.searchParams.get("prompt")).toBe("consent");
+    // The anti-CSRF state is random and stored for the callback to check.
+    const state = location.searchParams.get("state")!;
+    expect(state).toMatch(/^[0-9a-f]{32}$/);
+    expect(repo.getSetting("gmail_oauth_state", "")).toBe(state);
+    expect(location.searchParams.get("client_id")).toBe("pilot-client-id");
+    // The secret never travels in the URL.
+    expect(res.headers.get("location")).not.toContain("GOCSPX-not-a-real-secret");
+  });
+
+  it("refuses to start the flow without a client id", async () => {
+    const base = await boot();
+    const { cookie } = await webLogin(base, "admin", "admin123");
+    const res = await fetch(`${base}/settings/gmail/connect`, { headers: { cookie }, redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(decodeURIComponent(res.headers.get("location")!)).toContain("Save the OAuth client ID and secret first.");
+    expect(res.headers.get("location")).not.toContain("accounts.google.com");
   });
 });

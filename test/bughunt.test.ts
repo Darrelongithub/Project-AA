@@ -4,10 +4,10 @@
  */
 import { describe, expect, it } from "vitest";
 import { hashPassword } from "../src/util/password";
+import { configureTestOrganization } from "./helpers";
 import { openDb } from "../src/db/db";
 import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
-import { DEFAULT_REQUIREMENTS } from "../src/config";
 import { extractPhone } from "../src/enrich";
 import { resolveIdentity } from "../src/matching/identity";
 import { parseCookies } from "../src/web/auth";
@@ -20,38 +20,53 @@ import type { IncomingEmail } from "../src/types";
 function freshRepo(): Repo {
   const repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
-  repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
+  configureTestOrganization(repo);
   return repo;
 }
 
-describe("bug: requirement-rule upsert duplicated every base rule (NULLs in UNIQUE)", () => {
-  it("re-seeding base requirements never duplicates rows", () => {
+
+describe("bug: configuration writes duplicated rows (NULLs in UNIQUE)", () => {
+  it("re-saving a document checklist keeps exactly one row per slot", () => {
     const repo = freshRepo();
-    repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
-    repo.seedBaseRequirements(DEFAULT_REQUIREMENTS);
-    const baseRules = repo.listRules().filter((r) => r.programme === null && r.intake === null);
-    expect(baseRules.length).toBe(DEFAULT_REQUIREMENTS.length);
+    const type = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    const definitions = [
+      { key: "request_form", label: "Request form", required: true, blocking: true },
+      { key: "id", label: "Identity document", required: true, blocking: true },
+    ];
+    repo.replaceDocumentDefinitions(type.id, definitions);
+    repo.replaceDocumentDefinitions(type.id, definitions);
+    repo.upsertDocumentDefinition(type.id, { key: "id", label: "Photo ID", required: false, blocking: true });
+    const rows = repo.listDocumentDefinitions(type.id);
+    expect(rows.map((row) => row.key)).toEqual(["request_form", "id"]);
+    expect(rows.find((row) => row.key === "id")).toMatchObject({ label: "Photo ID", required: false });
   });
 
-  it("upsertRule on an All-programmes/All-intakes rule is idempotent", () => {
+  it("saving the same workflow rule twice updates it instead of duplicating", () => {
     const repo = freshRepo();
-    const rule = { programme: null, intake: null, document_type: "academic_cert" as const, required: true, meanGrade: null };
-    repo.upsertRule(rule);
-    repo.upsertRule({ ...rule, required: false });
-    const rows = repo.listRules().filter((r) => r.programme === null && r.intake === null && r.document_type === "academic_cert");
-    expect(rows.length).toBe(1);
-    expect(rows[0].required).toBe(false);
+    const type = repo.getCaseType("VENDOR_INTAKE", 1)!;
+    const input = {
+      organizationId: 1, caseTypeId: type.id, kind: "response" as const, name: "Draft a vendor acknowledgement", position: 0,
+      conditions: [{ field: "always" as const, value: true as const }],
+      action: { reply_action: "draft" as const, template_key: "ack_received" },
+    };
+    const first = repo.saveWorkflowRule(input);
+    const second = repo.saveWorkflowRule({ ...input, action: { reply_action: "draft", template_key: "status_answer" } });
+    expect(second.id).toBe(first.id);
+    expect(second.action.template_key).toBe("status_answer");
+    expect(repo.listWorkflowRules(1, { caseTypeId: type.id, kind: "response" }).filter((rule) => rule.name === input.name)).toHaveLength(1);
   });
 
-  it("seedDefaults cleans up legacy duplicate rows", () => {
+  it("the same rule name in another scope stays a separate rule", () => {
     const repo = freshRepo();
-    // Simulate the old corruption: raw duplicate inserts.
-    repo.db
-      .prepare("INSERT INTO requirement_rules (programme, intake, document_type, required) VALUES (NULL, NULL, 'id', 1)")
-      .run();
-    expect(repo.listRules().filter((r) => r.document_type === "id").length).toBeGreaterThan(1);
-    seedDefaults(repo);
-    expect(repo.listRules().filter((r) => r.document_type === "id").length).toBe(1);
+    const service = repo.getCaseType("SERVICE_REQUEST", 1)!;
+    const vendor = repo.getCaseType("VENDOR_INTAKE", 1)!;
+    const shared = { name: "Draft an acknowledgement", position: 0, conditions: [{ field: "always" as const, value: true as const }], action: { reply_action: "draft" as const } };
+    const a = repo.saveWorkflowRule({ organizationId: 1, caseTypeId: service.id, kind: "response", ...shared });
+    const b = repo.saveWorkflowRule({ organizationId: 1, caseTypeId: vendor.id, kind: "response", ...shared });
+    expect(a.id).not.toBe(b.id);
+    // An organization-wide rule with that name is a third, distinct scope.
+    const c = repo.saveWorkflowRule({ organizationId: 1, caseTypeId: null, kind: "response", ...shared });
+    expect([a.id, b.id, c.id]).toEqual([...new Set([a.id, b.id, c.id])]);
   });
 });
 
@@ -181,14 +196,16 @@ describe("bug: follow-up ladder stacked intervals instead of absolute days", () 
       repo,
       adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender },
     };
-    const a = repo.getOrCreateApplicant("ladder@example.org", "t1");
+    // The ladder chases a configured checklist: an unconfigured case has
+    // nothing outstanding, so it is never reminded.
+    const a = repo.createCase({ emailAddress: "ladder@example.test", threadId: "t1", organizationId: 1, caseTypeCode: "SERVICE_REQUEST" });
     // Armed 8 days ago with ladder 3,7,10 → rung 1 fired at day 3 (past due),
     // and the NEXT rung must be base+7d (≈ 1 day ago), NOT now+7d.
     const base = new Date(Date.now() - 8 * 24 * 3600_000);
     repo.setFollowup(a.id, 0, new Date(Date.now() - 5 * 24 * 3600_000).toISOString(), base.toISOString());
     const sent = await runFollowUpSweep(repo, ctx);
     expect(sent).toBe(1);
-    // Qualification gate: the rung is HELD as a staff suggestion, never sent.
+    // Evidence gate: the rung is HELD as a staff suggestion, never sent.
     expect(sender.sent.length).toBe(0);
     expect(repo.queuedOutbox(a.id)?.subject).toContain("REMINDER");
     const row = repo.getApplicant(a.id)!;
