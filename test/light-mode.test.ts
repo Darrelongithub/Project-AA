@@ -24,7 +24,7 @@ describe("light mode theme coverage", () => {
 
   it("the light theme redefines the slab shadows with paper values", () => {
     const light = css.match(/\[data-theme="light"\]\s*\{([\s\S]*?)\}/)?.[1] ?? "";
-    expect(light).toContain("--slab-inner: rgba(49,31,31,");
+    expect(light).toContain("--slab-inner: rgba(74,53,98,");
     expect(light).toContain("--slab-lip: rgba(255,255,255,");
     expect(light).not.toContain("rgba(0,0,0,.52)");
   });
@@ -32,7 +32,7 @@ describe("light mode theme coverage", () => {
   it("register-flow labels and rules get light-theme overrides (readable on paper)", () => {
     for (const rule of [
       '[data-theme="light"] .flow-heading { border-bottom-color: var(--line); }',
-      '[data-theme="light"] .flow-link { border-color: var(--wine-line); color: var(--wine-mid); }',
+      '[data-theme="light"] .flow-link { border-color: var(--plum-line); color: var(--plum-mid); }',
       '[data-theme="light"] .band-label b { color: var(--ink); }',
       '[data-theme="light"] .gauge-band { border-bottom-color: var(--line); }',
     ]) {
@@ -40,12 +40,14 @@ describe("light mode theme coverage", () => {
     }
   });
 
-  it("dark mode keeps the original noir values", () => {
+  it("dark mode keeps the purple-noir values", () => {
     const root = css.match(/:root\s*\{([\s\S]*?)\}/)?.[1] ?? "";
     expect(root).toContain("--slab-inner: rgba(0,0,0,.52)");
     expect(root).toContain("--slab-cast: rgba(0,0,0,.58)");
     // the dark masthead and rail are unchanged, self-consistent surfaces
-    expect(css).toMatch(/\.overview-mast \{[^}]*background:#090608/);
-    expect(css).toMatch(/\.sitehead\.sidebar \{[^}]*background:#070507/);
+    expect(css).toMatch(/\.overview-mast \{[^}]*background:#100c18/);
+    // the rail keeps its noir surface via the shell variable so the light theme can swap it
+    expect(root).toContain("--shell-bg: #070507");
+    expect(css).toMatch(/\.sitehead\.sidebar \{[^}]*background:var\(--shell-bg\)/);
   });
 });

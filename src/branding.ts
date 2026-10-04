@@ -30,12 +30,11 @@ export function organizationTheme(repo: Repo, organizationId = 1): OrganizationT
     (theme.primary.toLowerCase() === "#334155" && theme.accent.toLowerCase() === "#0f766e") ||
     (theme.primary.toLowerCase() === "#672b3c" && theme.accent.toLowerCase() === "#c7b69e") ||
     (theme.primary.toLowerCase() === "#660033" && theme.accent.toLowerCase() === "#d5a0b1") ||
-    (theme.primary.toLowerCase() === "#650019" && theme.accent.toLowerCase() === "#e18b9a")
+    (theme.primary.toLowerCase() === "#650019" && theme.accent.toLowerCase() === "#e18b9a") ||
+    (theme.primary.toLowerCase() === "#650019" && theme.accent.toLowerCase() === "#c89a4a")
   );
-  // Accent moved off the pink default to antique gold (garnet & gold);
-  // organizations still carrying ANY previous default pair — including the
-  // pink one — resolve to the current default automatically.
-  if (!theme || previousDefault) return { primary: "#650019", accent: "#c89a4a" };
+  // Primary identity moved to the purple/plum system; legacy default pairs resolve to the current UI palette.
+  if (!theme || previousDefault) return { primary: "#3b1d5f", accent: "#9a78c7" };
   return theme;
 }
 

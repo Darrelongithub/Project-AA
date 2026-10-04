@@ -47,7 +47,7 @@ export function parseCookies(header: string | undefined): Record<string, string>
 /**
  * HTTPS reverse proxies can embed the app in a cross-site preview frame. Use
  * SameSite=None + Secure for HTTPS deployments, and optionally CHIPS
- * partitioning where third-party cookies are blocked. Plain local HTTP keeps
+ * partitioning where third party cookies are blocked. Plain local HTTP keeps
  * the safer Lax default.
  */
 function cookieSite(secure: boolean, partitioned: boolean): string {
