@@ -1,9 +1,11 @@
 /**
  * The extraction fallback chain — FIXED LOGIC, not a judgment call:
  *
- *   pdfjs text layer → Tesseract on embedded images → full-page rasterise
- *   (free)             (free)                          + Tesseract (free)
- *                                       → Gemini vision (last resort)
+ *   PDFs:   pdfjs text layer → Tesseract on embedded images → full-page rasterise
+ *           (free)             (free)                          + Tesseract (free)
+ *                                                 → Gemini vision (last resort)
+ *   Images: preprocessed local Tesseract OCR → Gemini vision only when OCR
+ *           does not clear the document-type quality gate.
  *
  * Each tier's output is quality-checked (against thresholds that fit the
  * document TYPE) before it is accepted. Code (not AI) does the final
@@ -230,9 +232,8 @@ export async function extractAttachment(
     /\.(png|jpe?g|tiff?|webp|heic|heif)$/i.test(att.filename);
 
   // ── Tier 3 (Gemini vision) shared by both branches ───────────────────────
-  // Images try it FIRST (round 11 — phone photos are exactly where a vision
-  // model beats Tesseract); PDFs fall back to it after text/OCR. One call
-  // per attachment, ever.
+  // PDFs and images reach it only after their available local text/OCR tiers
+  // fail the quality gate. One call per attachment, ever.
   let visionError: VisionUnavailableError | null = null;
   let visionTried = false;
   const runVision = async (): Promise<ExtractionResult | null> => {
@@ -395,11 +396,9 @@ export async function extractAttachment(
       }
     }
   } else if (isImage) {
-    // Image attachments (photos of documents): a live vision model reads
-    // them FIRST — phone shots are where Tesseract is weakest. EXIF-rotate
-    // still happens for the OCR fallback (sideways phone shots of IDs).
-    const vFirst = await runVision();
-    if (vFirst) return vFirst;
+    // Image attachments (photos of documents) try local OCR first. EXIF
+    // rotation and contrast normalisation help with sideways/low-light shots;
+    // Gemini is reached below only when OCR misses the quality gate.
     if (deps.ocr) {
       const prep = await preprocessImage(att.content);
       // Try the EXIF-corrected, contrast-normalised image first. If a
@@ -424,9 +423,9 @@ export async function extractAttachment(
     }
   }
 
-  // ── Tier 3: Gemini vision (images already tried it first) ──────────────
-  const vPdf = await runVision();
-  if (vPdf) return vPdf;
+  // ── Tier 3: Gemini vision fallback after local extraction ───────────────
+  const visionFallback = await runVision();
+  if (visionFallback) return visionFallback;
 
   // Nothing read it. Record WHY — a vision outage is a different situation
   // from an unreadable document, and the pipeline tells staff which one.

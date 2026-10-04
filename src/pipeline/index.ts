@@ -5,8 +5,9 @@
  *   2. categorize (Gemini first when configured; deterministic regex fallback)
  *      before intake routing, then resolve/create applicant + ref number
  *   3. store the incoming email in the case history + audit
- *   4. extraction: pdf text → Tesseract → Gemini (fixed chain), with
- *      duplicate detection by content hash
+ *   4. extraction: PDFs use text/OCR/rasterisation → Gemini; images use local
+ *      OCR → Gemini only when OCR misses its quality gate; duplicate detection
+ *      by content hash
  *   5. matching: persist docs, supersede corrections
  *   6. rules: PURE Green/Orange/Red decision (no AI, ever)
  *   7. watcher: Green-only sanity check; can only downgrade
