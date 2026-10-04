@@ -33,7 +33,7 @@ beforeEach(() => {
   seedDefaults(repo);
   configureTestOrganization(repo);
   repo.createStaff("admin", "System Administrator", hashPassword("admin123"), "admin");
-  sender = new MockSender();
+  sender = new MockSender(true);
 });
 
 function mkCase(): ApplicantRow {

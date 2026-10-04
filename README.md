@@ -67,7 +67,7 @@ Automated messages are safe-by-default and require multiple gates:
 - A configured workflow must request a permitted send, the case type/global/category settings must allow it, and the classifier must not have held the message.
 - **A non-Green case is never auto-sent.** `evidence_gate=0` and a rule's `send` action cannot waive the Green, no-blocking-flags qualification; replies for other cases stay as suggested drafts for staff.
 - A fallback category or confidence below `CLASSIFIER_MIN_CONFIDENCE` (0.70) is held for a person. A category does not make an approval/rejection decision.
-- A staff member's deliberate send is separate from automated sending. The application does not claim a delivery when no delivering Gmail sender is connected; such a path is audited as `email_not_delivered`.
+- A staff member's deliberate send is separate from automated sending. When no delivering Gmail sender is connected, automated replies remain queued drafts; the application writes no outbound-email or auto-sent record for undelivered mail, and audits the hold as `email_not_delivered`.
 
 Human outcomes are recorded through the case page with `record_outcome` permission and a written reason. The automated pipeline never records an outcome. Historical `auto_approved` values may be preserved as imported legacy data; they are not produced by the current pipeline.
 

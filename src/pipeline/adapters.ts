@@ -26,18 +26,19 @@ export interface SendExtras {
 export interface EmailSender {
   send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void>;
   /**
-   * Does this sender put mail on the wire? `false` means every "sent" reply is
-   * only RECORDED (no mail connection), which the console must say out loud —
-   * an audit trail that claims a send nobody received is worse than no audit
-   * trail. Absent (a test double) is treated as "not our business".
+   * Does this sender put mail on the wire? `false` means delivery is
+   * unavailable: callers must not persist a successful send and should retain
+   * the reply as a draft. Absent (a test double) is treated as "not our
+   * business" and keeps the legacy assumed-success test behavior.
    */
   delivers?: boolean;
 }
 
-/** Records sends in memory (simulation/tests, and any install with no mail
- *  connection) — nothing is delivered, and it says so. */
+/** Records send attempts in memory. By default it simulates an offline install;
+ *  pass `true` in tests that need to model a delivering sender. */
 export class MockSender implements EmailSender {
-  readonly delivers = false;
+  readonly delivers: boolean;
+  constructor(delivers = false) { this.delivers = delivers; }
   sent: Array<{ to: string; subject: string; body: string; threadId: string; attachments: string[]; banner: boolean; fromName: string | null; replyTo: string | null }> = [];
   async send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void> {
     this.sent.push({

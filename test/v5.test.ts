@@ -35,7 +35,7 @@ function mkCase(opts: Partial<ApplicantRow> = {}): ApplicantRow {
 }
 
 function testApp(): { app: ReturnType<typeof createApp>; ctx: PipelineContext } {
-  const sender = new MockSender();
+  const sender = new MockSender(true);
   const ctx: PipelineContext = { repo, adapters: { vision: null as never, watcher: null as never, sender } };
   return { app: createApp({ repo, ctx }), ctx };
 }
@@ -85,7 +85,7 @@ describe("rule-driven assignment", () => {
       action: { reply_action: "draft", template_key: "status_answer", assign: owner, audit_code: "assigned_to_officer" },
     });
     expect(repo.listWorkflowRules(1, { caseTypeId: type.id, kind: "response" })).toHaveLength(before);
-    const ctx: PipelineContext = { repo, adapters: { vision: null as never, watcher: null as never, sender: new MockSender() } };
+    const ctx: PipelineContext = { repo, adapters: { vision: null as never, watcher: null as never, sender: new MockSender(true) } };
     const { processEmail } = await import("../src/pipeline");
     const res = mustProcessed(await processEmail(
       {

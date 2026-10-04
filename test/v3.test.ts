@@ -28,7 +28,7 @@ beforeEach(() => {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
   configureTestOrganization(repo);
-  sender = new MockSender();
+  sender = new MockSender(true);
   ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
 });
 

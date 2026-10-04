@@ -68,7 +68,7 @@ describe("PPR P1-3: explicit response actions — approve gate + follow-up rung 
   beforeAll(async () => {
     repo = fresh();
     repo.createStaff("admin", "Administrator", hashPassword("admin123"), "admin");
-    sender = new MockSender();
+    sender = new MockSender(true);
     ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
     const app = createApp({ repo, ctx });
     await new Promise<void>((resolve) => {

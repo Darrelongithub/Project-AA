@@ -161,7 +161,7 @@ async function main(): Promise<void> {
     log(`serve: listening on http://0.0.0.0:${port}`);
     if (sender.delivers !== true) {
       log(
-        "serve: MAIL IS NOT CONNECTED — automated replies are recorded in the console but NOT delivered. " +
+        "serve: MAIL IS NOT CONNECTED — automated replies are held as queued drafts and NOT delivered. " +
         "Connect Gmail under Settings → Connections (or set MODE=live with GMAIL_* credentials).",
         "warn"
       );

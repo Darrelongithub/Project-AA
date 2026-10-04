@@ -986,6 +986,7 @@ async function processEmailInner(
   // Send failures are never fatal: the reply becomes a queued draft and a
   // human handles it (v3 reliability requirement).
   let autoSent = false;
+  let autoSendUnavailable = false;
   // A rule that answers with "draft", "approve" or "hold" means exactly that:
   // the pipeline never escalates it to a send, whatever the gates say. Only
   // "send" (or legacy non-rule automation) may reach the wire.
@@ -1016,38 +1017,52 @@ async function processEmailInner(
         repo.audit(applicant.id, "system", "pack_incomplete", pack.issues.join("; "));
         repo.notify("review_needed", `${applicantNow.ref_number}: outgoing pack is incomplete — ${pack.issues[0]}`, applicant.id);
       }
-      await adapters.sender.send(applicantNow.email_address, draft.subject, draft.body, email.threadId, extras);
-      repo.insertEmail({
-        applicant_id: applicant.id,
-        message_id: `${email.id}:auto-reply`,
-        thread_id: email.threadId,
-        direction: "out",
-        from_addr: "",
-        to_addr: applicantNow.email_address,
-        subject: draft.subject,
-        body: draft.body,
-        category: null,
-        auto: 1,
-        at: new Date().toISOString(),
-        attachments: (extras.attachments ?? []).map((f) => f.filename),
-      });
-      repo.addOutbox({
-        applicant_id: applicant.id,
-        to_address: applicantNow.email_address,
-        subject: draft.subject,
-        body: draft.body,
-        mode: "auto",
-        template_key: draft.templateKey ?? "",
-      });
-      repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind ?? templateKey}: "${draft.subject}"`);
-      log(`pipeline: auto-sent [${autoKind ?? templateKey}] to ${applicantNow.email_address}`);
-      autoSent = true;
-      // An install with no mail connection records sends it cannot make. The
-      // audit trail must not claim a delivery that never happened.
       if (adapters.sender.delivers === false) {
+        // An offline/mock sender is not a successful send. Keep the prepared
+        // reply in the human queue, and do not write an outbound email, an
+        // automatic-send outbox row, or an auto_sent decision record.
+        repo.addOutbox({
+          applicant_id: applicant.id,
+          to_address: applicantNow.email_address,
+          subject: draft.subject,
+          body: draft.body,
+          mode: "queued",
+          template_key: draft.templateKey ?? "",
+          needs_approval: draftNeedsApproval ? 1 : 0,
+        });
         repo.audit(applicant.id, "system", "email_not_delivered",
-          `recorded only — no mail connection is configured, so "${draft.subject}" was NOT delivered to ${applicantNow.email_address}`);
-        log(`pipeline: reply recorded but NOT delivered (no mail connection) for ${applicantNow.ref_number}`, "warn");
+          `no mail connection is configured, so "${draft.subject}" was NOT delivered to ${applicantNow.email_address}; reply kept as a draft`);
+        autoSendUnavailable = true;
+        queueForHuman = true;
+        lifecycleAfter = "awaiting_review";
+        log(`pipeline: reply held as a draft; mail is NOT connected for ${applicantNow.ref_number}`, "warn");
+      } else {
+        await adapters.sender.send(applicantNow.email_address, draft.subject, draft.body, email.threadId, extras);
+        repo.insertEmail({
+          applicant_id: applicant.id,
+          message_id: `${email.id}:auto-reply`,
+          thread_id: email.threadId,
+          direction: "out",
+          from_addr: "",
+          to_addr: applicantNow.email_address,
+          subject: draft.subject,
+          body: draft.body,
+          category: null,
+          auto: 1,
+          at: new Date().toISOString(),
+          attachments: (extras.attachments ?? []).map((f) => f.filename),
+        });
+        repo.addOutbox({
+          applicant_id: applicant.id,
+          to_address: applicantNow.email_address,
+          subject: draft.subject,
+          body: draft.body,
+          mode: "auto",
+          template_key: draft.templateKey ?? "",
+        });
+        repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind ?? templateKey}: "${draft.subject}"`);
+        log(`pipeline: auto-sent [${autoKind ?? templateKey}] to ${applicantNow.email_address}`);
+        autoSent = true;
       }
     } catch (e) {
       repo.audit(applicant.id, "system", "send_failed", `auto-send [${autoKind ?? templateKey}] failed: ${(e as Error).message}`);
@@ -1112,6 +1127,8 @@ async function processEmailInner(
     if (!cur.sla_handled_at) repo.updateApplicant(applicant.id, { sla_due_at: due });
     const reason = humanTriageOnly
       ? `${enquiryOnly ? "general enquiry" : category.replace(/_/g, " ")} — staff response required`
+      : autoSendUnavailable
+        ? "mail is not connected — automated reply saved as a draft, not delivered"
       : heldForQualification && !heldForApproval
       ? "case not fully evidenced — suggested reply held for staff (an exception may still apply)"
       : heldForApproval

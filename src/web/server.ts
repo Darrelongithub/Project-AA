@@ -46,6 +46,13 @@ import { LoginThrottle } from "./throttle";
 import { emailBanner, organizationName, organizationSender, organizationTheme } from "../branding";
 import type { PackFile } from "../pack";
 
+class MailDeliveryUnavailableError extends Error {
+  constructor() {
+    super("Mail is not connected.");
+    this.name = "MailDeliveryUnavailableError";
+  }
+}
+
 export interface WebDeps {
   repo: Repo;
   ctx: PipelineContext; // reuse the pipeline's sender/vision adapters
@@ -74,11 +81,13 @@ export function createApp(deps: WebDeps): Express {
     subject: string,
     body: string,
     extras: { banner?: { mime: string; base64: string } | null; attachments?: Array<{ filename: string; mimeType: string; content: Buffer }> }
-  ): Promise<void> =>
-    ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
+  ): Promise<void> => {
+    if (ctx.adapters.sender.delivers === false) throw new MailDeliveryUnavailableError();
+    return ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
       ...organizationSender(repo, a.organization_id ?? 1),
       ...extras,
     });
+  };
   const authName = (): string => repo.getOrganization(1)?.name?.trim() || organizationName(repo, 1);
 
   app.disable("x-powered-by");
@@ -677,6 +686,10 @@ export function createApp(deps: WebDeps): Express {
       res.redirect(backToCase(id, `Reply sent${pack ? ` with the ${pack.label} pack attached` : ""}.`));
     } catch (e) {
       repo.releaseOutboxDraft(draft.id); // let the officer retry the send
+      if (e instanceof MailDeliveryUnavailableError) {
+        repo.audit(id, req.staff!.username, "email_not_delivered", `held draft "${subject}" remains queued because mail is not connected`);
+        return res.redirect(backToCase(id, "Mail is not connected — draft remains queued."));
+      }
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
       res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
     }
@@ -795,6 +808,10 @@ export function createApp(deps: WebDeps): Express {
         attachments: pack ? pack.files : [],
       });
     } catch (e) {
+      if (e instanceof MailDeliveryUnavailableError) {
+        repo.audit(id, req.staff!.username, "email_not_delivered", `manual template reply "${rendered.subject}" not sent because mail is not connected`);
+        return res.redirect(backToCase(id, "Mail is not connected — no reply was sent."));
+      }
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
       return res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
     }
@@ -842,6 +859,10 @@ export function createApp(deps: WebDeps): Express {
         attachments: pack.files,
       });
     } catch (e) {
+      if (e instanceof MailDeliveryUnavailableError) {
+        repo.audit(id, req.staff!.username, "email_not_delivered", `manual attachment-set reply "${rendered.subject}" not sent because mail is not connected`);
+        return res.redirect(backToCase(id, "Mail is not connected — no reply was sent."));
+      }
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
       return res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
     }
@@ -1046,10 +1067,12 @@ export function createApp(deps: WebDeps): Express {
         attachments: pack ? pack.files : [],
       });
     } catch (e) {
-      repo.audit(a.id, req.staff!.username, "send_failed", (e as Error).message);
+      const unavailable = e instanceof MailDeliveryUnavailableError;
+      repo.audit(a.id, req.staff!.username, unavailable ? "email_not_delivered" : "send_failed",
+        unavailable ? `manual compose reply "${subject}" not sent because mail is not connected` : (e as Error).message);
       return res.send(composeWindowPage(c(req), {
         applicant: a, templateKey: tpl?.key, subject, body,
-        error: `Send failed: ${(e as Error).message}`,
+        error: unavailable ? "Mail is not connected — no reply was sent." : `Send failed: ${(e as Error).message}`,
       }));
     }
     repo.insertEmail({

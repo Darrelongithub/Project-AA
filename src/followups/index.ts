@@ -101,19 +101,23 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
         if (rungAction === "send" && !gateOn && globalAuto && a.triage === "Green") {
           // Explicit rule action + un-gated case type + the global switch
           // released + a Green case: only then may the reminder go out.
-          const extras: SendExtras = { banner: emailBanner(repo, organizationId), attachments: [], ...organizationSender(repo, organizationId) };
-          try {
-            await ctx.adapters.sender.send(a.email_address, subject, rendered.body, "", extras);
-            repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "auto", template_key: "missing_documents" });
-            repo.audit(a.id, "system", "followup_sent", `rung ${rung}/${ladder.length - 1} reminder sent (${subject})`);
-            if (ctx.adapters.sender.delivers === false) {
-              repo.audit(a.id, "system", "email_not_delivered", `recorded only — no mail connection is configured, so "${subject}" was NOT delivered to ${a.email_address}`);
-            }
-            log(`followups: ${a.ref_number} rung ${rung} reminder sent`);
-          } catch (e) {
+          if (ctx.adapters.sender.delivers === false) {
             repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
-            repo.audit(a.id, "system", "followup_send_failed", `rung ${rung} send failed, held as draft (${e instanceof Error ? e.message : String(e)})`);
-            log(`followups: ${a.ref_number} rung ${rung} send failed — held`, "warn");
+            repo.audit(a.id, "system", "email_not_delivered", `no mail connection is configured, so "${subject}" was NOT delivered to ${a.email_address}; reminder kept as a draft`);
+            repo.notify("review_needed", `${a.ref_number}: reminder could not be delivered — mail is not connected`, a.id);
+            log(`followups: ${a.ref_number} rung ${rung} held; mail is not connected`, "warn");
+          } else {
+            const extras: SendExtras = { banner: emailBanner(repo, organizationId), attachments: [], ...organizationSender(repo, organizationId) };
+            try {
+              await ctx.adapters.sender.send(a.email_address, subject, rendered.body, "", extras);
+              repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "auto", template_key: "missing_documents" });
+              repo.audit(a.id, "system", "followup_sent", `rung ${rung}/${ladder.length - 1} reminder sent (${subject})`);
+              log(`followups: ${a.ref_number} rung ${rung} reminder sent`);
+            } catch (e) {
+              repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
+              repo.audit(a.id, "system", "followup_send_failed", `rung ${rung} send failed, held as draft (${e instanceof Error ? e.message : String(e)})`);
+              log(`followups: ${a.ref_number} rung ${rung} send failed — held`, "warn");
+            }
           }
         } else if (rungAction === "draft") {
           repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });

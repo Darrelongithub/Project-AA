@@ -38,7 +38,7 @@ beforeAll(async () => {
   repo.createStaff("manager", "Mary Mwangi (User)", hashPassword("manager123"), "user");
   repo.createStaff("jane", "Jane Wairimu (User)", hashPassword("jane123"), "user");
 
-  sender = new MockSender();
+  sender = new MockSender(true);
   ctx = {
     repo,
     adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender },
@@ -468,6 +468,61 @@ describe("production-readiness pass", () => {
     expect(page).toMatch(/Evidence requires verification|Ready for review|Escalated/);
     const filtered = await (await fetch(`${base}/applicants?queue=waiting_documents`, { headers: { cookie } })).text();
     expect(filtered).toContain("Missing information");
+  });
+
+  it("keeps a staff draft queued and writes no outbound email when mail is disconnected", async () => {
+    const { cookie, csrf } = await login();
+    const a = repo.findByRef(ref)!;
+    repo.addOutbox({
+      applicant_id: a.id, to_address: a.email_address,
+      subject: "Offline reply", body: "This reply must remain queued.", mode: "queued",
+    });
+    const draft = repo.queuedOutbox(a.id)!;
+    const outgoingBefore = repo.emailsForApplicant(a.id).filter((email) => email.direction === "out").length;
+    const originalSender = ctx.adapters.sender;
+    const offlineSender = new MockSender();
+    ctx.adapters.sender = offlineSender;
+    try {
+      const res = await fetch(`${base}/case/${a.id}/draft`, {
+        method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: `_csrf=${csrf}&decision=send&subject=Offline+reply&body=This+reply+must+remain+queued.`,
+        redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      expect(decodeURIComponent(res.headers.get("location") || "")).toContain("not connected");
+      expect(offlineSender.sent).toHaveLength(0);
+      expect(repo.queuedOutbox(a.id)?.id).toBe(draft.id);
+      expect(repo.emailsForApplicant(a.id).filter((email) => email.direction === "out")).toHaveLength(outgoingBefore);
+      const events = repo.auditForApplicant(a.id).map((entry) => entry.event);
+      expect(events).toContain("email_not_delivered");
+      expect(events).not.toContain("human_override");
+    } finally {
+      ctx.adapters.sender = originalSender;
+    }
+  });
+
+  it("does not record a staff template send when mail is disconnected", async () => {
+    const { cookie, csrf } = await login();
+    const a = repo.findByRef(ref)!;
+    const outgoingBefore = repo.emailsForApplicant(a.id).filter((email) => email.direction === "out").length;
+    const originalSender = ctx.adapters.sender;
+    const offlineSender = new MockSender(false);
+    ctx.adapters.sender = offlineSender;
+    try {
+      const res = await fetch(`${base}/case/${a.id}/send`, {
+        method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: `_csrf=${csrf}&template=ack_received`, redirect: "manual",
+      });
+      expect(res.status).toBe(302);
+      expect(decodeURIComponent(res.headers.get("location") || "")).toContain("Mail is not connected");
+      expect(offlineSender.sent).toHaveLength(0);
+      expect(repo.emailsForApplicant(a.id).filter((email) => email.direction === "out")).toHaveLength(outgoingBefore);
+      const events = repo.auditForApplicant(a.id).map((entry) => entry.event);
+      expect(events).toContain("email_not_delivered");
+      expect(events).not.toContain("email_sent_manual");
+    } finally {
+      ctx.adapters.sender = originalSender;
+    }
   });
 
   it("case draft UI hides INTERNAL boilerplate and refuses to send it", async () => {

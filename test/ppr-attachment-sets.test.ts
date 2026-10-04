@@ -57,7 +57,7 @@ describe("PPR P0-5: attachment sets replace hardcoded packs (E3 closed)", () => 
     // the administrator resolves to it and its starter templates are present.
     configureTestOrganization(repo);
     repo.createStaff("admin", "Administrator", hashPassword("admin123"), "admin");
-    sender = new MockSender();
+    sender = new MockSender(true);
     ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
     const app = createApp({ repo, ctx });
     await new Promise<void>((resolve) => {
