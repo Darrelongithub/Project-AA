@@ -246,6 +246,18 @@ describe("web console", () => {
     expect(portal.status).toBe(404);
   });
 
+  it("rejects an authenticated theme toggle without the session CSRF token", async () => {
+    const { cookie } = await login();
+    const response = await fetch(`${base}/theme`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded", referer: `${base}/` },
+      body: "",
+      redirect: "manual",
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
   it("v4 UI: splash, header shell, command palette and dark-mode toggle", async () => {
     const { cookie: sessionCookie, csrf } = await login();
     const cookie = `${sessionCookie}; theme=light`;
@@ -269,7 +281,7 @@ describe("web console", () => {
     const tog = await fetch(`${base}/theme`, {
       method: "POST",
       headers: { cookie, "content-type": "application/x-www-form-urlencoded", referer: `${base}/` },
-      body: "",
+      body: new URLSearchParams({ _csrf: csrf }).toString(),
       redirect: "manual",
     });
     expect(tog.status).toBe(302);

@@ -330,8 +330,12 @@ export function createApp(deps: WebDeps): Express {
     res.send(loginPage(undefined, req.theme, authName(), newLoginCsrf(), req.query.msg ? String(req.query.msg) : undefined));
   });
 
-  /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
-  app.post("/theme", (req, res) => {
+  /** Theme toggle — public visitors may set their own preference, but an
+   * authenticated POST must carry the same session CSRF token as other writes. */
+  app.post("/theme", (req, res, next) => {
+    if (req.staff) return csrfCheck(req, res, next);
+    next();
+  }, (req, res) => {
     const next = req.theme === "dark" ? "light" : "dark";
     res.setHeader("Set-Cookie", `theme=${next}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${365 * 86400}`);
     // Redirect back to where the toggle was pressed — but ONLY to a relative

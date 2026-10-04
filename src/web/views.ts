@@ -1345,9 +1345,10 @@ export function layout(opts: {
   const theme: Theme = opts.theme === "light" ? "light" : "dark";
   const otherTheme = theme === "dark" ? "light" : "dark";
   const inst = opts.institution ?? "Organization";
+  const themeCsrf = opts.user ? `<input type="hidden" name="_csrf" value="${esc(opts.csrf)}">` : "";
 
   const themeBtn = `<form method="post" action="/theme" style="display:inline">
-      <button class="iconbtn" title="Switch to ${otherTheme} mode">${icon(theme === "dark" ? "sun" : "moon")}</button>
+      ${themeCsrf}<button class="iconbtn" title="Switch to ${otherTheme} mode">${icon(theme === "dark" ? "sun" : "moon")}</button>
     </form>`;
 
   // Ctrl+K palette links follow the same role separation as the navigation.
