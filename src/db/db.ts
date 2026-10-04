@@ -569,13 +569,16 @@ function migrateLegacyTemplates(db: Database.Database): void {
 }
 
 function migrate(db: Database.Database): void {
+  // Bootstrap every base table before any legacy rewrite or constraint rebuild.
+  // In particular, tenantConstraints() may rebuild applicants, and the cases
+  // compatibility view created below depends on that table being present.
+  db.exec(SCHEMA_TABLES);
   const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((table) => table.name));
   for (const [from, to] of Object.entries(legacyStorage.tables)) if (tables.has(from) && !tables.has(to)) db.exec(`ALTER TABLE "${from}" RENAME TO "${to}"`);
   for (const [table, mapping] of Object.entries(legacyStorage.columns)) {
     const existing = columns(db, table);
     for (const [from, to] of Object.entries(mapping)) if (existing.has(from) && !existing.has(to)) db.exec(`ALTER TABLE "${table}" RENAME COLUMN "${from}" TO "${to}"`);
   }
-  db.exec(SCHEMA_TABLES);
   for (const [table, name, definition] of ADDITIONS) if (!columns(db, table).has(name)) db.exec(`ALTER TABLE "${table}" ADD COLUMN "${name}" ${definition}`);
   db.exec(SCHEMA_INDEXES);
   db.exec("UPDATE emails SET organization_id = (SELECT COALESCE(organization_id,1) FROM applicants WHERE id = emails.applicant_id) WHERE applicant_id IS NOT NULL");
