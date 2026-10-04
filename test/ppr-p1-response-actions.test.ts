@@ -6,9 +6,8 @@
  *    staff (user send paths remain allowed);
  *  - the follow-up ladder's rung response is rule data (send/draft/approve/
  *    none) replacing the old hardcoded "always hold": "none" cancels the
- *    ladder, "draft"/"approve" queue the rung accordingly, and "send" is
- *    subject to the profile's qualification gate — gate-on profiles keep
- *    holding, un-gated profiles actually send.
+ *    ladder, "draft"/"approve" queue the rung accordingly, and "send" still
+ *    cannot auto-send a non-Green case, even when its evidence gate is off.
  * All rule definitions go through the real admin routes; cases are produced
  * by the real pipeline; rungs fire through the real sweep.
  */
@@ -239,7 +238,7 @@ describe("PPR P1-3: explicit response actions — approve gate + follow-up rung 
     expect(repo.auditForApplicant(aid).some((a) => a.event === "followup_awaiting_approval")).toBe(true);
   });
 
-  it("\"send\" rungs obey the evidence gate: a gated case type keeps holding, an un-gated one sends", async () => {
+  it("\"send\" rungs cannot auto-send a non-Green case, even when the evidence gate is off", async () => {
     // Gate-ON (the fixture's service requests): an explicit "send" still holds.
     // A case type's OWN rules are evaluated before organization-wide ones, and
     // within a scope the lowest position wins — so this rule at position -1
@@ -270,9 +269,9 @@ describe("PPR P1-3: explicit response actions — approve gate + follow-up rung 
     expect(repo.queuedOutbox(gid)).toBeTruthy();
     expect(repo.auditForApplicant(gid).some((a) => a.event === "followup_held_qualification")).toBe(true);
 
-    // Gate-OFF (Resident services): the case type switches the evidence gate
-    // off explicitly, and the global draft-first switch is released (it governs
-    // reminder rungs too) — only then does an explicit "send" rung send.
+    // Gate-OFF (Resident services): even with the global draft-first switch
+    // released and an explicit "send" rung, the incomplete case remains Red and
+    // must still be held for staff.
     releaseAutomation(repo);
     expect((await post("/config/case-types/profile", {
       id: String(resId), evidence_gate: "0",
@@ -299,8 +298,10 @@ describe("PPR P1-3: explicit response actions — approve gate + follow-up rung 
     repo.setFollowup(fid, 0, pastIso(), pastIso());
     sender.sent.length = 0;
     await runFollowUpSweep(repo, ctx);
-    expect(sender.sent.length).toBe(1); // explicit action, un-gated case type
-    expect(repo.auditForApplicant(fid).some((a) => a.event === "followup_sent")).toBe(true);
-    expect(repo.auditForApplicant(fid).some((a) => a.event === "followup_held_qualification")).toBe(false);
+    expect(sender.sent).toHaveLength(0); // evidence_gate=0 cannot override the non-Green qualification
+    expect(repo.getApplicant(fid)!.triage).toBe("Red");
+    expect(repo.auditForApplicant(fid).some((a) => a.event === "followup_sent")).toBe(false);
+    expect(repo.auditForApplicant(fid).some((a) => a.event === "followup_held_qualification")).toBe(true);
+    expect(repo.queuedOutbox(fid)).toBeTruthy();
   });
 });

@@ -332,8 +332,9 @@ CREATE TABLE IF NOT EXISTS case_types (
   queues TEXT NOT NULL DEFAULT '[]',
   config_version INTEGER NOT NULL DEFAULT 1,
   default_reply_action TEXT NOT NULL DEFAULT 'draft',
-  -- Automated mail only for a fully evidenced case; a case type may switch it
-  -- off explicitly. Matches ADDITIONS and createCaseType (on by default).
+  -- Profile evidence-gate preference; it cannot waive the mandatory Green,
+  -- fully-qualified requirement for automated mail. Matches ADDITIONS and
+  -- createCaseType (on by default).
   evidence_gate INTEGER NOT NULL DEFAULT 1,
   UNIQUE (organization_id, code)
 );

@@ -688,9 +688,9 @@ async function processEmailInner(
   // ── Reply selection (PPR P0-4): stored response rules decide what the
   //    case replies and how it routes. Profiles without response rules keep
   //    the original chain below, unchanged. Templates, send/draft/hold,
-  //    follow-up ladder and audit codes are all rule data — the evidence
-  //    gate still holds every reply that is not fully evidenced for staff
-  //    whenever the case type has one (it is on by default). ────────────
+  //    follow-up ladder and audit codes are all rule data — but neither a
+  //    send action nor evidence_gate=0 can override the mandatory Green floor.
+  //    ─────────────────────────────────────────────────────────────────────
   const fullyQualified =
     finalStatus === "Green" && activeBlockingFlags.length === 0 && allDocsHigh && !watcherFlagged;
   const ruleDocsState = replyStateOf({
@@ -849,16 +849,20 @@ async function processEmailInner(
     queueForHuman = true;
   }
 
-  // ── Evidence gate: automated mail only for a fully evidenced case ───────
-  // Fully evidenced = Green verdict, no blocking flags, watcher clean. Every
-  // other file — including a "clean" missing-document case — gets the reply
-  // HELD as a staff suggestion instead: a contact who is short of a document
-  // today may still be accepted tomorrow on an exception, so the machine never
-  // speaks for the office on their behalf. A case type may switch this gate off
-  // (its workflow rules then own the send decision); it is on by default.
+  // ── Evidence qualification: automated mail requires a fully Green case ──
+  // Fully evidenced = Green verdict, no blocking flags, high-confidence docs,
+  // and a clean watcher. A workflow rule may choose the reply, but it cannot
+  // send for a non-Green case. In particular, evidence_gate=0 never waives the
+  // Green requirement; unqualified replies remain suggestions for staff.
   const typeGate = genericCaseType?.evidence_gate ?? 1;
   const evidenceGateOn = typeGate !== 0;
-  const heldForQualification = replyAttempted && ((!fullyQualified && evidenceGateOn) || activeBlockingFlags.length > 0 || !allDocsHigh || watcherFlagged);
+  const heldForQualification = replyAttempted && (
+    finalStatus !== "Green" ||
+    (evidenceGateOn && !fullyQualified) ||
+    activeBlockingFlags.length > 0 ||
+    !allDocsHigh ||
+    watcherFlagged
+  );
   if (heldForQualification) {
     repo.audit(
       applicant.id,

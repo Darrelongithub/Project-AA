@@ -5,7 +5,7 @@
  * Pinned here:
  *  1. the single global switch (default OFF = `automation_mode: draft`) holds
  *     EVERY automated reply — including a rule that says `send`, a case type
- *     that opted into auto with its evidence gate off, and a reminder rung;
+ *     with its evidence gate off, and a reminder rung (non-Green always stays held);
  *  2. releasing the global switch is not enough: each category must also be on
  *     the explicit allowlist, which starts empty;
  *  3. uncertain input always goes to a person — a fallback classification, a
@@ -34,9 +34,9 @@ let sender: MockSender;
 let ctx: PipelineContext;
 let typeId = 0;
 
-/** A tenant whose SERVICE_REQUEST case type is configured to *want* to send:
- *  rule says send, evidence gate off, case type auto. Only the product's own
- *  switches stand between it and the wire. */
+/** A tenant whose SERVICE_REQUEST case type is configured to request sending:
+ *  the rule says send, the profile is auto, and evidence_gate=0. Green is still
+ *  mandatory; the other switches control only whether a qualified case may send. */
 function boot(opts: { categorizer?: CategoryLabeler } = {}): void {
   repo = new Repo(openDb(":memory:"));
   seedDefaults(repo);
@@ -111,7 +111,26 @@ describe("the global switch is a real kill switch", () => {
     expect(sender.sent.length).toBe(0);
   });
 
-  it("holds a reminder rung that a rule armed to send", async () => {
+  it("evidence_gate=0 cannot auto-send a non-Green case even when every send switch is released", async () => {
+    boot();
+    releaseAutomation(repo);
+    const result = await processEmail(mail({
+      attachments: [{
+        filename: "form.pdf",
+        mimeType: "application/pdf",
+        content: await makeTextPdf(docLines("request_form", { name: "NON GREEN BYPASS" })),
+      }],
+    }), ctx);
+
+    expect(result.finalStatus).toBe("Red");
+    expect(result.autoSent).toBe(false);
+    expect(sender.sent).toHaveLength(0);
+    const audit = repo.auditForApplicant(result.applicantId!);
+    expect(audit.some((entry) => entry.event === "automation_held_evidence" && entry.detail.includes("verdict=Red"))).toBe(true);
+    expect(repo.queuedOutbox(result.applicantId!)).toBeTruthy();
+  });
+
+  it("evidence_gate=0 does not let a non-Green reminder rung auto-send", async () => {
     boot();
     const type = repo.getCaseType("SERVICE_REQUEST", 1)!;
     repo.saveWorkflowRule({
@@ -130,21 +149,24 @@ describe("the global switch is a real kill switch", () => {
       attachments: [{ filename: "form.pdf", mimeType: "application/pdf", content: await makeTextPdf(docLines("request_form", { name: "LADDER ONE" })) }],
     }), ctx);
     expect(result.skipped).toBeFalsy();
+    expect(result.finalStatus).toBe("Red");
     const id = result.applicantId!;
     expect((repo.getApplicant(id)! as { followup_action?: string }).followup_action).toBe("send"); // the rule armed a sending rung
-    repo.updateCaseTypeProfile(typeId, { evidence_gate: 0 });
+    expect(repo.getCaseType("SERVICE_REQUEST", 1)!.evidence_gate).toBe(0);
     repo.setFollowup(id, 0, new Date(Date.now() - 86_400_000).toISOString(), new Date(Date.now() - 86_400_000).toISOString());
 
     sender.sent.length = 0;
     await runFollowUpSweep(repo, ctx);
-    expect(sender.sent.length).toBe(0); // the global switch outranks the rule
-    expect(repo.auditForApplicant(id).some((a) => a.event === "followup_sent")).toBe(false);
+    expect(sender.sent).toHaveLength(0); // the global switch remains authoritative
 
     releaseAutomation(repo);
     repo.setFollowup(id, 0, new Date(Date.now() - 86_400_000).toISOString(), new Date(Date.now() - 86_400_000).toISOString());
     await runFollowUpSweep(repo, ctx);
-    expect(sender.sent.length).toBe(1); // released: the rung sends
-    expect(repo.auditForApplicant(id).some((a) => a.event === "followup_sent")).toBe(true);
+    expect(sender.sent).toHaveLength(0); // gate-off and global opt-in cannot override Red
+    const audit = repo.auditForApplicant(id);
+    expect(audit.some((entry) => entry.event === "followup_sent")).toBe(false);
+    expect(audit.some((entry) => entry.event === "followup_held_qualification")).toBe(true);
+    expect(repo.queuedOutbox(id)).toBeTruthy();
   });
 
   it("does not stop a person: staff Send works while the switch is off", async () => {

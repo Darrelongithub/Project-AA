@@ -2386,7 +2386,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
         </select></div>
       <div class=\"field\" style=\"flex:1;min-width:170px\"><span class=\"lbl\">Reminder response</span>
         <select name=\"followup_action\">
-          ${["hold", "send", "draft", "approve", "none"].map((d) => `<option value=\"${d}\" ${(act.followup_action ?? "hold") === d ? "selected" : ""}>${{ hold: "hold for staff (default)", send: "send (ungated profiles)", draft: "draft for staff", approve: "draft for approval", none: "do nothing (cancel ladder)" }[d]}</option>`).join("")}
+          ${["hold", "send", "draft", "approve", "none"].map((d) => `<option value=\"${d}\" ${(act.followup_action ?? "hold") === d ? "selected" : ""}>${{ hold: "hold for staff (default)", send: "request send (qualification still applies)", draft: "draft for staff", approve: "draft for approval", none: "do nothing (cancel ladder)" }[d]}</option>`).join("")}
         </select></div>
       <div class=\"field\" style=\"flex:1;min-width:150px\"><span class=\"lbl\">Attachment set</span>
         <input name=\"attachment_set\" value=\"${esc(act.attachment_set ?? "")}\" placeholder=\"(none)\"></div>
@@ -2512,12 +2512,12 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
           <option value=\"auto\" ${t.default_reply_action === "auto" ? "selected" : ""}>automatic sending when a rule says so</option>
         </select>
         <select name=\"evidence_gate\">
-          <option value=\"1\" ${t.evidence_gate !== 0 ? "selected" : ""}>hold unverified replies</option>
-          <option value=\"0\" ${t.evidence_gate === 0 ? "selected" : ""}>gate off (rules decide)</option>
+          <option value=\"1\" ${t.evidence_gate !== 0 ? "selected" : ""}>hold non-Green replies</option>
+          <option value=\"0\" ${t.evidence_gate === 0 ? "selected" : ""}>rules decide (Green still required)</option>
         </select>
         <button class=\"btn small ghost\">Save</button>
       </form></td>
-      <td>${t.evidence_gate !== 0 ? "on" : "off"}</td>
+      <td>${t.evidence_gate !== 0 ? "on" : "off (Green still required)"}</td>
       <td></td>
     </tr>`).join("")}
   </table>

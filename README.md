@@ -64,7 +64,8 @@ Automated messages are safe-by-default and require multiple gates:
 - The global `automation_mode` starts at **draft**.
 - The per-category auto-send allow-list starts **empty**. Releasing the global mode does not release every category.
 - New case types are draft-first and have the evidence gate on.
-- A configured workflow must request a permitted send, the case type/evidence gates must allow it, and the classifier must not have held the message.
+- A configured workflow must request a permitted send, the case type/global/category settings must allow it, and the classifier must not have held the message.
+- **A non-Green case is never auto-sent.** `evidence_gate=0` and a rule's `send` action cannot waive the Green, no-blocking-flags qualification; replies for other cases stay as suggested drafts for staff.
 - A fallback category or confidence below `CLASSIFIER_MIN_CONFIDENCE` (0.70) is held for a person. A category does not make an approval/rejection decision.
 - A staff member's deliberate send is separate from automated sending. The application does not claim a delivery when no delivering Gmail sender is connected; such a path is audited as `email_not_delivered`.
 
