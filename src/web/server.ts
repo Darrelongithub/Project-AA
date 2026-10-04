@@ -1187,12 +1187,11 @@ export function createApp(deps: WebDeps): Express {
     const reason = String(req.body.reason ?? "").trim();
     if (!["approved_after_review", "not_approved", "undecided"].includes(outcome)) return res.redirect(backToCase(id, "Unknown outcome — nothing changed."));
     if (!reason || reason.length > 2000) return res.redirect(backToCase(id, "A reason of 1–2000 characters is required for every human outcome."));
-    repo.db.transaction(() => {
-      repo.updateCase(id, { outcome: outcome as "approved_after_review" | "not_approved" | "undecided" });
-      repo.updateApplicant(id, { outcome_route: "human", decision_by: req.staff!.username, decision_reason: reason, decision_at: new Date().toISOString() });
-      repo.setLifecycle(id, outcome === "undecided" ? "awaiting_review" : "completed", req.staff!.username, reason);
-      staffAction(req, id, "human_outcome_recorded", `${outcome}: ${reason}`);
-    })();
+    repo.recordHumanOutcome(id, {
+      outcome: outcome as "approved_after_review" | "not_approved" | "undecided",
+      actor: req.staff!.username,
+      reason,
+    });
     res.redirect(backToCase(id, "Human outcome recorded."));
   });
 

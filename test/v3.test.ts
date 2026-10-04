@@ -110,8 +110,11 @@ describe("identity matching (features 4, 5, 34)", () => {
     const first = mustProcessed(await processEmail(mkEmail("u1", "tu-a", "uma@example.test", { attachments: await fullSet("UMA MUTURI") }), ctx));
     // Outcomes are human acts: close the case the way an officer would, then
     // prove new evidence reopens THAT case rather than fragmenting a second.
-    repo.updateCase(first.applicantId, { outcome: "approved_after_review" });
-    repo.setLifecycle(first.applicantId, "completed", "officer", "closed after review");
+    repo.recordHumanOutcome(first.applicantId, {
+      outcome: "approved_after_review",
+      actor: "officer",
+      reason: "closed after review",
+    });
     expect(repo.getCase(first.applicantId)!.lifecycle).toBe("completed");
 
     const res = mustProcessed(await processEmail(

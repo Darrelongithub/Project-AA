@@ -170,8 +170,12 @@ describe("re-typing a case", () => {
   it("leaves the recorded verdict alone (PROVISIONAL: no automatic re-evaluation)", async () => {
     admin = await login("admin", "admin123");
     const id = mkCase();
-    repo.updateApplicant(id, { req_result: "passed", routing: "human_review", outcome: "approved_after_review" });
-    repo.updateCase(id, { outcome: "approved_after_review" });
+    repo.updateApplicant(id, { req_result: "passed", routing: "human_review" });
+    repo.recordHumanOutcome(id, {
+      outcome: "approved_after_review",
+      actor: "officer",
+      reason: "Confirmed after review",
+    });
     const auditsBefore = repo.auditForApplicant(id).map((a) => a.event);
 
     expect((await retype(admin, id, typeId("VENDOR_INTAKE"))).status).toBe(302);

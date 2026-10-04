@@ -694,11 +694,6 @@ export class Repo {
         | "req_result"
         | "routing"
         | "routing_reason"
-        | "outcome"
-        | "outcome_route"
-        | "decision_by"
-        | "decision_reason"
-        | "decision_at"
       >
     >
   ): void {
@@ -708,8 +703,6 @@ export class Repo {
       "full_name", "phone", "case_type_code", "intake", "priority", "assigned_to",
       "lifecycle", "triage", "queue", "sla_due_at", "sla_handled_at", "escalated",
       "transfer", "nationality", "req_result", "routing", "routing_reason",
-      "outcome", "outcome_route", "decision_by", "decision_reason",
-      "decision_at",
     ]);
     const keys = Object.keys(patch) as Array<keyof typeof patch>;
     if (keys.length === 0) return;
@@ -724,8 +717,8 @@ export class Repo {
     }
   }
 
-  updateCase(id: number, patch: { category?: string | null; outcome?: CaseOutcome; case_type_id?: number | null }): void {
-    if (Object.keys(patch).some((key) => !["category", "outcome", "case_type_id"].includes(key))) throw new Error("updateCase: refusing unknown column");
+  updateCase(id: number, patch: { category?: string | null; case_type_id?: number | null }): void {
+    if (Object.keys(patch).some((key) => !["category", "case_type_id"].includes(key))) throw new Error("updateCase: refusing unknown column");
     const current = this.getCase(id);
     if (!current) throw new Error("Unknown case");
     if (patch.case_type_id != null && this.caseTypeById(patch.case_type_id)?.organization_id !== current.organization_id) throw new Error("Case type belongs to another organization");
@@ -740,7 +733,39 @@ export class Repo {
         this.db.prepare("UPDATE applicants SET case_type_code = ?, category = ?, updated_at = ? WHERE id = ?")
           .run(type?.code ?? null, type?.category ?? null, nowIso(), id);
       }
-      if (patch.outcome !== undefined) this.db.prepare("UPDATE applicants SET outcome = ?, updated_at = ? WHERE id = ?").run(patch.outcome,nowIso(),id);
+    })();
+  }
+
+  /** The only runtime path for a human-recorded case outcome. Outcome,
+   * provenance, lifecycle, SLA acknowledgement and audit are committed as one
+   * typed decision so generic patch methods cannot create an unattributed
+   * decision. Automatic outcomes are deliberately not supported by this path. */
+  recordHumanOutcome(
+    id: number,
+    decision: { outcome: Exclude<CaseOutcome, "auto_approved">; actor: string; reason: string }
+  ): void {
+    const actor = decision.actor.trim();
+    const reason = decision.reason.trim();
+    if (!actor) throw new Error("A decision actor is required");
+    if (!reason || reason.length > 2000) throw new Error("A human outcome requires a reason of 1–2000 characters");
+    if (!["approved_after_review", "not_approved", "undecided"].includes(String(decision.outcome))) {
+      throw new Error("Invalid human outcome");
+    }
+
+    const decidedAt = nowIso();
+    this.db.transaction(() => {
+      const current = this.getApplicant(id);
+      if (!current) throw new Error("Unknown case");
+      this.db.prepare(
+        `UPDATE applicants
+         SET outcome = ?, outcome_route = 'human', decision_by = ?, decision_reason = ?, decision_at = ?, updated_at = ?
+         WHERE id = ?`
+      ).run(decision.outcome, actor, reason, decidedAt, decidedAt, id);
+      if (current.sla_due_at && !current.sla_handled_at) {
+        this.updateApplicant(id, { sla_handled_at: decidedAt });
+      }
+      this.setLifecycle(id, decision.outcome === "undecided" ? "awaiting_review" : "completed", actor, reason);
+      this.audit(id, actor, "human_outcome_recorded", `${decision.outcome}: ${reason}`);
     })();
   }
 
