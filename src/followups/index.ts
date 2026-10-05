@@ -10,9 +10,10 @@
  * Every reminder is factual (the checklist is recomputed from reality at rung
  * time) — if the file became complete meanwhile, the ladder quietly stops.
  *
- * Reminders are never auto-sent unless a rule says so and the case type's
- * evidence gate is off: outstanding information always produces a SUGGESTED
- * reply held for staff by default. Returns the number of rungs processed.
+ * A reminder is only due while required information is still outstanding,
+ * which makes its case non-Green. Even an explicit rule `send` action and
+ * evidence_gate=0 cannot auto-send it; the rendered reminder is held for staff.
+ * Returns the number of rungs processed.
  */
 import type { Repo } from "../db/repo";
 import type { PipelineContext, SendExtras } from "../pipeline/adapters";
@@ -70,8 +71,9 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
       const organizationId = a.organization_id ?? 1;
       // PPR P1-3: the RULE that armed the ladder decides how each rung responds
       // (send / draft / approve / hold / none). Default "hold" keeps every rung
-      // with a person; "send" is additionally subject to the case type's
-      // evidence gate — gate-on types keep holding.
+      // with a person. A "send" rung additionally requires the profile gate to
+      // be off, global automation to be released, and the case to be Green —
+      // which an outstanding required document can never satisfy.
       const rungAction = (a as { followup_action?: string }).followup_action ?? "hold";
       const caseType = repo.caseTypeForCase(a.id);
       const gateOn = (caseType?.evidence_gate ?? 1) !== 0;
@@ -96,22 +98,26 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
           statusLabel: LIFECYCLE_LABELS[a.lifecycle],
         });
         const subject = rung === ladder.length - 1 ? `[FINAL REMINDER] ${rendered.subject}` : `[REMINDER] ${rendered.subject}`;
-        if (rungAction === "send" && !gateOn && globalAuto) {
+        if (rungAction === "send" && !gateOn && globalAuto && a.triage === "Green") {
           // Explicit rule action + un-gated case type + the global switch
-          // released: the reminder goes out.
-          const extras: SendExtras = { banner: emailBanner(repo, organizationId), attachments: [], ...organizationSender(repo, organizationId) };
-          try {
-            await ctx.adapters.sender.send(a.email_address, subject, rendered.body, "", extras);
-            repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "auto", template_key: "missing_documents" });
-            repo.audit(a.id, "system", "followup_sent", `rung ${rung}/${ladder.length - 1} reminder sent (${subject})`);
-            if (ctx.adapters.sender.delivers === false) {
-              repo.audit(a.id, "system", "email_not_delivered", `recorded only — no mail connection is configured, so "${subject}" was NOT delivered to ${a.email_address}`);
-            }
-            log(`followups: ${a.ref_number} rung ${rung} reminder sent`);
-          } catch (e) {
+          // released + a Green case: only then may the reminder go out.
+          if (ctx.adapters.sender.delivers !== true) {
             repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
-            repo.audit(a.id, "system", "followup_send_failed", `rung ${rung} send failed, held as draft (${e instanceof Error ? e.message : String(e)})`);
-            log(`followups: ${a.ref_number} rung ${rung} send failed — held`, "warn");
+            repo.audit(a.id, "system", "email_not_delivered", `no mail connection is configured, so "${subject}" was NOT delivered to ${a.email_address}; reminder kept as a draft`);
+            repo.notify("review_needed", `${a.ref_number}: reminder could not be delivered — mail is not connected`, a.id);
+            log(`followups: ${a.ref_number} rung ${rung} held; mail is not connected`, "warn");
+          } else {
+            const extras: SendExtras = { banner: emailBanner(repo, organizationId), attachments: [], ...organizationSender(repo, organizationId) };
+            try {
+              await ctx.adapters.sender.send(a.email_address, subject, rendered.body, "", extras);
+              repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "auto", template_key: "missing_documents" });
+              repo.audit(a.id, "system", "followup_sent", `rung ${rung}/${ladder.length - 1} reminder sent (${subject})`);
+              log(`followups: ${a.ref_number} rung ${rung} reminder sent`);
+            } catch (e) {
+              repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
+              repo.audit(a.id, "system", "followup_send_failed", `rung ${rung} send failed, held as draft (${e instanceof Error ? e.message : String(e)})`);
+              log(`followups: ${a.ref_number} rung ${rung} send failed — held`, "warn");
+            }
           }
         } else if (rungAction === "draft") {
           repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
@@ -124,9 +130,9 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
           repo.audit(a.id, "system", "followup_awaiting_approval", `rung ${rung}/${ladder.length - 1} queued for approval (${subject})`);
           log(`followups: ${a.ref_number} rung ${rung} reminder awaiting approval`);
         } else {
-          // "hold" (generic default) or "send" on a gate-on profile: anyone
-          // on the reminder ladder still has documents outstanding — by
-          // definition NOT fully qualified. Held as a staff suggestion.
+          // "hold" (generic default), "send" on a gate-on profile, or any
+          // "send" for a non-Green case: the still-missing required document
+          // means this reminder is not qualified for automatic mail.
           repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
           repo.notify("review_needed", `${a.ref_number}: follow-up reminder (rung ${rung}/${ladder.length - 1}) drafted — review and send`, a.id);
           repo.audit(a.id, "system", "followup_held_qualification", `rung ${rung}/${ladder.length - 1} held as a suggested reply (${subject})`);

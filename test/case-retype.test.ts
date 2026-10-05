@@ -90,6 +90,23 @@ describe("re-typing a case", () => {
     expect(repo.caseConfigFrozen(row)!.documents?.map((d) => d.key).sort()).toEqual(["insurance_certificate", "services_agreement"]);
   });
 
+  it("keeps the category coherent on the direct write path too", () => {
+    // updateApplicant is the other door into case_type_code (the intake
+    // pipeline, a staff patch). It used to copy the CODE into `category`, which
+    // updateCase/createCase fill with the case type's CATEGORY — one column, two
+    // meanings, and a case whose columns disagree is two cases at once.
+    const id = mkCase();
+    expect(repo.getApplicant(id)!.category).toBe("services");        // from createCase
+
+    repo.updateApplicant(id, { case_type_code: "VENDOR_INTAKE" });
+    expect(repo.getApplicant(id)!.category).toBe("vendors");      // same answer as re-typing
+
+    // A code with no case type in THIS organization has no category to inherit:
+    // it reads as unknown (NULL), never as a stray code pretending to be one.
+    repo.updateApplicant(id, { case_type_code: "HLC_ONLY" });
+    expect(repo.getApplicant(id)!.category).toBeNull();
+  });
+
   it("refuses a case type from another organization, and leaves the case alone", async () => {
     admin = await login("admin", "admin123");
     const id = mkCase();
@@ -170,8 +187,12 @@ describe("re-typing a case", () => {
   it("leaves the recorded verdict alone (PROVISIONAL: no automatic re-evaluation)", async () => {
     admin = await login("admin", "admin123");
     const id = mkCase();
-    repo.updateApplicant(id, { req_result: "passed", routing: "human_review", outcome: "approved_after_review" });
-    repo.updateCase(id, { outcome: "approved_after_review" });
+    repo.updateApplicant(id, { req_result: "passed", routing: "human_review" });
+    repo.recordHumanOutcome(id, {
+      outcome: "approved_after_review",
+      actor: "officer",
+      reason: "Confirmed after review",
+    });
     const auditsBefore = repo.auditForApplicant(id).map((a) => a.event);
 
     expect((await retype(admin, id, typeId("VENDOR_INTAKE"))).status).toBe(302);

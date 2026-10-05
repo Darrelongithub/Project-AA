@@ -9,13 +9,13 @@
 import * as crypto from "crypto";
 import { FAVICON_BASE64, LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
 import { FONT_INSTRUMENT_SERIF_ITALIC_WOFF2, FONT_INSTRUMENT_SERIF_WOFF2, FONT_MANROPE_WOFF2 } from "./fonts";
-import express, { type Express, type NextFunction, type Request, type Response } from "express";
+import express, { type Express, type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import { Repo } from "../db/repo";
 import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 import type { PipelineContext } from "../pipeline/adapters";
 import type { Adapters } from "../pipeline/adapters";
 import type { ApplicantRow, LifecycleStage, Permission } from "../types";
-import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS, type EmailCategory } from "../types";
+import { EMAIL_CATEGORIES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS, type EmailCategory } from "../types";
 import { checklistText, inspectTemplate, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import { fillSlots } from "../documents/matrix";
@@ -41,10 +41,19 @@ import { log } from "../util/log";
 import type { OnceResult } from "../util/once";
 import { hashPassword, verifyPassword } from "../util/password";
 import { normalizeUsername, USERNAME_RE } from "../util/username";
-import { gmailRedirectUri } from "./oauth";
-import { LoginThrottle } from "./throttle";
+import { gmailRedirectUri, publicOrigin } from "./oauth";
+import { LoginThrottle, RateWindow, SendGuard } from "./throttle";
+import { WEBHOOK_PATH_PREFIX, ingestWebhook, redactIngestKey } from "./webhook";
+import { envInt } from "../util/envnum";
 import { emailBanner, organizationName, organizationSender, organizationTheme } from "../branding";
 import type { PackFile } from "../pack";
+
+class MailDeliveryUnavailableError extends Error {
+  constructor() {
+    super("Mail is not connected.");
+    this.name = "MailDeliveryUnavailableError";
+  }
+}
 
 export interface WebDeps {
   repo: Repo;
@@ -74,11 +83,13 @@ export function createApp(deps: WebDeps): Express {
     subject: string,
     body: string,
     extras: { banner?: { mime: string; base64: string } | null; attachments?: Array<{ filename: string; mimeType: string; content: Buffer }> }
-  ): Promise<void> =>
-    ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
+  ): Promise<void> => {
+    if (ctx.adapters.sender.delivers !== true) throw new MailDeliveryUnavailableError();
+    return ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
       ...organizationSender(repo, a.organization_id ?? 1),
       ...extras,
     });
+  };
   const authName = (): string => repo.getOrganization(1)?.name?.trim() || organizationName(repo, 1);
 
   app.disable("x-powered-by");
@@ -86,8 +97,21 @@ export function createApp(deps: WebDeps): Express {
   // proxy's address unless this is set — which makes every per-IP rate
   // limiter a single global counter for ALL users. Opt in via TRUST_PROXY=1.
   if (process.env.TRUST_PROXY === "1") app.set("trust proxy", 1);
-  app.use(express.urlencoded({ extended: true, limit: "2mb" }));
-  app.use(express.json({ limit: "1mb" }));
+  // A webhook POST is parsed by the ingest route itself, under a cap measured in
+  // tens of kilobytes rather than megabytes: an unauthenticated caller must not
+  // be able to hand the process a 2 MB document to parse before anyone has
+  // decided whether its key is even valid. The console forms keep their limits.
+  const ingestPayloadLimit = envInt(process.env.WEBHOOK_MAX_PAYLOAD_BYTES, 65_536);
+  // Case-insensitive because Express matches routes case-insensitively: a caller
+  // reaching /API/V1/ingest/... must not be handed back to the 2 MB global parser
+  // (which is both a looser cap and a path where an oversized body escapes this
+  // endpoint's own 413 answer).
+  const ingestPrefix = WEBHOOK_PATH_PREFIX.toLowerCase();
+  const ownsOwnBody = (req: Request): boolean => req.path.toLowerCase().startsWith(ingestPrefix);
+  const skipIngestBody = (handler: RequestHandler): RequestHandler =>
+    ((req, res, next) => (ownsOwnBody(req) ? (next as () => void)() : handler(req, res, next))) as RequestHandler;
+  app.use(skipIngestBody(express.urlencoded({ extended: true, limit: "2mb" })));
+  app.use(skipIngestBody(express.json({ limit: "1mb" })));
   app.use(authMiddleware(repo));
 
   const c = (req: Request) => ({
@@ -104,11 +128,11 @@ export function createApp(deps: WebDeps): Express {
     } : undefined,
     gmailConfigured: Boolean(gmailConfigured) && repo.getSetting("gmail_disabled", "") !== "1",
     gmailAddress: deps.gmailAddress,
-    // Honesty about delivery: MockSender records, GmailSender sends. Only an
-    // explicit "does not deliver" raises the banner (a test double says nothing).
-    // Defensive: a context built for a test may pass no sender at all.
-    mailDelivers: ctx.adapters?.sender?.delivers,
-    // Is a model credential reachable at all (console secret or environment)?
+    // Honesty about delivery: MockSender records, GmailSender sends. Anything
+    // that cannot state it delivers raises the banner, exactly like the send
+    // paths that refuse to record a delivery.
+    mailDelivers: ctx.adapters?.sender?.delivers === true,
+    // Is a stored Gemini credential reachable for this installation?
     geminiAvailable: geminiCredentials() !== null,
   });
 
@@ -236,7 +260,7 @@ export function createApp(deps: WebDeps): Express {
   };
 
   app.use((req, res, next) => {
-    if (repo.staffCount() === 0 && req.path !== "/setup" && req.path !== "/healthz" && req.path !== "/theme") {
+    if (repo.staffCount() === 0 && req.path !== "/setup" && req.path !== "/healthz" && req.path !== "/theme" && !ownsOwnBody(req)) {
       res.redirect("/setup");
       return;
     }
@@ -330,8 +354,12 @@ export function createApp(deps: WebDeps): Express {
     res.send(loginPage(undefined, req.theme, authName(), newLoginCsrf(), req.query.msg ? String(req.query.msg) : undefined));
   });
 
-  /** Theme toggle — persisted in a cookie so it survives sessions & works on public pages. */
-  app.post("/theme", (req, res) => {
+  /** Theme toggle — public visitors may set their own preference, but an
+   * authenticated POST must carry the same session CSRF token as other writes. */
+  app.post("/theme", (req, res, next) => {
+    if (req.staff) return csrfCheck(req, res, next);
+    next();
+  }, (req, res) => {
     const next = req.theme === "dark" ? "light" : "dark";
     res.setHeader("Set-Cookie", `theme=${next}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${365 * 86400}`);
     // Redirect back to where the toggle was pressed — but ONLY to a relative
@@ -673,6 +701,10 @@ export function createApp(deps: WebDeps): Express {
       res.redirect(backToCase(id, `Reply sent${pack ? ` with the ${pack.label} pack attached` : ""}.`));
     } catch (e) {
       repo.releaseOutboxDraft(draft.id); // let the officer retry the send
+      if (e instanceof MailDeliveryUnavailableError) {
+        repo.audit(id, req.staff!.username, "email_not_delivered", `held draft "${subject}" remains queued because mail is not connected`);
+        return res.redirect(backToCase(id, "Mail is not connected — draft remains queued."));
+      }
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
       res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
     }
@@ -737,15 +769,16 @@ export function createApp(deps: WebDeps): Express {
 
   // Rapid double-click protection for template sends: the same officer sending
   // the same template to the same case within 5s is treated as one action.
-  const recentSends = new Map<string, number>();
-  const sendGuardOk = (key: string): boolean => {
-    const now = Date.now();
-    if (recentSends.size > 2000) recentSends.clear();
-    const last = recentSends.get(key) ?? 0;
-    if (now - last < 5000) return false;
-    recentSends.set(key, now);
-    return true;
-  };
+  // Entries past the window are worthless, so the map is pruned by age on each
+  // call. The previous shape capped the size with `recentSends.clear()`, which
+  // discarded EVERY in-flight guard the moment a busy office crossed the cap —
+  // the same bulk-wipe mistake src/web/throttle.ts documents for logins, and
+  // here it silently re-opened the duplicate send the guard exists to prevent.
+  // Rapid double-click protection for template sends: the same officer sending
+  // the same template to the same case within 5 s is treated as one action
+  // (see SendGuard for why the window is pruned instead of cleared).
+  const sendGuard = new SendGuard();
+  const sendGuardOk = (key: string): boolean => sendGuard.allow(key);
 
   /** PPR P0-5: which organization-owned attachment set (if any) rides along
    *  with a template. Missing/empty sets are audited — a send that silently
@@ -791,6 +824,10 @@ export function createApp(deps: WebDeps): Express {
         attachments: pack ? pack.files : [],
       });
     } catch (e) {
+      if (e instanceof MailDeliveryUnavailableError) {
+        repo.audit(id, req.staff!.username, "email_not_delivered", `manual template reply "${rendered.subject}" not sent because mail is not connected`);
+        return res.redirect(backToCase(id, "Mail is not connected — no reply was sent."));
+      }
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
       return res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
     }
@@ -838,6 +875,10 @@ export function createApp(deps: WebDeps): Express {
         attachments: pack.files,
       });
     } catch (e) {
+      if (e instanceof MailDeliveryUnavailableError) {
+        repo.audit(id, req.staff!.username, "email_not_delivered", `manual attachment-set reply "${rendered.subject}" not sent because mail is not connected`);
+        return res.redirect(backToCase(id, "Mail is not connected — no reply was sent."));
+      }
       repo.audit(id, req.staff!.username, "send_failed", (e as Error).message);
       return res.redirect(backToCase(id, `Send failed: ${(e as Error).message}`));
     }
@@ -1042,10 +1083,12 @@ export function createApp(deps: WebDeps): Express {
         attachments: pack ? pack.files : [],
       });
     } catch (e) {
-      repo.audit(a.id, req.staff!.username, "send_failed", (e as Error).message);
+      const unavailable = e instanceof MailDeliveryUnavailableError;
+      repo.audit(a.id, req.staff!.username, unavailable ? "email_not_delivered" : "send_failed",
+        unavailable ? `manual compose reply "${subject}" not sent because mail is not connected` : (e as Error).message);
       return res.send(composeWindowPage(c(req), {
         applicant: a, templateKey: tpl?.key, subject, body,
-        error: `Send failed: ${(e as Error).message}`,
+        error: unavailable ? "Mail is not connected — no reply was sent." : `Send failed: ${(e as Error).message}`,
       }));
     }
     repo.insertEmail({
@@ -1187,12 +1230,11 @@ export function createApp(deps: WebDeps): Express {
     const reason = String(req.body.reason ?? "").trim();
     if (!["approved_after_review", "not_approved", "undecided"].includes(outcome)) return res.redirect(backToCase(id, "Unknown outcome — nothing changed."));
     if (!reason || reason.length > 2000) return res.redirect(backToCase(id, "A reason of 1–2000 characters is required for every human outcome."));
-    repo.db.transaction(() => {
-      repo.updateCase(id, { outcome: outcome as "approved_after_review" | "not_approved" | "undecided" });
-      repo.updateApplicant(id, { outcome_route: "human", decision_by: req.staff!.username, decision_reason: reason, decision_at: new Date().toISOString() });
-      repo.setLifecycle(id, outcome === "undecided" ? "awaiting_review" : "completed", req.staff!.username, reason);
-      staffAction(req, id, "human_outcome_recorded", `${outcome}: ${reason}`);
-    })();
+    repo.recordHumanOutcome(id, {
+      outcome: outcome as "approved_after_review" | "not_approved" | "undecided",
+      actor: req.staff!.username,
+      reason,
+    });
     res.redirect(backToCase(id, "Human outcome recorded."));
   });
 
@@ -1334,7 +1376,15 @@ export function createApp(deps: WebDeps): Express {
 
   // 'it' role: cases + configuration, but not staff management.
   app.get("/settings", requireLogin, requireRole("admin"), (req, res) =>
-    res.send(settingsPage(c(req), req.query.msg ? String(req.query.msg) : undefined, gmailRedirectUri(repo, req.protocol, req.get("host") ?? "localhost")))
+    res.send(settingsPage(
+      c(req),
+      req.query.msg ? String(req.query.msg) : undefined,
+      gmailRedirectUri(repo, req.protocol, req.get("host") ?? "localhost"),
+      publicOrigin(repo, req.protocol, req.get("host") ?? "localhost"),
+      // Issued on demand so a tenant that predates this feature gets a key the
+      // first time its admin opens the page — no migration, no redeploy.
+      repo.ensureWebhookIngestKey(organizationId(req))
+    ))
   );
 
   // Configuration: requirements, replies, Gmail, intakes, templates, exports.
@@ -1940,13 +1990,10 @@ export function createApp(deps: WebDeps): Express {
   // The key is stored in the secret store (PPR P0-1), used by the extraction
   // pipeline AT ONCE (no restart, no env file). "Test key" performs a real
   // round-trip and reports exactly what happened.
-  /** The model credential the console knows: the stored secret first (that is
-   *  what Settings manages), then the environment — an infrastructure-as-code
-   *  deployment sets GEMINI_API_KEY and has no secret row at all. Reading only
-   *  the secret used to downgrade an env-configured installation to mock
-   *  reading on every boot, moments after buildAdapters had wired the real one. */
+  /** Gemini's secret is managed only in the installation secret store;
+   *  environment variables never supply or replace it. */
   const geminiCredentials = (): { apiKey: string; model: string } | null => {
-    const apiKey = repo.getSecret("gemini_api_key").trim() || (process.env.GEMINI_API_KEY ?? "").trim();
+    const apiKey = repo.getSecret("gemini_api_key").trim();
     if (!apiKey) return null;
     const model = repo.getSetting("gemini_model", "").trim() || (process.env.GEMINI_MODEL ?? "").trim() || DEFAULT_GEMINI_MODEL;
     return { apiKey, model };
@@ -2007,12 +2054,8 @@ export function createApp(deps: WebDeps): Express {
       // N1: the message below is only true if the adapters actually go
       // back to mock — rebuild before claiming it.
       rebuildAdapters();
-      const envStill = Boolean((process.env.GEMINI_API_KEY ?? "").trim());
-      repo.audit(null, req.staff!.username, "gemini_disabled",
-        envStill ? "API key removed from the console — the environment key is still in use" : "API key removed — back to text/OCR reading");
-      return res.redirect(back(envStill
-        ? "Gemini key removed from the console. The environment key (GEMINI_API_KEY) is still in use."
-        : "Gemini key removed. Document reading falls back to text/OCR only."));
+      repo.audit(null, req.staff!.username, "gemini_disabled", "API key removed — back to text/OCR reading");
+      return res.redirect(back("Gemini key removed. Document reading falls back to text/OCR only."));
     }
     if (!key && !repo.hasSecret("gemini_api_key")) {
       return res.redirect(back("Paste a Gemini API key first (get one free at aistudio.google.com/apikey)."));
@@ -2099,6 +2142,31 @@ export function createApp(deps: WebDeps): Express {
     );
   });
 
+  app.post("/settings/webhook", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    // Strict like every other settings surface: an action this route does not
+    // know is reported as "nothing changed", never quietly treated as a no-op
+    // success — the two things it can do are destructive or rate-affecting.
+    const back = (message: string) => res.redirect(`/settings?msg=${encodeURIComponent(message)}#webhook`);
+    const organizationIdForStaff = req.staff!.organization_id ?? 1;
+    const action = String(req.body.action ?? "");
+    if (action === "rotate") {
+      // One row update. Lookup is by value, so the previous URL is dead the
+      // instant this returns: no cache to expire, no grace window, no restart.
+      repo.setWebhookIngestKey(organizationIdForStaff, req.staff!.username);
+      return back("A new ingest key is live. The previous webhook URL stopped working at that moment — update every form, Zap or scenario that used it.");
+    }
+    if (action === "limit") {
+      const raw = String(req.body.webhook_rate_limit_per_minute ?? "").trim();
+      if (!/^\d+$/.test(raw) || Number(raw) < 1 || Number(raw) > 10_000) {
+        return back("Rate limit unchanged: enter a whole number of calls per minute between 1 and 10000.");
+      }
+      repo.setWebhookRateLimitPerMinute(organizationIdForStaff, Math.floor(Number(raw)));
+      repo.audit(null, req.staff!.username, "settings_changed", `webhook ingest rate limit for organization ${organizationIdForStaff} → ${raw} per minute`);
+      return back(`Rate limit saved for this organization: ${raw} requests per minute on the ingest address. Effective on the next request.`);
+    }
+    return back("Nothing changed: this form rotates the ingest key or sets the per-minute request budget.");
+  });
+
   app.post("/settings/automation/global", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const mode = String(req.body.mode ?? "auto") === "draft" ? "draft" : "auto";
     repo.setSetting("automation_mode", mode);
@@ -2120,10 +2188,7 @@ export function createApp(deps: WebDeps): Express {
   // Classification is a sensor: the model is handed this tenant's allow-list
   // and its answer is rejected unless it is on it. With no labels configured,
   // categorization stays deterministic keyword matching.
-  const WORKFLOW_CATEGORY_KEYS = [
-    "application", "document_submission", "missing_document", "fee_enquiry",
-    "general_enquiry", "follow_up", "complaint", "other",
-  ];
+  const WORKFLOW_CATEGORY_KEYS: readonly string[] = EMAIL_CATEGORIES;
   // ── Phase D3 (Q7 step 2): inbound address -> case type ───────────────────
   // Tenant-guarded like every other configuration write: the acting admin can
   // only ever claim an address for their OWN organization's case types, and an
@@ -2159,8 +2224,25 @@ export function createApp(deps: WebDeps): Express {
     const routed = WORKFLOW_CATEGORY_KEYS.includes(key);
     repo.audit(null, req.staff!.username, "email_category_added",
       `${key} ("${label}")${routed ? "" : " — not a workflow category, so messages carrying it route as 'other'"}`);
-    return res.redirect(back(`Category "${label}" (${key}) added.${routed ? "" : " Note: only the eight workflow categories drive routing; a custom label is recorded and routes as 'other'."}`));
+    return res.redirect(back(`Category "${label}" (${key}) added.${routed ? "" : " Note: only the built-in workflow categories drive routing; a custom label is recorded and routes as 'other'."}`));
   });
+  app.post("/settings/categories/edit", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const orgId = ownOrganizationId(req);
+    const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#categories`;
+    if (!repo.getOrganization(orgId)) return res.redirect(back("Unknown organization — complete setup first."));
+    const key = String(req.body.key ?? "").trim();
+    const label = String(req.body.label ?? "").trim();
+    const current = repo.listEmailCategories(orgId).find((row) => row.key === key);
+    if (!current) return res.redirect(back("Unknown category for this organization — nothing changed."));
+    if (!label || label.length > 60) return res.redirect(back("A category label must be 1-60 characters."));
+    if (label === current.label) return res.redirect(back(`Category "${key}" is unchanged.`));
+    if (!repo.updateEmailCategoryLabel(orgId, key, label)) {
+      return res.redirect(back("Category could not be updated — refresh the list and try again."));
+    }
+    repo.audit(null, req.staff!.username, "email_category_updated", `${key}: "${current.label}" → "${label}"`);
+    return res.redirect(back(`Category label updated to "${label}". Its key and existing message history are unchanged.`));
+  });
+
   app.post("/settings/categories/remove", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const orgId = ownOrganizationId(req);
     const back = (m: string) => `/settings?msg=${encodeURIComponent(m)}#categories`;
@@ -2499,6 +2581,77 @@ export function createApp(deps: WebDeps): Express {
 
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
+  // ── Public webhook ingest (Phase 18) ─────────────────────────────────────
+  // Unauthenticated by design — the permanent per-organization key in the path
+  // IS the credential, which is why it never appears in a log line, an audit row
+  // or this response body. Everything the payload carries is treated as hostile
+  // until src/web/webhook.ts has validated it, and the submission then runs
+  // through the same processEmail path as a real message: no gate is skipped and
+  // nothing in this endpoint can decide a case.
+  const declaredBytes = (req: Request): number => {
+    const lengthHeader = Number(req.headers["content-length"]);
+    if (Number.isFinite(lengthHeader) && lengthHeader > 0) return Math.floor(lengthHeader);
+    try { return Buffer.byteLength(JSON.stringify(req.body ?? {}), "utf8"); } catch { return 0; }
+  };
+  const webhookLimiter = new RateWindow({ windowMs: 60_000 });
+  const ingestJson = express.json({ limit: ingestPayloadLimit });
+  const ingestForm = express.urlencoded({ extended: false, limit: ingestPayloadLimit });
+  const parseIngestBody: RequestHandler = (req, res, next) => {
+    const isJson = String(req.headers["content-type"] ?? "").toLowerCase().includes("json");
+    const parser = isJson ? ingestJson : ingestForm;
+    const refuse = (error?: unknown): void => {
+      const message = String((error as Error)?.message ?? error);
+      setNoStore(res);
+      // 413/400 in the API's own shape: the parser's error text names byte
+      // limits, internal types and stack traces, which is the caller's business
+      // only as far as "your body was refused".
+      if (/too large|limit/i.test(message)) {
+        log(`webhook: body refused over the ${ingestPayloadLimit}-byte cap`, "warn");
+        res.status(413).json({ ok: false, error: "the request body is larger than this endpoint accepts" });
+        return;
+      }
+      res.status(400).json({ ok: false, error: isJson ? "the body is not valid JSON" : "the body is not readable form fields" });
+    };
+    try {
+      parser(req, res, (error?: unknown) => { if (error) return refuse(error); next(); });
+    } catch (error) {
+      // A recursion bomb (20 000 nested arrays) makes JSON.parse throw
+      // RangeError synchronously, before the callback — and an uncaught throw
+      // here would reach the generic error handler, which answers 500 AND
+      // writes a server_error audit row. A caller must not be able to buy
+      // audit-log growth with one line of JSON, so this surface answers it
+      // itself and stores nothing.
+      refuse(error);
+    }
+  };
+  app.post(`${WEBHOOK_PATH_PREFIX}:org_key`, parseIngestBody, async (req, res) => {
+    const reply = await ingestWebhook(
+      { repo, ctx, limiter: webhookLimiter },
+      {
+        orgKey: String(req.params.org_key ?? ""),
+        body: req.body,
+        // Declared bytes when the client stated them; otherwise a guarded
+        // re-serialisation. The guard matters: a 20 000-level-nested array
+        // parses fine and then overflows JSON.stringify's stack, and an
+        // uncaught throw here would answer 500 and write an audit row per
+        // request — a cheap way for a stranger to grow the audit log.
+        payloadBytes: declaredBytes(req),
+        ip: req.ip ?? "",
+      }
+    );
+    // No session, no cache: the answer belongs to this one call, and a shared
+    // proxy must not be able to serve a stale 429 or a replayed ref_number.
+    setNoStore(res);
+    if (reply.retryAfterSeconds) res.setHeader("Retry-After", String(reply.retryAfterSeconds));
+    res.status(reply.status).json(reply.body);
+  });
+  app.get(`${WEBHOOK_PATH_PREFIX}:org_key`, (_req, res) => {
+    // A key in a URL is a credential: never echo it back, and never confirm
+    // whether it is valid — GET is simply not what this endpoint is.
+    setNoStore(res);
+    res.status(405).setHeader("Allow", "POST").json({ ok: false, error: "use POST" });
+  });
+
   /** Command-palette search API (v4). Realm-scoped like every other list. */
   app.get("/api/search", requireLogin, (req, res) => {
     const q = String(req.query.q ?? "").trim();
@@ -2538,13 +2691,13 @@ export function createApp(deps: WebDeps): Express {
   // Last-resort error handler: log the detail, show a calm page — never a stack trace.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: unknown, req: Request, res: Response, _next: unknown) => {
-    log(`unhandled error on ${req.method} ${req.path}: ${(err as Error)?.stack ?? err}`, "error");
+    log(`unhandled error on ${req.method} ${redactIngestKey(req.path)}: ${(err as Error)?.stack ?? err}`, "error");
     // Persist only a minimal, tenant-attributable incident marker. The full
     // stack/message stays in the process log and is never copied into the
     // shared tenant audit surface where it could contain secrets or PII.
     try {
       const errorName = err instanceof Error ? err.name : "UnknownError";
-      repo.audit(null, req.staff?.username ?? "system", "server_error", `${req.method} ${req.path} — ${errorName}`);
+      repo.audit(null, req.staff?.username ?? "system", "server_error", `${req.method} ${redactIngestKey(req.path)} — ${errorName}`);
     } catch { /* the console log above remains authoritative if the DB is down */ }
     if (res.headersSent) return;
     if (req.path.startsWith("/api/")) {
@@ -2597,12 +2750,16 @@ export function guardAsyncRoutes(app: Express): void {
 
 /** Escalation sweep (feature 29) — runs on an interval in serve mode. */
 export function runEscalationSweep(repo: Repo, escalationHours: number): number {
-  const overdue = repo.overdueCases();
+  // The Settings window is what selects the cases — it used to be read, printed
+  // into the audit line and then ignored, so every value behaved like 0.
+  // Callers pass it through envInt, so a corrupt value arrives as the documented
+  // default, and 0 keeps the older “past its own SLA clock” rule.
+  const overdue = repo.overdueCases(escalationHours);
   let n = 0;
   for (const a of overdue) {
     repo.escalate(a.id);
     repo.notify("escalation", `Case ${a.ref_number} has exceeded its response target.`, a.id);
-    repo.audit(a.id, "system", "escalated", `exceeded response target (escalation window ${escalationHours}h)`);
+    repo.audit(a.id, "system", "escalated", escalationHours > 0 ? `unhandled for over ${escalationHours} h (escalation window)` : "exceeded response target");
     n++;
     log(`escalation: ${a.ref_number} exceeded response target → urgent`, "warn");
   }

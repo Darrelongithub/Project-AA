@@ -174,7 +174,7 @@ describe("a partially read document never automates a reply", () => {
     // Every automation gate wide open: this is the hardest case for a hold.
     releaseAutomation(repo);
     repo.updateCaseTypeProfile(type.id, { default_reply_action: "auto", evidence_gate: 0 });
-    const sender = new MockSender();
+    const sender = new MockSender(true);
     const ctx: PipelineContext = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
     return { repo, ctx, sender };
   }

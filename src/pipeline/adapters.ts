@@ -26,18 +26,20 @@ export interface SendExtras {
 export interface EmailSender {
   send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void>;
   /**
-   * Does this sender put mail on the wire? `false` means every "sent" reply is
-   * only RECORDED (no mail connection), which the console must say out loud —
-   * an audit trail that claims a send nobody received is worse than no audit
-   * trail. Absent (a test double) is treated as "not our business".
+   * Does this sender put mail on the wire? Required, and read as
+   * "not delivering" unless it is exactly `true`: a sender that cannot say for
+   * certain must not earn a successful-send record, an outbound email row or an
+   * auto-sent decision. Callers compare with `!== true` for that reason, so a
+   * new implementation has to state its capability (and TypeScript makes it).
    */
-  delivers?: boolean;
+  delivers: boolean;
 }
 
-/** Records sends in memory (simulation/tests, and any install with no mail
- *  connection) — nothing is delivered, and it says so. */
+/** Records send attempts in memory. By default it simulates an offline install;
+ *  pass `true` in tests that need to model a delivering sender. */
 export class MockSender implements EmailSender {
-  readonly delivers = false;
+  readonly delivers: boolean;
+  constructor(delivers = false) { this.delivers = delivers; }
   sent: Array<{ to: string; subject: string; body: string; threadId: string; attachments: string[]; banner: boolean; fromName: string | null; replyTo: string | null }> = [];
   async send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void> {
     this.sent.push({
@@ -61,24 +63,25 @@ export interface Adapters {
   categorizer?: CategoryLabeler;
 }
 
-/** The Gemini key the console knows: the organization's stored secret first
- *  (Settings → Connections), the environment second (headless CLIs). */
+/** Gemini credentials are read only from the installation's secret store
+ *  (Settings → Connections); environment variables never supply the API key. */
 export function resolveGeminiCredentials(cfg: AppConfig, repo?: Repo): { apiKey: string; model: string } | null {
-  const stored = repo?.getSecret("gemini_api_key").trim() || "";
-  const apiKey = stored || cfg.geminiApiKey || "";
+  const apiKey = repo?.getSecret("gemini_api_key").trim() || "";
   if (!apiKey) return null;
   const model = (repo && repo.getSetting("gemini_model", "").trim()) || cfg.geminiModel;
   return { apiKey, model };
 }
 
 export function buildAdapters(cfg: AppConfig, sender: EmailSender, repo?: Repo): Adapters {
-  const useGemini = cfg.mode === "live" && !!cfg.geminiApiKey;
+  const credentials = resolveGeminiCredentials(cfg, repo);
+  const useGemini = cfg.mode === "live" && credentials !== null;
+  const geminiModel = credentials?.model ?? cfg.geminiModel;
 
   // Live vision gets the resilience wrapper: SHA-256 result cache, daily
   // budget and a circuit breaker. Mock mode stays unwrapped (no budget to
   // burn, and tests assert on MockVisionAdapter directly).
   let vision: VisionAdapter = useGemini
-    ? new GeminiVisionAdapter(cfg.geminiApiKey!, cfg.geminiModel)
+    ? new GeminiVisionAdapter(credentials!.apiKey, geminiModel)
     : new MockVisionAdapter();
   if (useGemini && repo) {
     vision = new BudgetedVisionAdapter(vision, repo.visionCacheStore());
@@ -88,17 +91,16 @@ export function buildAdapters(cfg: AppConfig, sender: EmailSender, repo?: Repo):
   // and re-instantiated the model on every single email.
   const watcher: Watcher = useGemini
     ? (() => {
-        const w = new GeminiWatcher(cfg.geminiApiKey!, cfg.geminiModel);
+        const w = new GeminiWatcher(credentials!.apiKey, geminiModel);
         return (input) => w.watch(input);
       })()
     : makeHeuristicWatcher();
 
   // Classification is a sensor, never a decision-maker: it only runs when the
-  // tenant has defined its own category keys AND a key is reachable.
-  const credentials = resolveGeminiCredentials(cfg, repo);
+  // tenant has defined its own category keys AND a stored secret is available.
   const categorizer = credentials
     ? geminiCategoryLabeler({ apiKey: credentials.apiKey, model: credentials.model })
-    : (useGemini ? geminiCategoryLabeler({ apiKey: cfg.geminiApiKey!, model: cfg.geminiModel }) : undefined);
+    : undefined;
 
   return {
     vision,

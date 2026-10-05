@@ -220,6 +220,32 @@ describe("B4 — login throttle prunes by time, never blunt-clears", () => {
   });
 });
 
+describe("B5 — the duplicate-send window is pruned, never blunt-cleared", () => {
+  it("folds a repeat inside the window and forgets it once the window passes", async () => {
+    const { SendGuard } = await import("../src/web/throttle");
+    const guard = new SendGuard(5_000);
+    const now = Date.now();
+    expect(guard.allow("1:7:docs_request", now)).toBe(true);
+    expect(guard.allow("1:7:docs_request", now + 40)).toBe(false); // double-click
+    expect(guard.allow("2:7:docs_request", now + 41)).toBe(true); // another officer
+    expect(guard.allow("1:8:docs_request", now + 42)).toBe(true); // another case
+    expect(guard.allow("1:7:docs_request", now + 5_100)).toBe(true); // window rolled on
+    expect(guard.size).toBe(1); // the three aged-out keys were pruned individually
+  });
+
+  it("keeps guarding in-flight sends while the volume crosses the old cap", async () => {
+    const { SendGuard } = await import("../src/web/throttle");
+    const guard = new SendGuard(5_000);
+    const now = Date.now();
+    expect(guard.allow("1:1:ack_received", now)).toBe(true);
+    // The old implementation cleared everything past 2 000 entries, so this
+    // flood erased the guard above and a re-click mailed the reply twice.
+    for (let i = 0; i < 4_000; i++) guard.allow(`1:${i}:ack_received`, now + 10);
+    expect(guard.allow("1:1:ack_received", now + 20)).toBe(false);
+    expect(guard.size).toBeGreaterThan(0);
+  });
+});
+
 describe("B6 — admin password reset uses the same rules as first-run setup", () => {
   it("rejects missing/mismatched confirm and short passwords; accepts a matched pair", async () => {
     const base = await boot([]);

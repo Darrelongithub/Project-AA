@@ -33,9 +33,12 @@ beforeEach(() => {
 afterEach(() => { server?.close(); server = undefined; });
 
 /** A sender that blocks long enough for a second handler to interleave —
- *  exactly what real Gmail/SMTP does (100–2000 ms per message). */
+ *  exactly what real Gmail/SMTP does (100–2000 ms per message). It really does
+ *  deliver, so it says so: an EmailSender that stays silent about delivery is
+ *  held back as undeliverable (see test/sender-declares-delivery.test.ts). */
 class SlowSender {
   sent: unknown[][] = [];
+  readonly delivers = true;
   async send(...args: unknown[]): Promise<void> {
     await new Promise((r) => setTimeout(r, 80));
     this.sent.push(args);

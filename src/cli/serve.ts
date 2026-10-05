@@ -18,7 +18,7 @@ import { ingestNewEmails } from "../ingestion";
 import { missingGmailCredentials, resolveLookbackDays } from "../ingestion/sync";
 import { createApp, runEscalationSweep } from "../web/server";
 import { onceAtATime } from "../util/once";
-import { log } from "../util/log";
+import { log, logField } from "../util/log";
 
 /** Forwards to a swappable inner sender so Gmail can connect without a restart. */
 class DelegatingSender implements EmailSender {
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
         gmail = new GmailClient(fromSettings);
         gmailSource = "settings";
         sender.inner = new GmailSender(gmail);
-        log(`serve: Gmail connected via Settings (${fromSettings.address}) — live sorting enabled`);
+        log(`serve: Gmail connected via Settings (${logField(fromSettings.address)}) — live sorting enabled`);
       } else if ((!fromSettings || settingsDisabled) && gmailSource === "settings") {
         log(`serve: Gmail disconnected via Settings — live fetching stopped`);
         gmail = null;
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
       return null;
     } catch (e) {
       const err = e as Error;
-      log(`ingest poll failed: ${err.message}`, "error");
+      log(`ingest poll failed: ${logField(err.message)}`, "error");
       try { repo.setSetting("gmail_last_error", err.message.slice(0, 300)); } catch { /* best-effort */ }
       return err;
     }
@@ -161,7 +161,7 @@ async function main(): Promise<void> {
     log(`serve: listening on http://0.0.0.0:${port}`);
     if (sender.delivers !== true) {
       log(
-        "serve: MAIL IS NOT CONNECTED — automated replies are recorded in the console but NOT delivered. " +
+        "serve: MAIL IS NOT CONNECTED — automated replies are held as queued drafts and NOT delivered. " +
         "Connect Gmail under Settings → Connections (or set MODE=live with GMAIL_* credentials).",
         "warn"
       );
@@ -178,7 +178,7 @@ async function main(): Promise<void> {
       const escalationHours = envInt(repo.getSetting("escalation_hours", "8"), 8);
       runEscalationSweep(repo, escalationHours);
     } catch (e) {
-      log(`escalation sweep failed: ${(e as Error).message}`, "error");
+      log(`escalation sweep failed: ${logField((e as Error).message)}`, "error");
     }
   }, 5 * 60_000);
 
@@ -186,7 +186,7 @@ async function main(): Promise<void> {
   const { runFollowUpSweep } = await import("../followups");
   setInterval(() => {
     runFollowUpSweep(repo, ctx).catch((e) =>
-      log(`followup sweep failed: ${(e as Error).message}`, "error")
+      log(`followup sweep failed: ${logField((e as Error).message)}`, "error")
     );
   }, 2 * 60_000);
 

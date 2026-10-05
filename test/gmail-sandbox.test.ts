@@ -31,7 +31,8 @@ import { seedDefaults } from "../src/db/seed";
 import { processEmail } from "../src/pipeline";
 import { MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
-import { configureTestOrganization, releaseAutomation } from "./helpers";
+import { configureTestOrganization, docLines, releaseAutomation } from "./helpers";
+import { makeTextPdf } from "../src/simulation/pdfFactory";
 import type { IncomingEmail } from "../src/types";
 
 type Recorded = { method: string; url: string; body: string };
@@ -277,8 +278,9 @@ describe("end to end: a configured tenant's automated reply is delivered", () =>
     seedDefaults(repo);
     configureTestOrganization(repo); // starter templates included
     const type = repo.getCaseType("SERVICE_REQUEST", 1)!;
-    // Open every gate the product requires: global automation, the case type's
-    // own default and evidence gate, and a rule that says "send".
+    // Release the automation switches and configure an explicit send rule.
+    // evidence_gate=0 still cannot waive Green; this message supplies the full,
+    // high-confidence checklist and satisfies the case type's consent rule.
     releaseAutomation(repo);
     repo.updateCaseTypeProfile(type.id, { default_reply_action: "auto", evidence_gate: 0 });
     const statusRule = repo.listWorkflowRules(1, { caseTypeId: type.id, kind: "response" })
@@ -296,12 +298,16 @@ describe("end to end: a configured tenant's automated reply is delivered", () =>
     };
     const result = await processEmail({
       id: "live-1", threadId: "thread-1", from: "sam@example.org", fromName: "Sam Okonkwo",
-      subject: "Status of our service request", body: "Please advise on our service request.",
+      subject: "Status of our service request", body: "Please advise on our service request.\nConsent: yes",
       receivedAt: new Date().toISOString(), organizationId: 1, caseTypeCode: "SERVICE_REQUEST",
-      attachments: [],
+      attachments: [
+        { filename: "request.pdf", mimeType: "application/pdf", content: await makeTextPdf(docLines("request_form", { name: "Sam Okonkwo" })) },
+        { filename: "id.pdf", mimeType: "application/pdf", content: await makeTextPdf(docLines("id", { name: "Sam Okonkwo" })) },
+      ],
     } as IncomingEmail, ctx);
 
     expect(result.skipped).toBeFalsy();
+    expect(result.finalStatus).toBe("Green");
     expect(result.autoSent).toBe(true);
     // The message Google would have received:
     expect(requests.filter((r) => /messages\/send/.test(r.url)).length).toBe(1);

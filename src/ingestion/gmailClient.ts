@@ -16,7 +16,7 @@
 import type { IncomingEmail } from "../types";
 import { envInt } from "../util/envnum";
 import { MAX_ATTACHMENT_BYTES } from "../extraction/extract";
-import { log } from "../util/log";
+import { log, logField } from "../util/log";
 
 /** Whole-message cap; above this the mail is parked, never downloaded. */
 export const MAX_EMAIL_BYTES = envInt(process.env.GMAIL_MAX_EMAIL_BYTES, 40 * 1024 * 1024);
@@ -225,7 +225,7 @@ export class GmailClient {
           // attachment that DECLARES itself oversized is never downloaded.
           const declared = a.size ?? a.data?.length ?? 0;
           if (declared > MAX_ATTACHMENT_BYTES) {
-            log(`gmail: skipping ${a.filename} — declared ${(declared / 1024 / 1024).toFixed(1)} MB exceeds the ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB attachment cap`, "warn");
+            log(`gmail: skipping ${logField(a.filename)} — declared ${(declared / 1024 / 1024).toFixed(1)} MB exceeds the ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB attachment cap`, "warn");
             return false;
           }
           return true;

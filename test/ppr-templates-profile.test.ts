@@ -64,7 +64,7 @@ describe("PPR P0-6: templates per case type, case-type-owned defaults, real fall
     // account so the account resolves to it (and its templates exist).
     configureTestOrganization(repo);
     repo.createStaff("admin", "Administrator", hashPassword("admin123"), "admin");
-    sender = new MockSender();
+    sender = new MockSender(true);
     ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
     const app = createApp({ repo, ctx });
     await new Promise<void>((resolve) => {

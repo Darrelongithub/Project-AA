@@ -5,8 +5,9 @@
  *   2. categorize (Gemini first when configured; deterministic regex fallback)
  *      before intake routing, then resolve/create applicant + ref number
  *   3. store the incoming email in the case history + audit
- *   4. extraction: pdf text → Tesseract → Gemini (fixed chain), with
- *      duplicate detection by content hash
+ *   4. extraction: PDFs use text/OCR/rasterisation → Gemini; images use local
+ *      OCR → Gemini only when OCR misses its quality gate; duplicate detection
+ *      by content hash
  *   5. matching: persist docs, supersede corrections
  *   6. rules: PURE Green/Orange/Red decision (no AI, ever)
  *   7. watcher: Green-only sanity check; can only downgrade
@@ -48,7 +49,7 @@ import { writeDecisionLog } from "../logs";
 import { emailBanner, organizationName, organizationSender } from "../branding";
 import type { SendExtras } from "./adapters";
 import { LIFECYCLE_LABELS } from "../types";
-import { log } from "../util/log";
+import { log, logField } from "../util/log";
 import type { PipelineContext } from "./adapters";
 
 export interface PipelineOptions {
@@ -256,7 +257,7 @@ async function processEmailInner(
       parkEvent,
       `"${email.subject}" from ${email.from} — ${why}; kept in Mail, no case created${intakeRule ? ` (rule “${intakeRule.name}”)` : ""}`
     );
-    log(`pipeline: "${email.subject}" parked — ${why}`);
+    log(`pipeline: "${logField(email.subject)}" parked — ${logField(why)}`);
     return {
       skipped: true,
       applicantId: null,
@@ -349,7 +350,7 @@ async function processEmailInner(
   if (!applicant.full_name && email.fromName) {
     repo.updateApplicant(applicant.id, { full_name: email.fromName });
   }
-  log(`pipeline: email ${email.id} from ${email.from} → ${applicant.ref_number} (${category})`);
+  log(`pipeline: email ${email.id} from ${logField(email.from)} → ${applicant.ref_number} (${category})`);
 
   // ── Store incoming email in the case history (feature 4) ────────────────
   repo.insertEmail({
@@ -449,7 +450,7 @@ async function processEmailInner(
         type: "duplicate_submission",
         detail: `${att.filename} is a byte-identical resubmission of an existing ${dup.document_type} — deduplicated`,
       });
-      log(`pipeline: ${att.filename} recognised as duplicate of doc #${dup.id}`);
+      log(`pipeline: ${logField(att.filename)} recognised as duplicate of doc #${dup.id}`);
       continue;
     }
     extractions.push(res);
@@ -688,9 +689,9 @@ async function processEmailInner(
   // ── Reply selection (PPR P0-4): stored response rules decide what the
   //    case replies and how it routes. Profiles without response rules keep
   //    the original chain below, unchanged. Templates, send/draft/hold,
-  //    follow-up ladder and audit codes are all rule data — the evidence
-  //    gate still holds every reply that is not fully evidenced for staff
-  //    whenever the case type has one (it is on by default). ────────────
+  //    follow-up ladder and audit codes are all rule data — but neither a
+  //    send action nor evidence_gate=0 can override the mandatory Green floor.
+  //    ─────────────────────────────────────────────────────────────────────
   const fullyQualified =
     finalStatus === "Green" && activeBlockingFlags.length === 0 && allDocsHigh && !watcherFlagged;
   const ruleDocsState = replyStateOf({
@@ -849,16 +850,20 @@ async function processEmailInner(
     queueForHuman = true;
   }
 
-  // ── Evidence gate: automated mail only for a fully evidenced case ───────
-  // Fully evidenced = Green verdict, no blocking flags, watcher clean. Every
-  // other file — including a "clean" missing-document case — gets the reply
-  // HELD as a staff suggestion instead: a contact who is short of a document
-  // today may still be accepted tomorrow on an exception, so the machine never
-  // speaks for the office on their behalf. A case type may switch this gate off
-  // (its workflow rules then own the send decision); it is on by default.
+  // ── Evidence qualification: automated mail requires a fully Green case ──
+  // Fully evidenced = Green verdict, no blocking flags, high-confidence docs,
+  // and a clean watcher. A workflow rule may choose the reply, but it cannot
+  // send for a non-Green case. In particular, evidence_gate=0 never waives the
+  // Green requirement; unqualified replies remain suggestions for staff.
   const typeGate = genericCaseType?.evidence_gate ?? 1;
   const evidenceGateOn = typeGate !== 0;
-  const heldForQualification = replyAttempted && ((!fullyQualified && evidenceGateOn) || activeBlockingFlags.length > 0 || !allDocsHigh || watcherFlagged);
+  const heldForQualification = replyAttempted && (
+    finalStatus !== "Green" ||
+    (evidenceGateOn && !fullyQualified) ||
+    activeBlockingFlags.length > 0 ||
+    !allDocsHigh ||
+    watcherFlagged
+  );
   if (heldForQualification) {
     repo.audit(
       applicant.id,
@@ -982,6 +987,7 @@ async function processEmailInner(
   // Send failures are never fatal: the reply becomes a queued draft and a
   // human handles it (v3 reliability requirement).
   let autoSent = false;
+  let autoSendUnavailable = false;
   // A rule that answers with "draft", "approve" or "hold" means exactly that:
   // the pipeline never escalates it to a send, whatever the gates say. Only
   // "send" (or legacy non-rule automation) may reach the wire.
@@ -1012,38 +1018,52 @@ async function processEmailInner(
         repo.audit(applicant.id, "system", "pack_incomplete", pack.issues.join("; "));
         repo.notify("review_needed", `${applicantNow.ref_number}: outgoing pack is incomplete — ${pack.issues[0]}`, applicant.id);
       }
-      await adapters.sender.send(applicantNow.email_address, draft.subject, draft.body, email.threadId, extras);
-      repo.insertEmail({
-        applicant_id: applicant.id,
-        message_id: `${email.id}:auto-reply`,
-        thread_id: email.threadId,
-        direction: "out",
-        from_addr: "",
-        to_addr: applicantNow.email_address,
-        subject: draft.subject,
-        body: draft.body,
-        category: null,
-        auto: 1,
-        at: new Date().toISOString(),
-        attachments: (extras.attachments ?? []).map((f) => f.filename),
-      });
-      repo.addOutbox({
-        applicant_id: applicant.id,
-        to_address: applicantNow.email_address,
-        subject: draft.subject,
-        body: draft.body,
-        mode: "auto",
-        template_key: draft.templateKey ?? "",
-      });
-      repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind ?? templateKey}: "${draft.subject}"`);
-      log(`pipeline: auto-sent [${autoKind ?? templateKey}] to ${applicantNow.email_address}`);
-      autoSent = true;
-      // An install with no mail connection records sends it cannot make. The
-      // audit trail must not claim a delivery that never happened.
-      if (adapters.sender.delivers === false) {
+      if (adapters.sender.delivers !== true) {
+        // An offline/mock sender is not a successful send. Keep the prepared
+        // reply in the human queue, and do not write an outbound email, an
+        // automatic-send outbox row, or an auto_sent decision record.
+        repo.addOutbox({
+          applicant_id: applicant.id,
+          to_address: applicantNow.email_address,
+          subject: draft.subject,
+          body: draft.body,
+          mode: "queued",
+          template_key: draft.templateKey ?? "",
+          needs_approval: draftNeedsApproval ? 1 : 0,
+        });
         repo.audit(applicant.id, "system", "email_not_delivered",
-          `recorded only — no mail connection is configured, so "${draft.subject}" was NOT delivered to ${applicantNow.email_address}`);
-        log(`pipeline: reply recorded but NOT delivered (no mail connection) for ${applicantNow.ref_number}`, "warn");
+          `no mail connection is configured, so "${draft.subject}" was NOT delivered to ${applicantNow.email_address}; reply kept as a draft`);
+        autoSendUnavailable = true;
+        queueForHuman = true;
+        lifecycleAfter = "awaiting_review";
+        log(`pipeline: reply held as a draft; mail is NOT connected for ${applicantNow.ref_number}`, "warn");
+      } else {
+        await adapters.sender.send(applicantNow.email_address, draft.subject, draft.body, email.threadId, extras);
+        repo.insertEmail({
+          applicant_id: applicant.id,
+          message_id: `${email.id}:auto-reply`,
+          thread_id: email.threadId,
+          direction: "out",
+          from_addr: "",
+          to_addr: applicantNow.email_address,
+          subject: draft.subject,
+          body: draft.body,
+          category: null,
+          auto: 1,
+          at: new Date().toISOString(),
+          attachments: (extras.attachments ?? []).map((f) => f.filename),
+        });
+        repo.addOutbox({
+          applicant_id: applicant.id,
+          to_address: applicantNow.email_address,
+          subject: draft.subject,
+          body: draft.body,
+          mode: "auto",
+          template_key: draft.templateKey ?? "",
+        });
+        repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind ?? templateKey}: "${draft.subject}"`);
+        log(`pipeline: auto-sent [${autoKind ?? templateKey}] to ${logField(applicantNow.email_address, 254)}`);
+        autoSent = true;
       }
     } catch (e) {
       repo.audit(applicant.id, "system", "send_failed", `auto-send [${autoKind ?? templateKey}] failed: ${(e as Error).message}`);
@@ -1108,6 +1128,8 @@ async function processEmailInner(
     if (!cur.sla_handled_at) repo.updateApplicant(applicant.id, { sla_due_at: due });
     const reason = humanTriageOnly
       ? `${enquiryOnly ? "general enquiry" : category.replace(/_/g, " ")} — staff response required`
+      : autoSendUnavailable
+        ? "mail is not connected — automated reply saved as a draft, not delivered"
       : heldForQualification && !heldForApproval
       ? "case not fully evidenced — suggested reply held for staff (an exception may still apply)"
       : heldForApproval
@@ -1119,7 +1141,7 @@ async function processEmailInner(
           : `missing/unclear documents (${rulesOut.missing.map((m) => docLabel(m)).join(", ") || "review needed"})`;
     repo.notify("review_needed", `${cur.ref_number} needs review — ${reason}`, applicant.id);
     repo.audit(applicant.id, "system", "human_review_triggered", reason);
-    log(`pipeline: ${applicantNow.ref_number} queued for human (${reason})`);
+    log(`pipeline: ${applicantNow.ref_number} queued for human (${logField(reason)})`);
   }
 
   // ── Lifecycle transition + status history (features 15, 16) ─────────────

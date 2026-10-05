@@ -16,11 +16,18 @@
  */
 import type { Repo } from "../db/repo";
 
-export function gmailRedirectUri(repo: Repo, protocol: string, host: string): string {
+/** The address this installation is reachable at, for anything a human has to
+ *  copy out of the browser (OAuth redirect URIs, the public webhook URL). One
+ *  function, because both must agree about what "the outside address" is. */
+export function publicOrigin(repo: Repo, protocol: string, host: string): string {
   const configured = repo.getSetting("gmail_public_base_url", "").trim().replace(/\/+$/, "");
-  if (configured) return `${configured}/settings/gmail/callback`;
+  if (configured) return configured;
   const fixed = host
     .replace(/^0\.0\.0\.0(?=[:/]|$)/, "localhost")
     .replace(/^\[::\](?=[:/]|$)/, "localhost");
-  return `${protocol}://${fixed}/settings/gmail/callback`;
+  return `${protocol}://${fixed}`;
+}
+
+export function gmailRedirectUri(repo: Repo, protocol: string, host: string): string {
+  return `${publicOrigin(repo, protocol, host)}/settings/gmail/callback`;
 }

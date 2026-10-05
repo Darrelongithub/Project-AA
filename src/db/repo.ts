@@ -44,8 +44,25 @@ import { retentionDue } from "./retention";
 
 const nowIso = () => new Date().toISOString();
 
+/**
+ * The per-organization public ingest key (Phase 18 webhook). It is a
+ * credential, so it lives in the secrets store exactly like a Gmail token:
+ * never reachable through a settings read, never written into a log line or an
+ * audit detail.
+ */
+export const WEBHOOK_KEY_SECRET = "webhook_ingest_key";
+
+/** Fallback when the setting is absent or unparsable — the same value
+ *  `DEFAULT_SETTINGS.webhook_rate_limit_per_minute` seeds (the pattern
+ *  `retention_days` follows: a seeded default plus a read-side fallback). */
+export const DEFAULT_WEBHOOK_RATE_PER_MINUTE = 30;
+
+/** How long an empty claim (a submission that opened no case) is honoured
+ *  before a retry may take the identifier over. */
+export const WEBHOOK_CLAIM_TAKEOVER_MS = 15 * 60_000;
+
 /** PPR P0-1: the only keys that may live in the secrets store. */
-export const SECRET_KEYS: readonly string[] = ["gemini_api_key", "gmail_client_secret", "gmail_refresh_token"];
+export const SECRET_KEYS: readonly string[] = ["gemini_api_key", "gmail_client_secret", "gmail_refresh_token", WEBHOOK_KEY_SECRET];
 export const GENERIC_STAGE_PRESET: Array<{ id: string; label: string }> = [
   { id: "application_received", label: "Received" },
   { id: "documents_received", label: "Information received" },
@@ -96,6 +113,8 @@ export interface SecurityConsoleSnapshot {
   pipelineRuns: Array<{ id: number; applicant_id: number; timestamp: string; ref_number: string; case_type_code: string | null; triggering_email_id: string; computed_status: string; reasoning: string; auto_sent: number }>;
   errors: Array<{ id: number; applicant_id: number | null; at: string; actor: string; display_name: string; event: string; detail: string; ref_number: string | null; attempts: number | null; source: "audit" | "dead-letter" }>;
   integritySignals: Array<{ id: number; applicant_id: number; at: string; actor: string; display_name: string; event: string; detail: string; ref_number: string; latest_computed_status: string | null; latest_reasoning: string | null; latest_decision_at: string | null }>;
+  /** Public ingest calls, their own source type: never mixed into mail ingestion. */
+  webhookDeliveries: Array<{ id: number; at: string; outcome: string; status_code: number; external_id: string; sender_email: string; case_type_code: string; ref_number: string; applicant_id: number | null; detail: string }>;
 }
 
 type ScopeTag = string[] & { organizationId?: number; allCaseTypes?: boolean };
@@ -169,7 +188,12 @@ export class Repo {
     if (!/^[A-Z][A-Z0-9]{0,7}$/.test(prefix)) throw new Error("Reference prefix must be 1–8 characters and start with a letter");
     const result = this.db.prepare("INSERT INTO organizations (name, logo, ref_prefix, theme) VALUES (?,?,?,?)")
       .run(name, input.logo ?? null, prefix, JSON.stringify(theme));
-    return this.getOrganization(Number(result.lastInsertRowid))!;
+    const created = this.getOrganization(Number(result.lastInsertRowid))!;
+    // One permanent ingest key per organization, issued when the organization
+    // exists — an administrator never chooses it, because an org-settable slug
+    // is a brute-force target and a guessable URL is a leaked URL.
+    this.ensureWebhookIngestKey(created.id);
+    return created;
   }
 
   /**
@@ -594,6 +618,15 @@ export class Repo {
       .run(active ? 1 : 0, organizationId, key.trim());
   }
 
+  /** Change the staff-facing label while keeping the machine key stable. */
+  updateEmailCategoryLabel(organizationId: number, key: string, label: string): boolean {
+    const cleanLabel = label.trim();
+    if (!cleanLabel) throw new Error("email category label cannot be blank");
+    const result = this.db.prepare("UPDATE organization_categories SET label = ? WHERE organization_id = ? AND key = ? AND active = 1")
+      .run(cleanLabel, organizationId, key.trim());
+    return result.changes === 1;
+  }
+
   addEmailCategory(organizationId: number, input: { key: string; label: string }): void {
     this.db.prepare("INSERT INTO organization_categories (organization_id, key, label) VALUES (?,?,?) ON CONFLICT(organization_id, key) DO UPDATE SET label=excluded.label, active=1")
       .run(organizationId, input.key.trim(), input.label.trim());
@@ -694,11 +727,6 @@ export class Repo {
         | "req_result"
         | "routing"
         | "routing_reason"
-        | "outcome"
-        | "outcome_route"
-        | "decision_by"
-        | "decision_reason"
-        | "decision_at"
       >
     >
   ): void {
@@ -708,8 +736,6 @@ export class Repo {
       "full_name", "phone", "case_type_code", "intake", "priority", "assigned_to",
       "lifecycle", "triage", "queue", "sla_due_at", "sla_handled_at", "escalated",
       "transfer", "nationality", "req_result", "routing", "routing_reason",
-      "outcome", "outcome_route", "decision_by", "decision_reason",
-      "decision_at",
     ]);
     const keys = Object.keys(patch) as Array<keyof typeof patch>;
     if (keys.length === 0) return;
@@ -720,12 +746,25 @@ export class Repo {
     const vals = keys.map((k) => patch[k] ?? null);
     this.db.prepare(`UPDATE applicants SET ${setSql}, updated_at = ? WHERE id = ?`).run(...vals, nowIso(), id);
     if (Object.prototype.hasOwnProperty.call(patch, "case_type_code")) {
-      this.db.prepare("UPDATE applicants SET category = case_type_code WHERE id = ?").run(id);
+      // `category` is the case type's OWN grouping, which is what createCase and
+      // updateCase stamp onto the row. Copying the code into it here made one
+      // column mean two different things depending on which path wrote it, so
+      // anything that groups or filters by category saw a case-type code (or
+      // nothing at all) — the same "two cases at once" defect that keeping
+      // case_type_id and case_type_code coherent exists to prevent.
+      this.db
+        .prepare(
+          `UPDATE applicants SET category = (
+             SELECT ct.category FROM case_types ct
+              WHERE ct.code = applicants.case_type_code AND ct.organization_id = applicants.organization_id
+           ) WHERE id = ?`
+        )
+        .run(id);
     }
   }
 
-  updateCase(id: number, patch: { category?: string | null; outcome?: CaseOutcome; case_type_id?: number | null }): void {
-    if (Object.keys(patch).some((key) => !["category", "outcome", "case_type_id"].includes(key))) throw new Error("updateCase: refusing unknown column");
+  updateCase(id: number, patch: { category?: string | null; case_type_id?: number | null }): void {
+    if (Object.keys(patch).some((key) => !["category", "case_type_id"].includes(key))) throw new Error("updateCase: refusing unknown column");
     const current = this.getCase(id);
     if (!current) throw new Error("Unknown case");
     if (patch.case_type_id != null && this.caseTypeById(patch.case_type_id)?.organization_id !== current.organization_id) throw new Error("Case type belongs to another organization");
@@ -740,7 +779,39 @@ export class Repo {
         this.db.prepare("UPDATE applicants SET case_type_code = ?, category = ?, updated_at = ? WHERE id = ?")
           .run(type?.code ?? null, type?.category ?? null, nowIso(), id);
       }
-      if (patch.outcome !== undefined) this.db.prepare("UPDATE applicants SET outcome = ?, updated_at = ? WHERE id = ?").run(patch.outcome,nowIso(),id);
+    })();
+  }
+
+  /** The only runtime path for a human-recorded case outcome. Outcome,
+   * provenance, lifecycle, SLA acknowledgement and audit are committed as one
+   * typed decision so generic patch methods cannot create an unattributed
+   * decision. Automatic outcomes are deliberately not supported by this path. */
+  recordHumanOutcome(
+    id: number,
+    decision: { outcome: Exclude<CaseOutcome, "auto_approved">; actor: string; reason: string }
+  ): void {
+    const actor = decision.actor.trim();
+    const reason = decision.reason.trim();
+    if (!actor) throw new Error("A decision actor is required");
+    if (!reason || reason.length > 2000) throw new Error("A human outcome requires a reason of 1–2000 characters");
+    if (!["approved_after_review", "not_approved", "undecided"].includes(String(decision.outcome))) {
+      throw new Error("Invalid human outcome");
+    }
+
+    const decidedAt = nowIso();
+    this.db.transaction(() => {
+      const current = this.getApplicant(id);
+      if (!current) throw new Error("Unknown case");
+      this.db.prepare(
+        `UPDATE applicants
+         SET outcome = ?, outcome_route = 'human', decision_by = ?, decision_reason = ?, decision_at = ?, updated_at = ?
+         WHERE id = ?`
+      ).run(decision.outcome, actor, reason, decidedAt, decidedAt, id);
+      if (current.sla_due_at && !current.sla_handled_at) {
+        this.updateApplicant(id, { sla_handled_at: decidedAt });
+      }
+      this.setLifecycle(id, decision.outcome === "undecided" ? "awaiting_review" : "completed", actor, reason);
+      this.audit(id, actor, "human_outcome_recorded", `${decision.outcome}: ${reason}`);
     })();
   }
 
@@ -892,7 +963,12 @@ export class Repo {
        ORDER BY al.id DESC LIMIT 20`
     ).all(organizationId, demo) as SecurityConsoleSnapshot["integritySignals"];
 
-    return { logins, activeSessions, pipelineRuns, errors, integritySignals };
+    const webhookDeliveries = this.db.prepare(
+      `SELECT id, received_at AS at, outcome, status_code, external_id, sender_email, case_type_code, ref_number, applicant_id, detail
+       FROM webhook_deliveries WHERE organization_id = ? ORDER BY id DESC LIMIT 20`
+    ).all(organizationId) as SecurityConsoleSnapshot["webhookDeliveries"];
+
+    return { logins, activeSessions, pipelineRuns, errors, integritySignals, webhookDeliveries };
   }
 
   // ── Programmes & intakes ─────────────────────────────────────────────────
@@ -1877,6 +1953,171 @@ export class Repo {
     return this.db.prepare("SELECT 1 FROM secrets WHERE organization_id = ? AND key = ? AND value <> ''").get(organizationId, key) !== undefined;
   }
 
+  // ── Webhook ingest (Phase 18) ────────────────────────────────────────────
+
+  /**
+   * 24 random bytes, base64url: 32 characters drawn from a 62-symbol alphabet.
+   * The key is generated here and nowhere else, so there is no code path in
+   * which a human types something that has to be unguessable.
+   */
+  private newWebhookIngestKey(): string {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const candidate = crypto.randomBytes(24).toString("base64url");
+      // Unique across the installation, not merely within the tenant: two
+      // organizations answering to the same key would be an ownership bug that
+      // no lookup could detect afterwards.
+      const taken = this.db.prepare("SELECT 1 FROM secrets WHERE key = ? AND value = ?").get(WEBHOOK_KEY_SECRET, candidate);
+      if (!taken) return candidate;
+    }
+    throw new Error("Could not generate a unique ingest key");
+  }
+
+  webhookIngestKey(organizationId: number): string | null {
+    const row = this.db
+      .prepare("SELECT value FROM secrets WHERE organization_id = ? AND key = ? AND value <> ''")
+      .get(organizationId, WEBHOOK_KEY_SECRET) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  /** Issue on demand: organizations created before this feature, or whose key
+   *  row was removed, get a working key without a migration or a redeploy. */
+  ensureWebhookIngestKey(organizationId: number): string {
+    return this.webhookIngestKey(organizationId) ?? this.setWebhookIngestKey(organizationId);
+  }
+
+  /**
+   * Issue (or replace) the key. Rotation is a single row update and the lookup
+   * below is by value, so the previous key is dead the instant this returns —
+   * there is no cache, grace period or second copy to invalidate.
+   */
+  setWebhookIngestKey(organizationId: number, actor = "system"): string {
+    const previous = this.webhookIngestKey(organizationId);
+    const key = this.newWebhookIngestKey();
+    this.setSecret(WEBHOOK_KEY_SECRET, key, organizationId);
+    // Self-auditing, so no caller can rotate a credential quietly. The event
+    // names the difference between a first issue and a rotation, and the value
+    // itself is never written into the row.
+    this.audit(null, actor, previous ? "webhook_key_rotated" : "webhook_key_issued",
+      previous ? `organization ${organizationId}: the previous key stopped working immediately` : `organization ${organizationId}: ingest key issued`);
+    return key;
+  }
+
+  /**
+   * The ONLY resolution from key to tenant: one indexed exact-match lookup.
+   * A syntactically hopeless string is refused without touching the database,
+   * and both that case and a well-formed unknown key return the same null, so
+   * nothing about the key format is observable from the outside.
+   */
+  organizationForWebhookKey(key: string): number | null {
+    if (!/^[A-Za-z0-9_-]{20,64}$/.test(key)) return null;
+    const row = this.db
+      .prepare("SELECT organization_id FROM secrets WHERE key = ? AND value = ?")
+      .get(WEBHOOK_KEY_SECRET, key) as { organization_id: number } | undefined;
+    if (!row) return null;
+    return this.getOrganization(row.organization_id) ? row.organization_id : null;
+  }
+
+  /** Public ingest calls per minute, per key. A corrupt or absent value falls
+   *  back to the documented default instead of disabling the limiter (NaN > 0
+   *  is false, and `if (limit > 0)` would then never rate-limit anyone). */
+  /**
+   * The ingest budget for THIS organization. A per-tenant control cannot live in
+   * the shared `settings` table: an administrator of one tenant writing a row
+   * that throttles another tenant is a cross-tenant configuration write, which
+   * every other settings surface here refuses. So the tenant's own value wins
+   * when it has one, and the installation-wide setting is the default it follows
+   * until then.
+   */
+  webhookRateLimitPerMinute(organizationId = 1): number {
+    const own = this.db.prepare("SELECT webhook_rate_limit_per_minute FROM organizations WHERE id = ?").get(organizationId) as
+      | { webhook_rate_limit_per_minute: string | null }
+      | undefined;
+    const parsed = Number((own?.webhook_rate_limit_per_minute ?? "").trim());
+    if (Number.isFinite(parsed) && parsed > 0) return Math.min(10_000, Math.floor(parsed));
+    const fallback = Number(String(this.getSetting("webhook_rate_limit_per_minute", String(DEFAULT_WEBHOOK_RATE_PER_MINUTE))).trim());
+    return Number.isFinite(fallback) && fallback > 0 ? Math.min(10_000, Math.floor(fallback)) : DEFAULT_WEBHOOK_RATE_PER_MINUTE;
+  }
+
+  /** `null` hands the organization back to the installation default. */
+  setWebhookRateLimitPerMinute(organizationId: number, value: number | null): void {
+    const stored = value === null ? null : String(Math.min(10_000, Math.max(1, Math.floor(value))));
+    const changed = this.db.prepare("UPDATE organizations SET webhook_rate_limit_per_minute = ? WHERE id = ?").run(stored, organizationId);
+    if (!changed.changes) throw new Error(`setWebhookRateLimitPerMinute: no such organization ${organizationId}`);
+  }
+
+  /**
+   * Idempotency for a caller that retries: the claim is taken BEFORE the
+   * pipeline runs, exactly like `claimProcessed`, so two concurrent submissions
+   * with one `external_id` cannot both open a case. The second caller is told
+   * what the first produced instead of being handed a duplicate to reconcile.
+   */
+  claimWebhookExternalId(organizationId: number, externalId: string): { claimed: boolean; applicantId: number | null; refNumber: string | null } {
+    const res = this.db
+      .prepare("INSERT OR IGNORE INTO webhook_claims (organization_id, external_id, claimed_at) VALUES (?,?,?)")
+      .run(organizationId, externalId, nowIso());
+    if (res.changes > 0) return { claimed: true, applicantId: null, refNumber: null };
+    const row = this.db
+      .prepare("SELECT applicant_id, ref_number, claimed_at FROM webhook_claims WHERE organization_id = ? AND external_id = ?")
+      .get(organizationId, externalId) as { applicant_id: number | null; ref_number: string; claimed_at: string } | undefined;
+    if (!row) return { claimed: false, applicantId: null, refNumber: null };
+    if (row.applicant_id === null && Date.now() - Date.parse(row.claimed_at) > WEBHOOK_CLAIM_TAKEOVER_MS) {
+      // A claim that produced nothing and has been idle long past any real
+      // request is a crashed run, not a concurrent one: hand it over rather than
+      // locking the caller's identifier away forever. Two genuinely concurrent
+      // submissions never reach this — the loser's row is seconds old.
+      this.db
+        .prepare("UPDATE webhook_claims SET claimed_at = ? WHERE organization_id = ? AND external_id = ? AND applicant_id IS NULL")
+        .run(nowIso(), organizationId, externalId);
+      return { claimed: true, applicantId: null, refNumber: null };
+    }
+    return { claimed: false, applicantId: row.applicant_id, refNumber: row.ref_number || null };
+  }
+
+  /** Attach the case a claim produced, so a later retry returns the same ref. */
+  recordWebhookClaim(organizationId: number, externalId: string, applicantId: number, refNumber: string): void {
+    this.db
+      .prepare("UPDATE webhook_claims SET applicant_id = ?, ref_number = ? WHERE organization_id = ? AND external_id = ?")
+      .run(applicantId, refNumber, organizationId, externalId);
+  }
+
+  /** A submission that failed before it became a case must not burn its id —
+   *  release it so a corrected retry can still be accepted. */
+  releaseWebhookClaim(organizationId: number, externalId: string): void {
+    this.db.prepare("DELETE FROM webhook_claims WHERE organization_id = ? AND external_id = ?").run(organizationId, externalId);
+  }
+
+  logWebhookDelivery(d: {
+    organizationId: number; outcome: string; statusCode: number; externalId?: string; senderEmail?: string;
+    caseTypeCode?: string; refNumber?: string; applicantId?: number | null; detail?: string; payloadBytes?: number; metadata?: Record<string, string>;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO webhook_deliveries
+         (organization_id, received_at, outcome, status_code, external_id, sender_email, case_type_code,
+          ref_number, applicant_id, detail, payload_bytes, metadata)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        d.organizationId, nowIso(), d.outcome, d.statusCode, d.externalId ?? "", d.senderEmail ?? "", d.caseTypeCode ?? "",
+        d.refNumber ?? "", d.applicantId ?? null, (d.detail ?? "").slice(0, 500), d.payloadBytes ?? 0,
+        JSON.stringify(d.metadata ?? {})
+      );
+  }
+
+  /** The tenant's own self-diagnosis list — newest first, this organization only. */
+  listWebhookDeliveries(organizationId: number, limit = 20): Array<{
+    id: number; received_at: string; outcome: string; status_code: number; external_id: string;
+    sender_email: string; case_type_code: string; ref_number: string; detail: string; applicant_id: number | null;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, received_at, outcome, status_code, external_id, sender_email, case_type_code, ref_number, detail, applicant_id
+         FROM webhook_deliveries WHERE organization_id = ? ORDER BY id DESC LIMIT ?`
+      )
+      .all(organizationId, Math.max(1, Math.min(100, limit))) as never[];
+    return rows as never[];
+  }
+
   allSettings(): Record<string, string> {
     const rows = this.db.prepare("SELECT key, value FROM settings").all() as Array<{ key: string; value: string }>;
     // Defense in depth: even if a secret key somehow reappears in settings,
@@ -1942,15 +2183,40 @@ export class Repo {
     this.updateApplicant(id, { priority: "urgent", escalated: 1 });
   }
 
-  overdueCases(): ApplicantRow[] {
+  /**
+   * Open cases nobody has handled yet.
+   *
+   * Without a window, a case qualifies once its own SLA clock has run out.
+   * With `escalationHours` — the Settings `escalation_hours` value — the window
+   * replaces that test: a case is escalated once it has been open this long,
+   * so "respond within 4 h" and "raise it after 8 h" stay two independent
+   * numbers the office can set. Before the window was applied here, the setting
+   * only appeared inside the audit text and every value behaved like 0.
+   *
+   * `created_at` is written by SQLite as 'YYYY-MM-DD HH:MM:SS', a different
+   * shape from the ISO stamps Node writes, so the age test compares julianday()
+   * values instead of strings (see src/db/retention.ts for the same trap).
+   */
+  overdueCases(escalationHours = 0): ApplicantRow[] {
     const now = new Date().toISOString();
+    const window = Number.isFinite(escalationHours) && escalationHours > 0 ? escalationHours : 0;
+    if (!window) {
+      return this.db
+        .prepare(
+          `SELECT * FROM applicants
+           WHERE sla_due_at IS NOT NULL AND sla_handled_at IS NULL AND escalated = 0
+             AND sla_due_at < ? AND lifecycle IN ('awaiting_review','documents_received','application_received')`
+        )
+        .all(now) as ApplicantRow[];
+    }
     return this.db
       .prepare(
         `SELECT * FROM applicants
          WHERE sla_due_at IS NOT NULL AND sla_handled_at IS NULL AND escalated = 0
-           AND sla_due_at < ? AND lifecycle IN ('awaiting_review','documents_received','application_received')`
+           AND julianday(?) - julianday(created_at) >= ?
+           AND lifecycle IN ('awaiting_review','documents_received','application_received')`
       )
-      .all(now) as ApplicantRow[];
+      .all(now, window / 24) as ApplicantRow[];
   }
 
   // ── Decision logs ────────────────────────────────────────────────────────
@@ -1994,16 +2260,19 @@ export class Repo {
     return !!this.db.prepare("SELECT 1 FROM processed_emails WHERE email_id = ?").get(emailId);
   }
 
-  markProcessed(emailId: string, threadId: string): void {
-    this.db.prepare("INSERT OR IGNORE INTO processed_emails (email_id, thread_id) VALUES (?, ?)").run(emailId, threadId);
-  }
-
   /**
    * Atomically claim a message at the START of the pipeline: false means
    * another (concurrent) run already owns it — treat as skipped. Claiming
    * at the end instead let two concurrent runs of the same email both pass
    * the isProcessed gate and double-process (double drafts, double sends).
    * A mid-pipeline failure must unmarkProcessed() so retry can see it.
+   *
+   * This is the ONLY way a message may be marked: the caller has to see the
+   * verdict, which is why there is no fire-and-forget `markProcessed` variant —
+   * an INSERT OR IGNORE that reports nothing re-opens the exact race the claim
+   * exists to close. `isProcessed` reads every row regardless of organization,
+   * so the claim stays global for a given Gmail id even though the key carries
+   * the tenant; keep it that way if the claim ever becomes tenant-aware.
    */
   claimProcessed(emailId: string, threadId: string): boolean {
     const res = this.db
@@ -2112,6 +2381,13 @@ export class Repo {
   /**
    * Applicants who received an enquiry-style incoming email today (one SQL
    * query — the case page must not do one query per applicant).
+   *
+   * The list is exactly the `EmailCategory` values that describe a question
+   * rather than a submission, so it must stay inside that vocabulary: it used
+   * to name `case_enquiry` (no such category exists) while leaving out
+   * `general_enquiry`, which is the label ordinary enquiries are filed under —
+   * so the Awaiting-review tile ignored nearly every enquiry it was built to
+   * catch.
    */
   enquiryApplicantIdsToday(startISO: string, caseTypes?: string[] | null): Set<number> {
     const scope = this.scopePred("a", caseTypes);
@@ -2119,13 +2395,12 @@ export class Repo {
       .prepare(
         `SELECT DISTINCT e.applicant_id AS id FROM emails e JOIN applicants a ON a.id = e.applicant_id
          WHERE e.direction = 'in' AND e.at >= ?
-           AND e.category IN ('fee_enquiry','case_enquiry','follow_up','complaint','other')${scope.sql}`
+           AND e.category IN ('general_enquiry','fee_enquiry','follow_up','complaint','other')${scope.sql}`
       )
       .all(startISO, ...scope.params) as Array<{ id: number }>;
     return new Set(rows.map((r) => r.id));
   }
 
-  /** Counters for the Overview "Today" panel. */
   // ── Stage model (v5): every applicant sits in exactly one level ──────────
   // finished / unfinished / pending are the three buckets staff think in;
   // awaiting_review inside pending is the classic "human queue".
@@ -2185,6 +2460,7 @@ export class Repo {
       .get(applicantId) as { actor: string; at: string } | undefined;
   }
 
+  /** Counters for the Overview "Today" panel. */
   todayStats(demo?: number, caseTypes?: string[] | null): { emailsToday: number; docsToday: number; completedToday: number } {
     // date('now') is UTC — in UTC+3 the "today" counters would reset at 03:00
     // local. Compute THIS machine's local day boundaries instead.
@@ -2197,10 +2473,19 @@ export class Repo {
     const scope = this.scopePred("a", caseTypes);
     const pred = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
     const one = (sql: string) => (this.db.prepare(sql).get(lo, hi, ...dp, ...scope.params) as { n: number }).n;
+    // The window compares INSTANTS through julianday(), never as text:
+    // emails.at and documents.received_at are ISO stamps written by Node, while
+    // status_history.at comes from SQLite's `datetime('now')` default
+    // ("2026-05-01 08:00:00"). Compared as strings that row sorts before every
+    // ISO bound (a space is below 'T' at position 11), so today's completions
+    // fell outside today and the counter stuck at zero — the same trap
+    // src/db/retention.ts documents for the retention sweep.
+    const duringToday = (column: string) =>
+      `julianday(${column}) >= julianday(?) AND julianday(${column}) < julianday(?)`;
     return {
-      emailsToday: one(`SELECT COUNT(*) AS n FROM emails e JOIN applicants a ON a.id = e.applicant_id WHERE e.direction = 'in' AND e.at >= ? AND e.at < ?${pred}`),
-      docsToday: one(`SELECT COUNT(*) AS n FROM documents d JOIN applicants a ON a.id = d.applicant_id WHERE d.received_at >= ? AND d.received_at < ?${pred}`),
-      completedToday: one(`SELECT COUNT(*) AS n FROM status_history h JOIN applicants a ON a.id = h.applicant_id WHERE h.to_status = 'completed' AND h.at >= ? AND h.at < ?${pred}`),
+      emailsToday: one(`SELECT COUNT(*) AS n FROM emails e JOIN applicants a ON a.id = e.applicant_id WHERE e.direction = 'in' AND ${duringToday("e.at")}${pred}`),
+      docsToday: one(`SELECT COUNT(*) AS n FROM documents d JOIN applicants a ON a.id = d.applicant_id WHERE ${duringToday("d.received_at")}${pred}`),
+      completedToday: one(`SELECT COUNT(*) AS n FROM status_history h JOIN applicants a ON a.id = h.applicant_id WHERE h.to_status = 'completed' AND ${duringToday("h.at")}${pred}`),
     };
   }
 
@@ -2491,6 +2776,17 @@ export class Repo {
     return this.getSetting("automation_mode", "draft") !== "draft";
   }
 
+  /**
+   * The same switch as a value, for anything that displays it. Reads must not
+   * pick their own default: the console used to ask `getSetting("automation_mode",
+   * "auto")`, so on a database with no row for the key (never touched in
+   * Settings, or purged) the screen promised `auto` while the pipeline held
+   * every reply — a safety switch shown as the opposite of its state.
+   */
+  globalAutomationMode(): "auto" | "draft" {
+    return this.automationAllowedGlobally() ? "auto" : "draft";
+  }
+
   setAutomationMode(category: string, mode: "auto" | "draft"): void {
     this.db
       .prepare(
@@ -2768,9 +3064,17 @@ export class Repo {
   /** Fully remove an applicant's data (used after archiving). */
   deleteApplicantFull(applicantId: number): void {
     const tx = this.db.transaction(() => {
-      for (const t of ["documents", "flags", "emails", "notes", "tasks", "decision_logs", "status_history", "audit_log", "outbox", "applicant_threads", "notifications", "evaluations"]) {
+      for (const t of ["documents", "flags", "emails", "notes", "tasks", "decision_logs", "status_history", "audit_log", "outbox", "applicant_threads", "notifications", "evaluations", "webhook_claims"]) {
         this.db.prepare(`DELETE FROM ${t} WHERE applicant_id = ?`).run(applicantId);
       }
+      // The delivery log is kept, but disowned: it is the record that a call
+      // arrived (an operator's only trace of a burst of traffic), not the
+      // applicant's data. Its foreign key is cleared and the contact address it
+      // quoted goes with the case, so nothing about the person survives the
+      // retention deletion that the archive record does not already hold.
+      this.db
+        .prepare("UPDATE webhook_deliveries SET applicant_id = NULL, ref_number = '', sender_email = '', metadata = '{}' WHERE applicant_id = ?")
+        .run(applicantId);
       this.db.prepare("DELETE FROM applicants WHERE id = ?").run(applicantId);
     });
     tx();

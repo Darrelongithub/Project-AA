@@ -13,7 +13,6 @@ export interface AppConfig {
   mode: "mock" | "live";
   dbPath: string;
   port: number;
-  geminiApiKey?: string;
   geminiModel: string;
   gmail?: {
     address: string;
@@ -44,7 +43,6 @@ export function loadConfig(): AppConfig {
     mode,
     dbPath: env.DB_PATH || "./data/email-sorter.sqlite",
     port: envInt(env.PORT, 8080),
-    geminiApiKey: env.GEMINI_API_KEY || undefined,
     geminiModel: env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
     gmail: gmailConfigured
       ? {
@@ -76,6 +74,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   followup_ladder_days: "3,7,10", // Day 3 reminder, Day 7 final, Day 10 → human
   retention_days: "730", // completed cases kept 2 years, then archived+removed
   automation_mode: "draft", // 'draft' holds EVERY automated reply for approval
+  webhook_rate_limit_per_minute: "30", // public ingest: accepted calls per key
   intake_hotwords: DEFAULT_INTAKE_HOTWORDS, // round 9: which emails become cases
 };
 // NOTE: the sender display name is NOT a setting — it lives on the

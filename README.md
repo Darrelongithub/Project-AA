@@ -45,6 +45,14 @@ Inbound type resolution is deterministic, in this order: a connector-supplied ty
 
 Rule-based and classifier-category-to-case-type routing are intentionally not enabled. For a shared mailbox with several case types and no reliable address distinction, staff must route/re-type the case.
 
+### Web submissions
+
+An organization can accept submissions from its own website, form builder or automation tool through `POST /api/v1/ingest/:org_key`. The address, its permanent per-organization key, the request budget and the recent-delivery log all live under **Settings → Web submissions**, next to the Connections setup, with copy-paste examples for a plain HTML form, WordPress, Zapier, Make and Webflow.
+
+Accepted fields are `email` (required), `full_name`, `external_id`, `case_type`, `message` and `metadata`. The response returns the case's `ref_number`, so the caller can tell a person asking for their reference what it is. A submission is a message, not an instruction: it becomes an `IncomingEmail` on the `webhook` channel and runs the ordinary path — the same case-type rules, the same document and evidence gates, the same draft-first automation switch, the same human-only outcomes. Nothing on this endpoint can read a case, change one or decide one.
+
+Three properties are deliberate. Validation refuses rather than truncates, and a `case_type` the organization has not configured is an error rather than a new type or a silent fallback to `other`. `external_id` is an idempotency key, so a retry or a double-clicked form replays the first result instead of opening a second case; if processing fails the claim is released and a retry is welcome. Values are compared after Unicode normalisation with invisible characters (zero-width joiners, BOM, soft hyphen) removed, so a look-alike id cannot slip a second case through. The key is a bearer credential and is never written to a log line, an audit row or a delivery record, so rotation is one database update with no grace period — the old address is refused on the next request. Because a browser-side form must contain the address to post to it, anyone who can view that page can read it and submit through it: post from your own server when that is not acceptable, and rotate if it leaks (see `BUGS.md` PROD-13).
+
 ### Case states and queues
 
 State is derived from separate facts rather than one overloaded status string: lifecycle, routing, routing reason, outcome, escalation, and follow-up schedule. Each case appears in one queue:
@@ -64,9 +72,10 @@ Automated messages are safe-by-default and require multiple gates:
 - The global `automation_mode` starts at **draft**.
 - The per-category auto-send allow-list starts **empty**. Releasing the global mode does not release every category.
 - New case types are draft-first and have the evidence gate on.
-- A configured workflow must request a permitted send, the case type/evidence gates must allow it, and the classifier must not have held the message.
+- A configured workflow must request a permitted send, the case type/global/category settings must allow it, and the classifier must not have held the message.
+- **A non-Green case is never auto-sent.** `evidence_gate=0` and a rule's `send` action cannot waive the Green, no-blocking-flags qualification; replies for other cases stay as suggested drafts for staff.
 - A fallback category or confidence below `CLASSIFIER_MIN_CONFIDENCE` (0.70) is held for a person. A category does not make an approval/rejection decision.
-- A staff member's deliberate send is separate from automated sending. The application does not claim a delivery when no delivering Gmail sender is connected; such a path is audited as `email_not_delivered`.
+- A staff member's deliberate send is separate from automated sending. When no delivering Gmail sender is connected, automated replies remain queued drafts; the application writes no outbound-email or auto-sent record for undelivered mail, and audits the hold as `email_not_delivered`.
 
 Human outcomes are recorded through the case page with `record_outcome` permission and a written reason. The automated pipeline never records an outcome. Historical `auto_approved` values may be preserved as imported legacy data; they are not produced by the current pipeline.
 
@@ -83,17 +92,18 @@ The default mode is `MODE=mock`; external services are not contacted in that mod
 
 Do **not** grant `gmail.modify`: the application does not delete, label, move, or mark mail as read. No Gmail or Gemini endpoint has been exercised against a real account as part of the repository's automated checks. See the pilot checklist in [`BUGS.md`](BUGS.md#real-mail-pilot-unverified).
 
-Gmail and Gemini credentials are stored in the organization-scoped `secrets` table rather than the rendered/exportable settings bag. The Gemini API key is installation-wide. Do not put credentials into source control or chat.
+Gmail and Gemini credentials are stored in the organization-scoped `secrets` table rather than the rendered/exportable settings bag. The Gemini API key is installation-wide, is managed through **Settings → Connections**, and is read only from that secret store; `GEMINI_API_KEY` environment values are not used. Headless CLI tools read the same database secret. `GEMINI_MODEL` remains an optional, non-secret model-name override. Do not put credentials into source control or chat.
 
 ## Architecture and limits
 
 - **Runtime:** Node.js **22.13+**, TypeScript strict mode, Express, better-sqlite3, server-rendered HTML, Vitest. The UI does not use a client framework.
 - **Storage:** SQLite in WAL mode, foreign keys on, with a 5-second `busy_timeout`. Repository methods own tenant scope and transactional writes; `case_type_code` is the generic case-type code column.
 - **Ingestion:** Gmail messages are tenant-attributed from configured addresses, checked by the intake gate, and either parked (with an audit trail) or sent through the case pipeline. The normal mailbox lookback is 14 days; administrators can request an audited one-off 30/90/365-day backfill. A pass lists at most 1,000 message IDs, so exceptionally high-volume windows need a segmented backfill. Mailbox-wide reads exclude sent, spam, and trash unless a configured Gmail label narrows the watch target. Parked mail remains visible to staff and is included in classifier evaluation exports.
-- **Extraction:** PDF.js 6 reads untrusted PDFs through centralized hardened options; parsing has a 20-second budget, a 25-page cap, and the inbound attachment cap is 10 MB. Partially read material is capped at score 60, below the 75 auto-pass floor. OCR is best-effort; raster-only pages can require the optional `canvas` native module. Gemini vision is an optional last-resort reader, not a decision-maker. The duplicate-content heuristic can conservatively flag distinct files with long shared letterheads; that path holds for a person.
+- **Extraction:** PDF.js 6 reads untrusted PDFs through centralized hardened options; parsing has a 20-second budget, a 25-page cap, and the inbound attachment cap is 10 MB. Partially read material is capped at score 60, below the 75 auto-pass floor. OCR is best-effort and runs locally before Gemini on image attachments; raster-only PDF pages can require the optional `canvas` native module. Gemini vision is an optional last-resort reader, not a decision-maker. The duplicate-content heuristic can conservatively flag distinct files with long shared letterheads; that path holds for a person.
 - **Routing/evaluation:** document slots and rule trees are deterministic; missing or unread values are not treated as failures. Unknown, ambiguous, incomplete, or low-confidence cases route to a person.
 - **Web surface:** first-run setup/login; case pages, search, queues and mail; organization configuration (CaseTypes, rules, documents, aliases, workflows, templates, attachment sets); Settings (connections, automation, intake, SLA/retention); staff and scopes; admin exports. Mutating staff routes use authentication, tenant/scope checks, and CSRF protection. `/queue` and `/team` remain compatibility redirects.
 - **Operational CLIs:** serving, ingestion, escalation, follow-ups, online backup/restore, retention, demo seeding, and simulation/stress harnesses.
+- **Logging:** `src/util/log.ts` frames output so that **every physical line is self-describing** — `[ts] LEVEL ` on the first line of an event, `[ts] LEVEL … ` on each continuation — and non-line-break control characters (ANSI/CSI, NUL, the rest of C0) are removed. Message text routinely contains strings a stranger chose (a subject, a sender, an attachment filename, an ingest echo), so the framing is what stops such a value from appearing as its own log event; multi-line stack traces are marked, never flattened. Treat the log as text a correspondent can influence, never as trusted input, and delete any multi-line join rule in a collector: one physical line is one event, with `… ` marking a continuation.
 
 ## First run
 
@@ -175,7 +185,7 @@ The per-category auto-send allow-list starts empty. Measure any candidate catego
      --json labels/round1.report.json
    ```
 
-   To evaluate the configured Gemini classifier, add `--classifier configured --categories a,b,...` and provide a valid key through the approved local secret/environment configuration; the CLI does not print or store the key in its report.
+   To evaluate the configured Gemini classifier, add `--classifier configured --categories a,b,...` and ensure the selected workspace database (`DB_PATH` or the default) has a valid key saved through Settings → Connections; the CLI does not print or store the key in its report.
 
 Fixed acceptance bars: overall accuracy ≥90%; a category may be considered for auto-send only with precision ≥95% on at least 30 labelled examples. The report lists every wrong high-confidence prediction by ID (confidence floor 0.70). The harness never changes the product allow-list. Until real labels clear the bars, keep it empty and keep automation draft-only.
 
@@ -183,7 +193,7 @@ The retained template is [`docs/eval-template.csv`](docs/eval-template.csv); it 
 
 ## Verification commands
 
-Run these from the repository root with the checked-in lockfile and local project tools:
+Run these from the repository root with the checked-in lockfile and local project tools. CI (`.github/workflows/ci.yml`) runs the same list, so a green check means these commands passed — not that somebody remembered to run them:
 
 ```bash
 ./node_modules/.bin/tsc --noEmit
@@ -220,4 +230,4 @@ At the latest Phase 16 Part 3 validation on this worktree, typecheck, all runnab
 
 ## Static checks and audits
 
-`npm run typecheck` is the TypeScript static gate; the project has no configured ESLint policy. There is currently no checked-in CI workflow. Run typecheck, the full tests, simulation, stress, and build explicitly. `npm audit` is expected to report five development-tool advisories (Vitest/Vite toolchain); they are intentionally left unchanged rather than forcing a breaking test-runner upgrade. `npm audit --omit=dev` currently reports zero production vulnerabilities. See the detailed issue/decision register in [`BUGS.md`](BUGS.md).
+`npm run typecheck` is the TypeScript static gate; the project has no configured ESLint policy. `.github/workflows/ci.yml` runs the documented gates below on every push to `main` and on every pull request, plus a boot of the compiled server (`dist/`, what a deployment runs) against a fresh database that fails on a `migrate()` error or on any log line that is not a self-describing event — the invariant `src/util/log.ts` exists to provide, asserted on real output. A developer working outside CI runs the same commands explicitly. `npm audit` is expected to report five development-tool advisories (Vitest/Vite toolchain); they are intentionally left unchanged rather than forcing a breaking test-runner upgrade. `npm audit --omit=dev` currently reports zero production vulnerabilities. See the detailed issue/decision register in [`BUGS.md`](BUGS.md).

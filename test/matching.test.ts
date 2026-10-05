@@ -133,9 +133,17 @@ describe("flag reconciliation", () => {
 });
 
 describe("idempotency", () => {
-  it("marks emails processed and reports them", () => {
+  it("a message can be claimed exactly once, and released for retry", () => {
+    // claimProcessed is the pipeline's only door into processed_emails, and the
+    // verdict is the point: the second claimant must be told to stand down
+    // (test/matching.test used to exercise a fire-and-forget variant that no
+    // production path could safely use — it is gone).
     expect(repo.isProcessed("e1")).toBe(false);
-    repo.markProcessed("e1", "t1");
+    expect(repo.claimProcessed("e1", "t1")).toBe(true);
     expect(repo.isProcessed("e1")).toBe(true);
+    expect(repo.claimProcessed("e1", "t1")).toBe(false);
+    repo.unmarkProcessed("e1");
+    expect(repo.isProcessed("e1")).toBe(false);
+    expect(repo.claimProcessed("e1", "t1")).toBe(true);
   });
 });

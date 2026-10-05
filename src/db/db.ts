@@ -314,6 +314,10 @@ CREATE INDEX IF NOT EXISTS idx_evaluations_applicant ON evaluations(applicant_id
 CREATE TABLE IF NOT EXISTS organizations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
+  -- Public ingest budget for this tenant (Phase 18). Nullable on purpose: no
+  -- value means "follow the installation default", so an upgraded database
+  -- behaves exactly as it did before the column existed.
+  webhook_rate_limit_per_minute TEXT,
   logo TEXT,
   ref_prefix TEXT NOT NULL DEFAULT 'ORG',
   theme TEXT NOT NULL DEFAULT '{"primary":"#334155","accent":"#0f766e"}',
@@ -332,8 +336,9 @@ CREATE TABLE IF NOT EXISTS case_types (
   queues TEXT NOT NULL DEFAULT '[]',
   config_version INTEGER NOT NULL DEFAULT 1,
   default_reply_action TEXT NOT NULL DEFAULT 'draft',
-  -- Automated mail only for a fully evidenced case; a case type may switch it
-  -- off explicitly. Matches ADDITIONS and createCaseType (on by default).
+  -- Profile evidence-gate preference; it cannot waive the mandatory Green,
+  -- fully-qualified requirement for automated mail. Matches ADDITIONS and
+  -- createCaseType (on by default).
   evidence_gate INTEGER NOT NULL DEFAULT 1,
   UNIQUE (organization_id, code)
 );
@@ -437,9 +442,42 @@ CREATE TABLE IF NOT EXISTS staff_permissions (
   permission TEXT NOT NULL,
   granted_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (staff_id, permission)
-);`;
+);
 
-const ADDITIONS: Array<[string, string, string]> = [["applicants", "requirements_snapshot", "TEXT"], ["applicants", "nationality", "TEXT"], ["applicants", "followup_rung", "INTEGER NOT NULL DEFAULT 0"], ["applicants", "followup_next_at", "TEXT"], ["applicants", "followup_base_at", "TEXT"], ["applicants", "followup_action", "TEXT NOT NULL DEFAULT 'hold'"], ["emails", "channel", "TEXT NOT NULL DEFAULT 'email'"], ["emails", "attachments", "TEXT NOT NULL DEFAULT ''"], ["outbox", "template_key", "TEXT NOT NULL DEFAULT ''"], ["outbox", "needs_approval", "INTEGER NOT NULL DEFAULT 0"], ["outbox", "claimed_at", "TEXT"], ["programmes", "owner_id", "INTEGER REFERENCES staff_users(id)"], ["programmes", "school", "TEXT NOT NULL DEFAULT ''"], ["programmes", "entry_requirements", "TEXT NOT NULL DEFAULT ''"], ["templates", "include_banner", "INTEGER NOT NULL DEFAULT 1"], ["templates", "organization_id", "INTEGER"], ["staff_users", "demo", "INTEGER NOT NULL DEFAULT 0"], ["staff_users", "organization_id", "INTEGER"], ["staff_users", "active_organization_id", "INTEGER"], ["organizations", "ref_prefix", "TEXT NOT NULL DEFAULT 'ORG'"], ["organizations", "from_name", "TEXT"], ["organizations", "reply_to", "TEXT"], ["organizations", "locale", "TEXT"], ["organizations", "timezone", "TEXT"], ["organizations", "inbound_address", "TEXT"], ["case_types", "terminology", "TEXT NOT NULL DEFAULT '{}'"], ["case_types", "stages", "TEXT NOT NULL DEFAULT '[]'"], ["case_types", "queues", "TEXT NOT NULL DEFAULT '[]'"], ["case_types", "config_version", "INTEGER NOT NULL DEFAULT 1"], ["case_types", "default_reply_action", "TEXT NOT NULL DEFAULT 'draft'"], ["applicants", "case_config_frozen", "TEXT"], ["applicants", "config_version_frozen", "INTEGER"], ["applicants", "config_version_frozen_at", "TEXT"], ["applicants", "queue", "TEXT"], ["intakes", "deadline", "TEXT"], ["applicants", "requirements_structured", "TEXT"], ["programmes", "level", "TEXT NOT NULL DEFAULT 'general'"], ["applicants", "transfer", "INTEGER NOT NULL DEFAULT 0"], ["applicants", "demo", "INTEGER NOT NULL DEFAULT 0"], ["applicants", "organization_id", "INTEGER"], ["applicants", "case_type_id", "INTEGER"], ["applicants", "category", "TEXT"], ["applicants", "outcome", "TEXT NOT NULL DEFAULT 'undecided'"], ["documents", "confidence_score", "INTEGER NOT NULL DEFAULT 0"], ["documents", "extraction_note", "TEXT NOT NULL DEFAULT ''"], ["applicants", "req_result", "TEXT"], ["applicants", "routing", "TEXT"], ["applicants", "routing_reason", "TEXT"], ["applicants", "decision_by", "TEXT"], ["applicants", "decision_reason", "TEXT"], ["applicants", "decision_at", "TEXT"], ["templates", "attach_pack", "TEXT NOT NULL DEFAULT 'none'"], ["templates", "default_snapshot", "TEXT"], ["organization_templates", "case_type_id", "INTEGER NOT NULL DEFAULT 0"], ["organization_templates", "default_snapshot", "TEXT"], ["applicants", "outcome_route", "TEXT"], ["case_types", "evidence_gate", "INTEGER NOT NULL DEFAULT 1"], ["emails", "organization_id", "INTEGER NOT NULL DEFAULT 1"], ["processed_emails", "organization_id", "INTEGER NOT NULL DEFAULT 1"], ["staff_users", "case_type_scope_mode", "TEXT NOT NULL DEFAULT 'unscoped'"], ["applicants", "case_type_code", "TEXT"], ["evaluations", "case_type_code", "TEXT"], ["intakes", "organization_id", "INTEGER NOT NULL DEFAULT 1"],
+-- Phase 18: the public webhook surface. The credential itself lives in the
+-- secrets store (key webhook_ingest_key) and is deliberately NOT stored in
+-- either table below — a delivery log that carried the key would leak it to
+-- anyone who can read the log. webhook_claims is the idempotency ledger (one
+-- row per organization + external_id); webhook_deliveries is the newest-first
+-- record of what arrived and what became of it, for the tenant's own diagnosis.
+CREATE TABLE IF NOT EXISTS webhook_claims (
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  external_id     TEXT NOT NULL,
+  applicant_id    INTEGER REFERENCES applicants(id),
+  ref_number      TEXT NOT NULL DEFAULT '',
+  claimed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (organization_id, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  received_at     TEXT NOT NULL,
+  outcome         TEXT NOT NULL,
+  status_code     INTEGER NOT NULL,
+  external_id     TEXT NOT NULL DEFAULT '',
+  sender_email    TEXT NOT NULL DEFAULT '',
+  case_type_code  TEXT NOT NULL DEFAULT '',
+  ref_number      TEXT NOT NULL DEFAULT '',
+  applicant_id    INTEGER REFERENCES applicants(id),
+  detail          TEXT NOT NULL DEFAULT '',
+  payload_bytes   INTEGER NOT NULL DEFAULT 0,
+  metadata        TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_recent ON webhook_deliveries(organization_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_case ON webhook_deliveries(applicant_id);`;
+
+const ADDITIONS: Array<[string, string, string]> = [["applicants", "requirements_snapshot", "TEXT"], ["applicants", "nationality", "TEXT"], ["applicants", "followup_rung", "INTEGER NOT NULL DEFAULT 0"], ["applicants", "followup_next_at", "TEXT"], ["applicants", "followup_base_at", "TEXT"], ["applicants", "followup_action", "TEXT NOT NULL DEFAULT 'hold'"], ["emails", "channel", "TEXT NOT NULL DEFAULT 'email'"], ["emails", "attachments", "TEXT NOT NULL DEFAULT ''"], ["outbox", "template_key", "TEXT NOT NULL DEFAULT ''"], ["outbox", "needs_approval", "INTEGER NOT NULL DEFAULT 0"], ["outbox", "claimed_at", "TEXT"], ["programmes", "owner_id", "INTEGER REFERENCES staff_users(id)"], ["programmes", "school", "TEXT NOT NULL DEFAULT ''"], ["programmes", "entry_requirements", "TEXT NOT NULL DEFAULT ''"], ["templates", "include_banner", "INTEGER NOT NULL DEFAULT 1"], ["templates", "organization_id", "INTEGER"], ["staff_users", "demo", "INTEGER NOT NULL DEFAULT 0"], ["staff_users", "organization_id", "INTEGER"], ["staff_users", "active_organization_id", "INTEGER"], ["organizations", "ref_prefix", "TEXT NOT NULL DEFAULT 'ORG'"], ["organizations", "from_name", "TEXT"], ["organizations", "reply_to", "TEXT"], ["organizations", "locale", "TEXT"], ["organizations", "timezone", "TEXT"], ["organizations", "inbound_address", "TEXT"], ["organizations", "webhook_rate_limit_per_minute", "TEXT"], ["case_types", "terminology", "TEXT NOT NULL DEFAULT '{}'"], ["case_types", "stages", "TEXT NOT NULL DEFAULT '[]'"], ["case_types", "queues", "TEXT NOT NULL DEFAULT '[]'"], ["case_types", "config_version", "INTEGER NOT NULL DEFAULT 1"], ["case_types", "default_reply_action", "TEXT NOT NULL DEFAULT 'draft'"], ["applicants", "case_config_frozen", "TEXT"], ["applicants", "config_version_frozen", "INTEGER"], ["applicants", "config_version_frozen_at", "TEXT"], ["applicants", "queue", "TEXT"], ["intakes", "deadline", "TEXT"], ["applicants", "requirements_structured", "TEXT"], ["programmes", "level", "TEXT NOT NULL DEFAULT 'general'"], ["applicants", "transfer", "INTEGER NOT NULL DEFAULT 0"], ["applicants", "demo", "INTEGER NOT NULL DEFAULT 0"], ["applicants", "organization_id", "INTEGER"], ["applicants", "case_type_id", "INTEGER"], ["applicants", "category", "TEXT"], ["applicants", "outcome", "TEXT NOT NULL DEFAULT 'undecided'"], ["documents", "confidence_score", "INTEGER NOT NULL DEFAULT 0"], ["documents", "extraction_note", "TEXT NOT NULL DEFAULT ''"], ["applicants", "req_result", "TEXT"], ["applicants", "routing", "TEXT"], ["applicants", "routing_reason", "TEXT"], ["applicants", "decision_by", "TEXT"], ["applicants", "decision_reason", "TEXT"], ["applicants", "decision_at", "TEXT"], ["templates", "attach_pack", "TEXT NOT NULL DEFAULT 'none'"], ["templates", "default_snapshot", "TEXT"], ["organization_templates", "case_type_id", "INTEGER NOT NULL DEFAULT 0"], ["organization_templates", "default_snapshot", "TEXT"], ["applicants", "outcome_route", "TEXT"], ["case_types", "evidence_gate", "INTEGER NOT NULL DEFAULT 1"], ["emails", "organization_id", "INTEGER NOT NULL DEFAULT 1"], ["processed_emails", "organization_id", "INTEGER NOT NULL DEFAULT 1"], ["staff_users", "case_type_scope_mode", "TEXT NOT NULL DEFAULT 'unscoped'"], ["applicants", "case_type_code", "TEXT"], ["evaluations", "case_type_code", "TEXT"], ["intakes", "organization_id", "INTEGER NOT NULL DEFAULT 1"],
   // Columns the running code reads on ordinary requests. A database created by
   // an older release may lack any of them: CREATE TABLE IF NOT EXISTS never
   // adds a column to a table that already exists, so each one is declared here
@@ -470,6 +508,53 @@ export const SCHEMA_INDEXES = SCHEMA_STATEMENTS.filter(isIndexStatement).map((st
 
 function columns(db: Database.Database, table: string): Set<string> {
   return new Set((db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map((column) => column.name));
+}
+/**
+ * A view stores no rows of its own, but SQLite re-parses every view in the
+ * schema each time a table is dropped, renamed or rebuilt. `DROP TABLE`
+ * itself succeeds, so the failure surfaces on the NEXT schema statement — for
+ * example the `ALTER TABLE ... RENAME TO applicants` at the end of
+ * rebuildConstraint — as `error in view cases: no such table: main.applicants`
+ * on a database an older release left with the compatibility view and the
+ * pre-tenant `UNIQUE (email_address, thread_id)` constraint.
+ *
+ * suspendViews() therefore lifts every view out of the schema before migrate()
+ * starts touching tables, and resumeViews() puts them back afterwards. Views
+ * carry no data, so the round trip cannot lose anything; a view whose backing
+ * table this release retires on purpose (dropObsolete) is left dropped rather
+ * than aborting an upgrade.
+ */
+function suspendViews(db: Database.Database): Array<{ name: string; sql: string }> {
+  const views = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'view' AND sql IS NOT NULL ORDER BY rowid").all() as Array<{ name: string; sql: string }>;
+  for (const view of views) db.exec(`DROP VIEW "${view.name.replace(/"/g, '""')}"`);
+  return views;
+}
+function resumeViews(db: Database.Database, views: Array<{ name: string; sql: string }>): void {
+  for (const view of views) {
+    // migrate() may have installed its own definition for this name (the `cases`
+    // compatibility view); never let an older copy overwrite it.
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(view.name)) continue;
+    try {
+      db.exec(view.sql);
+    } catch {
+      // The view read a table this release retired deliberately; a definition
+      // that cannot resolve is of no use to anyone, so it stays dropped.
+    }
+  }
+}
+/**
+ * The `cases` object is a read alias over `applicants`, recreated on every boot
+ * so it always matches the current column list. A legacy database that still
+ * keeps its own TABLE under that name is refused instead of being silently
+ * shadowed: the rows in it would otherwise stay invisible to the application.
+ */
+function installCasesView(db: Database.Database): void {
+  const existing = db.prepare("SELECT type FROM sqlite_master WHERE name = 'cases'").get() as { type: string } | undefined;
+  if (existing && existing.type !== "view") {
+    throw new Error("A legacy table named 'cases' is blocking the compatibility view; merge it into 'applicants' before upgrading");
+  }
+  if (existing) db.exec("DROP VIEW cases");
+  db.exec("CREATE VIEW cases AS SELECT a.* FROM applicants a");
 }
 /** Rebuild only a known obsolete uniqueness constraint, preserving custom columns,
  * indexes, triggers, row IDs and the AUTOINCREMENT high-water mark. Foreign keys
@@ -570,11 +655,20 @@ function migrateLegacyTemplates(db: Database.Database): void {
 
 function migrate(db: Database.Database): void {
   const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((table) => table.name));
+  // Legacy storage names are rewritten while views are still attached, so SQLite
+  // updates any view text that mentions the renamed table or column.
   for (const [from, to] of Object.entries(legacyStorage.tables)) if (tables.has(from) && !tables.has(to)) db.exec(`ALTER TABLE "${from}" RENAME TO "${to}"`);
   for (const [table, mapping] of Object.entries(legacyStorage.columns)) {
     const existing = columns(db, table);
     for (const [from, to] of Object.entries(mapping)) if (existing.has(from) && !existing.has(to)) db.exec(`ALTER TABLE "${table}" RENAME COLUMN "${from}" TO "${to}"`);
   }
+  // Everything from here on creates, rebuilds or replaces tables, so the views
+  // go first (see suspendViews) — otherwise a database left with the old
+  // `cases` view aborts the whole migration on the applicants rebuild. The base
+  // schema is also bootstrapped before any constraint rebuild: a fresh database
+  // has to own the `applicants` table before tenantConstraints() can rewrite its
+  // uniqueness constraint and before the compatibility view is recreated.
+  const suspendedViews = suspendViews(db);
   db.exec(SCHEMA_TABLES);
   for (const [table, name, definition] of ADDITIONS) if (!columns(db, table).has(name)) db.exec(`ALTER TABLE "${table}" ADD COLUMN "${name}" ${definition}`);
   db.exec(SCHEMA_INDEXES);
@@ -613,8 +707,8 @@ function migrate(db: Database.Database): void {
   db.exec("CREATE INDEX IF NOT EXISTS idx_outbox_applicant ON outbox(applicant_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_cases_org_email ON applicants(organization_id,email_address)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_emails_org_thread ON emails(organization_id,thread_id)");
-  db.exec("DROP VIEW IF EXISTS cases");
-  db.exec("CREATE VIEW cases AS SELECT a.* FROM applicants a");
+  installCasesView(db);
+  resumeViews(db, suspendedViews);
   db.pragma("user_version = 2");
 }
 export function openDb(file: string): Database.Database {

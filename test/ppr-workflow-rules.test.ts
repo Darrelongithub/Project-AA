@@ -78,7 +78,7 @@ describe("PPR P0-4: workflow rules — first-email behaviour as data", () => {
     // staff member resolves to it.
     configureTestOrganization(repo);
     repo.createStaff("admin", "Administrator", hashPassword("admin123"), "admin");
-    sender = new MockSender();
+    sender = new MockSender(true);
     ctx = { repo, adapters: { vision: new MockVisionAdapter(), watcher: makeHeuristicWatcher(), sender } };
     const app = createApp({ repo, ctx });
     await new Promise<void>((resolve) => {

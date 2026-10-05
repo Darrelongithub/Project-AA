@@ -15,7 +15,7 @@
  */
 import type { Canvas, CanvasRenderingContext2D } from "canvas";
 import { envInt, envNum } from "../util/envnum";
-import { log } from "../util/log";
+import { log, logField } from "../util/log";
 
 import { openPdfDocument } from "./pdfOptions";
 
@@ -211,7 +211,7 @@ export async function preprocessImage(buf: Buffer): Promise<Buffer | null> {
     // The caller falls back to the raw bytes; OCR decides. Logged because a
     // systematic sharp failure (e.g. TIFF support missing) would otherwise
     // disable preprocessing silently and forever.
-    log(`preprocessImage: sharp failed (${(e as Error).message}); using original bytes`);
+    log(`preprocessImage: sharp failed (${logField((e as Error).message)}); using original bytes`);
     return null;
   }
 }

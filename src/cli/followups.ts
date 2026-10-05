@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   let sender: EmailSender = new MockSender();
   if (cfg.mode === "live" && cfg.gmail) {
     const gmail = new GmailClient(cfg.gmail);
-    sender = { send: (to, subject, body, threadId) => gmail.sendReply(to, subject, body, threadId) };
+    sender = { delivers: true, send: (to, subject, body, threadId) => gmail.sendReply(to, subject, body, threadId) };
   }
   const ctx: PipelineContext = { repo, adapters: buildAdapters(cfg, sender, repo) };
   const sent = await runFollowUpSweep(repo, ctx);

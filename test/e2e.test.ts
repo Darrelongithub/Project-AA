@@ -190,11 +190,11 @@ describe("pipeline end-to-end", () => {
     const id = res.applicantId;
     expect(repo.getCase(id)!.outcome).toBe("undecided");
 
-    repo.db.transaction(() => {
-      repo.updateCase(id, { outcome: "approved_after_review" });
-      repo.updateApplicant(id, { outcome_route: "human", decision_by: "officer", decision_reason: "All evidence verified by phone", decision_at: new Date().toISOString() });
-      repo.setLifecycle(id, "completed", "officer", "All evidence verified by phone");
-    })();
+    repo.recordHumanOutcome(id, {
+      outcome: "approved_after_review",
+      actor: "officer",
+      reason: "All evidence verified by phone",
+    });
 
     const row = repo.getCase(id)!;
     expect(row.outcome).toBe("approved_after_review");

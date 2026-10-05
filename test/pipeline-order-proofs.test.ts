@@ -15,8 +15,9 @@ import { Repo } from "../src/db/repo";
 import { seedDefaults } from "../src/db/seed";
 import { hashPassword } from "../src/util/password";
 import { createApp } from "../src/web/server";
+import { loadConfig } from "../src/config";
 import { processEmail } from "../src/pipeline";
-import { MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
+import { buildAdapters, MockSender, MockVisionAdapter, type PipelineContext } from "../src/pipeline/adapters";
 import { makeHeuristicWatcher } from "../src/watcher";
 import { GeminiVisionAdapter } from "../src/extraction/gemini";
 import { extractAttachment } from "../src/extraction/extract";
@@ -41,6 +42,7 @@ let executionOrder: string[] = [];
 let ocrResults: Array<string | null> = [];
 let originalGeminiEnv: string | undefined;
 let originalGeminiModelEnv: string | undefined;
+let originalModeEnv: string | undefined;
 let server: ReturnType<ReturnType<typeof createApp>["listen"]> | null = null;
 let base = "";
 let repo: Repo;
@@ -181,8 +183,10 @@ function chronologicalCaseAudit(applicantId: number) {
 beforeEach(() => {
   originalGeminiEnv = process.env.GEMINI_API_KEY;
   originalGeminiModelEnv = process.env.GEMINI_MODEL;
+  originalModeEnv = process.env.MODE;
   delete process.env.GEMINI_API_KEY;
   delete process.env.GEMINI_MODEL;
+  delete process.env.MODE;
   replyMode = "probe";
   geminiCalls = [];
   executionOrder = [];
@@ -199,9 +203,45 @@ afterEach(async () => {
   else process.env.GEMINI_API_KEY = originalGeminiEnv;
   if (originalGeminiModelEnv === undefined) delete process.env.GEMINI_MODEL;
   else process.env.GEMINI_MODEL = originalGeminiModelEnv;
+  if (originalModeEnv === undefined) delete process.env.MODE;
+  else process.env.MODE = originalModeEnv;
 });
 
 describe("Gemini-first email categorization through authenticated Settings", () => {
+  it("ignores an environment-only API key across adapters, classification, and key removal", async () => {
+    process.env.GEMINI_API_KEY = TEST_GEMINI_KEY;
+    process.env.MODE = "live";
+    await createAuthenticatedSettingsApp();
+
+    // Neither the server's boot-time rebuild nor CLI adapter construction may
+    // treat the process environment as a secret source.
+    expect(ctx.adapters.vision.constructor.name).toBe("MockVisionAdapter");
+    const envAdapters = buildAdapters(loadConfig(), new MockSender(), repo);
+    expect(envAdapters.vision.constructor.name).toBe("MockVisionAdapter");
+    expect(envAdapters.categorizer).toBeUndefined();
+    for (const [key, label] of [["general_enquiry", "General enquiry"], ["complaint", "Complaint"], ["other", "Other"]]) {
+      await post("/settings/categories/create", { key, label });
+    }
+
+    const result = await processEmail(testMail("proof-environment-key"), ctx);
+    expect(result.category).toBe("general_enquiry"); // deterministic classifier, not the env-key-backed fake Gemini answer
+    expect(geminiCalls).toHaveLength(0);
+    expect(repo.auditForApplicant(result.applicantId!).some((row) => row.event === "email_classifier_gemini" && row.detail.includes("outcome=not_configured"))).toBe(true);
+
+    // The same key becomes active only after it is deliberately saved in the
+    // secret store. Removing that secret must not fall back to the still-set env.
+    const saved = await post("/settings/gemini", { gemini_api_key: TEST_GEMINI_KEY, gemini_model: TEST_MODEL });
+    expect(decodeURIComponent(saved.headers.get("location") ?? "")).toMatch(/Gemini is live/i);
+    expect(ctx.adapters.vision.constructor.name).toBe("BudgetedVisionAdapter");
+    expect(geminiCalls).toHaveLength(1); // explicit Settings probe only
+
+    const cleared = await post("/settings/gemini", { clear: "1" });
+    expect(decodeURIComponent(cleared.headers.get("location") ?? "")).toContain("falls back to text/OCR only");
+    expect(repo.getSecret("gemini_api_key")).toBe("");
+    expect(ctx.adapters.vision.constructor.name).toBe("MockVisionAdapter");
+    expect(geminiCalls).toHaveLength(1); // no environment-key fallback after removal
+  });
+
   it("uses the saved real adapter before intake matching; audit records the model result", async () => {
     await createAuthenticatedSettingsApp();
     await configureThroughSettings();

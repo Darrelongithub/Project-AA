@@ -11,7 +11,7 @@ import { envInt } from "../util/envnum";
 import * as os from "os";
 import * as path from "path";
 import { createWorker } from "tesseract.js";
-import { log } from "../util/log";
+import { log, logField } from "../util/log";
 
 let workerPromise: Promise<any> | null = null;
 const OCR_TIMEOUT_MS = envInt(process.env.OCR_TIMEOUT_MS, 90_000);
@@ -63,7 +63,7 @@ export async function ocrImage(image: Buffer, ext: "png" | "jpg" = "png"): Promi
       if (timer) clearTimeout(timer);
     }
   } catch (e) {
-    log(`ocr: failed (${(e as Error).message}); falling through to next tier`);
+    log(`ocr: failed (${logField((e as Error).message)}); falling through to next tier`);
     return null;
   } finally {
     if (tmpFile) {

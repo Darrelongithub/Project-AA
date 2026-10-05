@@ -126,7 +126,7 @@ export async function classifyWithConfiguredCategories(
   recordAttempt?: CategoryTraceRecorder
 ): Promise<ConfiguredCategoryLabel> {
   const allowed = [...new Set(categories.map((x) => x.trim()).filter(Boolean))];
-  const hasCredentials = Boolean((credentials?.apiKey || process.env.GEMINI_API_KEY || "").trim());
+  const hasCredentials = Boolean((credentials?.apiKey || "").trim());
 
   if (allowed.length === 0) {
     recordAttempt?.({ classifier: "gemini", outcome: "not_run", reason: "no tenant categories configured" });
@@ -182,10 +182,9 @@ export async function classifyWithConfiguredCategories(
 }
 
 /**
- * Credentials come from the CALLER: the console stores the key in the
- * organization's secret store (Settings → Connections), and a headless CLI may
- * use the environment. Reading `process.env` in here meant a key saved through
- * the UI could never enable classification.
+ * Credentials come from the caller, which resolves the Gemini API key only
+ * from the installation's secret store (Settings → Connections). This helper
+ * never reads or falls back to a secret in the process environment.
  */
 /** A labeler bound to specific credentials: built once by the adapters (from
  *  the key the console manages) and passed in by the pipeline. */
@@ -198,8 +197,8 @@ async function geminiCategoryLabel(
   categories: string[],
   credentials?: { apiKey: string; model?: string }
 ): Promise<ConfiguredCategoryLabel> {
-  const key = (credentials?.apiKey || process.env.GEMINI_API_KEY || "").trim();
-  if (!key) throw new Error("no Gemini API key is configured (Settings → Connections, or GEMINI_API_KEY)");
+  const key = (credentials?.apiKey || "").trim();
+  if (!key) throw new Error("no Gemini API key is configured in Settings → Connections");
   // Keep the SDK lazy and optional in mock/test mode, as with document vision.
   // Gemini receives categories as data and can only return one of them.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
