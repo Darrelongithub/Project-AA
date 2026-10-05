@@ -2146,6 +2146,13 @@ export class Repo {
   /**
    * Applicants who received an enquiry-style incoming email today (one SQL
    * query — the case page must not do one query per applicant).
+   *
+   * The list is exactly the `EmailCategory` values that describe a question
+   * rather than a submission, so it must stay inside that vocabulary: it used
+   * to name `case_enquiry` (no such category exists) while leaving out
+   * `general_enquiry`, which is the label ordinary enquiries are filed under —
+   * so the Awaiting-review tile ignored nearly every enquiry it was built to
+   * catch.
    */
   enquiryApplicantIdsToday(startISO: string, caseTypes?: string[] | null): Set<number> {
     const scope = this.scopePred("a", caseTypes);
@@ -2153,7 +2160,7 @@ export class Repo {
       .prepare(
         `SELECT DISTINCT e.applicant_id AS id FROM emails e JOIN applicants a ON a.id = e.applicant_id
          WHERE e.direction = 'in' AND e.at >= ?
-           AND e.category IN ('fee_enquiry','case_enquiry','follow_up','complaint','other')${scope.sql}`
+           AND e.category IN ('general_enquiry','fee_enquiry','follow_up','complaint','other')${scope.sql}`
       )
       .all(startISO, ...scope.params) as Array<{ id: number }>;
     return new Set(rows.map((r) => r.id));
