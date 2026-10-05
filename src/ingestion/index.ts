@@ -13,7 +13,7 @@
 import type { ProcessResult } from "../types";
 import { processEmail, type PipelineOptions } from "../pipeline";
 import type { PipelineContext } from "../pipeline/adapters";
-import { log } from "../util/log";
+import { log, logField } from "../util/log";
 import { EmailTooLargeError, type GmailClient } from "./gmailClient";
 
 export async function ingestNewEmails(
@@ -30,7 +30,7 @@ export async function ingestNewEmails(
     // One refresh-token failure must not silently stop ingestion: report it
     // and try again on the next poll.
     const msg = (e as Error).message || String(e);
-    log(`ingestion: mailbox listing failed — ${msg}`, "error");
+    log(`ingestion: mailbox listing failed — ${logField(msg)}`, "error");
     repo.notify(
       "review_needed",
       `Gmail sync failed (${gmail.watchTarget()}): ${msg.slice(0, 200)} — check the Gmail connection settings`,
@@ -53,15 +53,15 @@ export async function ingestNewEmails(
       if (e instanceof EmailTooLargeError) {
         repo.parkDeadLetter({ message_id: id, subject: "", from_addr: "", error: msg });
         repo.notify("review_needed", `Oversized mail parked (~${(e.sizeEstimate / 1024 / 1024).toFixed(0)} MB): ask the sender for smaller scans`, null);
-        log(`ingestion: ${id} parked — ${msg}`, "error");
+        log(`ingestion: ${id} parked — ${logField(msg)}`, "error");
         continue;
       }
       const dl = repo.recordDeadLetter({ message_id: id, subject: "", from_addr: "", error: msg });
       if (dl.dead) {
         repo.notify("review_needed", `Message ${id} failed ${dl.attempts} times and was parked: ${msg.slice(0, 200)}`, null);
-        log(`ingestion: ${id} dead-lettered after ${dl.attempts} attempts — ${msg}`, "error");
+        log(`ingestion: ${id} dead-lettered after ${dl.attempts} attempts — ${logField(msg)}`, "error");
       } else {
-        log(`ingestion: failed to fetch ${id} (attempt ${dl.attempts}): ${msg}`, "error");
+        log(`ingestion: failed to fetch ${id} (attempt ${dl.attempts}): ${logField(msg)}`, "error");
       }
       continue;
     }
@@ -78,12 +78,12 @@ export async function ingestNewEmails(
         if (!attribution.matched && repo.listOrganizations().length > 1) {
           repo.audit(null, "system", "tenant_attribution_fallback",
             `"${email.subject}" to ${email.to || "(no recipient header)"} named no organization — filed under #${attribution.organizationId}; set each tenant's inbound address under Settings`);
-          log(`ingestion: "${email.subject}" matched no tenant address — filed under organization #${attribution.organizationId}`, "warn");
+          log(`ingestion: "${logField(email.subject)}" matched no tenant address — filed under organization #${attribution.organizationId}`, "warn");
         }
       }
     }
 
-    log(`ingestion: processing "${email.subject}" from ${email.from} → organization #${email.organizationId ?? 1}`);
+    log(`ingestion: processing "${logField(email.subject)}" from ${logField(email.from)} → organization #${email.organizationId ?? 1}`);
     try {
       results.push(await processEmail(email, ctx, opts));
       // Successful processing clears any earlier failure record.
@@ -104,9 +104,9 @@ export async function ingestNewEmails(
           `Message "${email.subject}" from ${email.from} failed ${dl.attempts} times and was parked: ${msg.slice(0, 200)}`,
           null
         );
-        log(`ingestion: "${email.subject}" dead-lettered after ${dl.attempts} attempts`, "error");
+        log(`ingestion: "${logField(email.subject)}" dead-lettered after ${dl.attempts} attempts`, "error");
       } else {
-        log(`ingestion: "${email.subject}" failed processing (attempt ${dl.attempts}): ${msg}`, "error");
+        log(`ingestion: "${logField(email.subject)}" failed processing (attempt ${dl.attempts}): ${logField(msg)}`, "error");
       }
     }
   }

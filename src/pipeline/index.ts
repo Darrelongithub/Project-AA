@@ -49,7 +49,7 @@ import { writeDecisionLog } from "../logs";
 import { emailBanner, organizationName, organizationSender } from "../branding";
 import type { SendExtras } from "./adapters";
 import { LIFECYCLE_LABELS } from "../types";
-import { log } from "../util/log";
+import { log, logField } from "../util/log";
 import type { PipelineContext } from "./adapters";
 
 export interface PipelineOptions {
@@ -257,7 +257,7 @@ async function processEmailInner(
       parkEvent,
       `"${email.subject}" from ${email.from} — ${why}; kept in Mail, no case created${intakeRule ? ` (rule “${intakeRule.name}”)` : ""}`
     );
-    log(`pipeline: "${email.subject}" parked — ${why}`);
+    log(`pipeline: "${logField(email.subject)}" parked — ${logField(why)}`);
     return {
       skipped: true,
       applicantId: null,
@@ -350,7 +350,7 @@ async function processEmailInner(
   if (!applicant.full_name && email.fromName) {
     repo.updateApplicant(applicant.id, { full_name: email.fromName });
   }
-  log(`pipeline: email ${email.id} from ${email.from} → ${applicant.ref_number} (${category})`);
+  log(`pipeline: email ${email.id} from ${logField(email.from)} → ${applicant.ref_number} (${category})`);
 
   // ── Store incoming email in the case history (feature 4) ────────────────
   repo.insertEmail({
@@ -450,7 +450,7 @@ async function processEmailInner(
         type: "duplicate_submission",
         detail: `${att.filename} is a byte-identical resubmission of an existing ${dup.document_type} — deduplicated`,
       });
-      log(`pipeline: ${att.filename} recognised as duplicate of doc #${dup.id}`);
+      log(`pipeline: ${logField(att.filename)} recognised as duplicate of doc #${dup.id}`);
       continue;
     }
     extractions.push(res);
@@ -1062,7 +1062,7 @@ async function processEmailInner(
           template_key: draft.templateKey ?? "",
         });
         repo.audit(applicant.id, "system", "email_sent_auto", `${autoKind ?? templateKey}: "${draft.subject}"`);
-        log(`pipeline: auto-sent [${autoKind ?? templateKey}] to ${applicantNow.email_address}`);
+        log(`pipeline: auto-sent [${autoKind ?? templateKey}] to ${logField(applicantNow.email_address, 254)}`);
         autoSent = true;
       }
     } catch (e) {
@@ -1141,7 +1141,7 @@ async function processEmailInner(
           : `missing/unclear documents (${rulesOut.missing.map((m) => docLabel(m)).join(", ") || "review needed"})`;
     repo.notify("review_needed", `${cur.ref_number} needs review — ${reason}`, applicant.id);
     repo.audit(applicant.id, "system", "human_review_triggered", reason);
-    log(`pipeline: ${applicantNow.ref_number} queued for human (${reason})`);
+    log(`pipeline: ${applicantNow.ref_number} queued for human (${logField(reason)})`);
   }
 
   // ── Lifecycle transition + status history (features 15, 16) ─────────────

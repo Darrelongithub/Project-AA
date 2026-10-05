@@ -34,7 +34,7 @@ import { extractPdfImages } from "./pdfImages";
 import { rasterizePdf, preprocessImage, RASTER_DEFAULTS } from "./rasterize";
 import type { VisionAdapter } from "./gemini";
 import { VisionUnavailableError } from "./gemini";
-import { log } from "../util/log";
+import { log, logField } from "../util/log";
 
 export interface ExtractDeps {
   vision?: VisionAdapter;
@@ -208,10 +208,13 @@ export async function extractAttachment(
   deps: ExtractDeps
 ): Promise<ExtractionResult> {
   const sha256 = crypto.createHash("sha256").update(att.content).digest("hex");
+  // A filename is chosen by the sender, so every log line about it uses a single-line,
+  // bounded copy. `fileTag` is for logs only — storage and matching keep the real name.
+  const fileTag = logField(att.filename);
 
   if (att.content.length > MAX_ATTACHMENT_BYTES) {
     log(
-      `extraction: ${att.filename} rejected — ${(att.content.length / 1024 / 1024).toFixed(1)} MB exceeds the ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB cap`,
+      `extraction: ${fileTag} rejected — ${(att.content.length / 1024 / 1024).toFixed(1)} MB exceeds the ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MB cap`,
       "warn"
     );
     return unreadable(
@@ -265,7 +268,7 @@ export async function extractAttachment(
       method: "gemini_vision",
       tier,
     });
-    log(`extraction: ${att.filename} → Gemini vision (${verdict.confidence} confidence, score ${verdict.score})`);
+    log(`extraction: ${fileTag} → Gemini vision (${verdict.confidence} confidence, score ${verdict.score})`);
     // A successful HTTP response is not necessarily a useful reading. Some
     // vision responses contain an empty/unknown JSON object; treating that as
     // authoritative used to skip OCR and lose a perfectly readable photo.
@@ -295,7 +298,7 @@ export async function extractAttachment(
     // ── Inspect first: WHY a PDF fails matters ───────────────────────────
     const { text: rawText, inspection } = await pdfRead(att.content);
     if (inspection.status === "encrypted") {
-      log(`extraction: ${att.filename} is password-protected`, "warn");
+      log(`extraction: ${fileTag} is password-protected`, "warn");
       return unreadable(
         att.filename,
         sha256,
@@ -303,7 +306,7 @@ export async function extractAttachment(
       );
     }
     if (inspection.status === "corrupt") {
-      log(`extraction: ${att.filename} is corrupt (${inspection.error})`, "warn");
+      log(`extraction: ${fileTag} is corrupt (${logField(inspection.error)})`, "warn");
       return unreadable(
         att.filename,
         sha256,
@@ -311,7 +314,7 @@ export async function extractAttachment(
       );
     }
     if (inspection.status === "timeout") {
-      log(`extraction: ${att.filename} exceeded the PDF parse budget (${inspection.error})`, "warn");
+      log(`extraction: ${fileTag} exceeded the PDF parse budget (${logField(inspection.error)})`, "warn");
       return unreadable(
         att.filename,
         sha256,
@@ -319,7 +322,7 @@ export async function extractAttachment(
       );
     }
     if (inspection.status === "empty") {
-      log(`extraction: ${att.filename} contains no pages`, "warn");
+      log(`extraction: ${fileTag} contains no pages`, "warn");
       return unreadable(
         att.filename,
         sha256,
@@ -329,13 +332,13 @@ export async function extractAttachment(
     const truncNote = inspection.truncated
       ? `Only the first 25 of ${inspection.numPages} pages were read.`
       : undefined;
-    if (truncNote) log(`extraction: ${att.filename} — ${truncNote}`, "warn");
+    if (truncNote) log(`extraction: ${fileTag} — ${logField(truncNote)}`, "warn");
 
     // ── Tier 1: embedded text layer ──────────────────────────────────────
     if (rawText) {
       const t1Type = classifyDocumentType(rawText);
       if (isGoodText(rawText, t1Type)) {
-        log(`extraction: ${att.filename} → embedded text layer (high confidence)`);
+        log(`extraction: ${fileTag} → embedded text layer (high confidence)`);
         return { ...finish(att.filename, rawText, "pdf_text", "high", truncNote, Boolean(truncNote)), sha256 };
       }
     }
@@ -350,13 +353,13 @@ export async function extractAttachment(
       }
       const joined = parts.join("\n");
       if (joined && isGoodText(joined, classifyDocumentType(joined))) {
-        log(`extraction: ${att.filename} → Tesseract OCR on embedded images`);
+        log(`extraction: ${fileTag} → Tesseract OCR on embedded images`);
         return { ...finish(att.filename, joined, "ocr", "medium", truncNote, Boolean(truncNote)), sha256 };
       }
       if (images.length === 0) {
-        log(`extraction: ${att.filename} → no usable embedded images found for OCR`);
+        log(`extraction: ${fileTag} → no usable embedded images found for OCR`);
       } else {
-        log(`extraction: ${att.filename} → embedded-image OCR failed quality check`);
+        log(`extraction: ${fileTag} → embedded-image OCR failed quality check`);
       }
     }
 
@@ -379,7 +382,7 @@ export async function extractAttachment(
         );
         const joined = parts.join("\n");
         if (joined && isGoodText(joined, classifyDocumentType(joined))) {
-          log(`extraction: ${att.filename} → rasterised ${report.rendered} page(s) + Tesseract OCR`);
+          log(`extraction: ${fileTag} → rasterised ${report.rendered} page(s) + Tesseract OCR`);
           const notes: string[] = [];
           if (truncNote) notes.push(truncNote);
           else if (report.overCap > 0) {
@@ -392,7 +395,7 @@ export async function extractAttachment(
           return { ...finish(att.filename, joined, "pdf_raster", "medium", notes.length ? notes.join(" ") : undefined, notes.length > 0), sha256 };
         }
       } catch (e) {
-        log(`extraction: rasterise failed for ${att.filename}: ${(e as Error).message}`);
+        log(`extraction: rasterise failed for ${fileTag}: ${logField((e as Error).message)}`);
       }
     }
   } else if (isImage) {
@@ -413,7 +416,7 @@ export async function extractAttachment(
       for (const candidate of candidates) {
         const t = await deps.ocr(candidate, "png");
         if (t && isGoodText(t, classifyDocumentType(t))) {
-          log(`extraction: ${att.filename} → Tesseract OCR on image (medium confidence)`);
+          log(`extraction: ${fileTag} → Tesseract OCR on image (medium confidence)`);
           const screenshotNote = /screen\s?shot|screen\s?capture|screencap/i.test(att.filename)
             ? "This looks like a screenshot. Where possible, please send the official document as a PDF or a photo of the paper original."
             : undefined;
@@ -431,10 +434,10 @@ export async function extractAttachment(
   // from an unreadable document, and the pipeline tells staff which one.
   const verr = visionError as VisionUnavailableError | null;
   if (verr) {
-    log(`extraction: ${att.filename} → vision model unavailable (${verr.kind}: ${verr.message})`, "warn");
+    log(`extraction: ${fileTag} → vision model unavailable (${verr.kind}: ${logField(verr.message)})`, "warn");
     return unreadable(att.filename, sha256, `Vision model unavailable (${verr.kind}). The document is preserved for human review.`);
   }
-  log(`extraction: ${att.filename} → unreadable by all tiers`, "warn");
+  log(`extraction: ${fileTag} → unreadable by all tiers`, "warn");
   const handwrittenHint = !isPdf
     ? " It may be handwritten, blurred, or a photo of a screen — a clear scan of the original will help."
     : "";
