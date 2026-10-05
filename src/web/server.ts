@@ -41,7 +41,7 @@ import { log } from "../util/log";
 import type { OnceResult } from "../util/once";
 import { hashPassword, verifyPassword } from "../util/password";
 import { normalizeUsername, USERNAME_RE } from "../util/username";
-import { gmailRedirectUri } from "./oauth";
+import { gmailRedirectUri, publicOrigin } from "./oauth";
 import { LoginThrottle, RateWindow, SendGuard } from "./throttle";
 import { WEBHOOK_PATH_PREFIX, ingestWebhook, redactIngestKey } from "./webhook";
 import { envInt } from "../util/envnum";
@@ -1371,7 +1371,15 @@ export function createApp(deps: WebDeps): Express {
 
   // 'it' role: cases + configuration, but not staff management.
   app.get("/settings", requireLogin, requireRole("admin"), (req, res) =>
-    res.send(settingsPage(c(req), req.query.msg ? String(req.query.msg) : undefined, gmailRedirectUri(repo, req.protocol, req.get("host") ?? "localhost")))
+    res.send(settingsPage(
+      c(req),
+      req.query.msg ? String(req.query.msg) : undefined,
+      gmailRedirectUri(repo, req.protocol, req.get("host") ?? "localhost"),
+      publicOrigin(repo, req.protocol, req.get("host") ?? "localhost"),
+      // Issued on demand so a tenant that predates this feature gets a key the
+      // first time its admin opens the page — no migration, no redeploy.
+      repo.ensureWebhookIngestKey(organizationId(req))
+    ))
   );
 
   // Configuration: requirements, replies, Gmail, intakes, templates, exports.
@@ -2104,11 +2112,11 @@ export function createApp(deps: WebDeps): Express {
     for (const key of [
       "institution_name", "sla_target_hours", "escalation_hours",
       "unanswered_target_hours", "followup_ladder_days", "retention_days",
-      "intake_hotwords", "webhook_rate_limit_per_minute",
+      "intake_hotwords",
     ]) {
       if (typeof req.body[key] !== "string") continue;
       const v = String(req.body[key]).trim();
-      if (["sla_target_hours", "escalation_hours", "unanswered_target_hours", "retention_days", "webhook_rate_limit_per_minute"].includes(key) && !numOk(v)) {
+      if (["sla_target_hours", "escalation_hours", "unanswered_target_hours", "retention_days"].includes(key) && !numOk(v)) {
         ignored.push(key.replace(/_/g, " "));
         continue;
       }
@@ -2127,6 +2135,31 @@ export function createApp(deps: WebDeps): Express {
         ignored.length ? `Saved. Kept current value for: ${ignored.join(", ")} (blank or invalid input).` : "Settings saved."
       )}`
     );
+  });
+
+  app.post("/settings/webhook", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    // Strict like every other settings surface: an action this route does not
+    // know is reported as "nothing changed", never quietly treated as a no-op
+    // success — the two things it can do are destructive or rate-affecting.
+    const back = (message: string) => res.redirect(`/settings?msg=${encodeURIComponent(message)}#webhook`);
+    const organizationIdForStaff = req.staff!.organization_id ?? 1;
+    const action = String(req.body.action ?? "");
+    if (action === "rotate") {
+      // One row update. Lookup is by value, so the previous URL is dead the
+      // instant this returns: no cache to expire, no grace window, no restart.
+      repo.setWebhookIngestKey(organizationIdForStaff, req.staff!.username);
+      return back("A new ingest key is live. The previous webhook URL stopped working at that moment — update every form, Zap or scenario that used it.");
+    }
+    if (action === "limit") {
+      const raw = String(req.body.webhook_rate_limit_per_minute ?? "").trim();
+      if (!/^\d+$/.test(raw) || Number(raw) < 1 || Number(raw) > 10_000) {
+        return back("Rate limit unchanged: enter a whole number of calls per minute between 1 and 10000.");
+      }
+      repo.setSetting("webhook_rate_limit_per_minute", String(Math.floor(Number(raw))));
+      repo.audit(null, req.staff!.username, "settings_changed", `webhook ingest rate limit → ${raw} per minute per key`);
+      return back(`Rate limit saved: ${raw} accepted calls per minute, per ingest key. Effective on the next request.`);
+    }
+    return back("Nothing changed: this form rotates the ingest key or sets the per-minute request budget.");
   });
 
   app.post("/settings/automation/global", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {

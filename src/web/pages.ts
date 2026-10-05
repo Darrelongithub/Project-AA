@@ -13,6 +13,7 @@ import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../rules/queues";
 import { docLabel } from "../rules";
 import { TEMPLATE_PARTIAL_DOCS, inspectTemplate, renderTemplate } from "../drafting";
 import { organizationName, organizationTheme } from "../branding";
+import { WEBHOOK_PATH_PREFIX } from "./webhook";
 import {
   avatar, categoryBadge, crest, esc, flagLabel, flowLine, fmtDate, gaugeRow,
   heroClock, icon, layout, lifecycleBadge, lifecycleStepper, priorityBadge, readabilityScore, slaText, triageBadge, type Theme,
@@ -1674,7 +1675,7 @@ ${msgs}`);
 
 // ── Settings (app behaviour) & Configuration (case intake setup) ────────────
 
-export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string): string {
+export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string, webhookOrigin?: string, webhookIngestKey?: string | null): string {
   const { repo } = c;
   const settings = repo.allSettings();
   // Effective, not as-stored: with no row for the key the pipeline holds every
@@ -1697,6 +1698,8 @@ export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string):
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 
 ${connectionsSection(c, gmailRedirectUri)}
+
+${webhookIngestSection(c, webhookOrigin ?? "", webhookIngestKey ?? null)}
 
 <div class="card" id="intake">
   <h2>Which emails become cases</h2>
@@ -1833,6 +1836,234 @@ ${categoriesCard(c)}
 })();
 </script>`
   );
+}
+
+// ── Web submissions (public ingest key, Phase 18) ──────────────────────────
+
+/**
+ * One card for the public ingest surface: the URL an outside system posts to,
+ * copy-pasteable examples for the five ways people actually wire it up, the
+ * tenant's own delivery log for self-diagnosis, and rotation behind an explicit
+ * second click.
+ *
+ * Markup and class names are the ones Settings already use (`card`, `formrow`,
+ * `badge b-*`, `mono`, `btn small ghost`, `table-scroll`, `card-head`): no new
+ * styling, no new tokens. The readonly-input-with-`this.select()` copy control
+ * and the inline-`<script>` block are the patterns the Gmail URI and the logo
+ * uploader above already establish.
+ *
+ * Why the address is shown in full, unlike the Gmail and Gemini credentials on
+ * this same page (presence-only by design, PPR P0-1): a provider secret is never
+ * needed back — it is only ever entered. This one is the thing an operator has
+ * to paste into a form, a Zap and a Webflow embed, and it grants nothing but the
+ * ability to submit, which is exactly why it is rotatable in place.
+ */
+export function webhookIngestSection(c: Ctx, origin: string, ingestKey: string | null): string {
+  const { repo } = c;
+  const url = ingestKey ? `${origin}${WEBHOOK_PATH_PREFIX}${ingestKey}` : "";
+  const deliveries = repo.listWebhookDeliveries(c.user.organization_id ?? 1, 10);
+  const rate = repo.webhookRateLimitPerMinute();
+
+  const outcomeBadge = (outcome: string, statusCode: number): string => {
+    if (outcome === "accepted") return `<span class="badge b-green">accepted</span>`;
+    if (outcome === "duplicate") return `<span class="badge b-blue">duplicate</span>`;
+    if (outcome === "parked") return `<span class="badge b-orange">parked by policy</span>`;
+    if (outcome === "rate_limited") return `<span class="badge b-orange">throttled ${statusCode}</span>`;
+    if (outcome === "rejected") return `<span class="badge b-orange">refused ${statusCode}</span>`;
+    return `<span class="badge b-red">failed ${statusCode}</span>`;
+  };
+
+  const rows = deliveries.map((row) => `<tr>
+    <td>${esc(fmtDate(row.received_at))}<br><span class="muted small mono">${esc(row.sender_email || "no address")}</span></td>
+    <td>${outcomeBadge(row.outcome, row.status_code)}</td>
+    <td class="small">${row.applicant_id
+      ? `<a href="/case/${row.applicant_id}"><b>${esc(row.ref_number || "case")}</b></a>${row.case_type_code ? `<br><span class="muted">${esc(row.case_type_code)}</span>` : ""}`
+      : row.ref_number ? `<b>${esc(row.ref_number)}</b>` : `<span class="muted">no case opened</span>`}</td>
+    <td class="small mono">${row.external_id ? esc(row.external_id) : '<span class="muted">—</span>'}</td>
+    <td class="small">${securityDetail(row.detail)}</td>
+  </tr>`).join("");
+
+  const snippets: Array<{ title: string; note: string; code: string }> = [
+    {
+      title: "Plain HTML form",
+      note: "Works from any page on any host. The sender lands in the queue exactly like an email from that address.",
+      code: `<form method="POST" action="${url}">
+  <input type="email" name="email" required placeholder="you@example.org">
+  <input type="text" name="full_name" placeholder="Your name">
+  <select name="case_type"><option value="SERVICE_REQUEST">Service request</option></select>
+  <textarea name="message" rows="5">What do you need?</textarea>
+  <button type="submit">Send</button>
+</form>
+<!-- external_id is optional. Set it to a number only your backend knows (an
+     order id, a post id) and a double submit cannot open a second case. -->`,
+    },
+    {
+      title: "WordPress",
+      note: "Add to your child theme's functions.php (or a code-snippets plugin) and post from a form with an ID. wp_remote_post is core, so no plugin is required.",
+      code: `add_action( 'rest_api_init', function () {
+  register_rest_route( 'aa', '/intake', function () {
+    return function ( $request ) {
+      $body = [
+        'email'       => sanitize_email( $request['email'] ),
+        'full_name'   => sanitize_text_field( $request['name'] ),
+        'message'     => sanitize_textarea_field( $request['message'] ),
+        'case_type'   => 'SERVICE_REQUEST',
+        'external_id' => 'wp-' . $request->get_param( 'post_id' ),
+      ];
+      $result = wp_remote_post( '${url}', [
+        'headers' => [ 'Content-Type' => 'application/json' ],
+        'body'    => wp_json_encode( $body ),
+        'timeout' => 20,
+      ] );
+      return new WP_REST_Response( [
+        'ref' => json_decode( wp_remote_retrieve_body( $result ) )->ref_number ?? null,
+      ] );
+    };
+  } );
+} );`,
+    },
+    {
+      title: "Zapier",
+      note: "Zapier → Create Zap → trigger (Form, Google Sheet, anything) → action <b>Webhooks by Zapier</b>.",
+      code: `Action      Webhooks by Zapier
+Method      POST
+URL         ${url}
+Payload type  Json
+Data        {
+  "email":     "{{contact_email}}",
+  "full_name": "{{first_name}} {{last_name}}",
+  "case_type": "SERVICE_REQUEST",
+  "message":   "{{notes}}",
+  "external_id": "{{zap_id}}-{{id}}"
+}
+Unmarshal Response  true   ← so the ref_number comes back into the Zap`,
+    },
+    {
+      title: "Make (Integromat)",
+      note: "A scenario module: <b>Webhooks → Send data</b>. Use the record ID as external_id so a re-run cannot open a second case.",
+      code: `Module      Webhooks: Send data
+URL         ${url}
+HTTP method POST
+Headers     Content-Type: application/json
+Payload     {
+  "email":      "{{email}}",
+  "full_name":  "{{name}}",
+  "case_type":  "SERVICE_REQUEST",
+  "message":    "{{comment}}",
+  "external_id": "{{id}}"
+}
+→ read ref_number straight out of the response for the next module`,
+    },
+    {
+      title: "Webflow",
+      note: "Webflow's native Forms block posts to Webflow only. Use an Embed Code block with this handler on the page that carries your button, or call it from your custom code after submit.",
+      code: `<script>
+async function submitToCaseOffice(fields) {
+  const res = await fetch('${url}', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: fields.email,
+      full_name: fields.name,
+      case_type: 'SERVICE_REQUEST',
+      message: fields.message,
+      external_id: 'webflow-' + fields.id,
+      metadata: { source: 'webflow', page: location.pathname }
+    })
+  });
+  const reply = await res.json();
+  if (res.ok) console.log('case', reply.ref_number, reply.reply);
+  else console.warn('not accepted:', reply.error);
+  return reply;
+}
+</script>`,
+    },
+  ];
+
+  const exampleBlocks = snippets.map((block) => `<div style="margin-top:14px">
+      <b class="small">${block.title}</b>
+      <p class="small muted" style="margin:3px 0 6px">${block.note}</p>
+      <textarea class="mono" rows="${Math.min(14, block.code.split("\n").length + 1)}" readonly style="width:100%;font-size:12px" onclick="this.select()" spellcheck="false">${esc(block.code)}</textarea>
+      <p style="margin:6px 0 0"><button type="button" class="btn small ghost" data-aa-copy="${esc(block.code)}">Copy</button> <span class="small muted" data-aa-copy-message></span></p>
+    </div>`).join("");
+
+  return `
+<div id="webhook">
+<h1 style="margin-top:34px">Web submissions</h1>
+<div class="sub">One address that your site, form builder or automation tool posts to. A submission becomes a case through the same rules as an inbound email — nothing can be decided from outside.</div>
+
+<div class="card" id="webhook-url">
+  <h2>Your webhook URL ${ingestKey ? `<span class="badge b-green">live now</span>` : `<span class="badge b-orange">not issued</span>`}</h2>
+  <p class="small muted" style="margin-top:-6px">Accepts <span class="mono">JSON</span> or plain form fields: <span class="mono">email</span> (required), <span class="mono">full_name</span>, <span class="mono">external_id</span>, <span class="mono">case_type</span>, <span class="mono">message</span>, <span class="mono">metadata</span>. The reply carries the case's reference number.</p>
+  ${ingestKey ? `
+  <div class="formrow" style="margin-top:10px">
+    <div style="flex:1;min-width:280px"><label>Submission address</label>
+      <input class="mono" style="width:100%" readonly value="${esc(url)}" onclick="this.select()" spellcheck="false" data-aa-webhook-url>
+    </div>
+    <div style="align-self:flex-end"><button type="button" class="btn small ghost" data-aa-copy="${esc(url)}">Copy</button> <span class="small muted" data-aa-copy-message></span></div>
+  </div>
+  <p class="small" style="color:var(--red);margin:8px 0 0"><b>Treat this address like a password.</b> Anyone who has it can submit on your behalf; they cannot read, change or decide anything, and every call they make is listed below. Do not put it in a public repository or a screenshot.</p>
+  <p class="small muted" style="margin:6px 0 0">This address is built from the one your browser used to reach this page${repo.getSetting("gmail_public_base_url", "").trim() ? ", and the public base URL pinned in Connections takes precedence" : ""}. If you open the console through a tunnel or an internal hop, check it is the address the public will use before you copy it into a form.</p>
+
+  <details style="margin-top:12px">
+    <summary class="small"><b>Rotate the key</b> — the current address stops working immediately</summary>
+    <p class="small muted" style="margin:8px 0">Every form, Zap and scenario that still posts to the old address starts getting <span class="mono">404 not found</span> the moment you rotate, and stays broken until it is updated. There is deliberately no grace period: a key you wanted gone is gone. Nothing else changes — the cases, the queue and the rules are untouched.</p>
+    <form method="post" action="/settings/webhook" style="margin:0">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <input type="hidden" name="action" value="rotate">
+      <p style="margin:0"><button class="btn small">Rotate key now</button></p>
+    </form>
+  </details>` : `
+  <p class="small" style="color:var(--red)">No ingest key is recorded for this organization yet. It is issued the first time this page is opened — reload to pick it up.</p>`}
+</div>
+
+<div class="card" id="webhook-settings">
+  <h2>Request budget</h2>
+  <div class="formrow" style="align-items:flex-end">
+    <div><label>Accepted calls per minute, per key</label>
+      <input type="number" min="1" max="10000" step="1" value="${rate}" form="aa-webhook-budget" style="width:120px">
+    </div>
+    <div style="align-self:flex-end">
+      <form method="post" action="/settings/webhook" id="aa-webhook-budget" style="margin:0">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <input type="hidden" name="action" value="limit">
+        <button class="btn small ghost">Save</button>
+      </form>
+    </div>
+  </div>
+  <p class="small muted" style="margin:8px 0 0">Live on the next request, no restart. A caller that goes over it gets <span class="mono">429</span> with a <span class="mono">Retry-After</span>, and the attempt is listed below. The counter is per key, so one tenant flooding its own address cannot slow another's; the threshold itself is set for the whole installation, like the other numbers on this page.</p>
+</div>
+
+<div class="card" id="webhook-examples">
+  <h2>Ways to send</h2>
+  <p class="small muted" style="margin-top:-6px">Each example already carries your own address. <span class="mono">case_type</span> must name a category this organization has configured — an unknown one is refused, never invented.</p>
+  ${exampleBlocks}
+</div>
+
+<div class="card nopad" id="webhook-deliveries">
+  <div class="card-head"><h2>Recent deliveries</h2><a class="small" href="/admin/security">Security console</a></div>
+  ${deliveries.length ? `<p class="small muted" style="padding:0 24px">The last ${deliveries.length} calls to this address, newest first — including the ones refused before a case was opened. Distinct from mail: these rows exist only for the public endpoint.</p>
+  <div class="table-scroll"><table>
+    <tr><th>When / from</th><th>Result</th><th>Case</th><th>external_id</th><th>What happened</th></tr>
+    ${rows}
+  </table></div>` : `<div class="empty"><p>Nothing has been posted to this address yet. Once a form or Zap is wired up, every call — accepted, refused, throttled or duplicated — shows here.</p></div>`}
+</div>
+</div>
+<script>
+(function () {
+  document.querySelectorAll("[data-aa-copy]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var value = button.getAttribute("data-aa-copy") || "";
+      var done = function (ok) {
+        var slot = button.parentNode.querySelector("[data-aa-copy-message]");
+        if (slot) slot.textContent = ok ? "Copied." : "Select the box and copy by hand.";
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(value).then(function () { done(true); }, function () { done(false); });
+      else done(false);
+    });
+  });
+})();
+</script>`;
 }
 
 // ── Account (self-service settings, available to every signed-in user) ─────
@@ -3000,6 +3231,11 @@ function securityEventLabel(event: string): string {
     case_type_changed: "Case type changed",
     case_config_upgraded: "Case configuration upgraded",
     status_changed: "Case status changed by staff",
+    webhook_ingest_accepted: "Webhook submission accepted",
+    webhook_rejected: "Webhook submission refused",
+    webhook_failed: "Webhook submission failed in processing",
+    webhook_key_issued: "Webhook ingest key issued",
+    webhook_key_rotated: "Webhook ingest key rotated",
   };
   return labels[event] ?? capFirst(event.replace(/_/g, " "));
 }
@@ -3055,6 +3291,19 @@ export function securityConsolePage(c: Ctx): string {
     <td class="small">${securityDetail(row.detail)}</td>
   </tr>`).join("");
 
+  const ingestBadge = (outcome: string): string => outcome === "accepted" ? "b-green"
+    : outcome === "duplicate" ? "b-blue"
+      : outcome === "failed" ? "b-red"
+        : outcome === "rate_limited" || outcome === "rejected" || outcome === "parked" ? "b-orange" : "b-gray";
+  const ingestRows = snapshot.webhookDeliveries.map((row) => `<tr>
+    <td>${esc(fmtDate(row.at))}<br><span class="muted small mono">${securityDetail(row.sender_email || "no address", 60)}</span></td>
+    <td><span class="badge ${ingestBadge(row.outcome)}">${esc(row.outcome.replace(/_/g, " "))} · ${row.status_code}</span>${row.external_id ? `<br><span class="muted small mono">${esc(row.external_id)}</span>` : ""}</td>
+    <td class="small">${row.applicant_id
+      ? `<a href="/case/${row.applicant_id}"><b>${esc(row.ref_number || "case")}</b></a>${row.case_type_code ? `<br><span class="muted">${esc(row.case_type_code)}</span>` : ""}`
+      : `<span class="muted">${row.ref_number ? esc(row.ref_number) : "no case"}</span>`}</td>
+    <td class="small">${securityDetail(row.detail)}</td>
+  </tr>`).join("");
+
   const metric = (value: number, label: string, detail: string) => `<div class="stat"><div class="n">${value}</div><div class="l">${esc(label)}</div><div class="context">${esc(detail)}</div></div>`;
   const gmailStatus = gmailPaused ? "Paused" : gmailConfigured ? "Configured" : "Not configured";
   const geminiStatus = geminiConfigured ? "Configured" : "Not configured";
@@ -3075,6 +3324,7 @@ export function securityConsolePage(c: Ctx): string {
       ${metric(snapshot.pipelineRuns.length, "Decision runs", "latest provenance records")}
       ${metric(snapshot.integritySignals.length, "Change signals", "review indicators, not proof")}
       ${metric(snapshot.errors.length, "Errors", "recorded failed work / requests")}
+      ${metric(snapshot.webhookDeliveries.length, "Webhook calls", "recent public ingest attempts")}
     </div>
   </section>
 
@@ -3116,6 +3366,12 @@ export function securityConsolePage(c: Ctx): string {
     <div class="card-head"><h2>Crashes, errors &amp; failed work</h2></div>
     <p class="small muted" style="padding:0 24px">Shows recorded service, sending, intake, and unhandled web request errors attributable to this organization. Fatal process exceptions are marked as shared runtime events; forced shutdowns or failures before the database opens cannot be recorded. Mail failures without a persisted case or organization link are excluded rather than shown across tenants.</p>
     ${errorRows ? `<div class="table-scroll"><table><tr><th>Issue</th><th>Case</th><th>Actor / time</th><th>Recorded detail</th></tr>${errorRows}</table></div>` : `<div class="empty"><p>No attributable errors or failed work are recorded.</p></div>`}
+  </section>
+
+  <section class="card nopad">
+    <div class="card-head"><h2>Webhook deliveries &amp; public ingest</h2><a class="small" href="/settings#webhook">Settings → Web submissions</a></div>
+    <p class="small muted" style="padding:0 24px">Calls to the public ingest address, kept apart from mail ingestion: submissions accepted into the pipeline, refusals stopped before anything was stored, idempotent replays, throttled calls and processing failures. The ingest key is never recorded. A webhook cannot decide a case and cannot bypass an evidence gate — it enters through the same path as an inbound email, and these rows say what that path made of it.</p>
+    ${ingestRows ? `<div class="table-scroll"><table><tr><th>Time / sender</th><th>Result</th><th>Case</th><th>Recorded detail</th></tr>${ingestRows}</table></div>` : `<div class="empty"><p>No public ingest calls have been recorded for this organization.</p></div>`}
   </section>
 </div>`);
 }
