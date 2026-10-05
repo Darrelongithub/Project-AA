@@ -38,7 +38,7 @@ interface Ctx {
 
 /** The one warning every page carries while mail cannot leave the building. */
 function deliveryNotice(c: Ctx): string | undefined {
-  if (c.mailDelivers !== false) return undefined;
+  if (c.mailDelivers !== true) return undefined;
   return `<b>Mail is not connected.</b> Automated replies are held as queued drafts and <b>not sent</b> — connect Gmail under <a href="/settings#connections">Settings &rarr; Connections</a>.`;
 }
 

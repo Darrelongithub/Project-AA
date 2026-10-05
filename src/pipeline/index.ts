@@ -1018,7 +1018,7 @@ async function processEmailInner(
         repo.audit(applicant.id, "system", "pack_incomplete", pack.issues.join("; "));
         repo.notify("review_needed", `${applicantNow.ref_number}: outgoing pack is incomplete — ${pack.issues[0]}`, applicant.id);
       }
-      if (adapters.sender.delivers === false) {
+      if (adapters.sender.delivers !== true) {
         // An offline/mock sender is not a successful send. Keep the prepared
         // reply in the human queue, and do not write an outbound email, an
         // automatic-send outbox row, or an auto_sent decision record.

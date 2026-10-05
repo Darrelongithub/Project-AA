@@ -82,7 +82,7 @@ export function createApp(deps: WebDeps): Express {
     body: string,
     extras: { banner?: { mime: string; base64: string } | null; attachments?: Array<{ filename: string; mimeType: string; content: Buffer }> }
   ): Promise<void> => {
-    if (ctx.adapters.sender.delivers === false) throw new MailDeliveryUnavailableError();
+    if (ctx.adapters.sender.delivers !== true) throw new MailDeliveryUnavailableError();
     return ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
       ...organizationSender(repo, a.organization_id ?? 1),
       ...extras,
@@ -113,10 +113,10 @@ export function createApp(deps: WebDeps): Express {
     } : undefined,
     gmailConfigured: Boolean(gmailConfigured) && repo.getSetting("gmail_disabled", "") !== "1",
     gmailAddress: deps.gmailAddress,
-    // Honesty about delivery: MockSender records, GmailSender sends. Only an
-    // explicit "does not deliver" raises the banner (a test double says nothing).
-    // Defensive: a context built for a test may pass no sender at all.
-    mailDelivers: ctx.adapters?.sender?.delivers,
+    // Honesty about delivery: MockSender records, GmailSender sends. Anything
+    // that cannot state it delivers raises the banner, exactly like the send
+    // paths that refuse to record a delivery.
+    mailDelivers: ctx.adapters?.sender?.delivers === true,
     // Is a stored Gemini credential reachable for this installation?
     geminiAvailable: geminiCredentials() !== null,
   });

@@ -101,7 +101,7 @@ export async function runFollowUpSweep(repo: Repo, ctx: PipelineContext): Promis
         if (rungAction === "send" && !gateOn && globalAuto && a.triage === "Green") {
           // Explicit rule action + un-gated case type + the global switch
           // released + a Green case: only then may the reminder go out.
-          if (ctx.adapters.sender.delivers === false) {
+          if (ctx.adapters.sender.delivers !== true) {
             repo.addOutbox({ applicant_id: a.id, to_address: a.email_address, subject, body: rendered.body, mode: "queued", template_key: "missing_documents" });
             repo.audit(a.id, "system", "email_not_delivered", `no mail connection is configured, so "${subject}" was NOT delivered to ${a.email_address}; reminder kept as a draft`);
             repo.notify("review_needed", `${a.ref_number}: reminder could not be delivered — mail is not connected`, a.id);

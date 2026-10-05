@@ -26,12 +26,13 @@ export interface SendExtras {
 export interface EmailSender {
   send(to: string, subject: string, body: string, threadId: string, extras?: SendExtras): Promise<void>;
   /**
-   * Does this sender put mail on the wire? `false` means delivery is
-   * unavailable: callers must not persist a successful send and should retain
-   * the reply as a draft. Absent (a test double) is treated as "not our
-   * business" and keeps the legacy assumed-success test behavior.
+   * Does this sender put mail on the wire? Required, and read as
+   * "not delivering" unless it is exactly `true`: a sender that cannot say for
+   * certain must not earn a successful-send record, an outbound email row or an
+   * auto-sent decision. Callers compare with `!== true` for that reason, so a
+   * new implementation has to state its capability (and TypeScript makes it).
    */
-  delivers?: boolean;
+  delivers: boolean;
 }
 
 /** Records send attempts in memory. By default it simulates an offline install;
