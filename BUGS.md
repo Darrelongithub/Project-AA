@@ -45,6 +45,10 @@ No live Gmail/Gemini endpoint, real test message, real tenant database, real arc
 | PROD-6 | **ACCEPTED / DOCUMENTED** | `npm audit` exits non-zero for five development-tool advisories (one critical, one high, three moderate) in the Vitest/Vite toolchain. They are intentionally left unfixed rather than forcing a breaking major upgrade; `npm audit --omit=dev` is clean. Revisit in a separately gated tooling migration, especially because the Vitest configuration is load-bearing for PDF.js 6's ESM bridge. |
 | PROD-7 | **ACCEPTED / DOCUMENTED** | Database backups and downloaded CSV exports can contain personal data. Archive encryption protects new retention archives only; it is not a general database/export encryption layer. Follow the access, storage, and deletion procedures above and in the README. |
 | PROD-8 | **ACCEPTED / HUMAN-SAFE FALSE POSITIVE** | The watcher’s duplicate-content heuristic compares a normalized 400-character prefix; distinct documents that share long letterhead boilerplate can be treated as duplicates. The failure mode is conservative (human review), not silent acceptance. Monitor during the pilot; adjust only with a regression case that retains the safety behavior. |
+| PROD-9 | **ACCEPTED / DOCUMENTED** | `organizations.locale` and `organizations.timezone` are saved, round-tripped through the Settings form and carried on the organization row, but no formatter reads them: console dates go through `fmtDate`/`fmtTime` in `src/web/views.ts`, which pin the `en-KE` locale. The Settings labels ("Locale (dates & numbers)", "Timezone (IANA name)") therefore promise an effect that does not happen yet. Either thread the tenant locale into the two helpers or narrow the labels; both are presentation-layer changes and were left for an owner decision rather than half-applied. |
+| PROD-10 | **ACCEPTED / DOCUMENTED** | `GET /notifications` marks the viewing staff member's alerts read, so a prefetch or an `<img>`-style traversal can consume alerts. It is kept as a GET for bookmark/compatibility reasons; a follow-up should make the read-marking a POST (or a `navigator.sendBeacon`) and leave the GET side-effect-free. |
+| PROD-11 | **ACCEPTED / DOCUMENTED** | Idempotency keys `processed_emails` on `(organization_id, email_id)` while every claim writes the default tenant and `isProcessed` reads across all rows. That combination is correct today — a Gmail message id is claimed once, by whoever gets there first — but it means the tenant column does not isolate the claim: if claims ever become per-organization, two tenants could each claim the same message and both draft and send. Keep the read global (or key the table on `email_id` alone) in that change. `dead_letters` is keyed by `message_id` only for the same reason. |
+| PROD-12 | **ACCEPTED / DOCUMENTED** | The project has no ESLint/Prettier configuration and no CI workflow. The automated gates are `npm run typecheck`, `npm test`, `npm run build`, `npm run simulate` and `npm run stress`, and they are run by hand; nothing enforces them on commit. |
 
 ## Phase 9-12 status
 
@@ -162,6 +166,25 @@ When finished: disconnect Gmail in the console first; revoke the OAuth grant; de
 
 ## Latest verification record
 
+**Full audit round, 2026-10-05 (this branch, after the items above):**
+
+| Gate | Result |
+| --- | --- |
+| Install | `npm install --ignore-scripts` + a local `node-gyp rebuild` for `better-sqlite3` (the sandbox blocks the prebuild download); `npm run setup:linux` is the supported path. |
+| TypeScript | `npx tsc --noEmit` — pass (strict, source and tests). |
+| Full Vitest | **700 passed, 1 skipped, 0 failed** across **92 files**; the skip is `test/responsive.test.ts` (no Chromium in this environment). |
+| Simulation | `npm run simulate` — **409/409 checks across 26 scenarios**. |
+| Stress | `npm run stress` — **1,000/1,000 cases clean**, determinism replay **11/11**. |
+| Production build | `npm run build` — pass; the PDF.js ESM bridge is copied into `dist`. |
+| Compiled boot | `node dist/src/cli/serve.js` on a throwaway database: `/setup` 200 → POST 302 `/`, `/login` 302 with a session cookie, `POST /config/case-types/create` 302 `#case-type-1`, `POST /intake/test` 302 `/case/1?msg=Test message processed…`, `/healthz` `{"ok":true}`. |
+| Compiled data check | Case 1 `ORG-2026-000001`: `triage=Green`, `category="services"` (the case type's category, not the code), one `outbox` row with `mode=queued`, `decision_logs.auto_sent=0`, and no `email_sent_auto` audit event — a held draft, not a claimed send. |
+| Console honesty | `/settings` renders the automation select on **draft (held)** for a fresh database and exactly **8** per-category rows. |
+| Guard rails | Anonymous `/export/labels.csv` → 302 `/login`; `POST /theme` without CSRF → 403, with CSRF → 302. |
+| Carried-over claims | BASE-1…BASE-7 and the templating item were re-read in code rather than trusted from notes: provenance lock (`test/decision-provenance.test.ts`), `/theme` CSRF, the Green evidence floor, no `email_sent_auto` before delivery, the category-label route, the removed env-key fallback, OCR-before-Gemini, and `src/drafting/tpl.ts` wired into `renderTemplate` with the `organization_templates` table, its `LEGACY_TEMPLATE_MIGRATION_MARKER` and `test/tpl-migration.test.ts`. All present; none re-applied. |
+| Diff hygiene | `git diff --check` — clean. |
+
+Not performed here: real Gmail/Gemini traffic, a real operator database upgrade, browser-based UI review, and any lint/format/CI run (none is configured — PROD-12).
+
 **Phase 16 Part 3 consolidation worktree, 2026-10-03 (before its commit):**
 
 | Gate | Result |
@@ -202,6 +225,17 @@ These later fixes were documented in stability, tenancy, UI, and operational rev
 18. **FIXED** — Corrupt SLA/escalation settings could produce an invalid date and fail each affected email/sweep; validated fallbacks now cover pipeline, daemon, and dashboard reads.
 19. **FIXED** — An admin password reset left the member's active sessions usable; the reset now purges them and audits the count.
 20. **FIXED / VERIFIED** — XSS/rendering, MIME, cookies, CSV escaping, route CSRF/tenant guards, migration ordering, online backup, and explicit restore behavior were swept again; later tests cover the specific paths. No new unresolved defect was recorded by those sweeps.
+21. **FIXED** — Booting a legacy database that still carried the `cases` compatibility view aborted the whole migration (`error in view cases: no such table: main.applicants`): SQLite re-parses views on every table rebuild. `migrate()` now suspends views before it touches tables and reinstalls them after, bootstraps the base schema before any constraint rebuild, and refuses a legacy *table* named `cases` instead of shadowing it (`test/fresh-boot-migration.test.ts`).
+22. **FIXED** — The Overview "awaiting review / enquiries" tile filtered on `case_enquiry`, a category that does not exist, while omitting `general_enquiry`, the label ordinary enquiries are filed under; the tile ignored nearly every enquiry it was built to catch. The IN-list is now the five question-shaped `EmailCategory` values (`test/enquiry-tile.test.ts`).
+23. **FIXED** — The Overview "Today" counters bounded SQLite-stamped columns (`status_history.at`, written `YYYY-MM-DD HH:MM:SS`) against Node ISO bounds as text, and a space sorts before `T`, so a completion from seconds ago did not count. All three counters compare `julianday()` values, the same normalization `src/db/retention.ts` documents (`test/today-stats.test.ts`).
+24. **FIXED** — `escalation_hours` was read, printed into the audit line, and then ignored: `runEscalationSweep` called `overdueCases()` with no argument, so every setting behaved like 0 and README's "escalation timing is configurable" was false. `Repo.overdueCases(escalationHours)` now measures age from `created_at` through `julianday()`, keeps the legacy past-SLA branch when no window is configured, and the sweep reports what it actually applied (`test/escalation-window.test.ts`).
+25. **FIXED** — The duplicate-send guard cleared its whole `recentSends` map past 2 000 entries, wiping the guards that were *inside* their window — the busy-office case the protection exists for — and re-opening duplicate mail that cannot be recalled. It is now `SendGuard` in `src/web/throttle.ts`, next to the login throttle that already documents this rule: entries expire individually (`test/fix-round3-security.test.ts`, B5).
+26. **FIXED** — `EmailSender.delivers` was optional and every send path tested `delivers === false`, so an adapter that simply omitted the flag earned `email_sent_auto`, an outbound `emails` row, an `auto` outbox record and `auto_sent = 1` for mail it never put on the wire. The property is required on the interface and all four reads are `!== true` (`test/sender-declares-delivery.test.ts`); test doubles that do deliver now say so.
+27. **FIXED** — `updateApplicant` answered a changed `case_type_code` with `category = case_type_code` while `createCase`/`updateCase` store the case type's own `category`: one column, two meanings, so a case patched through the intake/staff path carried a code where a grouping belongs. It now resolves the category on `case_types` for the same code *and* organization, and an unknown code reads as NULL rather than as a stray code (`test/case-retype.test.ts`).
+28. **FIXED** — The automation kill switch was displayed with a default of its own (`getSetting("automation_mode", "auto")` on the Overview, a raw settings-map comparison in the Settings `<select>`) while the pipeline defaults to `draft`, so a database with no row for the key showed "auto" beside a per-category table that said every reply was held. `Repo.globalAutomationMode()` is now the single reader for both screens (`test/automation-switch-display.test.ts`).
+29. **FIXED (docs)** — `.env.example` advertised `portal_otp_delivery=screen|email`, a knob no code reads, and left the DB-backed v3 keys looking like environment variables. Every remaining entry in the file has a confirmed read site.
+30. **FIXED** — `Repo.markProcessed` was a fire-and-forget twin of `claimProcessed` (`INSERT OR IGNORE` that never reported whether the caller won the claim); no production path called it, and any new one would re-open the double-processing race the claim exists to close. It is deleted, and `test/matching.test.ts` now pins the claim contract itself: one winner, duplicate refused, `unmarkProcessed` re-opens for retry.
+31. **FIXED** — The eight workflow categories were hand-copied in three places (the automation allowlist table, the category routes' `WORKFLOW_CATEGORY_KEYS`, and `test/helpers.ts`) beside the union and label map in `src/types.ts`; `types.ts` now exports `EMAIL_CATEGORIES` and all three derive from it, so a new category cannot be classifiable but un-allowlistable, and "release every gate" in a test means every gate.
 
 ## Historical defect ledger — de-duplicated
 
