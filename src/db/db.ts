@@ -472,6 +472,53 @@ export const SCHEMA_INDEXES = SCHEMA_STATEMENTS.filter(isIndexStatement).map((st
 function columns(db: Database.Database, table: string): Set<string> {
   return new Set((db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map((column) => column.name));
 }
+/**
+ * A view stores no rows of its own, but SQLite re-parses every view in the
+ * schema each time a table is dropped, renamed or rebuilt. `DROP TABLE`
+ * itself succeeds, so the failure surfaces on the NEXT schema statement — for
+ * example the `ALTER TABLE ... RENAME TO applicants` at the end of
+ * rebuildConstraint — as `error in view cases: no such table: main.applicants`
+ * on a database an older release left with the compatibility view and the
+ * pre-tenant `UNIQUE (email_address, thread_id)` constraint.
+ *
+ * suspendViews() therefore lifts every view out of the schema before migrate()
+ * starts touching tables, and resumeViews() puts them back afterwards. Views
+ * carry no data, so the round trip cannot lose anything; a view whose backing
+ * table this release retires on purpose (dropObsolete) is left dropped rather
+ * than aborting an upgrade.
+ */
+function suspendViews(db: Database.Database): Array<{ name: string; sql: string }> {
+  const views = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'view' AND sql IS NOT NULL ORDER BY rowid").all() as Array<{ name: string; sql: string }>;
+  for (const view of views) db.exec(`DROP VIEW "${view.name.replace(/"/g, '""')}"`);
+  return views;
+}
+function resumeViews(db: Database.Database, views: Array<{ name: string; sql: string }>): void {
+  for (const view of views) {
+    // migrate() may have installed its own definition for this name (the `cases`
+    // compatibility view); never let an older copy overwrite it.
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(view.name)) continue;
+    try {
+      db.exec(view.sql);
+    } catch {
+      // The view read a table this release retired deliberately; a definition
+      // that cannot resolve is of no use to anyone, so it stays dropped.
+    }
+  }
+}
+/**
+ * The `cases` object is a read alias over `applicants`, recreated on every boot
+ * so it always matches the current column list. A legacy database that still
+ * keeps its own TABLE under that name is refused instead of being silently
+ * shadowed: the rows in it would otherwise stay invisible to the application.
+ */
+function installCasesView(db: Database.Database): void {
+  const existing = db.prepare("SELECT type FROM sqlite_master WHERE name = 'cases'").get() as { type: string } | undefined;
+  if (existing && existing.type !== "view") {
+    throw new Error("A legacy table named 'cases' is blocking the compatibility view; merge it into 'applicants' before upgrading");
+  }
+  if (existing) db.exec("DROP VIEW cases");
+  db.exec("CREATE VIEW cases AS SELECT a.* FROM applicants a");
+}
 /** Rebuild only a known obsolete uniqueness constraint, preserving custom columns,
  * indexes, triggers, row IDs and the AUTOINCREMENT high-water mark. Foreign keys
  * are disabled by openDb before this transaction, then checked before commit. */
@@ -570,16 +617,22 @@ function migrateLegacyTemplates(db: Database.Database): void {
 }
 
 function migrate(db: Database.Database): void {
-  // Bootstrap every base table before any legacy rewrite or constraint rebuild.
-  // In particular, tenantConstraints() may rebuild applicants, and the cases
-  // compatibility view created below depends on that table being present.
-  db.exec(SCHEMA_TABLES);
   const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((table) => table.name));
+  // Legacy storage names are rewritten while views are still attached, so SQLite
+  // updates any view text that mentions the renamed table or column.
   for (const [from, to] of Object.entries(legacyStorage.tables)) if (tables.has(from) && !tables.has(to)) db.exec(`ALTER TABLE "${from}" RENAME TO "${to}"`);
   for (const [table, mapping] of Object.entries(legacyStorage.columns)) {
     const existing = columns(db, table);
     for (const [from, to] of Object.entries(mapping)) if (existing.has(from) && !existing.has(to)) db.exec(`ALTER TABLE "${table}" RENAME COLUMN "${from}" TO "${to}"`);
   }
+  // Everything from here on creates, rebuilds or replaces tables, so the views
+  // go first (see suspendViews) — otherwise a database left with the old
+  // `cases` view aborts the whole migration on the applicants rebuild. The base
+  // schema is also bootstrapped before any constraint rebuild: a fresh database
+  // has to own the `applicants` table before tenantConstraints() can rewrite its
+  // uniqueness constraint and before the compatibility view is recreated.
+  const suspendedViews = suspendViews(db);
+  db.exec(SCHEMA_TABLES);
   for (const [table, name, definition] of ADDITIONS) if (!columns(db, table).has(name)) db.exec(`ALTER TABLE "${table}" ADD COLUMN "${name}" ${definition}`);
   db.exec(SCHEMA_INDEXES);
   db.exec("UPDATE emails SET organization_id = (SELECT COALESCE(organization_id,1) FROM applicants WHERE id = emails.applicant_id) WHERE applicant_id IS NOT NULL");
@@ -617,8 +670,8 @@ function migrate(db: Database.Database): void {
   db.exec("CREATE INDEX IF NOT EXISTS idx_outbox_applicant ON outbox(applicant_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_cases_org_email ON applicants(organization_id,email_address)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_emails_org_thread ON emails(organization_id,thread_id)");
-  db.exec("DROP VIEW IF EXISTS cases");
-  db.exec("CREATE VIEW cases AS SELECT a.* FROM applicants a");
+  installCasesView(db);
+  resumeViews(db, suspendedViews);
   db.pragma("user_version = 2");
 }
 export function openDb(file: string): Database.Database {
