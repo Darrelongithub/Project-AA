@@ -39,7 +39,10 @@ interface Ctx {
 
 /** The one warning every page carries while mail cannot leave the building. */
 function deliveryNotice(c: Ctx): string | undefined {
-  if (c.mailDelivers !== true) return undefined;
+  // The banner is useful precisely when the sender cannot deliver. The old
+  // predicate was inverted, so a healthy Gmail connection showed a scary
+  // warning while an offline installation stayed silent.
+  if (c.mailDelivers === true) return undefined;
   return `<b>Mail is not connected.</b> Automated replies are held as queued drafts and <b>not sent</b> — connect Gmail under <a href="/settings#connections">Settings &rarr; Connections</a>.`;
 }
 
@@ -2084,7 +2087,10 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   const gClientSecret = repo.hasSecret("gmail_client_secret") ? "saved" : "";
   const gRefresh = repo.hasSecret("gmail_refresh_token") ? "saved" : "";
   const geminiKeySaved = repo.hasSecret("gemini_api_key");
-  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh) || Boolean(c.gmailConfigured);
+  // Settings-backed OAuth is the primary source of truth. Runtime env
+  // credentials are also valid, but must not hide a disabled connection.
+  const connected = repo.getSetting("gmail_disabled", "") !== "1" &&
+    (Boolean(gAddress && gClientId && gClientSecret && gRefresh) || Boolean(c.gmailConfigured));
   // AUX-2: a plain-`http://` redirect URI on a NON-LOOPBACK host can never
   // be registered with a Google OAuth web client — the classic
   // behind-a-proxy trap (the app sees the plain HTTP hop to the proxy,
@@ -2783,6 +2789,15 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
   // Round 3: the legacy courses tab is gone — case types are configured under
   // Configuration; /config?tab=courses redirects to the staff area.
   const tab = tabChoice === "replies" || tabChoice === "pack" || tabChoice === "requirements" || tabChoice === "rules" ? tabChoice : "case-types";
+  const setupGuide = tab === "case-types" ? `<section class="setup-guide" aria-label="Configuration guide">
+    <div><span class="kicker">SETUP GUIDE</span><h2>Make the workspace ready in four calm steps</h2><p class="small muted">You do not need to understand every setting. Start at the top, save each step, and come back when you are ready.</p></div>
+    <div class="setup-steps">
+      <a href="/config?tab=case-types"><b>1</b><span><strong>Describe your work</strong><small>Create a case type and name it in everyday language.</small></span></a>
+      <a href="/config?tab=pack"><b>2</b><span><strong>List what is needed</strong><small>Add the documents or information staff check.</small></span></a>
+      <a href="/config?tab=rules"><b>3</b><span><strong>Choose what happens next</strong><small>Keep uncertain cases with a person; automate only clean work.</small></span></a>
+      <a href="/settings#connections"><b>4</b><span><strong>Connect the inbox</strong><small>Gmail and Gemini are optional and can be tested separately.</small></span></a>
+    </div>
+  </section>` : "";
   const tabBar = `<div class="tabs" style="margin:0 0 20px">
     <a href="/config?tab=case-types" class="${tab === "case-types" ? "on" : ""}">CaseTypes</a>
     <a href="/config?tab=rules" class="${tab === "rules" ? "on" : ""}">Workflow rules</a>
@@ -2851,6 +2866,7 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
 <h1>Configuration</h1>
 <div class="sub">Requirements, deadlines and reply behaviour | case type configuration (checklists, rules, windows) lives under <a href="/config?tab=case-types">Case types</a>. Changes apply to newly processed email immediately.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+${setupGuide}
 ${tabBar}
 ${tab === "rules" ? workflowRulesTab(c, editRuleId) : tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? attachmentSetsCard(c) + documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsWorkspace) : replyHtml}
 `

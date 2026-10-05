@@ -126,8 +126,14 @@ export function createApp(deps: WebDeps): Express {
       logo: repo.getOrganization(organizationId(req))!.logo,
       tagline: organizationId(req) === 1 ? repo.getSetting("splash_tagline", "") : "",
     } : undefined,
-    gmailConfigured: Boolean(gmailConfigured) && repo.getSetting("gmail_disabled", "") !== "1",
-    gmailAddress: deps.gmailAddress,
+    // Reflect the same settings-backed connection that the sync loop uses.
+    // Previously this only exposed env credentials, so a Gmail account saved
+    // in Settings appeared disconnected everywhere in the console.
+    gmailConfigured: repo.getSetting("gmail_disabled", "") !== "1" && (
+      Boolean(gmailConfigured) ||
+      Boolean(repo.getSetting("gmail_address", "").trim() && repo.getSetting("gmail_client_id", "").trim() && repo.hasSecret("gmail_client_secret") && repo.hasSecret("gmail_refresh_token"))
+    ),
+    gmailAddress: repo.getSetting("gmail_address", "").trim() || deps.gmailAddress,
     // Honesty about delivery: MockSender records, GmailSender sends. Anything
     // that cannot state it delivers raises the banner, exactly like the send
     // paths that refuse to record a delivery.
