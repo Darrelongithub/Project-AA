@@ -111,11 +111,12 @@ export function configureTestOrganization(repo: Repo, opts: { name?: string; ref
   return { organizationId: organization.id, codes };
 }
 
-/** Every workflow category the router understands. */
-export const EMAIL_CATEGORIES = [
-  "application", "document_submission", "missing_document", "fee_enquiry",
-  "general_enquiry", "follow_up", "complaint", "other",
-];
+// The product's own list, not a test copy: releasing "all" automation really
+// does mean all of it, and a category added upstream cannot be missing here.
+// (A hand-copied list once was; the tests then passed while the product changed.)
+import { EMAIL_CATEGORIES } from "../src/types";
+
+export { EMAIL_CATEGORIES };
 
 /**
  * Opens EVERY automation gate the product requires, for tests that assert an

@@ -7,7 +7,7 @@ import { envInt } from "../util/envnum";
 import { missingGmailCredentials, resolveLookbackDays } from "../ingestion/sync";
 import type { Repo } from "../db/repo";
 import type { ApplicantRow, CaseType, DocType, EmailRecord, RuleNode, StaffUser } from "../types";
-import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS } from "../types";
+import { EMAIL_CATEGORIES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS } from "../types";
 import { describeRule } from "../rules/workflow";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../rules/queues";
 import { docLabel } from "../rules";
@@ -1740,7 +1740,7 @@ ${categoriesCard(c)}
     <div style="flex:0"><button class="btn">Apply global mode</button></div>
   </form>
   <table style="margin-top:14px"><tr><th>Email category</th><th>Mode</th><th></th></tr>
-    ${(["application", "document_submission", "missing_document", "fee_enquiry", "general_enquiry", "follow_up", "complaint", "other"] as string[])
+    ${EMAIL_CATEGORIES
       .map((cat) => {
         const mode = c.repo.automationMode(cat);
         return `<tr><td>${esc(cat.replace(/_/g, " "))}</td>

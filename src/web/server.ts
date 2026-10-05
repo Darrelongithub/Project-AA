@@ -15,7 +15,7 @@ import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 import type { PipelineContext } from "../pipeline/adapters";
 import type { Adapters } from "../pipeline/adapters";
 import type { ApplicantRow, LifecycleStage, Permission } from "../types";
-import { EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS, type EmailCategory } from "../types";
+import { EMAIL_CATEGORIES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS, type EmailCategory } from "../types";
 import { checklistText, inspectTemplate, renderTemplate } from "../drafting";
 import { docLabel } from "../rules";
 import { fillSlots } from "../documents/matrix";
@@ -2140,10 +2140,7 @@ export function createApp(deps: WebDeps): Express {
   // Classification is a sensor: the model is handed this tenant's allow-list
   // and its answer is rejected unless it is on it. With no labels configured,
   // categorization stays deterministic keyword matching.
-  const WORKFLOW_CATEGORY_KEYS = [
-    "application", "document_submission", "missing_document", "fee_enquiry",
-    "general_enquiry", "follow_up", "complaint", "other",
-  ];
+  const WORKFLOW_CATEGORY_KEYS: readonly string[] = EMAIL_CATEGORIES;
   // ── Phase D3 (Q7 step 2): inbound address -> case type ───────────────────
   // Tenant-guarded like every other configuration write: the acting admin can
   // only ever claim an address for their OWN organization's case types, and an
@@ -2179,7 +2176,7 @@ export function createApp(deps: WebDeps): Express {
     const routed = WORKFLOW_CATEGORY_KEYS.includes(key);
     repo.audit(null, req.staff!.username, "email_category_added",
       `${key} ("${label}")${routed ? "" : " — not a workflow category, so messages carrying it route as 'other'"}`);
-    return res.redirect(back(`Category "${label}" (${key}) added.${routed ? "" : " Note: only the eight workflow categories drive routing; a custom label is recorded and routes as 'other'."}`));
+    return res.redirect(back(`Category "${label}" (${key}) added.${routed ? "" : " Note: only the built-in workflow categories drive routing; a custom label is recorded and routes as 'other'."}`));
   });
   app.post("/settings/categories/edit", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const orgId = ownOrganizationId(req);

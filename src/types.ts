@@ -88,6 +88,28 @@ export type EmailCategory =
   | "complaint"
   | "other";
 
+/**
+ * Every workflow category, in the order the console lists them.
+ *
+ * This array is the single list the automation allowlist table and the
+ * category-editor routes iterate over; it used to be two copies of the same
+ * eight strings written out by hand, so a category added to the union above
+ * could be quietly missing from one of them — an allowlist row nobody can
+ * switch on. `EMAIL_CATEGORY_LABELS` is a `Record` over the union, so the
+ * vocabulary cannot grow a label without growing the union, and this is the one
+ * remaining place that has to follow.
+ */
+export const EMAIL_CATEGORIES: EmailCategory[] = [
+  "application",
+  "document_submission",
+  "missing_document",
+  "fee_enquiry",
+  "general_enquiry",
+  "follow_up",
+  "complaint",
+  "other",
+];
+
 export const EMAIL_CATEGORY_LABELS: Record<EmailCategory, string> = {
   application: "Application",
   document_submission: "Document Submission",
