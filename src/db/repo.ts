@@ -2066,16 +2066,19 @@ export class Repo {
     return !!this.db.prepare("SELECT 1 FROM processed_emails WHERE email_id = ?").get(emailId);
   }
 
-  markProcessed(emailId: string, threadId: string): void {
-    this.db.prepare("INSERT OR IGNORE INTO processed_emails (email_id, thread_id) VALUES (?, ?)").run(emailId, threadId);
-  }
-
   /**
    * Atomically claim a message at the START of the pipeline: false means
    * another (concurrent) run already owns it — treat as skipped. Claiming
    * at the end instead let two concurrent runs of the same email both pass
    * the isProcessed gate and double-process (double drafts, double sends).
    * A mid-pipeline failure must unmarkProcessed() so retry can see it.
+   *
+   * This is the ONLY way a message may be marked: the caller has to see the
+   * verdict, which is why there is no fire-and-forget `markProcessed` variant —
+   * an INSERT OR IGNORE that reports nothing re-opens the exact race the claim
+   * exists to close. `isProcessed` reads every row regardless of organization,
+   * so the claim stays global for a given Gmail id even though the key carries
+   * the tenant; keep it that way if the claim ever becomes tenant-aware.
    */
   claimProcessed(emailId: string, threadId: string): boolean {
     const res = this.db
