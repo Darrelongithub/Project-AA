@@ -2166,7 +2166,6 @@ export class Repo {
     return new Set(rows.map((r) => r.id));
   }
 
-  /** Counters for the Overview "Today" panel. */
   // ── Stage model (v5): every applicant sits in exactly one level ──────────
   // finished / unfinished / pending are the three buckets staff think in;
   // awaiting_review inside pending is the classic "human queue".
@@ -2226,6 +2225,7 @@ export class Repo {
       .get(applicantId) as { actor: string; at: string } | undefined;
   }
 
+  /** Counters for the Overview "Today" panel. */
   todayStats(demo?: number, caseTypes?: string[] | null): { emailsToday: number; docsToday: number; completedToday: number } {
     // date('now') is UTC — in UTC+3 the "today" counters would reset at 03:00
     // local. Compute THIS machine's local day boundaries instead.
@@ -2238,10 +2238,19 @@ export class Repo {
     const scope = this.scopePred("a", caseTypes);
     const pred = (demo === undefined ? "" : " AND a.demo = ?") + scope.sql;
     const one = (sql: string) => (this.db.prepare(sql).get(lo, hi, ...dp, ...scope.params) as { n: number }).n;
+    // The window compares INSTANTS through julianday(), never as text:
+    // emails.at and documents.received_at are ISO stamps written by Node, while
+    // status_history.at comes from SQLite's `datetime('now')` default
+    // ("2026-05-01 08:00:00"). Compared as strings that row sorts before every
+    // ISO bound (a space is below 'T' at position 11), so today's completions
+    // fell outside today and the counter stuck at zero — the same trap
+    // src/db/retention.ts documents for the retention sweep.
+    const duringToday = (column: string) =>
+      `julianday(${column}) >= julianday(?) AND julianday(${column}) < julianday(?)`;
     return {
-      emailsToday: one(`SELECT COUNT(*) AS n FROM emails e JOIN applicants a ON a.id = e.applicant_id WHERE e.direction = 'in' AND e.at >= ? AND e.at < ?${pred}`),
-      docsToday: one(`SELECT COUNT(*) AS n FROM documents d JOIN applicants a ON a.id = d.applicant_id WHERE d.received_at >= ? AND d.received_at < ?${pred}`),
-      completedToday: one(`SELECT COUNT(*) AS n FROM status_history h JOIN applicants a ON a.id = h.applicant_id WHERE h.to_status = 'completed' AND h.at >= ? AND h.at < ?${pred}`),
+      emailsToday: one(`SELECT COUNT(*) AS n FROM emails e JOIN applicants a ON a.id = e.applicant_id WHERE e.direction = 'in' AND ${duringToday("e.at")}${pred}`),
+      docsToday: one(`SELECT COUNT(*) AS n FROM documents d JOIN applicants a ON a.id = d.applicant_id WHERE ${duringToday("d.received_at")}${pred}`),
+      completedToday: one(`SELECT COUNT(*) AS n FROM status_history h JOIN applicants a ON a.id = h.applicant_id WHERE h.to_status = 'completed' AND ${duringToday("h.at")}${pred}`),
     };
   }
 
