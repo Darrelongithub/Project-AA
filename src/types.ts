@@ -349,9 +349,13 @@ export interface Attachment {
 
 /**
  * Delivery channel (v3 feature 40): every channel — Gmail, the applicant
- * portal, WhatsApp/SMS bridges — feeds the same case history.
+ * portal, the public webhook, WhatsApp/SMS bridges — feeds the same case
+ * history. A non-`email` channel is SYNTHETIC: it did not arrive in a thread,
+ * so identity matching skips the quoted-reference continuity rule (see
+ * src/matching/identity.ts) and nobody can address another tenant's case by
+ * pasting its reference into a payload.
  */
-export type Channel = "email" | "portal" | "whatsapp" | "sms" | "other";
+export type Channel = "email" | "portal" | "webhook" | "whatsapp" | "sms" | "other";
 
 export interface IncomingEmail {
   id: string;

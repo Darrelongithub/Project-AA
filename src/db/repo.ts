@@ -44,8 +44,25 @@ import { retentionDue } from "./retention";
 
 const nowIso = () => new Date().toISOString();
 
+/**
+ * The per-organization public ingest key (Phase 18 webhook). It is a
+ * credential, so it lives in the secrets store exactly like a Gmail token:
+ * never reachable through a settings read, never written into a log line or an
+ * audit detail.
+ */
+export const WEBHOOK_KEY_SECRET = "webhook_ingest_key";
+
+/** Fallback when the setting is absent or unparsable — the same value
+ *  `DEFAULT_SETTINGS.webhook_rate_limit_per_minute` seeds (the pattern
+ *  `retention_days` follows: a seeded default plus a read-side fallback). */
+export const DEFAULT_WEBHOOK_RATE_PER_MINUTE = 30;
+
+/** How long an empty claim (a submission that opened no case) is honoured
+ *  before a retry may take the identifier over. */
+export const WEBHOOK_CLAIM_TAKEOVER_MS = 15 * 60_000;
+
 /** PPR P0-1: the only keys that may live in the secrets store. */
-export const SECRET_KEYS: readonly string[] = ["gemini_api_key", "gmail_client_secret", "gmail_refresh_token"];
+export const SECRET_KEYS: readonly string[] = ["gemini_api_key", "gmail_client_secret", "gmail_refresh_token", WEBHOOK_KEY_SECRET];
 export const GENERIC_STAGE_PRESET: Array<{ id: string; label: string }> = [
   { id: "application_received", label: "Received" },
   { id: "documents_received", label: "Information received" },
@@ -96,6 +113,8 @@ export interface SecurityConsoleSnapshot {
   pipelineRuns: Array<{ id: number; applicant_id: number; timestamp: string; ref_number: string; case_type_code: string | null; triggering_email_id: string; computed_status: string; reasoning: string; auto_sent: number }>;
   errors: Array<{ id: number; applicant_id: number | null; at: string; actor: string; display_name: string; event: string; detail: string; ref_number: string | null; attempts: number | null; source: "audit" | "dead-letter" }>;
   integritySignals: Array<{ id: number; applicant_id: number; at: string; actor: string; display_name: string; event: string; detail: string; ref_number: string; latest_computed_status: string | null; latest_reasoning: string | null; latest_decision_at: string | null }>;
+  /** Public ingest calls, their own source type: never mixed into mail ingestion. */
+  webhookDeliveries: Array<{ id: number; at: string; outcome: string; status_code: number; external_id: string; sender_email: string; case_type_code: string; ref_number: string; applicant_id: number | null; detail: string }>;
 }
 
 type ScopeTag = string[] & { organizationId?: number; allCaseTypes?: boolean };
@@ -169,7 +188,12 @@ export class Repo {
     if (!/^[A-Z][A-Z0-9]{0,7}$/.test(prefix)) throw new Error("Reference prefix must be 1–8 characters and start with a letter");
     const result = this.db.prepare("INSERT INTO organizations (name, logo, ref_prefix, theme) VALUES (?,?,?,?)")
       .run(name, input.logo ?? null, prefix, JSON.stringify(theme));
-    return this.getOrganization(Number(result.lastInsertRowid))!;
+    const created = this.getOrganization(Number(result.lastInsertRowid))!;
+    // One permanent ingest key per organization, issued when the organization
+    // exists — an administrator never chooses it, because an org-settable slug
+    // is a brute-force target and a guessable URL is a leaked URL.
+    this.ensureWebhookIngestKey(created.id);
+    return created;
   }
 
   /**
@@ -939,7 +963,12 @@ export class Repo {
        ORDER BY al.id DESC LIMIT 20`
     ).all(organizationId, demo) as SecurityConsoleSnapshot["integritySignals"];
 
-    return { logins, activeSessions, pipelineRuns, errors, integritySignals };
+    const webhookDeliveries = this.db.prepare(
+      `SELECT id, received_at AS at, outcome, status_code, external_id, sender_email, case_type_code, ref_number, applicant_id, detail
+       FROM webhook_deliveries WHERE organization_id = ? ORDER BY id DESC LIMIT 20`
+    ).all(organizationId) as SecurityConsoleSnapshot["webhookDeliveries"];
+
+    return { logins, activeSessions, pipelineRuns, errors, integritySignals, webhookDeliveries };
   }
 
   // ── Programmes & intakes ─────────────────────────────────────────────────
@@ -1924,6 +1953,151 @@ export class Repo {
     return this.db.prepare("SELECT 1 FROM secrets WHERE organization_id = ? AND key = ? AND value <> ''").get(organizationId, key) !== undefined;
   }
 
+  // ── Webhook ingest (Phase 18) ────────────────────────────────────────────
+
+  /**
+   * 24 random bytes, base64url: 32 characters drawn from a 62-symbol alphabet.
+   * The key is generated here and nowhere else, so there is no code path in
+   * which a human types something that has to be unguessable.
+   */
+  private newWebhookIngestKey(): string {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const candidate = crypto.randomBytes(24).toString("base64url");
+      // Unique across the installation, not merely within the tenant: two
+      // organizations answering to the same key would be an ownership bug that
+      // no lookup could detect afterwards.
+      const taken = this.db.prepare("SELECT 1 FROM secrets WHERE key = ? AND value = ?").get(WEBHOOK_KEY_SECRET, candidate);
+      if (!taken) return candidate;
+    }
+    throw new Error("Could not generate a unique ingest key");
+  }
+
+  webhookIngestKey(organizationId: number): string | null {
+    const row = this.db
+      .prepare("SELECT value FROM secrets WHERE organization_id = ? AND key = ? AND value <> ''")
+      .get(organizationId, WEBHOOK_KEY_SECRET) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  /** Issue on demand: organizations created before this feature, or whose key
+   *  row was removed, get a working key without a migration or a redeploy. */
+  ensureWebhookIngestKey(organizationId: number): string {
+    return this.webhookIngestKey(organizationId) ?? this.setWebhookIngestKey(organizationId);
+  }
+
+  /**
+   * Issue (or replace) the key. Rotation is a single row update and the lookup
+   * below is by value, so the previous key is dead the instant this returns —
+   * there is no cache, grace period or second copy to invalidate.
+   */
+  setWebhookIngestKey(organizationId: number, actor = "system"): string {
+    const previous = this.webhookIngestKey(organizationId);
+    const key = this.newWebhookIngestKey();
+    this.setSecret(WEBHOOK_KEY_SECRET, key, organizationId);
+    // Self-auditing, so no caller can rotate a credential quietly. The event
+    // names the difference between a first issue and a rotation, and the value
+    // itself is never written into the row.
+    this.audit(null, actor, previous ? "webhook_key_rotated" : "webhook_key_issued",
+      previous ? `organization ${organizationId}: the previous key stopped working immediately` : `organization ${organizationId}: ingest key issued`);
+    return key;
+  }
+
+  /**
+   * The ONLY resolution from key to tenant: one indexed exact-match lookup.
+   * A syntactically hopeless string is refused without touching the database,
+   * and both that case and a well-formed unknown key return the same null, so
+   * nothing about the key format is observable from the outside.
+   */
+  organizationForWebhookKey(key: string): number | null {
+    if (!/^[A-Za-z0-9_-]{20,64}$/.test(key)) return null;
+    const row = this.db
+      .prepare("SELECT organization_id FROM secrets WHERE key = ? AND value = ?")
+      .get(WEBHOOK_KEY_SECRET, key) as { organization_id: number } | undefined;
+    if (!row) return null;
+    return this.getOrganization(row.organization_id) ? row.organization_id : null;
+  }
+
+  /** Public ingest calls per minute, per key. A corrupt or absent value falls
+   *  back to the documented default instead of disabling the limiter (NaN > 0
+   *  is false, and `if (limit > 0)` would then never rate-limit anyone). */
+  webhookRateLimitPerMinute(): number {
+    const raw = Number((this.getSetting("webhook_rate_limit_per_minute", String(DEFAULT_WEBHOOK_RATE_PER_MINUTE)) || "").trim());
+    return Number.isFinite(raw) && raw > 0 ? Math.min(10_000, Math.floor(raw)) : DEFAULT_WEBHOOK_RATE_PER_MINUTE;
+  }
+
+  /**
+   * Idempotency for a caller that retries: the claim is taken BEFORE the
+   * pipeline runs, exactly like `claimProcessed`, so two concurrent submissions
+   * with one `external_id` cannot both open a case. The second caller is told
+   * what the first produced instead of being handed a duplicate to reconcile.
+   */
+  claimWebhookExternalId(organizationId: number, externalId: string): { claimed: boolean; applicantId: number | null; refNumber: string | null } {
+    const res = this.db
+      .prepare("INSERT OR IGNORE INTO webhook_claims (organization_id, external_id, claimed_at) VALUES (?,?,?)")
+      .run(organizationId, externalId, nowIso());
+    if (res.changes > 0) return { claimed: true, applicantId: null, refNumber: null };
+    const row = this.db
+      .prepare("SELECT applicant_id, ref_number, claimed_at FROM webhook_claims WHERE organization_id = ? AND external_id = ?")
+      .get(organizationId, externalId) as { applicant_id: number | null; ref_number: string; claimed_at: string } | undefined;
+    if (!row) return { claimed: false, applicantId: null, refNumber: null };
+    if (row.applicant_id === null && Date.now() - Date.parse(row.claimed_at) > WEBHOOK_CLAIM_TAKEOVER_MS) {
+      // A claim that produced nothing and has been idle long past any real
+      // request is a crashed run, not a concurrent one: hand it over rather than
+      // locking the caller's identifier away forever. Two genuinely concurrent
+      // submissions never reach this — the loser's row is seconds old.
+      this.db
+        .prepare("UPDATE webhook_claims SET claimed_at = ? WHERE organization_id = ? AND external_id = ? AND applicant_id IS NULL")
+        .run(nowIso(), organizationId, externalId);
+      return { claimed: true, applicantId: null, refNumber: null };
+    }
+    return { claimed: false, applicantId: row.applicant_id, refNumber: row.ref_number || null };
+  }
+
+  /** Attach the case a claim produced, so a later retry returns the same ref. */
+  recordWebhookClaim(organizationId: number, externalId: string, applicantId: number, refNumber: string): void {
+    this.db
+      .prepare("UPDATE webhook_claims SET applicant_id = ?, ref_number = ? WHERE organization_id = ? AND external_id = ?")
+      .run(applicantId, refNumber, organizationId, externalId);
+  }
+
+  /** A submission that failed before it became a case must not burn its id —
+   *  release it so a corrected retry can still be accepted. */
+  releaseWebhookClaim(organizationId: number, externalId: string): void {
+    this.db.prepare("DELETE FROM webhook_claims WHERE organization_id = ? AND external_id = ?").run(organizationId, externalId);
+  }
+
+  logWebhookDelivery(d: {
+    organizationId: number; outcome: string; statusCode: number; externalId?: string; senderEmail?: string;
+    caseTypeCode?: string; refNumber?: string; applicantId?: number | null; detail?: string; payloadBytes?: number; metadata?: Record<string, string>;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO webhook_deliveries
+         (organization_id, received_at, outcome, status_code, external_id, sender_email, case_type_code,
+          ref_number, applicant_id, detail, payload_bytes, metadata)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        d.organizationId, nowIso(), d.outcome, d.statusCode, d.externalId ?? "", d.senderEmail ?? "", d.caseTypeCode ?? "",
+        d.refNumber ?? "", d.applicantId ?? null, (d.detail ?? "").slice(0, 500), d.payloadBytes ?? 0,
+        JSON.stringify(d.metadata ?? {})
+      );
+  }
+
+  /** The tenant's own self-diagnosis list — newest first, this organization only. */
+  listWebhookDeliveries(organizationId: number, limit = 20): Array<{
+    id: number; received_at: string; outcome: string; status_code: number; external_id: string;
+    sender_email: string; case_type_code: string; ref_number: string; detail: string; applicant_id: number | null;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, received_at, outcome, status_code, external_id, sender_email, case_type_code, ref_number, detail, applicant_id
+         FROM webhook_deliveries WHERE organization_id = ? ORDER BY id DESC LIMIT ?`
+      )
+      .all(organizationId, Math.max(1, Math.min(100, limit))) as never[];
+    return rows as never[];
+  }
+
   allSettings(): Record<string, string> {
     const rows = this.db.prepare("SELECT key, value FROM settings").all() as Array<{ key: string; value: string }>;
     // Defense in depth: even if a secret key somehow reappears in settings,
@@ -2870,9 +3044,17 @@ export class Repo {
   /** Fully remove an applicant's data (used after archiving). */
   deleteApplicantFull(applicantId: number): void {
     const tx = this.db.transaction(() => {
-      for (const t of ["documents", "flags", "emails", "notes", "tasks", "decision_logs", "status_history", "audit_log", "outbox", "applicant_threads", "notifications", "evaluations"]) {
+      for (const t of ["documents", "flags", "emails", "notes", "tasks", "decision_logs", "status_history", "audit_log", "outbox", "applicant_threads", "notifications", "evaluations", "webhook_claims"]) {
         this.db.prepare(`DELETE FROM ${t} WHERE applicant_id = ?`).run(applicantId);
       }
+      // The delivery log is kept, but disowned: it is the record that a call
+      // arrived (an operator's only trace of a burst of traffic), not the
+      // applicant's data. Its foreign key is cleared and the contact address it
+      // quoted goes with the case, so nothing about the person survives the
+      // retention deletion that the archive record does not already hold.
+      this.db
+        .prepare("UPDATE webhook_deliveries SET applicant_id = NULL, ref_number = '', sender_email = '', metadata = '{}' WHERE applicant_id = ?")
+        .run(applicantId);
       this.db.prepare("DELETE FROM applicants WHERE id = ?").run(applicantId);
     });
     tx();

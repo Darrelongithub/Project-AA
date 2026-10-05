@@ -438,7 +438,40 @@ CREATE TABLE IF NOT EXISTS staff_permissions (
   permission TEXT NOT NULL,
   granted_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (staff_id, permission)
-);`;
+);
+
+-- Phase 18: the public webhook surface. The credential itself lives in the
+-- secrets store (key webhook_ingest_key) and is deliberately NOT stored in
+-- either table below — a delivery log that carried the key would leak it to
+-- anyone who can read the log. webhook_claims is the idempotency ledger (one
+-- row per organization + external_id); webhook_deliveries is the newest-first
+-- record of what arrived and what became of it, for the tenant's own diagnosis.
+CREATE TABLE IF NOT EXISTS webhook_claims (
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  external_id     TEXT NOT NULL,
+  applicant_id    INTEGER REFERENCES applicants(id),
+  ref_number      TEXT NOT NULL DEFAULT '',
+  claimed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (organization_id, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  received_at     TEXT NOT NULL,
+  outcome         TEXT NOT NULL,
+  status_code     INTEGER NOT NULL,
+  external_id     TEXT NOT NULL DEFAULT '',
+  sender_email    TEXT NOT NULL DEFAULT '',
+  case_type_code  TEXT NOT NULL DEFAULT '',
+  ref_number      TEXT NOT NULL DEFAULT '',
+  applicant_id    INTEGER REFERENCES applicants(id),
+  detail          TEXT NOT NULL DEFAULT '',
+  payload_bytes   INTEGER NOT NULL DEFAULT 0,
+  metadata        TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_recent ON webhook_deliveries(organization_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_case ON webhook_deliveries(applicant_id);`;
 
 const ADDITIONS: Array<[string, string, string]> = [["applicants", "requirements_snapshot", "TEXT"], ["applicants", "nationality", "TEXT"], ["applicants", "followup_rung", "INTEGER NOT NULL DEFAULT 0"], ["applicants", "followup_next_at", "TEXT"], ["applicants", "followup_base_at", "TEXT"], ["applicants", "followup_action", "TEXT NOT NULL DEFAULT 'hold'"], ["emails", "channel", "TEXT NOT NULL DEFAULT 'email'"], ["emails", "attachments", "TEXT NOT NULL DEFAULT ''"], ["outbox", "template_key", "TEXT NOT NULL DEFAULT ''"], ["outbox", "needs_approval", "INTEGER NOT NULL DEFAULT 0"], ["outbox", "claimed_at", "TEXT"], ["programmes", "owner_id", "INTEGER REFERENCES staff_users(id)"], ["programmes", "school", "TEXT NOT NULL DEFAULT ''"], ["programmes", "entry_requirements", "TEXT NOT NULL DEFAULT ''"], ["templates", "include_banner", "INTEGER NOT NULL DEFAULT 1"], ["templates", "organization_id", "INTEGER"], ["staff_users", "demo", "INTEGER NOT NULL DEFAULT 0"], ["staff_users", "organization_id", "INTEGER"], ["staff_users", "active_organization_id", "INTEGER"], ["organizations", "ref_prefix", "TEXT NOT NULL DEFAULT 'ORG'"], ["organizations", "from_name", "TEXT"], ["organizations", "reply_to", "TEXT"], ["organizations", "locale", "TEXT"], ["organizations", "timezone", "TEXT"], ["organizations", "inbound_address", "TEXT"], ["case_types", "terminology", "TEXT NOT NULL DEFAULT '{}'"], ["case_types", "stages", "TEXT NOT NULL DEFAULT '[]'"], ["case_types", "queues", "TEXT NOT NULL DEFAULT '[]'"], ["case_types", "config_version", "INTEGER NOT NULL DEFAULT 1"], ["case_types", "default_reply_action", "TEXT NOT NULL DEFAULT 'draft'"], ["applicants", "case_config_frozen", "TEXT"], ["applicants", "config_version_frozen", "INTEGER"], ["applicants", "config_version_frozen_at", "TEXT"], ["applicants", "queue", "TEXT"], ["intakes", "deadline", "TEXT"], ["applicants", "requirements_structured", "TEXT"], ["programmes", "level", "TEXT NOT NULL DEFAULT 'general'"], ["applicants", "transfer", "INTEGER NOT NULL DEFAULT 0"], ["applicants", "demo", "INTEGER NOT NULL DEFAULT 0"], ["applicants", "organization_id", "INTEGER"], ["applicants", "case_type_id", "INTEGER"], ["applicants", "category", "TEXT"], ["applicants", "outcome", "TEXT NOT NULL DEFAULT 'undecided'"], ["documents", "confidence_score", "INTEGER NOT NULL DEFAULT 0"], ["documents", "extraction_note", "TEXT NOT NULL DEFAULT ''"], ["applicants", "req_result", "TEXT"], ["applicants", "routing", "TEXT"], ["applicants", "routing_reason", "TEXT"], ["applicants", "decision_by", "TEXT"], ["applicants", "decision_reason", "TEXT"], ["applicants", "decision_at", "TEXT"], ["templates", "attach_pack", "TEXT NOT NULL DEFAULT 'none'"], ["templates", "default_snapshot", "TEXT"], ["organization_templates", "case_type_id", "INTEGER NOT NULL DEFAULT 0"], ["organization_templates", "default_snapshot", "TEXT"], ["applicants", "outcome_route", "TEXT"], ["case_types", "evidence_gate", "INTEGER NOT NULL DEFAULT 1"], ["emails", "organization_id", "INTEGER NOT NULL DEFAULT 1"], ["processed_emails", "organization_id", "INTEGER NOT NULL DEFAULT 1"], ["staff_users", "case_type_scope_mode", "TEXT NOT NULL DEFAULT 'unscoped'"], ["applicants", "case_type_code", "TEXT"], ["evaluations", "case_type_code", "TEXT"], ["intakes", "organization_id", "INTEGER NOT NULL DEFAULT 1"],
   // Columns the running code reads on ordinary requests. A database created by

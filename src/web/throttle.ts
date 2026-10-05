@@ -1,4 +1,9 @@
 /**
+ * Windowed guards for the web surface: login-failure throttling, the
+ * duplicate-send window, and the public webhook rate limit. Shared rule: entries
+ * expire by their own clock, the map is bounded by eviction, never by a bulk
+ * `clear()`.
+ *
  * Time-based login-failure throttling.
  *
  * The previous implementation kept `Map<ip, number[]>` and, when the map
@@ -106,5 +111,60 @@ export class SendGuard {
   /** Keys currently inside their window (for tests / observability). */
   get size(): number {
     return this.seen.size;
+  }
+}
+
+/**
+ * Fixed-window hit counter for the public webhook ingest: `limit` accepted calls
+ * per `windowMs`, per key.
+ *
+ * It follows the rule this file exists to state. The natural way to write this
+ * is a map of counters plus a periodic sweep, or a size cap with `clear()` — and
+ * both are wrong in the same direction: wiping the map forgets which callers had
+ * already spent their budget, so a flood that trips the cap is rewarded with a
+ * fresh allowance. Here a window rolls over on its own clock, an idle key is
+ * dropped when it is next touched, and the number of tracked keys is bounded by
+ * evicting the least recently seen one, which only ever shortens a stranger's
+ * pause, never an attacker's.
+ */
+export class RateWindow {
+  private readonly hits = new Map<string, { count: number; resetAt: number }>();
+  private readonly windowMs: number;
+  private readonly maxEntries: number;
+
+  constructor(options: { windowMs?: number; maxEntries?: number } = {}) {
+    this.windowMs = options.windowMs ?? 60_000;
+    this.maxEntries = options.maxEntries ?? 10_000;
+  }
+
+  /**
+   * Count one hit against `key` and report whether it is inside `limit`.
+   * `limit` is a parameter, not constructor state, because the threshold is a
+   * Settings value: changing it must take effect on the next request, not on the
+   * next process start.
+   */
+  hit(key: string, limit: number, now: number = Date.now()): { ok: boolean; retryAfterSeconds: number; remaining: number } {
+    const seen = this.hits.get(key);
+    const open = seen && seen.resetAt > now ? seen : { count: 0, resetAt: now + this.windowMs };
+    open.count += 1;
+    this.hits.delete(key);
+    this.hits.set(key, open);
+    if (this.hits.size > this.maxEntries) {
+      const oldest = this.hits.keys().next();
+      if (!oldest.done) this.hits.delete(oldest.value);
+    }
+    if (open.count > limit) {
+      return { ok: false, retryAfterSeconds: Math.max(1, Math.ceil((open.resetAt - now) / 1000)), remaining: 0 };
+    }
+    return { ok: true, retryAfterSeconds: 0, remaining: Math.max(0, limit - open.count) };
+  }
+
+  /** Keys with an open window (for tests and for an operator's status view). */
+  get size(): number {
+    return this.hits.size;
+  }
+
+  forget(key: string): void {
+    this.hits.delete(key);
   }
 }

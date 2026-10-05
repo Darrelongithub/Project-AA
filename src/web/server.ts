@@ -9,7 +9,7 @@
 import * as crypto from "crypto";
 import { FAVICON_BASE64, LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
 import { FONT_INSTRUMENT_SERIF_ITALIC_WOFF2, FONT_INSTRUMENT_SERIF_WOFF2, FONT_MANROPE_WOFF2 } from "./fonts";
-import express, { type Express, type NextFunction, type Request, type Response } from "express";
+import express, { type Express, type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import { Repo } from "../db/repo";
 import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
 import type { PipelineContext } from "../pipeline/adapters";
@@ -42,7 +42,9 @@ import type { OnceResult } from "../util/once";
 import { hashPassword, verifyPassword } from "../util/password";
 import { normalizeUsername, USERNAME_RE } from "../util/username";
 import { gmailRedirectUri } from "./oauth";
-import { LoginThrottle, SendGuard } from "./throttle";
+import { LoginThrottle, RateWindow, SendGuard } from "./throttle";
+import { WEBHOOK_PATH_PREFIX, ingestWebhook, redactIngestKey } from "./webhook";
+import { envInt } from "../util/envnum";
 import { emailBanner, organizationName, organizationSender, organizationTheme } from "../branding";
 import type { PackFile } from "../pack";
 
@@ -95,8 +97,16 @@ export function createApp(deps: WebDeps): Express {
   // proxy's address unless this is set — which makes every per-IP rate
   // limiter a single global counter for ALL users. Opt in via TRUST_PROXY=1.
   if (process.env.TRUST_PROXY === "1") app.set("trust proxy", 1);
-  app.use(express.urlencoded({ extended: true, limit: "2mb" }));
-  app.use(express.json({ limit: "1mb" }));
+  // A webhook POST is parsed by the ingest route itself, under a cap measured in
+  // tens of kilobytes rather than megabytes: an unauthenticated caller must not
+  // be able to hand the process a 2 MB document to parse before anyone has
+  // decided whether its key is even valid. The console forms keep their limits.
+  const ingestPayloadLimit = envInt(process.env.WEBHOOK_MAX_PAYLOAD_BYTES, 65_536);
+  const ownsOwnBody = (req: Request): boolean => req.path.startsWith(WEBHOOK_PATH_PREFIX);
+  const skipIngestBody = (handler: RequestHandler): RequestHandler =>
+    ((req, res, next) => (ownsOwnBody(req) ? (next as () => void)() : handler(req, res, next))) as RequestHandler;
+  app.use(skipIngestBody(express.urlencoded({ extended: true, limit: "2mb" })));
+  app.use(skipIngestBody(express.json({ limit: "1mb" })));
   app.use(authMiddleware(repo));
 
   const c = (req: Request) => ({
@@ -245,7 +255,7 @@ export function createApp(deps: WebDeps): Express {
   };
 
   app.use((req, res, next) => {
-    if (repo.staffCount() === 0 && req.path !== "/setup" && req.path !== "/healthz" && req.path !== "/theme") {
+    if (repo.staffCount() === 0 && req.path !== "/setup" && req.path !== "/healthz" && req.path !== "/theme" && !ownsOwnBody(req)) {
       res.redirect("/setup");
       return;
     }
@@ -2094,11 +2104,11 @@ export function createApp(deps: WebDeps): Express {
     for (const key of [
       "institution_name", "sla_target_hours", "escalation_hours",
       "unanswered_target_hours", "followup_ladder_days", "retention_days",
-      "intake_hotwords",
+      "intake_hotwords", "webhook_rate_limit_per_minute",
     ]) {
       if (typeof req.body[key] !== "string") continue;
       const v = String(req.body[key]).trim();
-      if (["sla_target_hours", "escalation_hours", "unanswered_target_hours", "retention_days"].includes(key) && !numOk(v)) {
+      if (["sla_target_hours", "escalation_hours", "unanswered_target_hours", "retention_days", "webhook_rate_limit_per_minute"].includes(key) && !numOk(v)) {
         ignored.push(key.replace(/_/g, " "));
         continue;
       }
@@ -2533,6 +2543,51 @@ export function createApp(deps: WebDeps): Express {
 
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
+  // ── Public webhook ingest (Phase 18) ─────────────────────────────────────
+  // Unauthenticated by design — the permanent per-organization key in the path
+  // IS the credential, which is why it never appears in a log line, an audit row
+  // or this response body. Everything the payload carries is treated as hostile
+  // until src/web/webhook.ts has validated it, and the submission then runs
+  // through the same processEmail path as a real message: no gate is skipped and
+  // nothing in this endpoint can decide a case.
+  const webhookLimiter = new RateWindow({ windowMs: 60_000 });
+  const ingestJson = express.json({ limit: ingestPayloadLimit });
+  const ingestForm = express.urlencoded({ extended: false, limit: ingestPayloadLimit });
+  const parseIngestBody: RequestHandler = (req, res, next) => {
+    const isJson = String(req.headers["content-type"] ?? "").toLowerCase().includes("json");
+    const parser = isJson ? ingestJson : ingestForm;
+    parser(req, res, (error?: unknown) => {
+      if (!error) return next();
+      const message = String((error as Error)?.message ?? error);
+      // 413/400 in the API's own shape: the parser's error text names byte
+      // limits and internal types, which is the caller's business only as far as
+      // "your body was refused".
+      if (/too large|limit/i.test(message)) {
+        log(`webhook: body refused over the ${ingestPayloadLimit}-byte cap`, "warn");
+        return res.status(413).json({ ok: false, error: "the request body is larger than this endpoint accepts" });
+      }
+      return res.status(400).json({ ok: false, error: isJson ? "the body is not valid JSON" : "the body is not readable form fields" });
+    });
+  };
+  app.post(`${WEBHOOK_PATH_PREFIX}:org_key`, parseIngestBody, async (req, res) => {
+    const reply = await ingestWebhook(
+      { repo, ctx, limiter: webhookLimiter },
+      {
+        orgKey: String(req.params.org_key ?? ""),
+        body: req.body,
+        payloadBytes: Buffer.byteLength(JSON.stringify(req.body ?? {}), "utf8"),
+        ip: req.ip ?? "",
+      }
+    );
+    if (reply.retryAfterSeconds) res.setHeader("Retry-After", String(reply.retryAfterSeconds));
+    res.status(reply.status).json(reply.body);
+  });
+  app.get(`${WEBHOOK_PATH_PREFIX}:org_key`, (_req, res) => {
+    // A key in a URL is a credential: never echo it back, and never confirm
+    // whether it is valid — GET is simply not what this endpoint is.
+    res.status(405).setHeader("Allow", "POST").json({ ok: false, error: "use POST" });
+  });
+
   /** Command-palette search API (v4). Realm-scoped like every other list. */
   app.get("/api/search", requireLogin, (req, res) => {
     const q = String(req.query.q ?? "").trim();
@@ -2572,13 +2627,13 @@ export function createApp(deps: WebDeps): Express {
   // Last-resort error handler: log the detail, show a calm page — never a stack trace.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: unknown, req: Request, res: Response, _next: unknown) => {
-    log(`unhandled error on ${req.method} ${req.path}: ${(err as Error)?.stack ?? err}`, "error");
+    log(`unhandled error on ${req.method} ${redactIngestKey(req.path)}: ${(err as Error)?.stack ?? err}`, "error");
     // Persist only a minimal, tenant-attributable incident marker. The full
     // stack/message stays in the process log and is never copied into the
     // shared tenant audit surface where it could contain secrets or PII.
     try {
       const errorName = err instanceof Error ? err.name : "UnknownError";
-      repo.audit(null, req.staff?.username ?? "system", "server_error", `${req.method} ${req.path} — ${errorName}`);
+      repo.audit(null, req.staff?.username ?? "system", "server_error", `${req.method} ${redactIngestKey(req.path)} — ${errorName}`);
     } catch { /* the console log above remains authoritative if the DB is down */ }
     if (res.headersSent) return;
     if (req.path.startsWith("/api/")) {

@@ -74,6 +74,7 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   followup_ladder_days: "3,7,10", // Day 3 reminder, Day 7 final, Day 10 → human
   retention_days: "730", // completed cases kept 2 years, then archived+removed
   automation_mode: "draft", // 'draft' holds EVERY automated reply for approval
+  webhook_rate_limit_per_minute: "30", // public ingest: accepted calls per key
   intake_hotwords: DEFAULT_INTAKE_HOTWORDS, // round 9: which emails become cases
 };
 // NOTE: the sender display name is NOT a setting — it lives on the
