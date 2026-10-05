@@ -2633,12 +2633,16 @@ export function guardAsyncRoutes(app: Express): void {
 
 /** Escalation sweep (feature 29) — runs on an interval in serve mode. */
 export function runEscalationSweep(repo: Repo, escalationHours: number): number {
-  const overdue = repo.overdueCases();
+  // The Settings window is what selects the cases — it used to be read, printed
+  // into the audit line and then ignored, so every value behaved like 0.
+  // Callers pass it through envInt, so a corrupt value arrives as the documented
+  // default, and 0 keeps the older “past its own SLA clock” rule.
+  const overdue = repo.overdueCases(escalationHours);
   let n = 0;
   for (const a of overdue) {
     repo.escalate(a.id);
     repo.notify("escalation", `Case ${a.ref_number} has exceeded its response target.`, a.id);
-    repo.audit(a.id, "system", "escalated", `exceeded response target (escalation window ${escalationHours}h)`);
+    repo.audit(a.id, "system", "escalated", escalationHours > 0 ? `unhandled for over ${escalationHours} h (escalation window)` : "exceeded response target");
     n++;
     log(`escalation: ${a.ref_number} exceeded response target → urgent`, "warn");
   }

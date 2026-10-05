@@ -1976,15 +1976,40 @@ export class Repo {
     this.updateApplicant(id, { priority: "urgent", escalated: 1 });
   }
 
-  overdueCases(): ApplicantRow[] {
+  /**
+   * Open cases nobody has handled yet.
+   *
+   * Without a window, a case qualifies once its own SLA clock has run out.
+   * With `escalationHours` — the Settings `escalation_hours` value — the window
+   * replaces that test: a case is escalated once it has been open this long,
+   * so "respond within 4 h" and "raise it after 8 h" stay two independent
+   * numbers the office can set. Before the window was applied here, the setting
+   * only appeared inside the audit text and every value behaved like 0.
+   *
+   * `created_at` is written by SQLite as 'YYYY-MM-DD HH:MM:SS', a different
+   * shape from the ISO stamps Node writes, so the age test compares julianday()
+   * values instead of strings (see src/db/retention.ts for the same trap).
+   */
+  overdueCases(escalationHours = 0): ApplicantRow[] {
     const now = new Date().toISOString();
+    const window = Number.isFinite(escalationHours) && escalationHours > 0 ? escalationHours : 0;
+    if (!window) {
+      return this.db
+        .prepare(
+          `SELECT * FROM applicants
+           WHERE sla_due_at IS NOT NULL AND sla_handled_at IS NULL AND escalated = 0
+             AND sla_due_at < ? AND lifecycle IN ('awaiting_review','documents_received','application_received')`
+        )
+        .all(now) as ApplicantRow[];
+    }
     return this.db
       .prepare(
         `SELECT * FROM applicants
          WHERE sla_due_at IS NOT NULL AND sla_handled_at IS NULL AND escalated = 0
-           AND sla_due_at < ? AND lifecycle IN ('awaiting_review','documents_received','application_received')`
+           AND julianday(?) - julianday(created_at) >= ?
+           AND lifecycle IN ('awaiting_review','documents_received','application_received')`
       )
-      .all(now) as ApplicantRow[];
+      .all(now, window / 24) as ApplicantRow[];
   }
 
   // ── Decision logs ────────────────────────────────────────────────────────
