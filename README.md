@@ -193,7 +193,7 @@ The retained template is [`docs/eval-template.csv`](docs/eval-template.csv); it 
 
 ## Verification commands
 
-Run these from the repository root with the checked-in lockfile and local project tools:
+Run these from the repository root with the checked-in lockfile and local project tools. CI (`.github/workflows/ci.yml`) runs the same list, so a green check means these commands passed — not that somebody remembered to run them:
 
 ```bash
 ./node_modules/.bin/tsc --noEmit
@@ -230,4 +230,4 @@ At the latest Phase 16 Part 3 validation on this worktree, typecheck, all runnab
 
 ## Static checks and audits
 
-`npm run typecheck` is the TypeScript static gate; the project has no configured ESLint policy. There is currently no checked-in CI workflow. Run typecheck, the full tests, simulation, stress, and build explicitly. `npm audit` is expected to report five development-tool advisories (Vitest/Vite toolchain); they are intentionally left unchanged rather than forcing a breaking test-runner upgrade. `npm audit --omit=dev` currently reports zero production vulnerabilities. See the detailed issue/decision register in [`BUGS.md`](BUGS.md).
+`npm run typecheck` is the TypeScript static gate; the project has no configured ESLint policy. `.github/workflows/ci.yml` runs the documented gates below on every push to `main` and on every pull request, plus a boot of the compiled server against a fresh database that fails on a `migrate()` error or on any log line that is not a self-describing event. A developer working outside CI runs the same commands explicitly. `npm audit` is expected to report five development-tool advisories (Vitest/Vite toolchain); they are intentionally left unchanged rather than forcing a breaking test-runner upgrade. `npm audit --omit=dev` currently reports zero production vulnerabilities. See the detailed issue/decision register in [`BUGS.md`](BUGS.md).

@@ -1,0 +1,119 @@
+# The gates this repository already documents (README → "Verification commands"), run on every
+# push and pull request, so that "green" means the checked-in commands passed rather than that
+# someone remembers to run them. It introduces no new policy: there is still no ESLint config
+# and no formatter, and each step below is a command from README.md verbatim.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: typecheck · tests · simulate · stress · build · boot
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, so the whitespace step below can diff against the PR base.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          # engines.node is >=22.13.0 (pdf.js 6 requires it).
+          node-version: "22.13"
+          cache: npm
+
+      # Only needed if a native module (better-sqlite3, sharp, canvas) has to compile rather
+      # than use its prebuilt binary — deliberately the same list as scripts/setup-linux.sh so
+      # CI and a developer's Linux box are prepared the same way.
+      - name: Native module build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential python3 pkg-config \
+            libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+
+      - name: Install dependencies from the lockfile
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck (strict)
+        run: npm run typecheck
+
+      - name: Test suite
+        run: npm test
+
+      - name: Scenario simulation through the real pipeline
+        run: npm run simulate
+
+      - name: Deterministic stress harness
+        run: npm run stress
+
+      - name: Build
+        run: npm run build
+
+      # The boot gate is the one that has actually bitten: the crash that shipped twice was a
+      # boot-time migrate() aborting on a real database file, which no in-memory test can show.
+      # So CI opens the compiled server against a fresh file and fails on a migration error, and
+      # — the PROD-14 invariant — on any log line that is not its own self-describing event.
+      - name: Compiled server boots on a fresh database and frames its own log
+        run: |
+          work="$(mktemp -d)"
+          DB_PATH="$work/ci.sqlite" PORT=8080 MODE=mock node dist/src/cli/serve.js > "$work/serve.log" 2>&1 &
+          pid=$!
+          answer=""
+          for _ in $(seq 1 60); do
+            sleep 1
+            answer="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/login || true)"
+            [ -n "$answer" ] && [ "$answer" != "000" ] && break
+          done
+          kill "$pid" 2>/dev/null || true
+          if [ -z "$answer" ] || [ "$answer" = "000" ]; then
+            echo "::error::the server never answered on :8080"
+            cat "$work/serve.log"
+            exit 1
+          fi
+          if grep -qE 'no such table|error in view|SqliteError|Migration failed' "$work/serve.log"; then
+            echo "::error::boot-time migration reported a failure"
+            cat "$work/serve.log"
+            exit 1
+          fi
+          if grep -vE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z\] (DEBUG|INFO|WARN|ERROR) ' "$work/serve.log" | grep -q .; then
+            echo "::error::log output contains a line that is not a prefixed event (PROD-14)"
+            cat "$work/serve.log"
+            exit 1
+          fi
+          echo "answered HTTP $answer; no migration errors; every log line framed"
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev
+
+      # Report-only on purpose: `npm audit` currently names five advisories in the
+      # Vitest/Vite development toolchain, tracked as an accepted limitation (BUGS.md PROD-6)
+      # rather than forcing a breaking test-runner upgrade. It is shown, not gated.
+      - name: Development dependency audit (informational)
+        continue-on-error: true
+        run: npm audit
+
+      - name: No school-specific identity strings in src
+        run: |
+          if rg -qi 'riara|kcse|kcpe|igcse|admission' src; then
+            echo "::error::src/ contains subject-matter identity strings; this is a generic intake product"
+            rg -in 'riara|kcse|kcpe|igcse|admission' src | head -20
+            exit 1
+          fi
+
+      - name: No whitespace errors in the change
+        if: github.event_name == 'pull_request'
+        run: git diff --check "${{ github.event.pull_request.base.sha }}" HEAD
