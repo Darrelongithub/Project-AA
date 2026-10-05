@@ -722,7 +722,20 @@ export class Repo {
     const vals = keys.map((k) => patch[k] ?? null);
     this.db.prepare(`UPDATE applicants SET ${setSql}, updated_at = ? WHERE id = ?`).run(...vals, nowIso(), id);
     if (Object.prototype.hasOwnProperty.call(patch, "case_type_code")) {
-      this.db.prepare("UPDATE applicants SET category = case_type_code WHERE id = ?").run(id);
+      // `category` is the case type's OWN grouping, which is what createCase and
+      // updateCase stamp onto the row. Copying the code into it here made one
+      // column mean two different things depending on which path wrote it, so
+      // anything that groups or filters by category saw a case-type code (or
+      // nothing at all) — the same "two cases at once" defect that keeping
+      // case_type_id and case_type_code coherent exists to prevent.
+      this.db
+        .prepare(
+          `UPDATE applicants SET category = (
+             SELECT ct.category FROM case_types ct
+              WHERE ct.code = applicants.case_type_code AND ct.organization_id = applicants.organization_id
+           ) WHERE id = ?`
+        )
+        .run(id);
     }
   }
 
