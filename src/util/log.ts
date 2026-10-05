@@ -18,13 +18,16 @@
  * Framing deliberately **marks** extra lines instead of collapsing them:
  * `err.stack` is legitimately multi-line and flattening it would trade a
  * cosmetic problem for worse diagnostics on every crash. Non-newline control
- * characters (ESC/ANSI, NUL, the rest of C0) *are* removed, because they carry
- * nothing a reader needs and a terminal that `tail`s the file would otherwise
- * act on them.
+ * characters *are* removed — whole ANSI/CSI sequences first, then any remaining C0
+ * byte and DEL — because they carry nothing a reader needs and a terminal that
+ * `tail`s the file would otherwise act on them. Leaving `\u001b[31m` as `[31m` would
+ * be inert but noisy, so the sequence goes as a unit.
  */
 
 /** Characters that end a physical line, including the two Unicode separators. */
 const LINE_BREAK = /\r\n|\n|\r|\u2028|\u2029/;
+/** ANSI/CSI sequences (colour, cursor movement): an ESC plus its parameters. */
+const CSI = /\u001B\[[0-9;?]*[ -/]*[@-~]/g;
 /** Control characters other than the line breaks handled above. */
 const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 /** Written after the prefix on every line that continues the event above it. */
@@ -37,7 +40,10 @@ const threshold: number = LEVELS[(process.env.LOG_LEVEL as Level) || "info"] ?? 
 
 /** Split into physical lines and strip the characters no log line should carry. */
 function frame(msg: string): string[] {
-  return msg.split(LINE_BREAK).map((line) => line.replace(CONTROL_CHARS, ""));
+  return msg
+    .replace(CSI, "")
+    .split(LINE_BREAK)
+    .map((line) => line.replace(CONTROL_CHARS, ""));
 }
 
 export function log(msg: string, level: Level = "info"): void {
