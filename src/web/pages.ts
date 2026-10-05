@@ -194,7 +194,9 @@ function adminDashboard(c: Ctx): string {
   const triage = repo.triageCounts(realm, scope);
   const gmailConnected = Boolean(repo.hasSecret("gmail_refresh_token")) || Boolean(c.gmailConfigured);
   const lastSync = repo.getSetting("gmail_last_sync_at", "");
-  const globalMode = repo.getSetting("automation_mode", "auto");
+  // Same predicate the pipeline uses — a switch the console shows backwards is
+  // worse than no switch at all.
+  const globalMode = repo.globalAutomationMode();
 
   const applications = Number(s.applications);
   const completed = Number(s.completed);
@@ -1675,6 +1677,9 @@ ${msgs}`);
 export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string): string {
   const { repo } = c;
   const settings = repo.allSettings();
+  // Effective, not as-stored: with no row for the key the pipeline holds every
+  // reply, so the select must show "draft" rather than trusting its own default.
+  const globalAutomation = repo.globalAutomationMode();
   const organizationId = c.user.organization_id ?? 1;
   const organization = repo.getOrganization(organizationId);
   const settingInput = (key: string, label: string) =>
@@ -1729,8 +1734,8 @@ ${categoriesCard(c)}
   <form method="post" action="/settings/automation/global" class="formrow" style="align-items:end">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div><label>Global mode</label><select name="mode">
-      <option value="auto" ${settings["automation_mode"] !== "draft" ? "selected" : ""}>auto — only the categories allowlisted below may send</option>
-      <option value="draft" ${settings["automation_mode"] === "draft" ? "selected" : ""}>draft — hold EVERY automated reply for approval</option>
+      <option value="auto" ${globalAutomation === "auto" ? "selected" : ""}>auto — only the categories allowlisted below may send</option>
+      <option value="draft" ${globalAutomation === "draft" ? "selected" : ""}>draft — hold EVERY automated reply for approval</option>
     </select></div>
     <div style="flex:0"><button class="btn">Apply global mode</button></div>
   </form>

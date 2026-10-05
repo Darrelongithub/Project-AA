@@ -2579,6 +2579,17 @@ export class Repo {
     return this.getSetting("automation_mode", "draft") !== "draft";
   }
 
+  /**
+   * The same switch as a value, for anything that displays it. Reads must not
+   * pick their own default: the console used to ask `getSetting("automation_mode",
+   * "auto")`, so on a database with no row for the key (never touched in
+   * Settings, or purged) the screen promised `auto` while the pipeline held
+   * every reply — a safety switch shown as the opposite of its state.
+   */
+  globalAutomationMode(): "auto" | "draft" {
+    return this.automationAllowedGlobally() ? "auto" : "draft";
+  }
+
   setAutomationMode(category: string, mode: "auto" | "draft"): void {
     this.db
       .prepare(
