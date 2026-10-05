@@ -6,6 +6,8 @@ No live Gmail/Gemini endpoint, real test message, real tenant database, real arc
 
 ## Current open and unverified items
 
+> **Reading this file against a checkout of `main`?** Until 2026-10-05, `main` stopped before Item 1 of this programme: the fresh-boot migration fix, BASE-1…BASE-7, the Phase 17 audit and the whole Phase 18 webhook surface existed only on `arena/*-project-aa` branches. See "Branch reality check — what `main` actually contained" below for the verified divergence, the crash reproduction, and the `Text File.txt` removal.
+
 ### Operations before real data
 
 | ID | Status | Issue and action to close |
@@ -78,6 +80,41 @@ Scope: one small, self-contained pass over the process logger and a handful of i
 **Explicit non-goals.** No log rotation, no JSON/structured logging, no secret-scraping rewrite of existing lines, no change to `audit_log` (that table is storage with its own redaction rules), no UI change, no webhook change.
 
 **Definition of done.** Steps 1–4 landed with the tests green; PROD-14 closed with dated evidence; the live run shows zero unprefixed physical lines; and no `log()` call site anywhere in `src/` interpolates an unbounded caller-controlled string. Estimated diff: `src/util/log.ts` ~35 lines, 14 call-site lines across 4 files (none in `src/web/*`), one new test file, two doc edits. Flagged files touched: `src/pipeline/index.ts` (call sites only) — the phase must not touch `src/db/repo.ts`, `src/db/db.ts` or `src/web/*`.
+
+## Branch reality check — what `main` actually contained (2026-10-05)
+
+Reported symptom: after pulling `main` (`f2b7b4e`), a fresh `npm run serve` still crashed with `no such table: main.applicants` raised from `migrate()` via `rebuildConstraint` (`src/db/db.ts:583`/`:650`) — the failure that an earlier round fixed and pinned with `test/fresh-boot-migration.test.ts`.
+
+**Finding: the fix was never on `main`. This is a branch-divergence problem, not a regression, and not an environment problem.** Verified by checking each claim against the fetched refs rather than against a summary:
+
+| Check | Command | Result |
+| --- | --- | --- |
+| `main` tip and shape | `git log --format='%h %ad %s' -3 origin/main`, `git rev-list --count origin/main` | `f2b7b4e "Add files via upload"` (2026-10-04), 134 commits, sharing history with this branch; merge base was `87520e1` (Merge PR #11) |
+| Is the fix an ancestor of `main`? | `git merge-base --is-ancestor <sha> origin/main` for `202bfd5` `f50be7a` `677dcf8` `dd80c32` `4d12cec` `0abdc7e` `36ff78d` `cf9fa65` | **every one: NOT on main** — nothing from Item 1 onward (fresh-boot migration, BASE-1…BASE-7, Phase 17 audit, Phase 18 webhook core + Settings UI, per-tenant budget, hostile pass, docs) had reached `main` |
+| The fix's machinery in `main`'s file | `git show origin/main:src/db/db.ts \| grep -cE "view\|suspend\|reinstall"` | **0** matches; the same grep on this branch returns 25 (`suspendViews`/`reinstallViews`, documented at `src/db/db.ts:513-528`) |
+| The regression test | `git cat-file -e origin/main:test/fresh-boot-migration.test.ts` | **ABSENT from main** (present on this branch, 4 tests, green) |
+| The webhook surface | `git cat-file -e` for `src/web/webhook.ts`, `test/webhook-ingest.test.ts`, `test/webhook-hostile.test.ts` on `origin/main` | **all ABSENT from main** |
+
+Reproduction, run on `main`'s extracted tree against this branch with an identical fixture — the fixture `test/fresh-boot-migration.test.ts` builds (a legacy `applicants` table with `UNIQUE (email_address, thread_id)` plus the `cases` compatibility view and one row):
+
+```
+RESULT /tmp/maintree:         CRASHED — error in view cases: no such table: main.applicants
+RESULT /home/user/Project-AA: MIGRATED OK — tenant-scoped UNIQUE (rebuilt); row survives: true; cases is a view
+```
+
+So a local `npm run serve` crash on `main` is exactly what `main`'s code must do, and the branch content fixes it. **`main` can fast-forward to this branch**: after `git merge origin/main` (`f861c6a`), `git merge-base --is-ancestor origin/main HEAD` is true, and the merge itself was clean — `git merge-tree --write-tree` reported no conflicts and `git diff --stat HEAD^1 HEAD` showed a single added path.
+
+### The `Text File.txt` artifact at the root of `main`
+
+**What it was:** a 2,137,365-byte unified `git diff` — 37,113 lines, 186 `diff --git` sections, first hunk on `.env.example` — committed by the GitHub web UI in `f2b7b4e "Add files via upload"` (2026-10-04 18:45 +0300). That commit touched no other path, which is how a working-tree dump ended up tracked at the repository root: web-upload commits whatever is dropped into the box, on top of whatever branch is checked out.
+
+**Why it was safe to remove, verified rather than assumed:** nothing references it — `git grep -l "Text File" origin/main` returned no matches; there are no `.github/workflows` files in the repository at all; and its content is superseded rather than unique (spot-checked: the hunk removing `BUNDLED_DATA_DIR` and adding `ARCHIVE_ENCRYPTION_KEY` matches this branch's `.env.example:68`). It is an evidence dump of a past local state, the same category as the ZIP uploads this register already warns must never be applied wholesale — kept as tracked content it becomes a second, unfalsifiable account of "what the code does" lying next to the code. Removed with `git rm` in `2f96451`, not by ignoring it, so it stops appearing in fresh checkouts.
+
+**Follow-up for whoever merges:** after this branch lands, `Text File.txt` is gone from the tip; the blob remains in `main`'s history (only a history rewrite removes that, which is not proposed).
+
+### Correction to a claim made in the previous report
+
+The previous turn's report stated that `main`'s README still advertised `npm run db:init` and a `## Quick start` section. **That was wrong.** `git show origin/main:README.md` has neither: it carries the same `## First run` section as this branch (`npm run setup:linux`, `npm run serve`, `MODE=live DB_PATH=… PORT=8080 npm start`), and no ref under `refs/remotes/origin` contains a README with `db:init`. The claim came from a fetched copy of the file instead of the checked-out tree — the exact shortcut this project's register exists to prevent.
 
 ## Phase 9-12 status
 
