@@ -41,4 +41,4 @@ echo
 echo "Done. Next:"
 echo "  npm run typecheck   # strict TypeScript"
 echo "  npm test            # full suite"
-echo "  npm run serve       # staff console on http://localhost:3000 (PORT=… to change)"
+echo "  npm run serve       # staff console on http://localhost:${PORT:-8080} (config default 8080)"
