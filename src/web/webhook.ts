@@ -53,6 +53,17 @@ const EMAIL_RE = /^[^\s@]+@(?:[^\s.@]+\.)+[^\s.@]+$/;
 /** Control characters except tab, newline and carriage return. */
 const STRIP_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
+/**
+ * Invisible formatting characters: zero-width space/joiners, RTL overrides, word
+ * joiner, BOM and soft hyphen. Kept out of every field deliberately. They are the
+ * cheap way to make two strings look identical in an operator's list while being
+ * different to a database — and one of those places where a difference is a
+ * second case rather than a cosmetic one, because `external_id` is the idempotency
+ * key. Nothing here changes what a caller can *do*; it stops a submission from
+ * arriving as a string that no one can compare or search for reliably.
+ */
+const INVISIBLE_RE = /[\u200B-\u200F\u2060-\u2064\uFEFF\u00AD]/g;
+
 export interface WebhookDeps {
   repo: Repo;
   ctx: PipelineContext;
@@ -88,6 +99,30 @@ export function redactIngestKey(path: string): string {
   return `${WEBHOOK_PATH_PREFIX}[redacted]${boundary === -1 ? "" : rest.slice(boundary)}`;
 }
 
+/**
+ * The address as it may be named in a process log line. With `TRUST_PROXY=1`
+ * `req.ip` comes from a header the caller writes, and a log line is built by
+ * concatenation — so this is printable-only and short. It is a log-hygiene
+ * measure, not an identity: nothing here uses the address to authorize.
+ */
+const ADDRESS_SHAPE = /^(?:\[[0-9A-Fa-f:.]{1,64}\]|[0-9A-Fa-f:.]{1,64})(?:%[0-9A-Za-z]{1,16})?$/;
+
+export function safeIpLabel(ip: string): string {
+  const oneLine = ip
+    // Line breaks first, so two words cannot be fused into one by their removal.
+    .replace(/[\r\n\t\v\f\u0085\u2028\u2029]/g, " ")
+    .replace(/[^\x20-\x7E]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64);
+  // Address-shaped or not named at all. Under TRUST_PROXY this value comes from
+  // a header the caller writes, and a log line is built by concatenation: even
+  // confined to one line, quoting it back would let a stranger dictate what the
+  // installation's log says. So text that is not an address is reported as
+  // exactly that — which is also what an operator needs to know.
+  return ADDRESS_SHAPE.test(oneLine) ? oneLine : "an unrecognized address";
+}
+
 function reject(status: number, error: string, field?: string): PayloadRejection {
   return { ok: false, status, error, ...(field ? { field } : {}) };
 }
@@ -102,7 +137,9 @@ function textField(body: Record<string, unknown>, key: string, max: number, opts
   const raw = body[key];
   if (raw === undefined || raw === null) return { value: "" };
   if (typeof raw === "object") return reject(400, `${key} must be a short text value, not a list or an object`, key);
-  let text = String(raw).replace(STRIP_RE, "");
+  // Composed first, then invisible characters: "e\u0301" and "\u00e9" must not be
+  // two different case types, and neither must be a different idempotency key.
+  let text = String(raw).normalize("NFC").replace(STRIP_RE, "").replace(INVISIBLE_RE, "");
   text = opts.singleLine ? text.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim() : text.trim();
   if (text.length > max) return reject(400, `${key} is longer than ${max} characters`, key);
   return { value: text };
@@ -129,18 +166,18 @@ function metadataField(body: Record<string, unknown>): { value: Record<string, s
   }
   const out: Record<string, string> = {};
   for (const key of keys) {
-    if (key.replace(STRIP_RE, "").trim().length > WEBHOOK_FIELD_LIMITS.metadata_key) {
+    if (key.replace(STRIP_RE, "").replace(INVISIBLE_RE, "").trim().length > WEBHOOK_FIELD_LIMITS.metadata_key) {
       return reject(400, `metadata field names are limited to ${WEBHOOK_FIELD_LIMITS.metadata_key} characters`, "metadata");
     }
     const value = raw[key];
     if (value !== null && typeof value === "object") {
       return reject(400, `metadata.${key} must be a single value, not a list or an object`, "metadata");
     }
-    const text = String(value ?? "").replace(STRIP_RE, "").trim();
+    const text = String(value ?? "").normalize("NFC").replace(STRIP_RE, "").replace(INVISIBLE_RE, "").trim();
     if (text.length > WEBHOOK_FIELD_LIMITS.metadata_value) {
       return reject(400, `metadata.${key} is longer than ${WEBHOOK_FIELD_LIMITS.metadata_value} characters`, "metadata");
     }
-    out[key.replace(STRIP_RE, "").trim().slice(0, WEBHOOK_FIELD_LIMITS.metadata_key)] = text;
+    out[key.replace(STRIP_RE, "").replace(INVISIBLE_RE, "").trim().slice(0, WEBHOOK_FIELD_LIMITS.metadata_key)] = text;
   }
   if (Buffer.byteLength(JSON.stringify(out), "utf8") > WEBHOOK_FIELD_LIMITS.metadata_bytes) {
     return reject(400, `metadata is larger than ${WEBHOOK_FIELD_LIMITS.metadata_bytes} bytes`, "metadata");
@@ -231,7 +268,7 @@ export async function ingestWebhook(deps: WebhookDeps, params: IngestParams): Pr
   if (organizationId === null) {
     const guess = limiter.hit(`unknown:${params.ip}`, 30);
     if (!guess.ok) return { status: 429, body: { ok: false, error: "too many requests" }, retryAfterSeconds: guess.retryAfterSeconds };
-    log(`webhook: refused an unrecognized ingest key from ${params.ip || "an unknown address"}`, "warn");
+    log(`webhook: refused an unrecognized ingest key from ${safeIpLabel(params.ip)}`, "warn");
     return { status: 404, body: { ok: false, error: "not found" } };
   }
 

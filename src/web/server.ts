@@ -102,7 +102,12 @@ export function createApp(deps: WebDeps): Express {
   // be able to hand the process a 2 MB document to parse before anyone has
   // decided whether its key is even valid. The console forms keep their limits.
   const ingestPayloadLimit = envInt(process.env.WEBHOOK_MAX_PAYLOAD_BYTES, 65_536);
-  const ownsOwnBody = (req: Request): boolean => req.path.startsWith(WEBHOOK_PATH_PREFIX);
+  // Case-insensitive because Express matches routes case-insensitively: a caller
+  // reaching /API/V1/ingest/... must not be handed back to the 2 MB global parser
+  // (which is both a looser cap and a path where an oversized body escapes this
+  // endpoint's own 413 answer).
+  const ingestPrefix = WEBHOOK_PATH_PREFIX.toLowerCase();
+  const ownsOwnBody = (req: Request): boolean => req.path.toLowerCase().startsWith(ingestPrefix);
   const skipIngestBody = (handler: RequestHandler): RequestHandler =>
     ((req, res, next) => (ownsOwnBody(req) ? (next as () => void)() : handler(req, res, next))) as RequestHandler;
   app.use(skipIngestBody(express.urlencoded({ extended: true, limit: "2mb" })));
@@ -2583,24 +2588,41 @@ export function createApp(deps: WebDeps): Express {
   // until src/web/webhook.ts has validated it, and the submission then runs
   // through the same processEmail path as a real message: no gate is skipped and
   // nothing in this endpoint can decide a case.
+  const declaredBytes = (req: Request): number => {
+    const lengthHeader = Number(req.headers["content-length"]);
+    if (Number.isFinite(lengthHeader) && lengthHeader > 0) return Math.floor(lengthHeader);
+    try { return Buffer.byteLength(JSON.stringify(req.body ?? {}), "utf8"); } catch { return 0; }
+  };
   const webhookLimiter = new RateWindow({ windowMs: 60_000 });
   const ingestJson = express.json({ limit: ingestPayloadLimit });
   const ingestForm = express.urlencoded({ extended: false, limit: ingestPayloadLimit });
   const parseIngestBody: RequestHandler = (req, res, next) => {
     const isJson = String(req.headers["content-type"] ?? "").toLowerCase().includes("json");
     const parser = isJson ? ingestJson : ingestForm;
-    parser(req, res, (error?: unknown) => {
-      if (!error) return next();
+    const refuse = (error?: unknown): void => {
       const message = String((error as Error)?.message ?? error);
+      setNoStore(res);
       // 413/400 in the API's own shape: the parser's error text names byte
-      // limits and internal types, which is the caller's business only as far as
-      // "your body was refused".
+      // limits, internal types and stack traces, which is the caller's business
+      // only as far as "your body was refused".
       if (/too large|limit/i.test(message)) {
         log(`webhook: body refused over the ${ingestPayloadLimit}-byte cap`, "warn");
-        return res.status(413).json({ ok: false, error: "the request body is larger than this endpoint accepts" });
+        res.status(413).json({ ok: false, error: "the request body is larger than this endpoint accepts" });
+        return;
       }
-      return res.status(400).json({ ok: false, error: isJson ? "the body is not valid JSON" : "the body is not readable form fields" });
-    });
+      res.status(400).json({ ok: false, error: isJson ? "the body is not valid JSON" : "the body is not readable form fields" });
+    };
+    try {
+      parser(req, res, (error?: unknown) => { if (error) return refuse(error); next(); });
+    } catch (error) {
+      // A recursion bomb (20 000 nested arrays) makes JSON.parse throw
+      // RangeError synchronously, before the callback — and an uncaught throw
+      // here would reach the generic error handler, which answers 500 AND
+      // writes a server_error audit row. A caller must not be able to buy
+      // audit-log growth with one line of JSON, so this surface answers it
+      // itself and stores nothing.
+      refuse(error);
+    }
   };
   app.post(`${WEBHOOK_PATH_PREFIX}:org_key`, parseIngestBody, async (req, res) => {
     const reply = await ingestWebhook(
@@ -2608,16 +2630,25 @@ export function createApp(deps: WebDeps): Express {
       {
         orgKey: String(req.params.org_key ?? ""),
         body: req.body,
-        payloadBytes: Buffer.byteLength(JSON.stringify(req.body ?? {}), "utf8"),
+        // Declared bytes when the client stated them; otherwise a guarded
+        // re-serialisation. The guard matters: a 20 000-level-nested array
+        // parses fine and then overflows JSON.stringify's stack, and an
+        // uncaught throw here would answer 500 and write an audit row per
+        // request — a cheap way for a stranger to grow the audit log.
+        payloadBytes: declaredBytes(req),
         ip: req.ip ?? "",
       }
     );
+    // No session, no cache: the answer belongs to this one call, and a shared
+    // proxy must not be able to serve a stale 429 or a replayed ref_number.
+    setNoStore(res);
     if (reply.retryAfterSeconds) res.setHeader("Retry-After", String(reply.retryAfterSeconds));
     res.status(reply.status).json(reply.body);
   });
   app.get(`${WEBHOOK_PATH_PREFIX}:org_key`, (_req, res) => {
     // A key in a URL is a credential: never echo it back, and never confirm
     // whether it is valid — GET is simply not what this endpoint is.
+    setNoStore(res);
     res.status(405).setHeader("Allow", "POST").json({ ok: false, error: "use POST" });
   });
 
