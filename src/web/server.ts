@@ -42,7 +42,7 @@ import type { OnceResult } from "../util/once";
 import { hashPassword, verifyPassword } from "../util/password";
 import { normalizeUsername, USERNAME_RE } from "../util/username";
 import { gmailRedirectUri } from "./oauth";
-import { LoginThrottle } from "./throttle";
+import { LoginThrottle, SendGuard } from "./throttle";
 import { emailBanner, organizationName, organizationSender, organizationTheme } from "../branding";
 import type { PackFile } from "../pack";
 
@@ -754,15 +754,16 @@ export function createApp(deps: WebDeps): Express {
 
   // Rapid double-click protection for template sends: the same officer sending
   // the same template to the same case within 5s is treated as one action.
-  const recentSends = new Map<string, number>();
-  const sendGuardOk = (key: string): boolean => {
-    const now = Date.now();
-    if (recentSends.size > 2000) recentSends.clear();
-    const last = recentSends.get(key) ?? 0;
-    if (now - last < 5000) return false;
-    recentSends.set(key, now);
-    return true;
-  };
+  // Entries past the window are worthless, so the map is pruned by age on each
+  // call. The previous shape capped the size with `recentSends.clear()`, which
+  // discarded EVERY in-flight guard the moment a busy office crossed the cap —
+  // the same bulk-wipe mistake src/web/throttle.ts documents for logins, and
+  // here it silently re-opened the duplicate send the guard exists to prevent.
+  // Rapid double-click protection for template sends: the same officer sending
+  // the same template to the same case within 5 s is treated as one action
+  // (see SendGuard for why the window is pruned instead of cleared).
+  const sendGuard = new SendGuard();
+  const sendGuardOk = (key: string): boolean => sendGuard.allow(key);
 
   /** PPR P0-5: which organization-owned attachment set (if any) rides along
    *  with a template. Missing/empty sets are audited — a send that silently

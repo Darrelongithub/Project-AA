@@ -77,3 +77,34 @@ export class LoginThrottle {
     for (const ip of order) this.fails.delete(ip);
   }
 }
+
+/**
+ * Short-window "did this exact action just happen?" guard, used to fold a rapid
+ * double-click on a send button into one action.
+ *
+ * It follows the same rule as LoginThrottle above: entries are dropped when
+ * their own window expires, never by clearing the whole map. A size cap plus
+ * `clear()` (what this used to be, at 2 000 entries) discards every guard that
+ * is INSIDE its window at that moment — precisely the busy-office case the
+ * protection exists for — and the duplicate mail it lets through cannot be
+ * recalled.
+ */
+export class SendGuard {
+  private readonly seen = new Map<string, number>();
+
+  constructor(private readonly windowMs = 5_000) {}
+
+  /** True when `key` may proceed; a repeat inside the window is refused. */
+  allow(key: string, now: number = Date.now()): boolean {
+    for (const [seenKey, at] of this.seen) if (now - at >= this.windowMs) this.seen.delete(seenKey);
+    const last = this.seen.get(key);
+    if (last !== undefined && now - last < this.windowMs) return false;
+    this.seen.set(key, now);
+    return true;
+  }
+
+  /** Keys currently inside their window (for tests / observability). */
+  get size(): number {
+    return this.seen.size;
+  }
+}
