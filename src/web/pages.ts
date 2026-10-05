@@ -2408,7 +2408,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
   const caseTypes = c.repo.listCaseTypes(organizationId);
   const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
   const orgPicker = `<form method="get" action="/config" class="inline" style="margin-bottom:16px">
-    <input type="hidden" name="tab" value="case types">
+    <input type="hidden" name="tab" value="case-types">
     <label class="small muted">Organization</label>
     <select name="organization" onchange="this.form.submit()">${organizations.map((o) => `<option value="${o.id}" ${o.id === organizationId ? "selected" : ""}>${esc(o.name)} · ${esc(o.ref_prefix)}</option>`).join("")}</select>
   </form>`;
@@ -2420,7 +2420,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
       <td>${d.required ? "required" : "optional"} · ${d.blocking ? "blocks gate" : "non-blocking"}</td>
       <td><form method="post" action="/config/case-types/document-delete" style="margin:0">${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}"><input type="hidden" name="key" value="${esc(d.key)}"><button class="btn small ghost">Remove</button></form></td>
     </tr>`).join("");
-    return `<details class="card type-card" id="case type-${ct.id}">
+    return `<details class="card type-card" id="case-type-${ct.id}">
       <summary class="type-card-summary"><span>${esc(ct.name)}</span><span class="mono small muted">${esc(ct.code)}</span><span class="type-card-hint">Edit CaseType</span></summary>
       <div class="type-content">
       <p class="small muted">Category: ${esc(ct.category)} · Every requirement below is this CaseType's own — nothing is inherited.</p>
@@ -2475,7 +2475,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
     <summary><span class="type-group-name">${esc(category)}</span><span class="type-group-count">${types.length} CaseType${types.length === 1 ? "" : "s"}</span></summary>
     <div class="type-group-body">${types.map(typeCard).join("")}</div>
   </details>`).join("");
-  return `<div id="case types">
+  return `<div id="case-types">
     <section class="card">
       <h2>Organizations &amp; CaseTypes</h2>
       <p class="small muted">Organizations own their CaseTypes, document definitions, rule trees and reference prefixes. A new organization starts empty — nothing is copied from another tenant, and no configuration is bundled with the product.</p>
@@ -2784,20 +2784,36 @@ ${profileCard}
 ${form}`;
 }
 
+function configurationChecklist(c: Ctx): string {
+  const orgId = c.user.organization_id ?? 1;
+  const types = c.repo.listCaseTypes(orgId);
+  const docs = types.reduce((n, type) => n + c.repo.listDocumentDefinitions(type.id).length, 0);
+  const rules = types.filter((type) => c.repo.caseTypeRules(type).length > 0).length;
+  const templates = c.repo.listTemplates(orgId).length;
+  const hasGmail = c.repo.getSetting("gmail_disabled", "") !== "1" &&
+    Boolean(c.repo.getSetting("gmail_address", "").trim() && c.repo.getSetting("gmail_client_id", "").trim() && c.repo.hasSecret("gmail_client_secret") && c.repo.hasSecret("gmail_refresh_token"));
+  const hasGemini = c.repo.hasSecret("gemini_api_key");
+  const checks: Array<{ label: string; detail: string; href: string; done: boolean }> = [
+    { label: "Name the institution", detail: "Give the workspace its identity", href: "/settings#organization", done: Boolean(c.institution && c.institution !== "Organization") },
+    { label: "Create a case type", detail: "For example, Undergraduate application", href: "/config?tab=case-types", done: types.length > 0 },
+    { label: "Add the document checklist", detail: "Define what applicants must provide", href: "/config?tab=case-types", done: docs > 0 },
+    { label: "Define the requirements rules", detail: "Rules stay deterministic; uncertain cases go to staff", href: "/config?tab=case-types", done: rules > 0 },
+    { label: "Review response templates", detail: `${templates} template${templates === 1 ? "" : "s"} available`, href: "/templates", done: templates > 0 },
+    { label: "Connect Gmail", detail: "Use Gmail as an intake channel", href: "/settings#connections", done: hasGmail },
+    { label: "Add Gemini (optional)", detail: "Classify messy messages and documents first", href: "/settings#gemini", done: hasGemini },
+  ];
+  const complete = checks.filter((item) => item.done).length;
+  return `<section class="readiness-card" aria-label="Configuration checklist">
+    <div class="readiness-head"><div><span class="kicker">READY WHEN YOU ARE</span><h2>Configuration checklist</h2><p class="small muted">Complete these in order. AA will not reject an applicant automatically; incomplete or uncertain cases stay with a human.</p></div><div class="readiness-progress"><strong>${complete}/${checks.length}</strong><span>ready</span></div></div>
+    <div class="readiness-list">${checks.map((item, index) => `<a href="${item.href}" class="readiness-item ${item.done ? "done" : ""}"><span class="readiness-number">${item.done ? "✓" : index + 1}</span><span><strong>${item.label}</strong><small>${item.detail}</small></span><span class="readiness-arrow">→</span></a>`).join("")}</div>
+  </section>`;
+}
+
 export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsWorkspace?: string, caseTypesOrganizationId?: number, editRuleId?: number): string {
 
   // Round 3: the legacy courses tab is gone — case types are configured under
   // Configuration; /config?tab=courses redirects to the staff area.
   const tab = tabChoice === "replies" || tabChoice === "pack" || tabChoice === "requirements" || tabChoice === "rules" ? tabChoice : "case-types";
-  const setupGuide = tab === "case-types" ? `<section class="setup-guide" aria-label="Configuration guide">
-    <div><span class="kicker">SETUP GUIDE</span><h2>Make the workspace ready in four calm steps</h2><p class="small muted">You do not need to understand every setting. Start at the top, save each step, and come back when you are ready.</p></div>
-    <div class="setup-steps">
-      <a href="/config?tab=case-types"><b>1</b><span><strong>Describe your work</strong><small>Create a case type and name it in everyday language.</small></span></a>
-      <a href="/config?tab=pack"><b>2</b><span><strong>List what is needed</strong><small>Add the documents or information staff check.</small></span></a>
-      <a href="/config?tab=rules"><b>3</b><span><strong>Choose what happens next</strong><small>Keep uncertain cases with a person; automate only clean work.</small></span></a>
-      <a href="/settings#connections"><b>4</b><span><strong>Connect the inbox</strong><small>Gmail and Gemini are optional and can be tested separately.</small></span></a>
-    </div>
-  </section>` : "";
   const tabBar = `<div class="tabs" style="margin:0 0 20px">
     <a href="/config?tab=case-types" class="${tab === "case-types" ? "on" : ""}">CaseTypes</a>
     <a href="/config?tab=rules" class="${tab === "rules" ? "on" : ""}">Workflow rules</a>
@@ -2866,7 +2882,7 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
 <h1>Configuration</h1>
 <div class="sub">Requirements, deadlines and reply behaviour | case type configuration (checklists, rules, windows) lives under <a href="/config?tab=case-types">Case types</a>. Changes apply to newly processed email immediately.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
-${setupGuide}
+${configurationChecklist(c)}
 ${tabBar}
 ${tab === "rules" ? workflowRulesTab(c, editRuleId) : tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? attachmentSetsCard(c) + documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsWorkspace) : replyHtml}
 `

@@ -946,10 +946,10 @@ td { padding-top: 16px; padding-bottom: 16px; }
 @keyframes accentDraw { from { transform:scaleX(.2); transform-origin:left; opacity:.2; } to { transform:scaleX(1); transform-origin:left; opacity:1; } }
 @keyframes markFloat { 0%,100% { transform:translateY(0) rotate(0deg); } 50% { transform:translateY(-2px) rotate(-1deg); } }
 @keyframes softPulse { 0%,100% { box-shadow:0 0 0 0 color-mix(in srgb,var(--plum-mid) 0%,transparent); } 50% { box-shadow:0 0 0 5px color-mix(in srgb,var(--plum-mid) 10%,transparent); } }
-.content > .card, .content > .grid, .content > .stat, .content > .case-row, .content > .empty-state, .content > .table-wrap, .content > section { animation:contentRise .48s cubic-bezier(.2,.75,.2,1) both; }
+.content > .card, .content > .grid, .content > .stat, .content > .case-row, .content > .empty-state, .content > .table-wrap, .content > section { animation:contentRise .22s ease-out both; }
 .content > :nth-child(2) { animation-delay:.045s; } .content > :nth-child(3) { animation-delay:.09s; } .content > :nth-child(4) { animation-delay:.135s; } .content > :nth-child(5) { animation-delay:.18s; }
 .card, .stat, .case-row, .table-wrap, .type-card { transition:border-color .22s ease, box-shadow .22s ease, transform .22s ease, background-color .22s ease; }
-.card:hover, .stat:hover, .case-row:hover, .type-card:hover { transform:translateY(-2px); border-color:color-mix(in srgb,var(--plum-outline) 68%,var(--line)); box-shadow:var(--shadow-lg); }
+.card:hover, .stat:hover, .case-row:hover, .type-card:hover { border-color:color-mix(in srgb,var(--plum-outline) 68%,var(--line)); box-shadow:var(--shadow-lg); }
 .aa-mark { transition:transform .28s cubic-bezier(.2,.8,.2,1), filter .28s ease; }
 .aa-mark:hover { transform:translateY(-1px) rotate(-1.5deg); filter:drop-shadow(0 8px 16px color-mix(in srgb,var(--plum-mid) 20%,transparent)); }
 .aa-mark-white:hover { animation:markFloat 1.8s ease-in-out infinite; }
@@ -1203,6 +1203,24 @@ input:focus, select:focus, textarea:focus { border-color: var(--plum-light); box
 .setup-steps strong { font-size:12px; }
 .setup-steps small { margin-top:3px; color:var(--muted); font-size:11px; line-height:1.35; }
 @media (max-width:720px) { .setup-guide,.setup-steps { grid-template-columns:1fr; } }
+.readiness-card { padding:20px 24px; margin:0 0 22px; border:1px solid var(--line); border-left:3px solid var(--plum-mid); border-radius:12px; background:var(--card); }
+.readiness-head { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; }
+.readiness-head h2 { margin:4px 0; font-size:22px; }
+.readiness-head .kicker { color:var(--plum-light); font-size:10px; font-weight:800; letter-spacing:.16em; }
+.readiness-progress { min-width:68px; text-align:right; color:var(--plum-light); }
+.readiness-progress strong { display:block; font:400 28px/1 var(--display); }
+.readiness-progress span { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.1em; }
+.readiness-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:16px; }
+.readiness-item { display:flex; align-items:center; gap:10px; min-width:0; padding:11px 12px; border:1px solid var(--line2); border-radius:9px; color:var(--ink); text-decoration:none; background:var(--card-raised); transition:background .16s ease,border-color .16s ease; }
+.readiness-item:hover { background:var(--plum-wash); border-color:var(--plum-soft); text-decoration:none; }
+.readiness-item.done { border-color:var(--green-line); }
+.readiness-number { display:grid; place-items:center; width:24px; height:24px; flex:none; border-radius:50%; border:1px solid var(--line); color:var(--muted); font-size:11px; font-weight:800; }
+.readiness-item.done .readiness-number { color:var(--green); border-color:var(--green-line); background:var(--green-bg); }
+.readiness-item strong,.readiness-item small { display:block; }
+.readiness-item strong { font-size:12px; }
+.readiness-item small { margin-top:3px; color:var(--muted); font-size:11px; line-height:1.3; }
+.readiness-arrow { margin-left:auto; color:var(--muted); }
+@media (max-width:720px) { .readiness-head { flex-direction:column; gap:8px; } .readiness-progress { text-align:left; } .readiness-list { grid-template-columns:1fr; } }
 /* Final proportionality pass: calmer hierarchy, consistent rhythm, and no
    decorative treatment should compete with the work. */
 :root { --space-page: clamp(18px, 3vw, 42px); }
