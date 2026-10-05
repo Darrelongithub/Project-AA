@@ -2020,9 +2020,29 @@ export class Repo {
   /** Public ingest calls per minute, per key. A corrupt or absent value falls
    *  back to the documented default instead of disabling the limiter (NaN > 0
    *  is false, and `if (limit > 0)` would then never rate-limit anyone). */
-  webhookRateLimitPerMinute(): number {
-    const raw = Number((this.getSetting("webhook_rate_limit_per_minute", String(DEFAULT_WEBHOOK_RATE_PER_MINUTE)) || "").trim());
-    return Number.isFinite(raw) && raw > 0 ? Math.min(10_000, Math.floor(raw)) : DEFAULT_WEBHOOK_RATE_PER_MINUTE;
+  /**
+   * The ingest budget for THIS organization. A per-tenant control cannot live in
+   * the shared `settings` table: an administrator of one tenant writing a row
+   * that throttles another tenant is a cross-tenant configuration write, which
+   * every other settings surface here refuses. So the tenant's own value wins
+   * when it has one, and the installation-wide setting is the default it follows
+   * until then.
+   */
+  webhookRateLimitPerMinute(organizationId = 1): number {
+    const own = this.db.prepare("SELECT webhook_rate_limit_per_minute FROM organizations WHERE id = ?").get(organizationId) as
+      | { webhook_rate_limit_per_minute: string | null }
+      | undefined;
+    const parsed = Number((own?.webhook_rate_limit_per_minute ?? "").trim());
+    if (Number.isFinite(parsed) && parsed > 0) return Math.min(10_000, Math.floor(parsed));
+    const fallback = Number(String(this.getSetting("webhook_rate_limit_per_minute", String(DEFAULT_WEBHOOK_RATE_PER_MINUTE))).trim());
+    return Number.isFinite(fallback) && fallback > 0 ? Math.min(10_000, Math.floor(fallback)) : DEFAULT_WEBHOOK_RATE_PER_MINUTE;
+  }
+
+  /** `null` hands the organization back to the installation default. */
+  setWebhookRateLimitPerMinute(organizationId: number, value: number | null): void {
+    const stored = value === null ? null : String(Math.min(10_000, Math.max(1, Math.floor(value))));
+    const changed = this.db.prepare("UPDATE organizations SET webhook_rate_limit_per_minute = ? WHERE id = ?").run(stored, organizationId);
+    if (!changed.changes) throw new Error(`setWebhookRateLimitPerMinute: no such organization ${organizationId}`);
   }
 
   /**

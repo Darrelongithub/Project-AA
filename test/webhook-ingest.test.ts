@@ -298,6 +298,8 @@ describe("webhook ingest: rate limiting", () => {
   it("returns 429 with Retry-After past the configured per-minute threshold", async () => {
     const flood = repo.createOrganization({ name: "Flood Test Desk", refPrefix: "FLD" });
     const floodKey = repo.setWebhookIngestKey(flood.id);
+    // No per-tenant value on this fresh organization, so it follows the
+    // installation default — which is what this block moves.
     repo.setSetting("webhook_rate_limit_per_minute", "2");
     try {
       const one = await postJson(floodKey, { email: "f1@example.org", message: "one" });
@@ -318,6 +320,34 @@ describe("webhook ingest: rate limiting", () => {
     } finally {
       repo.setSetting("webhook_rate_limit_per_minute", "1000");
     }
+  });
+
+  it("applies a tenant's own budget to that tenant alone, overriding the default", async () => {
+    // One tenant must not be able to throttle another by setting a number, and
+    // an organization with no value of its own keeps following the installation
+    // default. That is why the budget is a column on the organization row and
+    // not a row in the shared settings table.
+    const tight = repo.createOrganization({ name: "Narrow Desk", refPrefix: "NGH" });
+    const loose = repo.createOrganization({ name: "Wide Desk", refPrefix: "WDE" });
+    const tightKey = repo.setWebhookIngestKey(tight.id);
+    const looseKey = repo.setWebhookIngestKey(loose.id);
+    repo.setWebhookRateLimitPerMinute(tight.id, 1);
+    repo.setSetting("webhook_rate_limit_per_minute", "1000");
+    expect(repo.webhookRateLimitPerMinute(tight.id)).toBe(1);
+    expect(repo.webhookRateLimitPerMinute(loose.id)).toBe(1000);
+
+    const first = await postJson(tightKey, { email: "n1@example.org", message: "one" });
+    const second = await postJson(tightKey, { email: "n2@example.org", message: "two" });
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(429);
+    // The neighbour is untouched by all of that.
+    for (let i = 0; i < 3; i++) {
+      expect((await postJson(looseKey, { email: `w${i}@example.org`, message: `call ${i}` })).status).toBe(202);
+    }
+    // Clearing the override hands the tenant back to the default, no restart.
+    repo.setWebhookRateLimitPerMinute(tight.id, null);
+    expect(repo.webhookRateLimitPerMinute(tight.id)).toBe(1000);
+    expect((await postJson(tightKey, { email: "n3@example.org", message: "three" })).status).toBe(202);
   });
 
   it("keeps one tenant's traffic inside that tenant", async () => {

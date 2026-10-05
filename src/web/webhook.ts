@@ -235,7 +235,7 @@ export async function ingestWebhook(deps: WebhookDeps, params: IngestParams): Pr
     return { status: 404, body: { ok: false, error: "not found" } };
   }
 
-  const budget = limiter.hit(`org:${organizationId}`, repo.webhookRateLimitPerMinute());
+  const budget = limiter.hit(`org:${organizationId}`, repo.webhookRateLimitPerMinute(organizationId));
   if (!budget.ok) {
     repo.logWebhookDelivery({
       organizationId, outcome: "rate_limited", statusCode: 429,

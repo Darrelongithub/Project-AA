@@ -45,6 +45,14 @@ Inbound type resolution is deterministic, in this order: a connector-supplied ty
 
 Rule-based and classifier-category-to-case-type routing are intentionally not enabled. For a shared mailbox with several case types and no reliable address distinction, staff must route/re-type the case.
 
+### Web submissions
+
+An organization can accept submissions from its own website, form builder or automation tool through `POST /api/v1/ingest/:org_key`. The address, its permanent per-organization key, the request budget and the recent-delivery log all live under **Settings → Web submissions**, next to the Connections setup, with copy-paste examples for a plain HTML form, WordPress, Zapier, Make and Webflow.
+
+Accepted fields are `email` (required), `full_name`, `external_id`, `case_type`, `message` and `metadata`. The response returns the case's `ref_number`, so the caller can tell a person asking for their reference what it is. A submission is a message, not an instruction: it becomes an `IncomingEmail` on the `webhook` channel and runs the ordinary path — the same case-type rules, the same document and evidence gates, the same draft-first automation switch, the same human-only outcomes. Nothing on this endpoint can read a case, change one or decide one.
+
+Three properties are deliberate. Validation refuses rather than truncates, and a `case_type` the organization has not configured is an error rather than a new type or a silent fallback to `other`. `external_id` is an idempotency key, so a retry or a double-clicked form replays the first result instead of opening a second case; if processing fails the claim is released and a retry is welcome. The key is a bearer credential and is never written to a log line, an audit row or a delivery record, so rotation is one database update with no grace period — the old address is refused on the next request. Because a browser-side form must contain the address to post to it, anyone who can view that page can read it and submit through it: post from your own server when that is not acceptable, and rotate if it leaks (see `BUGS.md` PROD-13).
+
 ### Case states and queues
 
 State is derived from separate facts rather than one overloaded status string: lifecycle, routing, routing reason, outcome, escalation, and follow-up schedule. Each case appears in one queue:

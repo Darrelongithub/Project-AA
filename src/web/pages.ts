@@ -1862,7 +1862,7 @@ export function webhookIngestSection(c: Ctx, origin: string, ingestKey: string |
   const { repo } = c;
   const url = ingestKey ? `${origin}${WEBHOOK_PATH_PREFIX}${ingestKey}` : "";
   const deliveries = repo.listWebhookDeliveries(c.user.organization_id ?? 1, 10);
-  const rate = repo.webhookRateLimitPerMinute();
+  const rate = repo.webhookRateLimitPerMinute(c.user.organization_id ?? 1);
 
   const outcomeBadge = (outcome: string, statusCode: number): string => {
     if (outcome === "accepted") return `<span class="badge b-green">accepted</span>`;
@@ -2020,7 +2020,7 @@ async function submitToCaseOffice(fields) {
 <div class="card" id="webhook-settings">
   <h2>Request budget</h2>
   <div class="formrow" style="align-items:flex-end">
-    <div><label>Accepted calls per minute, per key</label>
+    <div><label>Requests per minute, per key</label>
       <input type="number" min="1" max="10000" step="1" value="${rate}" form="aa-webhook-budget" style="width:120px">
     </div>
     <div style="align-self:flex-end">
@@ -2031,7 +2031,7 @@ async function submitToCaseOffice(fields) {
       </form>
     </div>
   </div>
-  <p class="small muted" style="margin:8px 0 0">Live on the next request, no restart. A caller that goes over it gets <span class="mono">429</span> with a <span class="mono">Retry-After</span>, and the attempt is listed below. The counter is per key, so one tenant flooding its own address cannot slow another's; the threshold itself is set for the whole installation, like the other numbers on this page.</p>
+  <p class="small muted" style="margin:8px 0 0">Applied on the next request, no restart. A caller over the limit gets <span class="mono">429</span> with a <span class="mono">Retry-After</span>, and the attempt is listed below. Everything that arrives with a valid key counts against it — including payloads this endpoint refuses, because a flood of garbage is what the budget is for. The window is a fixed 60 seconds, so a throttled caller waits at most a minute. The counter belongs to this organization, so rotating the key does not reset it, and one tenant's traffic cannot slow another's. The value you save here belongs to this organization — a tenant that has never set one follows the installation default.</p>
 </div>
 
 <div class="card" id="webhook-examples">

@@ -2155,9 +2155,9 @@ export function createApp(deps: WebDeps): Express {
       if (!/^\d+$/.test(raw) || Number(raw) < 1 || Number(raw) > 10_000) {
         return back("Rate limit unchanged: enter a whole number of calls per minute between 1 and 10000.");
       }
-      repo.setSetting("webhook_rate_limit_per_minute", String(Math.floor(Number(raw))));
-      repo.audit(null, req.staff!.username, "settings_changed", `webhook ingest rate limit → ${raw} per minute per key`);
-      return back(`Rate limit saved: ${raw} accepted calls per minute, per ingest key. Effective on the next request.`);
+      repo.setWebhookRateLimitPerMinute(organizationIdForStaff, Math.floor(Number(raw)));
+      repo.audit(null, req.staff!.username, "settings_changed", `webhook ingest rate limit for organization ${organizationIdForStaff} → ${raw} per minute`);
+      return back(`Rate limit saved for this organization: ${raw} requests per minute on the ingest address. Effective on the next request.`);
     }
     return back("Nothing changed: this form rotates the ingest key or sets the per-minute request budget.");
   });

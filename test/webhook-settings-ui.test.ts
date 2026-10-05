@@ -166,7 +166,7 @@ describe("Settings → Web submissions", () => {
     const saved = await postSettings({ action: "limit", webhook_rate_limit_per_minute: "7" });
     expect(saved.status).toBe(302);
     expect(repo.webhookRateLimitPerMinute()).toBe(7);
-    expect(decodeURIComponent(saved.location ?? "")).toMatch(/7 accepted calls per minute/);
+    expect(decodeURIComponent(saved.location ?? "")).toMatch(/7 requests per minute/);
 
     const junk = await postSettings({ action: "limit", webhook_rate_limit_per_minute: "-4" });
     expect(decodeURIComponent(junk.location ?? "")).toMatch(/Rate limit unchanged/);
@@ -174,8 +174,27 @@ describe("Settings → Web submissions", () => {
 
     const page = await settingsPage();
     expect(page.html).toContain('value="7"');
-    expect(page.html).toMatch(/Accepted calls per minute, per key/);
-    repo.setSetting("webhook_rate_limit_per_minute", "1000");
+    expect(page.html).toMatch(/Requests per minute, per key/);
+    // Per-tenant, not a write into the shared settings row that every other
+    // organization's intake budget is read from.
+    expect(repo.webhookRateLimitPerMinute(2)).not.toBe(7);
+    expect(repo.getSetting("webhook_rate_limit_per_minute", "")).toBe("30"); // still the seeded default, not what was just saved
+    repo.setWebhookRateLimitPerMinute(1, null);
+  });
+
+  it("keeps one administrator's budget inside their own organization", async () => {
+    const second = repo.createOrganization({ name: "Other Desk", refPrefix: "OTH" });
+    repo.createStaff("admin2", "Other Administrator", hashPassword("admin12345"), "admin", false, second.id);
+    const other = await webLogin(base, "admin2", "admin12345");
+    expect(other.status).toBe(302);
+    const before = repo.webhookRateLimitPerMinute(1);
+    const saved = await postSettings({ action: "limit", webhook_rate_limit_per_minute: "4" }, other.cookie, other.csrf);
+    expect(saved.status).toBe(302);
+    expect(repo.webhookRateLimitPerMinute(second.id)).toBe(4);
+    expect(repo.webhookRateLimitPerMinute(1)).toBe(before);
+    // …and the other administrator's own page is unchanged by it.
+    const mine = await settingsPage();
+    expect(mine.html).toContain(`value="${before}"`);
   });
 
   it("lists recent deliveries with their outcome, timestamp and case link", async () => {
