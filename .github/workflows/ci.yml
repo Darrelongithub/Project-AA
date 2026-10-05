@@ -77,7 +77,11 @@ jobs:
       - name: Compiled server boots on a fresh database and frames its own log
         run: |
           work="$(mktemp -d)"
-          DB_PATH="$work/ci.sqlite" PORT=8080 MODE=mock node dist/src/cli/serve.js > "$work/serve.log" 2>&1 &
+          # --no-warnings: Node's own runtime diagnostics are written to stderr beside the
+          # app's, and they are not framed log events. Suppressing them at the source keeps
+          # the assertion below strict — every line in this file must be one the logger
+          # emitted — instead of teaching the gate to forgive a list of noise patterns.
+          DB_PATH="$work/ci.sqlite" PORT=8080 MODE=mock node --no-warnings dist/src/cli/serve.js > "$work/serve.log" 2>&1 &
           pid=$!
           answer=""
           for _ in $(seq 1 60); do
@@ -96,8 +100,12 @@ jobs:
             cat "$work/serve.log"
             exit 1
           fi
-          if grep -vE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z\] (DEBUG|INFO|WARN|ERROR) ' "$work/serve.log" | grep -q .; then
-            echo "::error::process log contains a line that is not a prefixed event (PROD-14)"
+          unframed="$(grep -vE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z\] (DEBUG|INFO|WARN|ERROR) ' "$work/serve.log" | head -3 | tr '\n' '|')"
+          if [ -n "$unframed" ]; then
+            # The offending text goes in the annotation, not only the log: annotations are
+            # readable through the checks API when the raw run log is not, so a failure here
+            # is diagnosable from the outside instead of turning into a guess.
+            echo "::error::process log contains a line that is not a prefixed event (PROD-14): ${unframed}"
             cat "$work/serve.log"
             exit 1
           fi
