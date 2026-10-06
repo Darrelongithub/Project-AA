@@ -39,7 +39,10 @@ interface Ctx {
 
 /** The one warning every page carries while mail cannot leave the building. */
 function deliveryNotice(c: Ctx): string | undefined {
-  if (c.mailDelivers !== true) return undefined;
+  // The banner is useful precisely when the sender cannot deliver. The old
+  // predicate was inverted, so a healthy Gmail connection showed a scary
+  // warning while an offline installation stayed silent.
+  if (c.mailDelivers === true) return undefined;
   return `<b>Mail is not connected.</b> Automated replies are held as queued drafts and <b>not sent</b> — connect Gmail under <a href="/settings#connections">Settings &rarr; Connections</a>.`;
 }
 
@@ -2084,7 +2087,10 @@ export function connectionsSection(c: Ctx, gmailRedirectUri?: string): string {
   const gClientSecret = repo.hasSecret("gmail_client_secret") ? "saved" : "";
   const gRefresh = repo.hasSecret("gmail_refresh_token") ? "saved" : "";
   const geminiKeySaved = repo.hasSecret("gemini_api_key");
-  const connected = Boolean(gAddress && gClientId && gClientSecret && gRefresh) || Boolean(c.gmailConfigured);
+  // Settings-backed OAuth is the primary source of truth. Runtime env
+  // credentials are also valid, but must not hide a disabled connection.
+  const connected = repo.getSetting("gmail_disabled", "") !== "1" &&
+    (Boolean(gAddress && gClientId && gClientSecret && gRefresh) || Boolean(c.gmailConfigured));
   // AUX-2: a plain-`http://` redirect URI on a NON-LOOPBACK host can never
   // be registered with a Google OAuth web client — the classic
   // behind-a-proxy trap (the app sees the plain HTTP hop to the proxy,
@@ -2402,7 +2408,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
   const caseTypes = c.repo.listCaseTypes(organizationId);
   const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
   const orgPicker = `<form method="get" action="/config" class="inline" style="margin-bottom:16px">
-    <input type="hidden" name="tab" value="case types">
+    <input type="hidden" name="tab" value="case-types">
     <label class="small muted">Organization</label>
     <select name="organization" onchange="this.form.submit()">${organizations.map((o) => `<option value="${o.id}" ${o.id === organizationId ? "selected" : ""}>${esc(o.name)} · ${esc(o.ref_prefix)}</option>`).join("")}</select>
   </form>`;
@@ -2414,7 +2420,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
       <td>${d.required ? "required" : "optional"} · ${d.blocking ? "blocks gate" : "non-blocking"}</td>
       <td><form method="post" action="/config/case-types/document-delete" style="margin:0">${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}"><input type="hidden" name="key" value="${esc(d.key)}"><button class="btn small ghost">Remove</button></form></td>
     </tr>`).join("");
-    return `<details class="card type-card" id="case type-${ct.id}">
+    return `<details class="card type-card" id="case-type-${ct.id}">
       <summary class="type-card-summary"><span>${esc(ct.name)}</span><span class="mono small muted">${esc(ct.code)}</span><span class="type-card-hint">Edit CaseType</span></summary>
       <div class="type-content">
       <p class="small muted">Category: ${esc(ct.category)} · Every requirement below is this CaseType's own — nothing is inherited.</p>
@@ -2469,7 +2475,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
     <summary><span class="type-group-name">${esc(category)}</span><span class="type-group-count">${types.length} CaseType${types.length === 1 ? "" : "s"}</span></summary>
     <div class="type-group-body">${types.map(typeCard).join("")}</div>
   </details>`).join("");
-  return `<div id="case types">
+  return `<div id="case-types">
     <section class="card">
       <h2>Organizations &amp; CaseTypes</h2>
       <p class="small muted">Organizations own their CaseTypes, document definitions, rule trees and reference prefixes. A new organization starts empty — nothing is copied from another tenant, and no configuration is bundled with the product.</p>
@@ -2778,6 +2784,31 @@ ${profileCard}
 ${form}`;
 }
 
+function configurationChecklist(c: Ctx): string {
+  const orgId = c.user.organization_id ?? 1;
+  const types = c.repo.listCaseTypes(orgId);
+  const docs = types.reduce((n, type) => n + c.repo.listDocumentDefinitions(type.id).length, 0);
+  const rules = types.filter((type) => c.repo.caseTypeRules(type).length > 0).length;
+  const templates = c.repo.listTemplates(orgId).length;
+  const hasGmail = c.repo.getSetting("gmail_disabled", "") !== "1" &&
+    Boolean(c.repo.getSetting("gmail_address", "").trim() && c.repo.getSetting("gmail_client_id", "").trim() && c.repo.hasSecret("gmail_client_secret") && c.repo.hasSecret("gmail_refresh_token"));
+  const hasGemini = c.repo.hasSecret("gemini_api_key");
+  const checks: Array<{ label: string; detail: string; href: string; done: boolean }> = [
+    { label: "Name the institution", detail: "Give the workspace its identity", href: "/settings#organization", done: Boolean(c.institution && c.institution !== "Organization") },
+    { label: "Create a case type", detail: "For example, Undergraduate application", href: "/config?tab=case-types", done: types.length > 0 },
+    { label: "Add the document checklist", detail: "Define what applicants must provide", href: "/config?tab=case-types", done: docs > 0 },
+    { label: "Define the requirements rules", detail: "Rules stay deterministic; uncertain cases go to staff", href: "/config?tab=case-types", done: rules > 0 },
+    { label: "Review response templates", detail: `${templates} template${templates === 1 ? "" : "s"} available`, href: "/templates", done: templates > 0 },
+    { label: "Connect Gmail", detail: "Use Gmail as an intake channel", href: "/settings#connections", done: hasGmail },
+    { label: "Add Gemini (optional)", detail: "Classify messy messages and documents first", href: "/settings#gemini", done: hasGemini },
+  ];
+  const complete = checks.filter((item) => item.done).length;
+  return `<section class="readiness-card" aria-label="Configuration checklist">
+    <div class="readiness-head"><div><span class="kicker">READY WHEN YOU ARE</span><h2>Configuration checklist</h2><p class="small muted">Complete these in order. AA will not reject an applicant automatically; incomplete or uncertain cases stay with a human.</p></div><div class="readiness-progress"><strong>${complete}/${checks.length}</strong><span>ready</span></div></div>
+    <div class="readiness-list">${checks.map((item, index) => `<a href="${item.href}" class="readiness-item ${item.done ? "done" : ""}"><span class="readiness-number">${item.done ? "✓" : index + 1}</span><span><strong>${item.label}</strong><small>${item.detail}</small></span><span class="readiness-arrow">→</span></a>`).join("")}</div>
+  </section>`;
+}
+
 export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, reqsTarget?: string, tabChoice?: string, reqsWorkspace?: string, caseTypesOrganizationId?: number, editRuleId?: number): string {
 
   // Round 3: the legacy courses tab is gone — case types are configured under
@@ -2851,6 +2882,7 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
 <h1>Configuration</h1>
 <div class="sub">Requirements, deadlines and reply behaviour | case type configuration (checklists, rules, windows) lives under <a href="/config?tab=case-types">Case types</a>. Changes apply to newly processed email immediately.</div>
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
+${configurationChecklist(c)}
 ${tabBar}
 ${tab === "rules" ? workflowRulesTab(c, editRuleId) : tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? attachmentSetsCard(c) + documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsWorkspace) : replyHtml}
 `
