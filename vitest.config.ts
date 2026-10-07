@@ -6,6 +6,10 @@ export default defineConfig({
     testTimeout: 180_000,
     hookTimeout: 180_000,
     include: ["test/**/*.test.ts"],
+    // A failing test should say why it failed, not just that it did. The second
+    // reporter classifies every failure and prints next steps; it is inert when
+    // the suite is green. For a deeper, re-runnable pass: npm run test:troubleshoot.
+    reporters: ["default", "./test/troubleshootReporter.ts"],
     server: {
       deps: {
         // pdf.js v4+ is ESM-only. Both the package and our one-line bridge are

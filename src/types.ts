@@ -161,7 +161,7 @@ export interface Programme {
   entry_requirements: string;
   owner_id: number | null;
   owner_name: string | null;
-  /** Award level — selects the university-wide default entry requirements. */
+  /** Award level or band — selects organization-defined entry requirements when configured. */
   level: string;
 }
 

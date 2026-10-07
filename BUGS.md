@@ -1,3 +1,81 @@
+# Break-test findings (2026-10-06 redesign pass)
+
+Bugs found while stress-checking the redesign / flowchart / email work. Status is **fixed** unless noted.
+
+| ID | Severity | Area | Finding | Fix |
+| --- | --- | --- | --- | --- |
+| BT-1 | High | `src/db/seed.ts` | `import type { RuleNode }` appeared mid-file after other statements — invalid TypeScript module order; would fail `tsc`. | Moved import to the top of the file with the other imports. |
+| BT-2 | Medium | `src/web/pages.ts` | Unused `firstCond` helper in the flowchart editor — breaks builds with `noUnusedLocals`. | Removed. |
+| BT-3 | High | `src/ingestion/gmailClient.ts` + outbound path | Email **banner** was `Content-Disposition: inline` with a CID but the body was **plain text only**, so clients showed a loose image instead of a header. | HTML alternative embeds `<img src="cid:organization-banner">`. |
+| BT-4 | Medium | `src/web/server.ts` + `gmailClient.ts` | With banner + signature, HTML could show **two signatures** (plain `--` block already in body, plus HTML signature block). | Text signature is not pre-appended when a banner (HTML path) is used; plain MIME part still receives `signatureText`; HTML uses `signatureHtml` only once. |
+| BT-5 | Medium | `src/branding.ts` `emailBanner` | Custom uploaded banner was only applied when `organizationId === 1`; other tenants always fell through to logo/default. | Any org can use the uploaded banner setting (settings keys remain installation-global by schema). |
+| BT-6 | Low | Product copy | University / “admissions desk” framing reintroduced by an early one-click starter. | Purged from `src/`; replaced with neutral process templates. |
+| BT-7 | Info | Flowchart editor | Full drag-and-drop canvas is not required for correctness; interactive click-to-edit panel is wired to existing save/toggle/delete endpoints. | Shipped as centrepiece editor. |
+| BT-8 | Info | Multi-tenant settings | `email_banner`, `signature_*`, `classifier_prompt` use the global settings table (not per-organization rows). Fine for single-tenant pilots; multi-tenant isolation of these keys is a known follow-up. | Documented; not silently cross-writing case data. |
+
+## Phase 20 — redesign correctness pass (2026-10-07) — delivered
+
+The UI/flowchart redesign (see [`WHAT_CHANGED.md`](WHAT_CHANGED.md)) reached this
+branch as `Project-AA-full-fixed.zip`. It had never been typechecked or tested:
+the archive omitted `tsconfig.json`, `vitest.config.ts`, `src/logs/index.ts`,
+`tessdata/eng.traineddata.gz` and 22 test files, and the tree it produced failed
+`npm run typecheck` and `npm test`.
+
+A read-only scan was run first and is recorded in **[`BUG_SCAN.md`](BUG_SCAN.md)**
+(16 findings; a content-and-mode snapshot proved no file changed during it).
+Every fixable finding is closed below and pinned by a regression test.
+
+| ID | Severity | Finding | Status |
+| --- | --- | --- | --- |
+| BUG-01 | Critical | The archive is 28 files short: no compiler config, no test config, `src/logs/index.ts` absent, 22 suites missing | **CLOSED** — paths restored from git; the three obsolete ZIPs deleted |
+| BUG-02 | Critical | Unused `PROCESS_TEMPLATES` import broke typecheck, build and CI (`noUnusedLocals`) | **FIXED** — cards now rendered from the constant; route validates against it |
+| BUG-03 | Critical | `test/web.test.ts` still asserted the removed Instrument Serif font | **FIXED** — asserts Manrope throughout |
+| BUG-04 | High | Flowchart save dropped conditions 2 and 3 | **FIXED** — one row per condition; over-long rules refused, not truncated |
+| BUG-05 | High | Flowchart save reset SLA, attachment set, follow-up ladder, template map, audit code, fallback, priority, assign, request-info | **FIXED** — hidden mirrors carry the untouched values |
+| BUG-06 | High | Flowchart save re-enabled a deliberately parked rule | **FIXED** — `enabled` round-trips; the advanced form keeps its old default |
+| BUG-07 | High | The diagram ordered by `position`; the engine sorts case-type rules first and scopes per case type — the picture and `firstMatchingRule` disagreed. The preview route had the same drift | **FIXED** — page and preview both use `compareRuleOrder` / `rulesForCaseScope` |
+| BUG-08 | High | A rule with no conditions (which can never fire) was shown as "Any message" and saved as a catch-all | **FIXED** — labelled "Never matches", round-trips as `[]` |
+| BUG-09 | Medium | Flowchart nodes unreachable by keyboard; On/Off control hidden behind `:hover` | **FIXED** — keydown handler; `:focus-within` reveals the control |
+| BUG-10 | Medium | `emailBanner` applied organization 1's upload to every tenant | **FIXED** — branding settings scoped per organization |
+| BUG-11 | Medium | Seeding a process template appended to the shared `intake_hotwords`, widening every tenant's intake | **FIXED** — per-organization hotwords, merged at read time |
+| BUG-12 | Medium | Classifier guidance was global and was injected after the JSON output contract | **FIXED** — scoped per organization, placed before the contract |
+| BUG-13 | Low | Inline banner lost its file extension, degrading to a generic attachment | **FIXED** — extension derived from the MIME type |
+| BUG-14 | Low | Dead Instrument Serif WOFF2 blobs and routes still shipped (~58 KB) | **FIXED** — removed |
+| BUG-15 | Low | Trailing whitespace at `src/web/pages.ts:2830` | **FIXED** |
+| BUG-16 | Low | The two MIME paths disagreed about "already signed"; a body mentioning the signer suppressed the signature | **FIXED** — one shared rule |
+
+**Coverage added:** `test/flowchart.test.ts` (17 tests — the two invariants
+*what is drawn is what runs* and *what is not shown is not lost*),
+`test/process-templates.test.ts` (21 tests), `test/troubleshooter.test.ts`
+(19 tests).
+
+**New operational surface:** `npm test` now ends with a classified diagnosis of
+every failure, and `npm run test:troubleshoot` runs a deeper pass with
+environment pre-flight. Runbook and decision flowchart: [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
+
+**Verified on `arena/e9eb1057-project-aa` (Node 22.22.3):** `npm run typecheck`
+clean · `npm test` 99 files / 828 passed / 1 skipped (the Playwright
+environment skip, ENV-1) · `npm run simulate` 409/409 across 26 scenarios ·
+`npm run build` clean. `canvas` could not be built here, so raster-only paths
+exercise the documented fallback (ENV-2) — this is not the same as green on CI.
+
+## Regression checks performed
+
+- Import order / module structure on `seed.ts`
+- Flowchart editor save/toggle/delete still posts to existing CSRF-protected routes
+- Admin role still implies `publish_rules` via `hasPermission`
+- Empty rule trees remain valid (`validateRuleTree([])`)
+- Banner MIME structure (multipart/related + alternative)
+- Signature append guards (template already signed / banner HTML path)
+
+## Still open (not introduced by this pass)
+
+- Live Gmail + Gemini end-to-end still pilot-dependent (`MODE=mock` default)
+- Settings keys for banner/signature/classifier are not org-scoped in the schema
+- No pixel-perfect drag-and-drop node reordering yet (order uses existing `position` field via advanced form)
+
+---
+
 # BUGS — issue register, decisions, and historical fixes
 
 **Canonical issue/status record.** Updated for the Phase 16 Markdown consolidation (2026-10-03). Status labels mean: **OPEN** = action still required; **UNVERIFIED** = no evidence from the available environment; **ACCEPTED** = known limitation/risk consciously left in place; **FIXED** = corrected and covered by regression evidence; **RETIRED** = the old feature/path was removed by the later general-purpose redesign; **NOT A BUG** = investigated behavior retained by the specification.

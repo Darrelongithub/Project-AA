@@ -7,6 +7,7 @@
     "build": "tsc -p tsconfig.json && node -e \"require('fs').copyFileSync('src/extraction/pdfjs-esm.mjs','dist/src/extraction/pdfjs-esm.mjs')\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:troubleshoot": "tsx scripts/troubleshoot-tests.mts",
     "simulate": "tsx src/cli/simulate.ts",
     "ingest": "tsx src/cli/ingest.ts",
     "queue": "tsx src/cli/queue.ts",

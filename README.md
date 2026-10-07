@@ -203,9 +203,16 @@ Run these from the repository root with the checked-in lockfile and local projec
 npm run build
 npm audit
 npm audit --omit=dev
+npm run test:troubleshoot   # when a test fails: classifies it and says what to do
 rg -i 'riara|kcse|kcpe|igcse|admission' src
 git diff --check
 ```
+
+**When a test fails,** `npm test` prints a classified diagnosis with next steps
+after the run, and `npm run test:troubleshoot` gives a deeper, re-runnable pass
+with an environment pre-flight (native modules, Node version, working
+directory). The runbook and decision flowchart are in
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
 
 The current suite has one environment-gated responsive test: it skips when Playwright Chromium is unavailable. The simulation is a 26-scenario / 409-check gate; stress runs 1,000 synthetic cases plus deterministic replays. See the current dated gate results, known limitations, and accepted decisions in [`BUGS.md`](BUGS.md).
 
@@ -218,6 +225,7 @@ At the latest Phase 16 Part 3 validation on this worktree, typecheck, all runnab
 | `npm run serve` | Start the TypeScript server and pipeline using `DB_PATH`. |
 | `npm start` | Start the compiled server (`npm run build` first). |
 | `npm run typecheck` / `npm test` | Strict TypeScript check / Vitest suite. |
+| `npm run test:troubleshoot` | Runs the suite and explains every failure — what it means and what to do next. See `TROUBLESHOOTING.md`. |
 | `npm run simulate` | Synthetic scenario suite through the real pipeline using mock external adapters; refuses the server DB. |
 | `npm run stress` | Deterministic 1,000-case synthetic load/stress harness with throwaway storage. |
 | `npm run ingest`, `queue`, `escalate`, `followups` | One-shot operational CLIs. |

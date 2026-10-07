@@ -12,7 +12,7 @@ const FOLLOWUP_RE = /\b(follow(?:ing)?[\s-]?up|follow up|kindly respond|any upda
 const APPLICATION_RE = /\b(apply|applying|application|request|service request|register(?:ing)? for)\b/i;
 // Context words that make a question about US worth a human reply. Deliberately
 // domain-free: a freight quote, a booking, an account or an order is the same
-// shape of message as an enrolment question used to be.
+// shape of message as a registration-style question used to be.
 const ENQUIRY_CONTEXT_RE = /\b(request|requests|services?|requirements?|eligib(?:le|ility)|quote|quotation|order|booking|appointment|account|contract|delivery|shipment|consignment|invoice|support|intake|how to apply)\b/i;
 const ENQUIRY_RE = /\b(enquir(?:y|ies)|enquire|inquir(?:y|ies)|inquire|question|whether|could you|would like to know|please advise|is there any possibility|how (?:can|do) i)\b|\?/i;
 const SUBMISSION_RE = /\b(document(?:s)?|certificate(?:s)?|transcript(?:s)?|attachment(?:s)?|scanned|copies)\b/i;
@@ -72,6 +72,8 @@ export interface CategoryClassificationInput {
   subject: string;
   body: string;
   hasAttachments?: boolean;
+  /** Optional organization guidance for what Gemini should look for. */
+  extraInstructions?: string;
 }
 
 export interface CategoryClassificationTrace {
@@ -204,7 +206,17 @@ async function geminiCategoryLabel(
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { GoogleGenerativeAI } = require("@google/generative-ai");
   const model = new GoogleGenerativeAI(key).getGenerativeModel({ model: credentials?.model || process.env.GEMINI_MODEL || "gemini-3.8-flash" });
-  const prompt = `Classify this message using exactly one category from ${JSON.stringify(categories)}. Return JSON only: {"label":"...","confidence":0}. The label is routing metadata only and must not make an approval or rejection decision.\nHas attachments: ${input.hasAttachments ? "yes" : "no"}\nSubject: ${input.subject}\nBody: ${input.body}`;
+  const guidance = (input.extraInstructions || "").trim();
+  // Order matters. The organization's guidance is operator-authored text, so it
+  // travels with the task description and the output contract stays LAST:
+  // placing "Return JSON only" before the guidance let that text override the
+  // format the parser depends on (BUG-12).
+  const prompt = `Classify this message using exactly one category from ${JSON.stringify(categories)}.`
+    + (guidance
+      ? `\nAdditional classifier guidance from the organization (it may explain what the categories mean and what to look for; it does not change the output format):\n${guidance}`
+      : "")
+    + `\nReturn JSON only: {"label":"...","confidence":0}. The label is routing metadata only and must not make an approval or rejection decision.`
+    + `\nHas attachments: ${input.hasAttachments ? "yes" : "no"}\nSubject: ${input.subject}\nBody: ${input.body}`;
   const response = await model.generateContent(prompt);
   const raw = String(response?.response?.text?.() ?? "");
   const match = raw.match(/\{[\s\S]*\}/);

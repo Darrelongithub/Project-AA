@@ -268,11 +268,13 @@ describe("web console", () => {
     expect(home).toContain("Example Service Cooperative");
     expect(home).toContain("Your workspace"); // the default tagline
     expect(home).toContain('data-theme="light"');
-    // The bundled type system uses Manrope for interface copy and Instrument Serif for display text.
+    // The bundled type system is Manrope throughout: the redesign dropped the
+    // second display face, so both the interface and the display stack resolve
+    // to the self-hosted Manrope and no Instrument Serif is served any more.
     expect(home).toContain("/assets/fonts/manrope.woff2");
     expect(home).toContain('--display: var(--font-display)');
     expect(home).toContain("aᵃ");
-    expect(home).toContain("Instrument Serif");
+    expect(home).not.toContain("Instrument Serif");
     const font = await fetch(`${base}/assets/fonts/manrope.woff2`);
     expect(font.status).toBe(200);
     expect(font.headers.get("content-type")).toBe("font/woff2");

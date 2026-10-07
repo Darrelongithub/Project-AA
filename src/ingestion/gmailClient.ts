@@ -17,6 +17,7 @@ import type { IncomingEmail } from "../types";
 import { envInt } from "../util/envnum";
 import { MAX_ATTACHMENT_BYTES } from "../extraction/extract";
 import { log, logField } from "../util/log";
+import { bodyAlreadySigned } from "../branding";
 
 /** Whole-message cap; above this the mail is parked, never downloaded. */
 export const MAX_EMAIL_BYTES = envInt(process.env.GMAIL_MAX_EMAIL_BYTES, 40 * 1024 * 1024);
@@ -53,6 +54,28 @@ interface MimePartNode {
   filename?: string;
   body?: { data?: string; attachmentId?: string; size?: number };
   parts?: MimePartNode[];
+}
+
+/**
+ * Filename for the inline banner part.
+ *
+ * Several mail clients pick a renderer from the filename extension. Dropping it
+ * (the multipart rewrite shipped `filename="organization-banner"` with no
+ * suffix) degraded a PNG or SVG banner to a generic attachment — the very
+ * behaviour the rewrite set out to fix (BUG-13).
+ */
+const BANNER_EXTENSIONS: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/svg+xml": "svg",
+};
+export function bannerFilename(mime: string): string {
+  const type = (mime || "").split(";")[0].trim().toLowerCase();
+  const ext = BANNER_EXTENSIONS[type];
+  return "organization-banner" + (ext ? `.${ext}` : "");
 }
 
 export class GmailClient {
@@ -273,7 +296,7 @@ export class GmailClient {
     subject: string,
     body: string,
     threadId: string,
-    extras?: { attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>; banner?: { mime: string; base64: string } | null; fromName?: string | null; fromAddress?: string | null; replyTo?: string | null }
+    extras?: { attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>; banner?: { mime: string; base64: string } | null; fromName?: string | null; fromAddress?: string | null; replyTo?: string | null; signatureHtml?: string; signatureText?: string }
   ): Promise<void> {
     const { to: cleanTo, subject: cleanSubject } = sanitizeHeaders(to, subject);
     const headers = [`To: ${cleanTo}`, `Subject: ${cleanSubject}`, "MIME-Version: 1.0"];
@@ -304,19 +327,41 @@ export class GmailClient {
       const related = "RU-REL-" + Date.now().toString(16);
       const parts: string[] = [];
       if (banner) {
+        // Embed banner via CID in HTML so clients show a header, not a loose image attachment.
+        const escapedBody = body
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+        const htmlBody =
+          `<!DOCTYPE html><html><body style="margin:0;padding:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#1f1729;">` +
+          `<div style="max-width:640px;margin:0 auto;">` +
+          `<img src="cid:organization-banner" alt="" style="display:block;width:100%;max-width:720px;height:auto;border:0;" />` +
+          `<div style="padding:20px 8px 8px;white-space:pre-wrap;font-size:15px;line-height:1.55;">${escapedBody}</div>` +
+          (extras?.signatureHtml || "") +
+          `</div></body></html>`;
+        const alt = "ALT-" + Date.now().toString(16);
         parts.push(
           [
             `--${mixed}`,
             `Content-Type: multipart/related; boundary="${related}"`,
             "",
             `--${related}`,
+            `Content-Type: multipart/alternative; boundary="${alt}"`,
+            "",
+            `--${alt}`,
             "Content-Type: text/plain; charset=UTF-8",
             "",
-            body,
+            body + (extras?.signatureText && !bodyAlreadySigned(body, extras.signatureText) ? extras.signatureText : ""),
+            "",
+            `--${alt}`,
+            "Content-Type: text/html; charset=UTF-8",
+            "",
+            htmlBody,
+            `--${alt}--`,
             "",
             `--${related}`,
             `Content-Type: ${banner.mime}; name="organization-banner"`,
-            `Content-Disposition: inline; filename="organization-banner.jpg"`,
+            `Content-Disposition: inline; filename="${bannerFilename(banner.mime)}"`,
             "Content-Transfer-Encoding: base64",
             "Content-Id: <organization-banner>",
             "",
