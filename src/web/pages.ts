@@ -848,7 +848,7 @@ export function applicantsPage(
   <select name="case_type"><option value="">Every case type</option>${caseTypes.map((p) => opt(p.code, p.name, q.caseType)).join("")}</select>
   <select name="intake"><option value="">Every intake</option>${intakes.map((i) => opt(i, i, q.intake)).join("")}</select>
   <button class="btn ghost">Refine results</button>
-  ${c.user.role === "admin" ? `<a class="btn small ghost" href="/applicants/export.csv">Export records</a>` : ""}
+  ${c.user.role === "admin" ? `<a class="btn small ghost" href="/export/applicants.csv">Export records</a>` : ""}
   ${c.user.role === "admin" && repo.listCaseTypes(c.user.organization_id ?? 1).length ? `<a class="btn small ghost" href="/intake/test">Test intake</a>` : ""}
 </form>
 

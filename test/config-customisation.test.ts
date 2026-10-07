@@ -594,3 +594,11 @@ describe("a new organization does not inherit a placeholder identity", () => {
     expect(repo.getSetting("institution_name", "")).toBe("Sweep Cooperative");
   });
 });
+
+describe("export links", () => {
+  it("the applicants export button points to the real route", async () => {
+    const html = await get("/applicants");
+    expect(html).toContain('href="/export/applicants.csv"');
+    expect(html).not.toContain("/applicants/export.csv");
+  });
+});
