@@ -35,7 +35,7 @@ import type {
 } from "../types";
 import { PERMISSIONS } from "../types";
 import type { WorkflowRule } from "../rules/workflow";
-import { fillSlots } from "../documents/matrix";
+import { documentRequirementsForCaseType, documentRequirementsFromAxes, fillSlots } from "../documents/matrix";
 import { validateRuleTree } from "../rules/caseType";
 import type { VisionCacheStore } from "../extraction/gemini";
 import { isValidCachedVision } from "../extraction/gemini";
@@ -193,6 +193,15 @@ export class Repo {
     // exists — an administrator never chooses it, because an org-settable slug
     // is a brute-force target and a guessable URL is a leaked URL.
     this.ensureWebhookIngestKey(created.id);
+    // The name signed on outgoing mail is its own setting (a workspace can be
+    // "Riverdale College" in the console and "Riverdale Admissions" on
+    // letters). It used
+    // to keep the seeded placeholder "Organization" until someone found the
+    // second field buried under Letters & identity. First run adopts the name
+    // the administrator just chose; a later organization never renames an
+    // existing installation's outgoing mail.
+    const signed = this.getSetting("institution_name", "");
+    if (!signed.trim() || signed.trim() === "Organization") this.setSetting("institution_name", name);
     return created;
   }
 
@@ -262,6 +271,56 @@ export class Repo {
     return this.getCaseType(code, organizationId)!;
   }
 
+  /**
+   * Rename, re-code or re-categorise an existing case type.
+   *
+   * A code is the stable identifier staff and inbound aliases refer to, so it
+   * is normalised exactly like `createCaseType` does and is refused when it
+   * would collide with a sibling type. Retired rows are skipped by the
+   * collision check so a code can be re-used only once the old type is gone
+   * from the active list.
+   */
+  updateCaseTypeIdentity(id: number, patch: { name?: string; code?: string; category?: string }): void {
+    const current = this.db.prepare("SELECT id, organization_id, code, name, category FROM case_types WHERE id = ?").get(id) as
+      { id: number; organization_id: number; code: string; name: string; category: string } | undefined;
+    if (!current) throw new Error("Unknown case type");
+    const code = patch.code === undefined ? current.code : patch.code.trim().toUpperCase();
+    const name = patch.name === undefined ? current.name : patch.name.trim();
+    const category = patch.category === undefined ? current.category : patch.category.trim() || "general";
+    if (!/^[A-Z][A-Z0-9_:-]{0,63}$/.test(code)) throw new Error("Case type code must start with a letter and use letters, digits, _ - or : only");
+    if (!name || name.length > 200) throw new Error("A case type name is required (200 characters or fewer)");
+    if (code !== current.code) {
+      const clash = this.db.prepare("SELECT id FROM case_types WHERE organization_id = ? AND code = ? AND active = 1 AND id <> ?").get(current.organization_id, code, id);
+      if (clash) throw new Error(`This organization already has a case type called ${code}`);
+    }
+    this.db.prepare("UPDATE case_types SET code = ?, name = ?, category = ? WHERE id = ?").run(code, name, category, id);
+    this.bumpCaseTypeConfigVersion(id);
+  }
+
+  /**
+   * Retire a case type: it disappears from every picker and stops being
+   * offered as a route, while existing cases keep the history they froze.
+   * Retiring is deliberately a soft delete — a case type is referenced by
+   * cases, aliases and workflow rules, and a hard delete would orphan them.
+   */
+  retireCaseType(id: number): void {
+    const current = this.db.prepare("SELECT id FROM case_types WHERE id = ?").get(id) as { id: number } | undefined;
+    if (!current) throw new Error("Unknown case type");
+    this.db.prepare("UPDATE case_types SET active = 0 WHERE id = ?").run(id);
+    // A retired type must not keep routing inbound mail.
+    this.db.prepare("UPDATE case_type_aliases SET active = 0 WHERE case_type_id = ?").run(id);
+    this.db.prepare("UPDATE workflow_rules SET enabled = 0 WHERE case_type_id = ?").run(id);
+  }
+
+  /** Bring a retired case type back, re-using its code if still free. */
+  reactivateCaseType(id: number): void {
+    const row = this.db.prepare("SELECT organization_id, code FROM case_types WHERE id = ?").get(id) as { organization_id: number; code: string } | undefined;
+    if (!row) throw new Error("Unknown case type");
+    const clash = this.db.prepare("SELECT id FROM case_types WHERE organization_id = ? AND code = ? AND active = 1 AND id <> ?").get(row.organization_id, row.code, id);
+    if (clash) throw new Error(`This organization already has an active case type called ${row.code}`);
+    this.db.prepare("UPDATE case_types SET active = 1 WHERE id = ?").run(id);
+  }
+
   getCaseType(code: string, organizationId = 1): CaseType | undefined {
     const row = this.db.prepare("SELECT id, organization_id, code, name, category, config, active, terminology, stages, queues, config_version, default_reply_action, evidence_gate FROM case_types WHERE organization_id = ? AND code = ? COLLATE NOCASE")
       .get(organizationId, code.trim()) as (Omit<CaseType, "config" | "terminology" | "stages" | "queues"> & { config: string; terminology: string; stages: string; queues: string }) | undefined;
@@ -291,6 +350,12 @@ export class Repo {
     return row ? this.getCaseType(row.code, row.organization_id) : undefined;
   }
 
+  /** Case types this organization has retired — still referenced by history. */
+  listRetiredCaseTypes(organizationId = 1): CaseType[] {
+    const rows = this.db.prepare("SELECT code FROM case_types WHERE organization_id = ? AND active = 0 ORDER BY code").all(organizationId) as Array<{ code: string }>;
+    return rows.map((r) => this.getCaseType(r.code, organizationId)!).filter(Boolean);
+  }
+
   listCases(organizationId?: number): ApplicantRow[] {
     // `0` is retained as the legacy live-realm selector used by the old
     // dashboard; organization ids are positive and use the canonical path.
@@ -318,19 +383,64 @@ export class Repo {
   }
 
   listDocumentDefinitions(caseTypeId: number): DocumentDefinition[] {
-    type Row = Omit<DocumentDefinition, "required" | "blocking"> & { required: number; blocking: number };
-    return (this.db.prepare("SELECT id, case_type_id, key, label, required, blocking, position FROM document_definitions WHERE case_type_id = ? ORDER BY position, id").all(caseTypeId) as Row[])
-      .map((d) => ({ ...d, required: !!d.required, blocking: !!d.blocking }));
+    type Row = Omit<DocumentDefinition, "required" | "blocking" | "axis_values"> & { required: number; blocking: number; axis_values: string | null };
+    return (this.db.prepare("SELECT id, case_type_id, key, label, required, blocking, position, axis, axis_values FROM document_definitions WHERE case_type_id = ? ORDER BY position, id").all(caseTypeId) as Row[])
+      .map((d) => {
+        let values: string[] | null = null;
+        if (d.axis_values) { try { const parsed: unknown = JSON.parse(d.axis_values); if (Array.isArray(parsed)) values = parsed.map(String); } catch { values = null; } }
+        return { ...d, required: !!d.required, blocking: !!d.blocking, axis_values: values };
+      });
   }
 
-  upsertDocumentDefinition(caseTypeId: number, input: { key: string; label: string; required?: boolean; blocking?: boolean; position?: number }): void {
+  upsertDocumentDefinition(caseTypeId: number, input: {
+    key: string; label: string; required?: boolean; blocking?: boolean; position?: number;
+    /** Axis this slot depends on; the slot applies only for `values` of it. */
+    axis?: string | null; values?: string[] | null;
+  }): void {
     const key = input.key.trim().toLowerCase().replace(/[^a-z0-9_:-]+/g, "_");
     if (!key || !input.label.trim()) throw new Error("Document key and label are required");
+    const axis = input.axis?.trim() ? input.axis.trim() : null;
+    const values = axis ? [...new Set((input.values ?? []).map((v) => String(v).trim()).filter(Boolean))] : [];
+    if (axis && !values.length) throw new Error(`Pick at least one value of “${axis}”, or clear the axis so the slot always applies`);
     this.db.prepare(
-      "INSERT INTO document_definitions (case_type_id, key, label, required, blocking, position) VALUES (?,?,?,?,?,?) " +
-      "ON CONFLICT(case_type_id,key) DO UPDATE SET label=excluded.label, required=excluded.required, blocking=excluded.blocking, position=excluded.position"
-    ).run(caseTypeId, key, input.label.trim(), input.required === false ? 0 : 1, input.blocking === false ? 0 : 1, input.position ?? 0);
+      "INSERT INTO document_definitions (case_type_id, key, label, required, blocking, position, axis, axis_values) VALUES (?,?,?,?,?,?,?,?) " +
+      "ON CONFLICT(case_type_id,key) DO UPDATE SET label=excluded.label, required=excluded.required, blocking=excluded.blocking, position=excluded.position, axis=excluded.axis, axis_values=excluded.axis_values"
+    ).run(caseTypeId, key, input.label.trim(), input.required === false ? 0 : 1, input.blocking === false ? 0 : 1, input.position ?? 0,
+      axis, axis ? JSON.stringify(values) : null);
     this.bumpCaseTypeConfigVersion(caseTypeId);
+  }
+
+  /**
+   * The checklist a case is measured against, honouring organization-defined
+   * axes: a slot that names an axis applies only when this case's selection for
+   * that axis is one of the slot's values. A slot with no axis, or a case with
+   * no selection, always applies — so an organization that never configures an
+   * axis sees exactly the checklist it configured, unchanged.
+   */
+  documentRequirementsForCase(caseTypeId: number, selections?: Record<string, string> | null): Array<{ key: string; label: string; required: boolean; blocking: boolean }> {
+    const definitions = this.listDocumentDefinitions(caseTypeId);
+    if (!definitions.some((d) => d.axis)) return documentRequirementsForCaseType({ caseType: { id: caseTypeId, code: "generic" }, definitions }).map((d) => ({ key: d.key, label: d.label, required: d.required, blocking: d.blocking }));
+    const owner = this.db.prepare("SELECT organization_id FROM case_types WHERE id = ?").get(caseTypeId) as { organization_id: number } | undefined;
+    const axes = this.listOrganizationDocumentAxes(owner?.organization_id ?? 0);
+    const resolved = documentRequirementsFromAxes({ axes, selections: selections ?? {}, definitions });
+    return resolved.map((d) => ({ key: d.key, label: d.label, required: d.required, blocking: d.blocking }));
+  }
+
+  /** Axis values this case is assessed against (empty when none were set). */
+  axisSelections(a: { axis_selections?: string | null }): Record<string, string> {
+    if (!a.axis_selections) return {};
+    try {
+      const parsed: unknown = JSON.parse(a.axis_selections);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) if (typeof v === "string" && v.trim()) out[k] = v.trim();
+      return out;
+    } catch { return {}; }
+  }
+
+  setAxisSelections(applicantId: number, selections: Record<string, string>): void {
+    this.db.prepare("UPDATE applicants SET axis_selections = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(Object.keys(selections).length ? JSON.stringify(selections) : null, applicantId);
   }
 
   deleteDocumentDefinition(caseTypeId: number, key: string): void {
@@ -375,7 +485,7 @@ export class Repo {
     const frozen: CaseConfigFrozen = {
       config_version: caseType?.config_version ?? 1,
       rules: caseType ? this.caseTypeRules(caseType) : null,
-      documents: caseType ? this.listDocumentDefinitions(caseType.id).map((d) => ({ key: d.key, label: d.label, required: d.required, blocking: d.blocking })) : null,
+      documents: caseType ? this.documentRequirementsForCase(caseType.id, this.axisSelections(a)) : null,
       frozen_at: nowIso(),
     };
     this.db.prepare("UPDATE applicants SET case_config_frozen = ?, config_version_frozen = ?, config_version_frozen_at = ? WHERE id = ?")
@@ -484,6 +594,36 @@ export class Repo {
     const row = this.db.prepare("SELECT case_type_id FROM workflow_rules WHERE id = ? AND organization_id = ?").get(id, organizationId) as { case_type_id: number | null } | undefined;
     this.db.prepare("DELETE FROM workflow_rules WHERE id = ? AND organization_id = ?").run(id, organizationId);
     if (row?.case_type_id) this.bumpCaseTypeConfigVersion(row.case_type_id);
+  }
+
+  /**
+   * Move a rule one place earlier or later inside its own scope.
+   *
+   * "First match wins" is only usable if the order is editable, and the scope
+   * is the same one the flowchart draws: rules pinned to one case type never
+   * trade places with organization-wide rules, because `compareRuleOrder`
+   * always runs case-type rules first. Positions are rewritten as 0,10,20…
+   * so there is always room to insert a step between two neighbours later.
+   *
+   * Returns the new order of rule ids, or null when the rule is unknown or
+   * already at the end of its chain.
+   */
+  moveWorkflowRule(id: number, organizationId: number, dir: "up" | "down"): number[] | null {
+    const target = this.getWorkflowRule(id);
+    if (!target || target.organization_id !== organizationId) return null;
+    const siblings = this.db.prepare(
+      "SELECT id, position FROM workflow_rules WHERE organization_id = ? AND kind = ? AND COALESCE(case_type_id, -1) = COALESCE(?, -1) ORDER BY position, id"
+    ).all(organizationId, target.kind, target.case_type_id) as Array<{ id: number; position: number }>;
+    const from = siblings.findIndex((r) => r.id === id);
+    if (from < 0) return null;
+    const to = dir === "up" ? from - 1 : from + 1;
+    if (to < 0 || to >= siblings.length) return null;
+    const order = siblings.map((r) => r.id);
+    [order[from], order[to]] = [order[to], order[from]];
+    const update = this.db.prepare("UPDATE workflow_rules SET position = ?, updated_at = datetime('now') WHERE id = ? AND organization_id = ?");
+    order.forEach((ruleId, index) => update.run(index * 10, ruleId, organizationId));
+    if (target.case_type_id) this.bumpCaseTypeConfigVersion(target.case_type_id);
+    return order;
   }
 
   updateCaseTypeProfile(id: number, patch: { default_reply_action?: "auto" | "draft"; evidence_gate?: 0 | 1 }): void {
@@ -1162,8 +1302,10 @@ export class Repo {
     }
     const frozen = this.caseConfigFrozen(a);
     const type = this.caseTypeForCase(a.id);
-    const definitions = frozen?.documents ?? (type ? this.listDocumentDefinitions(type.id) : []);
-    return definitions.map((definition) => ({ document_type: definition.key, label: definition.label, required: definition.required, blocking: definition.blocking }));
+    // A frozen snapshot already had the axes applied when it was taken, so it
+    // is returned as-is; only the live path resolves them again now.
+    if (frozen?.documents) return frozen.documents.map((definition) => ({ document_type: definition.key, label: definition.label, required: definition.required, blocking: definition.blocking }));
+    return type ? this.documentRequirementsForCase(type.id, this.axisSelections(a)).map((definition) => ({ document_type: definition.key, label: definition.label, required: definition.required, blocking: definition.blocking })) : [];
   }
 
   /** Freeze the current requirement set onto the applicant on first triage.

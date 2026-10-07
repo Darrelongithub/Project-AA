@@ -1330,6 +1330,45 @@ export function createApp(deps: WebDeps): Express {
     }
   });
 
+  /**
+   * Record the axis values a case is assessed against, then re-freeze its
+   * checklist against the current configuration.
+   *
+   * Axes are how one case type serves several situations ("a Kenyan applicant
+   * needs a KRA PIN, an international applicant needs a visa"). Without a
+   * selection recorded, every slot applies — so this is additive and a tenant
+   * that never defines an axis is entirely unaffected.
+   */
+  app.post("/case/:id/axes", requireLogin, csrfCheck, (req, res) => {
+    const id = Number(req.params.id);
+    const a = requireCase(req, res, id);
+    if (!a) return;
+    const type = repo.caseTypeForCase(id);
+    if (!type) return res.redirect(backToCase(id, "Give this case a case type before setting its axes — nothing changed."));
+    const axes = repo.listOrganizationDocumentAxes(a.organization_id ?? organizationId(req));
+    const selections: Record<string, string> = {};
+    for (const axis of axes) {
+      const raw = String((req.body as Record<string, unknown>)[`axis_${axis.key}`] ?? "").trim();
+      if (raw && axis.values.includes(raw)) selections[axis.key] = raw;
+    }
+    const before = repo.axisSelections(a);
+    const changed = JSON.stringify(before) !== JSON.stringify(selections);
+    if (changed) {
+      repo.setAxisSelections(id, selections);
+      const updated = requireCase(req, res, id);
+      if (!updated) return;
+      // Re-freeze so the checklist this case is measured against matches the
+      // selection, exactly as changing a case type does. The verdict is left
+      // alone: evidence is re-derived by the Re-evaluate action, never here.
+      repo.reFreezeCaseConfig(updated);
+      repo.audit(id, req.staff!.username, "case_axes_changed",
+        `${JSON.stringify(before)} → ${JSON.stringify(selections)}; checklist re-frozen, outcome unchanged`);
+    }
+    res.redirect(backToCase(id, changed
+      ? "Axes updated — the checklist now shows only the slots that apply to this case. The recorded outcome is untouched; use Re-evaluate to re-check the evidence."
+      : "Axes unchanged."));
+  });
+
   app.post("/config/reevaluate-open", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     let checked = 0;
     let failed = 0;
@@ -1474,21 +1513,24 @@ export function createApp(deps: WebDeps): Express {
       return parsed as RuleCondition[];
     }
     const out: RuleCondition[] = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 8; i++) {
       const field = String((body as Record<string, string>)[`cond_field_${i}`] ?? "").trim();
       const value = String((body as Record<string, string>)[`cond_value_${i}`] ?? "").trim();
+      // "match / does not match" — the only operator a condition row exposes.
+      // Anything else stays in the raw JSON box, which is still authoritative.
+      const negated = String((body as Record<string, string>)[`cond_op_${i}`] ?? "").trim() === "not";
       if (!field) continue;
       if (field === "always") out.push({ field: "always", value: true });
       else if (field === "sender_state") out.push({ field: "sender_state", value: value.toLowerCase() === "known" ? "known" : "unknown" });
       else if (field === "has_attachments") out.push({ field: "has_attachments", value: ["yes", "true", "1"].includes(value.toLowerCase()) });
       else if (field === "body_is_ref") out.push({ field: "body_is_ref", value: true });
       else if (field === "signals") out.push({ field: "signals", value: "configured_intake" });
-      else if (field === "category") out.push({ field: "category", op: "in", values: value.split(",").map((s) => s.trim()).filter(Boolean) });
+      else if (field === "category") out.push({ field: "category", op: negated ? "not_in" : "in", values: value.split(",").map((s) => s.trim()).filter(Boolean) });
       else if (field === "docs_state") {
         const values = value.split(",").map((s) => s.trim()).filter(Boolean);
         out.push({ field: "docs_state", values: (values.length ? values : ["any"]) as never });
       } else if (field === "text" || field === "subject" || field === "body") {
-        out.push({ field, op: "contains_any", values: value.split(",").map((s) => s.trim()).filter(Boolean) });
+        out.push({ field, op: negated ? "not_contains" : "contains_any", values: value.split(",").map((s) => s.trim()).filter(Boolean) });
       } else throw new Error(`unknown condition field '${field}'`);
     }
     return out;
@@ -1660,6 +1702,27 @@ export function createApp(deps: WebDeps): Express {
     res.redirect("/config?tab=rules");
   });
 
+  /**
+   * Reorder one step inside its own chain.
+   *
+   * The flowchart says "first match wins", so the order has to be editable
+   * from the flowchart itself — otherwise the only way to reprioritise a rule
+   * is to retype a number in the advanced form and hope it is right. The
+   * scope is the repository's, which is the same grouping the diagram draws.
+   */
+  app.post("/config/workflow-rules/move", requireLogin, requirePermission("publish_rules"), csrfCheck, (req, res) => {
+    const id = Number(req.body.id);
+    const dir = String(req.body.dir) === "up" ? "up" : "down";
+    const rule = repo.getWorkflowRule(id);
+    if (rule && rule.organization_id !== (req.staff!.organization_id ?? 1)) return res.redirect("/config?tab=rules");
+    const order = rule ? repo.moveWorkflowRule(id, rule.organization_id, dir) : null;
+    if (!order) {
+      return res.redirect(`/config?tab=rules&msg=${encodeURIComponent(dir === "up" ? "That step is already first in its chain." : "That step is already last in its chain.")}`);
+    }
+    repo.audit(null, req.staff!.username, "workflow_rule_moved", `${rule!.name} (#${id}) ${dir} — chain now ${order.join(" > ")}`);
+    res.redirect(`/config?tab=rules&msg=${encodeURIComponent(`“${rule!.name}” moved ${dir}. Rules above it are tried first.`)}`);
+  });
+
   app.post("/config/case-types/vocabulary", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const id = Number(req.body.id);
     // Tenant guard: only this administrator's own profiles are addressable —
@@ -1718,6 +1781,65 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(`/config?tab=case-types&organization=${organizationId}#case-type-${ct.id}`);
   });
 
+  /**
+   * Rename / re-code / re-categorise a case type and retire it again.
+   *
+   * A case type is created once and then referenced by cases, aliases,
+   * templates and workflow rules, so there was previously no way at all to
+   * correct a typo in its name or code. Retiring is a soft delete: the type
+   * leaves every picker and stops routing mail, but the cases that froze its
+   * configuration keep their history.
+   */
+  app.post("/config/case-types/update", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const organizationId = Number(req.body.organization_id);
+    if (organizationId !== ownOrganizationId(req)) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("That configuration belongs to another organization — nothing was saved.")}`);
+    const caseTypeId = Number(req.body.case_type_id);
+    const ct = repo.listCaseTypes(organizationId).find((x) => x.id === caseTypeId);
+    if (!ct) return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent("Unknown CaseType — nothing was saved.")}`);
+    try {
+      repo.updateCaseTypeIdentity(caseTypeId, {
+        name: req.body.name === undefined ? undefined : String(req.body.name),
+        code: req.body.code === undefined ? undefined : String(req.body.code),
+        category: req.body.category === undefined ? undefined : String(req.body.category),
+      });
+      const saved = repo.caseTypeById(caseTypeId)!;
+      repo.audit(null, req.staff!.username, "case_type_updated", `${organizationId}:${ct.code} → ${saved.code} (“${saved.name}”)`);
+      return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent(`Case type “${saved.name}” updated.`)}#case-type-${caseTypeId}`);
+    } catch (e) {
+      return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent(`Case type was not updated: ${(e as Error).message}`)}#case-type-${caseTypeId}`);
+    }
+  });
+
+  app.post("/config/case-types/retire", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const organizationId = Number(req.body.organization_id);
+    if (organizationId !== ownOrganizationId(req)) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("That configuration belongs to another organization — nothing was changed.")}`);
+    const caseTypeId = Number(req.body.case_type_id);
+    const ct = repo.listCaseTypes(organizationId).find((x) => x.id === caseTypeId);
+    if (!ct) return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent("Unknown CaseType — nothing was changed.")}`);
+    try {
+      repo.retireCaseType(caseTypeId);
+      repo.audit(null, req.staff!.username, "case_type_retired", `${organizationId}:${ct.code} — stopped routing; history kept`);
+      return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent(`“${ct.name}” retired. Existing cases keep their history; its addresses and rules stopped.`)}`);
+    } catch (e) {
+      return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent(`Case type was not retired: ${(e as Error).message}`)}`);
+    }
+  });
+
+  app.post("/config/case-types/reactivate", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const organizationId = Number(req.body.organization_id);
+    if (organizationId !== ownOrganizationId(req)) return res.redirect(`/config?tab=case-types&msg=${encodeURIComponent("That configuration belongs to another organization — nothing was changed.")}`);
+    const caseTypeId = Number(req.body.case_type_id);
+    try {
+      const ct = repo.listRetiredCaseTypes(organizationId).find((x) => x.id === caseTypeId);
+      if (!ct) return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent("Unknown retired CaseType.")}`);
+      repo.reactivateCaseType(caseTypeId);
+      repo.audit(null, req.staff!.username, "case_type_reactivated", `${organizationId}:${ct.code}`);
+      return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent(`“${ct.name}” is active again. Re-enable its rules and addresses if you want them to run.`)}`);
+    } catch (e) {
+      return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent(`Case type was not restored: ${(e as Error).message}`)}`);
+    }
+  });
+
   app.post("/config/case-types/document", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
     const organizationId = Number(req.body.organization_id);
     // Tenant guard: configuration writes only ever reach the acting
@@ -1728,8 +1850,29 @@ export function createApp(deps: WebDeps): Express {
     const key = String(req.body.key ?? "").trim();
     const label = String(req.body.label ?? "").trim();
     if (!ct || !key || !label) return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent("Unknown CaseType or incomplete document slot.")}`);
-    repo.upsertDocumentDefinition(caseTypeId, { key, label, required: String(req.body.required) !== "0", blocking: String(req.body.blocking) !== "0", position: Number(req.body.position ?? 0) || 0 });
-    repo.audit(null, req.staff!.username, "case_type_document_saved", `${ct.code}:${key}`);
+    // An axis makes the slot conditional: it applies only for the values of
+    // that axis listed here. Blank axis (the default) means "always applies".
+    const axis = String(req.body.axis ?? "").trim();
+    const axisValues = String(req.body.axis_values ?? "")
+      .split(",").map((v) => v.trim()).filter(Boolean);
+    // Silently ignoring an unknown axis would leave a slot that looks
+    // conditional and never is. Reject it instead, naming the axes that exist.
+    if (axis && !repo.listOrganizationDocumentAxes(organizationId).some((ax) => ax.key === axis)) {
+      return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent(`Document slot was not saved: “${axis}” is not one of this organization's axes.`)}#case-type-${caseTypeId}`);
+    }
+    try {
+      repo.upsertDocumentDefinition(caseTypeId, {
+        key, label,
+        required: String(req.body.required) !== "0",
+        blocking: String(req.body.blocking) !== "0",
+        position: Number(req.body.position ?? 0) || 0,
+        axis: axis || null,
+        values: axis ? axisValues : null,
+      });
+    } catch (e) {
+      return res.redirect(`/config?tab=case-types&organization=${organizationId}&msg=${encodeURIComponent(`Document slot was not saved: ${(e as Error).message}`)}#case-type-${caseTypeId}`);
+    }
+    repo.audit(null, req.staff!.username, "case_type_document_saved", `${ct.code}:${key}${axis ? ` (axis ${axis} = ${axisValues.join("/") || "any"})` : ""}`);
     res.redirect(`/config?tab=case-types&organization=${organizationId}#case-type-${caseTypeId}`);
   });
 

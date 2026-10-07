@@ -1010,6 +1010,25 @@ export function casePage(c: Ctx, a: ApplicantRow, flash?: string, preview?: { su
 
   // ── Evidence requirements: needed vs supplied, at a glance ──────────────
   const reqByType = new Map(requirements.map((r) => [r.document_type, r]));
+  const csrf = `<input type="hidden" name="_csrf" value="${esc(c.csrf)}">`;
+
+  // ── Axes: which variant of the checklist this case is measured against ───
+  const orgAxes = c.repo.listOrganizationDocumentAxes(a.organization_id ?? 1);
+  const axisSel = c.repo.axisSelections(a);
+  const axisCard = orgAxes.length
+    ? `<section class="sec" id="case-axes">
+      <div class="sec-head"><h2>What applies to this case</h2><span class="small muted">narrows the checklist — never the outcome</span></div>
+      <form method="post" action="/case/${a.id}/axes" class="formrow">
+        ${csrf}
+        ${orgAxes.map((ax) => `<div><label>${esc(ax.label)}</label><select name="axis_${esc(ax.key)}" title="Only the slots pinned to this value — plus every unconditional slot — appear on the checklist">
+          <option value="">— not set —</option>
+          ${ax.values.map((v) => `<option value="${esc(v)}"${axisSel[ax.key] === v ? " selected" : ""}>${esc(v)}</option>`).join("")}
+        </select></div>`).join("")}
+        <div style="flex:0"><label>&nbsp;</label><button class="btn">Apply to checklist</button></div>
+      </form>
+      <p class="small muted" style="margin:8px 0 0">Setting a value re-freezes the checklist this case is measured against. The recorded outcome is untouched: use <b>Re-evaluate</b> to re-check the evidence against it. Clearing a value brings every slot back.</p>
+    </section>`
+    : "";
 
   // ── Required documents: every received document, expandable ──────────────
   const docRowsHtml = allDocs
@@ -1184,6 +1203,8 @@ ${changed ? `<div class="changed"><b>What changed since the last triage:</b> ${c
     </section>
 
     ${evaluationPanel(c, a)}
+
+    ${axisCard}
 
     <!-- Required documents -->
     <section class="sec">
@@ -1732,8 +1753,8 @@ export function settingsPage(c: Ctx, flash?: string, gmailRedirectUri?: string, 
   const globalAutomation = repo.globalAutomationMode();
   const organizationId = c.user.organization_id ?? 1;
   const organization = repo.getOrganization(organizationId);
-  const settingInput = (key: string, label: string) =>
-    `<div><label>${esc(label)}</label><input type="text" name="${esc(key)}" value="${esc(settings[key] ?? "")}"></div>`;
+  const settingInput = (key: string, label: string, fallback = "") =>
+    `<div><label>${esc(label)}</label><input type="text" name="${esc(key)}" value="${esc(settings[key] ?? fallback)}"></div>`;
   const organizationInput = (key: string, label: string, value: string) =>
     `<div><label>${esc(label)}</label><input type="text" name="${esc(key)}" value="${esc(value)}"></div>`;
 
@@ -1820,9 +1841,11 @@ ${categoriesCard(c)}
     </div>
     <div class="formrow">
       ${settingInput("followup_ladder_days", "Reminder sequence (days between reminders, e.g. 3,7,10)")}
+      ${settingInput("retention_days", "Keep completed cases for (days)")}
     </div>
     <p><button class="btn">Save response targets</button></p>
     <p class="small muted" style="margin-bottom:0">Current ladder: <b>${esc(settings["followup_ladder_days"] ?? "3,7,10")}</b> days — reminders stop as soon as the case is complete. A response rule can switch the ladder off for its own path.</p>
+    <p class="small muted" style="margin-bottom:0">Retention is how long a <b>completed</b> case is kept before it is archived and cleared by the retention sweep (<code>npm run retain</code>). Nothing is deleted the moment you lower it — the next sweep picks it up, and every removal is recorded.</p>
   </form>
 </div>
 
@@ -1832,14 +1855,14 @@ ${categoriesCard(c)}
   <form method="post" action="/settings/organization">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
-      ${organizationInput("organization_name", (c.user.organization_id ?? 1) === 1 ? "Organisation name" : "Organisation name", organization?.name ?? c.institution)}
+      ${organizationInput("organization_name", "Workspace name (shown in the console)", organization?.name ?? c.institution)}
       ${organizationInput("primary_color", "Primary colour", organization ? organizationTheme(repo, organizationId).primary : "#3b1d5f")}
       ${organizationInput("accent_color", "Accent colour", organization ? organizationTheme(repo, organizationId).accent : "#9a78c7")}
       <div><label>Reference prefix</label><input name="ref_prefix" value="${esc(organization?.ref_prefix ?? repo.organizationRefPrefix(c.user.organization_id ?? 1))}" pattern="[A-Za-z]{1,8}" maxlength="8" required></div>
     </div>
     <div class="formrow">
       ${organizationInput("from_name", "From name on outgoing mail", organization?.from_name ?? "")}
-      ${organizationInput("reply_to", "Reply address address", organization?.reply_to ?? "")}
+      ${organizationInput("reply_to", "Reply-to address", organization?.reply_to ?? "")}
       ${organizationInput("locale", "Locale (dates & numbers)", organization?.locale ?? "en-KE")}
       ${organizationInput("timezone", "Timezone (IANA name)", organization?.timezone ?? "")}
     </div>
@@ -1858,7 +1881,7 @@ ${categoriesCard(c)}
   <form method="post" action="/settings/general" style="margin-top:14px">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
-      ${settingInput("institution_name", "Organization name used on outgoing mail")}
+      ${settingInput("institution_name", "Name signed on outgoing mail &amp; documents", settings["institution_name"] ?? organization?.name ?? c.institution)}
       ${(() => {
         const org = c.repo.getOrganization(c.user.organization_id ?? 1);
         return `<div class="field"><span class="lbl">Inbound mailbox address for this organization</span>
@@ -1866,6 +1889,7 @@ ${categoriesCard(c)}
           <span class="small muted">Mail delivered to this address belongs to this organization. One shared mailbox can serve several tenants — without an address here, incoming mail falls back to the head office and the audit trail says so.</span></div>`;
       })()}
     </div>
+    <p class="small muted">This is the name that closes an email and heads a generated document. It can read differently from the workspace name above — “Riverdale College” in the console, “Riverdale Admissions Office” on letters — and both start out the same.</p>
     <p><button class="btn ghost">Save response settings</button></p>
   </form>
 </div>
@@ -2072,7 +2096,7 @@ async function submitToCaseOffice(fields) {
   <h2>Request budget</h2>
   <div class="formrow" style="align-items:flex-end">
     <div><label>Requests per minute, per key</label>
-      <input type="number" min="1" max="10000" step="1" value="${rate}" form="aa-webhook-budget" style="width:120px">
+      <input type="number" name="webhook_rate_limit_per_minute" min="1" max="10000" step="1" value="${rate}" form="aa-webhook-budget" style="width:120px">
     </div>
     <div style="align-self:flex-end">
       <form method="post" action="/settings/webhook" id="aa-webhook-budget" style="margin:0">
@@ -2430,7 +2454,7 @@ function requirementsTab(c: Ctx, _target?: string, _system?: string): string {
     <div><label>Closes</label><input type="date" name="deadline"></div>
     <div style="flex:0"><label>&nbsp;</label><button class="btn small">Add window</button></div>
   </form>`;
-  return `<section class="card"><h2>Configured requirements</h2><p>Required documents and scalar AND / OR / NOT rules belong to each case type. Existing cases keep their frozen configuration until an explicit explicit review upgrade.</p>${types.length ? types.map((type) => '<h3>' + esc(type.name) + '</h3><p>' + esc(ruleTreeText(c.repo.caseTypeRules(type))) + '</p><p class="small">' + c.repo.listDocumentDefinitions(type.id).map((definition) => esc(definition.label) + (definition.required && definition.blocking ? ' (required)' : ' (optional)')).join(', ') + '</p>').join('') : '<p class="small muted">No case types configured.</p>'}<a class="btn ghost" href="/config?tab=case-types">Configure case types</a></section><section class="card" id="rules-ops"><h2>Rule operations</h2><form method="post" action="/config/reevaluate-open">${csrf}<button class="btn ghost">Review all open cases</button></form></section><section class="card" id="categories-pointer"><h2>Message categories</h2><p class="small muted">Categories live in Settings: the labels an incoming message may be given | and the allowed list a Gemini key may choose from | are managed <a href="/settings#categories">there</a>.</p></section><section class="card" id="intakes"><h2>Submission windows</h2><p class="small muted">A window named in an incoming message is attached to its case. A deadline here turns an arrival after that date into a <span class="mono">late_submission</span> flag | a person decides whether to accept it; nothing is rejected automatically. Windows are inferred from real mail or added below.</p>${windows}${addWindow}</section><section class="card" id="deadletters"><h2>Parked mail</h2>${c.repo.listDeadLetters().map((letter) => '<p>' + esc(letter.subject) + ' | ' + esc(letter.error.slice(0,140)) + '</p><form method="post" action="/config/dead-letter/retry">' + csrf + '<input type="hidden" name="id" value="' + letter.id + '"><button class="btn small">Retry</button></form>').join('') || '<p>Nothing parked.</p>'}</section>`;
+  return `<section class="card"><h2>Configured requirements</h2><p>Required documents and scalar AND / OR / NOT rules belong to each case type. Existing cases keep their frozen configuration until someone runs an explicit re-evaluation.</p>${types.length ? types.map((type) => '<h3>' + esc(type.name) + '</h3><p>' + esc(ruleTreeText(c.repo.caseTypeRules(type))) + '</p><p class="small">' + c.repo.listDocumentDefinitions(type.id).map((definition) => esc(definition.label) + (definition.required && definition.blocking ? ' (required)' : ' (optional)')).join(', ') + '</p>').join('') : '<p class="small muted">No case types configured.</p>'}<a class="btn ghost" href="/config?tab=case-types">Configure case types</a></section><section class="card" id="rules-ops"><h2>Rule operations</h2><form method="post" action="/config/reevaluate-open">${csrf}<button class="btn ghost">Review all open cases</button></form></section><section class="card" id="categories-pointer"><h2>Message categories</h2><p class="small muted">Categories live in Settings: the labels an incoming message may be given | and the allowed list a Gemini key may choose from | are managed <a href="/settings#categories">there</a>.</p></section><section class="card" id="intakes"><h2>Submission windows</h2><p class="small muted">A window named in an incoming message is attached to its case. A deadline here turns an arrival after that date into a <span class="mono">late_submission</span> flag | a person decides whether to accept it; nothing is rejected automatically. Windows are inferred from real mail or added below.</p>${windows}${addWindow}</section><section class="card" id="deadletters"><h2>Parked mail</h2>${c.repo.listDeadLetters().map((letter) => '<p>' + esc(letter.subject) + ' | ' + esc(letter.error.slice(0,140)) + '</p><form method="post" action="/config/dead-letter/retry">' + csrf + '<input type="hidden" name="id" value="' + letter.id + '"><button class="btn small">Retry</button></form>').join('') || '<p>Nothing parked.</p>'}</section>`;
 }
 
 
@@ -2460,26 +2484,65 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
     <label class="small muted">Organization</label>
     <select name="organization" onchange="this.form.submit()">${organizations.map((o) => `<option value="${o.id}" ${o.id === organizationId ? "selected" : ""}>${esc(o.name)} · ${esc(o.ref_prefix)}</option>`).join("")}</select>
   </form>`;
+  const axes = c.repo.listOrganizationDocumentAxes(organizationId);
   const typeCard = (ct: CaseType): string => {
     const definitions = c.repo.listDocumentDefinitions(ct.id);
     const rules = c.repo.caseTypeRules(ct);
+    // Every slot is editable in place: the key is the stable identifier (it is
+    // what an uploaded document's type is matched against), while the label,
+    // the required/blocking behaviour and the display order are configuration
+    // an office is expected to revisit.
+    const axisOpts = (selected?: string | null) =>
+      `<option value=""${selected ? "" : " selected"}>always applies</option>` +
+      axes.map((ax) => `<option value="${esc(ax.key)}"${selected === ax.key ? " selected" : ""}>only for ${esc(ax.label)}</option>`).join("");
     const documentRows = definitions.map((d) => `<tr>
-      <td class="mono small">${esc(d.key)}</td><td>${esc(d.label)}</td>
-      <td>${d.required ? "required" : "optional"} · ${d.blocking ? "blocks gate" : "non-blocking"}</td>
+      <td class="mono small">${esc(d.key)}</td>
+      <td><form method="post" action="/config/case-types/document" style="display:flex;gap:6px;align-items:center;margin:0;flex-wrap:wrap">
+        ${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}">
+        <input type="hidden" name="key" value="${esc(d.key)}">
+        <input name="label" value="${esc(d.label)}" required aria-label="Label for ${esc(d.key)}" style="flex:2;min-width:160px">
+        <select name="required" aria-label="Required for ${esc(d.key)}"><option value="1"${d.required ? " selected" : ""}>required</option><option value="0"${d.required ? "" : " selected"}>optional</option></select>
+        <select name="blocking" aria-label="Blocking for ${esc(d.key)}"><option value="1"${d.blocking ? " selected" : ""}>blocks</option><option value="0"${d.blocking ? "" : " selected"}>non-blocking</option></select>
+        <input type="number" name="position" value="${d.position}" aria-label="Display order for ${esc(d.key)}" title="Shown in this order on the checklist" style="width:74px">
+        ${axes.length ? `<select name="axis" aria-label="Axis for ${esc(d.key)}" title="Make this slot conditional on an organization axis">${axisOpts(d.axis)}</select>
+        <input name="axis_values" value="${esc((d.axis_values ?? []).join(", "))}" aria-label="Values for ${esc(d.key)}" placeholder="${d.axis ? "values, comma separated" : "—"}" title="The values of that axis this slot applies to" style="width:150px">` : ""}
+        <button class="btn small ghost">Save</button>
+      </form></td>
+      <td class="small">${d.required ? "required" : "optional"} · ${d.blocking ? "blocks gate" : "non-blocking"}${d.axis ? `<br><span class="muted">when ${esc(d.axis)} is ${(d.axis_values ?? []).length ? esc((d.axis_values ?? []).join(" / ")) : "anything"}</span>` : ""}</td>
       <td><form method="post" action="/config/case-types/document-delete" style="margin:0">${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}"><input type="hidden" name="key" value="${esc(d.key)}"><button class="btn small ghost">Remove</button></form></td>
     </tr>`).join("");
     return `<details class="card type-card" id="case-type-${ct.id}">
       <summary class="type-card-summary"><span>${esc(ct.name)}</span><span class="mono small muted">${esc(ct.code)}</span><span class="type-card-hint">Edit CaseType</span></summary>
       <div class="type-content">
       <p class="small muted">Category: ${esc(ct.category)} · Every requirement below is this CaseType's own — nothing is inherited.</p>
+      ${ownTenant ? `<details style="margin:0 0 12px;border:1px solid var(--line2);border-radius:8px">
+        <summary style="cursor:pointer;padding:8px 12px"><b>Rename or retire this case type</b></summary>
+        <div style="padding:4px 14px 14px">
+          <form method="post" action="/config/case-types/update" class="formrow" style="margin:0">
+            ${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}">
+            <div><label>CaseType name</label><input name="name" value="${esc(ct.name)}" required></div>
+            <div><label>CaseType code</label><input name="code" value="${esc(ct.code)}" required pattern="[A-Za-z][A-Za-z0-9_-]{0,63}" title="Letters, digits, _ and - — start with a letter"></div>
+            <div><label>Category</label><input name="category" value="${esc(ct.category)}" placeholder="general"></div>
+            <div style="flex:0"><label>&nbsp;</label><button class="btn small">Save case type</button></div>
+          </form>
+          <p class="small muted" style="margin:8px 0 0">Renaming is safe: cases keep the checklist and rules they froze until someone re-evaluates them. Changing the code changes what inbound aliases and web submissions must send.</p>
+          <form method="post" action="/config/case-types/retire" style="margin-top:10px">
+            ${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}">
+            <button class="btn small ghost" onclick="return confirm('Retire “${esc(ct.name)}”? It leaves every picker and stops routing mail. Existing cases keep their history.')">Retire this case type</button>
+          </form>
+        </div>
+      </details>` : ""}
       <h3>Document matrix</h3>
-      ${definitions.length ? `<table><tr><th>Key</th><th>Label</th><th>Gate behavior</th><th></th></tr>${documentRows}</table>` : `<p class="small muted">No document slots configured yet.</p>`}
+      ${definitions.length ? `<table><tr><th>Key</th><th>Label, gate behaviour &amp; order</th><th>Currently</th><th></th></tr>${documentRows}</table>` : `<p class="small muted">No document slots configured yet.</p>`}
       <form method="post" action="/config/case-types/document" class="formrow" style="margin-top:10px">
         ${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}">
         <div><label>Document key</label><input name="key" placeholder="employee_id" required></div>
         <div style="flex:2"><label>Label shown to the correspondent</label><input name="label" placeholder="Signed employee ID" required></div>
         <div><label>Required</label><select name="required"><option value="1">Yes</option><option value="0">No</option></select></div>
         <div><label>Blocking</label><select name="blocking"><option value="1">Yes</option><option value="0">No</option></select></div>
+        <div style="flex:0"><label>Display order</label><input type="number" name="position" value="${definitions.length}" style="width:90px" title="Lower numbers appear first on the checklist"></div>
+        ${axes.length ? `<div><label>Applies</label><select name="axis" title="Make this slot conditional on an organization axis">${axisOpts()}</select></div>
+        <div><label>…for these values</label><input name="axis_values" placeholder="comma separated" title="Comma-separated values of the chosen axis this slot applies to"></div>` : ""}
         <div style="flex:0"><label>&nbsp;</label><button class="btn small">Save document slot</button></div>
       </form>
       <h3 style="margin-top:20px">Rule tree</h3>
@@ -2523,6 +2586,17 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
     <summary><span class="type-group-name">${esc(category)}</span><span class="type-group-count">${types.length} CaseType${types.length === 1 ? "" : "s"}</span></summary>
     <div class="type-group-body">${types.map(typeCard).join("")}</div>
   </details>`).join("");
+  // Retiring is reversible: a retired type only disappears from the pickers,
+  // so it has to be reachable again from here rather than only in the database.
+  const retired = c.repo.listRetiredCaseTypes(organizationId);
+  const retiredCard = retired.length ? `<section class="card" id="retired-case-types">
+    <h2>Retired case types</h2>
+    <p class="small muted" style="margin-top:-6px">Hidden from every picker and no longer routing mail. Existing cases keep the checklist and rules they froze.</p>
+    <table><tr><th>Code</th><th>Name</th><th></th></tr>${retired.map((ct) => `<tr>
+      <td class="mono small">${esc(ct.code)}</td><td>${esc(ct.name)}</td>
+      <td>${ownTenant ? `<form method="post" action="/config/case-types/reactivate" style="margin:0">${csrf}<input type="hidden" name="organization_id" value="${organizationId}"><input type="hidden" name="case_type_id" value="${ct.id}"><button class="btn small ghost">Restore</button></form>` : ""}</td>
+    </tr>`).join("")}</table>
+  </section>` : "";
   return `<div id="case-types">
     <section class="card">
       <h2>Organizations &amp; CaseTypes</h2>
@@ -2541,15 +2615,17 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
         <div style="flex:0"><label>&nbsp;</label><button class="btn">Create CaseType</button></div>
       </form>
       <h3 style="margin-top:20px">Configurable axes</h3>
-      <p class="small muted">Axes are organization vocabulary, not hardcoded level, curriculum or status fields. Save one JSON array of <span class="mono">{key,label,values}</span> objects.</p>
+      <p class="small muted">Axes are organization vocabulary, not hardcoded level, curriculum or status fields: the dimensions two similar cases differ along — country, funding route, delivery mode. Save one JSON array of <span class="mono">{key,label,values}</span> objects.</p>
       <form method="post" action="/config/case-types/axes" style="margin:0">
         ${csrf}<input type="hidden" name="organization_id" value="${organizationId}">
         <textarea name="axes_json" style="min-height:80px;font-family:monospace" spellcheck="false">${esc(JSON.stringify(c.repo.listOrganizationDocumentAxes(organizationId), null, 2))}</textarea>
         <button class="btn small" style="margin-top:8px">Save axes</button>
       </form>
+      <p class="small muted">Once an axis exists, each document slot gains an <b>Applies</b> dropdown: a slot can be pinned to some values of an axis instead of applying to everyone. On a case, set the axes under <b>Evidence</b> and the checklist narrows to the slots that apply — and re-freezing is an explicit, audited action, never a surprise.</p>
       <p class="small muted" style="margin-bottom:0">Configure the selected organization, then create a CaseType such as <b>HR_ONBOARDING</b>. Empty rule trees remain undecided and are sent to a human.</p>
     </section>
     ${caseTypes.length ? `<div class="type-groups">${caseTypeGroups}</div>` : `<div class="empty"><p>No CaseTypes yet for ${esc(organization?.name ?? "this organization")}.</p></div>`}
+    ${retiredCard}
     ${aliasesCard}
   </div>`;
 }
@@ -2837,7 +2913,11 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
   //      carrying its current value, so a save from here can no longer reset
   //      an SLA, an attachment set, a follow-up ladder or a template map —
   //      and it can no longer re-enable a rule that was switched off.
-  const FLOW_MAX_CONDITIONS = 3; // parseRuleConditions reads cond_field_0..2
+  // Rows the panel can express on its own. `parseRuleConditions` reads
+  // cond_field_0..7, so this number and the server's loop must move together:
+  // a rule with MORE conditions than this is still fully editable, but through
+  // the raw-JSON box the panel switches to rather than through rows.
+  const FLOW_MAX_CONDITIONS = 8;
   const FLOW_COND_FIELDS = ["always", "sender_state", "text", "subject", "body", "has_attachments", "docs_state", "category", "body_is_ref", "signals"];
   /** Empty when the flowchart can faithfully round-trip a rule; otherwise why not. */
   const flowUnsupported = (r: (typeof rules)[0]): string => {
@@ -2848,14 +2928,23 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     return "";
   };
   /** Settings the panel preserves but does not surface — shown as a chip so staff know they exist. */
-  const hiddenExtras = (r: (typeof rules)[0]): string[] => {
+  /**
+   * Settings beyond "if / then" that this step also carries. They used to be
+   * listed as things the flowchart preserved but could not change; every one
+   * of them now has an input in the panel, so the chip is a summary of what
+   * is set rather than a warning that it is out of reach.
+   */
+  const extrasOf = (r: (typeof rules)[0]): string[] => {
     const a = r.action || {};
     const out: string[] = [];
     if (a.sla_hours != null) out.push(`SLA ${a.sla_hours}h`);
     if (a.attachment_set) out.push(`attachments: ${a.attachment_set}`);
-    if (a.followup === "ladder") out.push("follow-up ladder");
+    if (a.followup === "ladder") out.push(`follow-up ladder (${a.followup_action ?? "hold"})`);
     if (a.template_map) out.push("template map");
     if (a.priority === "high") out.push("high priority");
+    if (a.assign) out.push(`assigned to ${staff.find((s) => s.id === Number(a.assign))?.display_name ?? `#${a.assign}`}`);
+    if (a.request_info) out.push("lists missing documents");
+    if (a.fallback === "none") out.push("silent when no template");
     if (a.audit_code) out.push(`audit ${a.audit_code}`);
     return out;
   };
@@ -2910,28 +2999,42 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
    * labelled as parked rather than as "Any message" — the label that used to
    * make a click on Save turn a dead rule into a catch-all (BUG-08).
    */
-  const renderRuleNode = (r: (typeof rules)[0], i: number): string => {
+  const renderRuleNode = (r: (typeof rules)[0], i: number, total: number): string => {
     const conds = (r.conditions || []).map(describeCond).filter(Boolean);
     const ifText = (r.conditions || []).length === 0
       ? "Never matches — no conditions yet"
       : (conds.length ? conds.join(" AND ") : "Any message");
     const off = r.enabled ? "" : " style=\"opacity:.55\"";
-    const extras = hiddenExtras(r);
+    const extras = extrasOf(r);
     const unsupported = flowUnsupported(r);
+    // "First match wins" is only meaningful if the order can be changed here,
+    // so every step carries its own up/down control. The first step cannot go
+    // up and the last cannot go down — both are rendered disabled rather than
+    // silently doing nothing.
+    const moveBtn = (dir: "up" | "down", enabled: boolean, label: string) =>
+      enabled
+        ? `<form method=\"post\" action=\"/config/workflow-rules/move\" style=\"margin:0\" onclick=\"event.stopPropagation()\">
+            <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\"><input type=\"hidden\" name=\"id\" value=\"${r.id}\">
+            <input type=\"hidden\" name=\"dir\" value=\"${dir}\">
+            <button type=\"submit\" title=\"Move ${dir} (tried ${dir === "up" ? "earlier" : "later"})\" aria-label=\"Move ${esc(r.name)} ${dir}\">${dir === "up" ? "↑" : "↓"}</button>
+          </form>`
+        : `<button type=\"button\" disabled title=\"Already ${label}\" aria-label=\"${esc(r.name)} is already ${label}\">${dir === "up" ? "↑" : "↓"}</button>`;
     return `${i ? `<div class=\"flow-connector\" aria-hidden=\"true\"></div>` : ""}
       <div class=\"flow-node editable ${nodeClass(r)}${unsupported ? " advanced" : ""}\" data-rule-id=\"${r.id}\" tabindex=\"0\" role=\"button\" aria-label=\"Edit rule ${esc(r.name)}\"${off}>
         <div class=\"fn-actions\">
+          ${moveBtn("up", i > 0, "first in this chain")}
+          ${moveBtn("down", i < total - 1, "last in this chain")}
           <form method=\"post\" action=\"/config/workflow-rules/toggle\" style=\"margin:0\" onclick=\"event.stopPropagation()\">
             <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\"><input type=\"hidden\" name=\"id\" value=\"${r.id}\">
             <button type=\"submit\" title=\"Toggle on/off\">${r.enabled ? "On" : "Off"}</button>
           </form>
         </div>
-        <div class=\"fn-kicker\">#${r.position}${r.enabled ? "" : " · off"}</div>
+        <div class=\"fn-kicker\">step ${i + 1} of ${total}${r.enabled ? "" : " · off"}</div>
         <div class=\"fn-title\">${esc(r.name)}</div>
         <div class=\"fn-if\"><b>If</b> ${esc(ifText)}</div>
         <div class=\"fn-then\"><b>Then</b> ${esc(describeAction(r))}</div>
         ${extras.length ? `<div class=\"fn-extras\">${esc(extras.join(" · "))}</div>` : ""}
-        ${unsupported ? `<div class=\"fn-warn\">${esc(unsupported)} — edit it in “Advanced — rule table &amp; full form” below.</div>` : ""}
+        ${unsupported ? `<div class=\"fn-warn\">${esc(unsupported)} — this step opens in the raw-JSON editor below, so nothing is lost or silently shortened.</div>` : ""}
       </div>`;
   };
 
@@ -2943,9 +3046,6 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
    */
   const renderRuleChain = (kind: "intake" | "response") => {
     const ofKind = rules.filter((r) => r.kind === kind);
-    if (!ofKind.length) {
-      return `<div class=\"flow-empty-hint\">No ${kind} steps yet. Use <b>+ Add step</b> in a group below.</div>`;
-    }
     const groups: Array<{ scope: string; label: string; note: string; list: typeof ofKind }> = [];
     const seen = new Set<number>();
     for (const ct of [...caseTypes].sort((a, b) => a.name.localeCompare(b.name))) {
@@ -2963,15 +3063,34 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     const wide = ofKind.filter((r) => r.case_type_id === null).sort(compareRuleOrder);
     if (wide.length) groups.push({ scope: "", label: "All case types", note: "organization-wide", list: wide });
 
-    return groups.map((g) => `
+    /**
+     * The "add" bar. It is drawn even when the chain is empty — a group only
+     * exists once it owns a rule, so an empty organization used to show
+     * "use + Add step in a group below" with no group and no button anywhere
+     * on the page. The scope picker covers every case type plus the
+     * organization-wide bucket, so the very first step is creatable here.
+     */
+    const addBar = `
+      <div class=\"flow-add flow-add-bar\">
+        <label class=\"small muted\" for=\"flow-scope-${kind}\">Add a ${kind} step to</label>
+        <select id=\"flow-scope-${kind}\">
+          ${caseTypeOptions.map((o) => `<option value=\"${o.id == null ? "" : o.id}\"${o.id == null ? " selected" : ""}>${esc(o.name)}</option>`).join("")}
+        </select>
+        <button type=\"button\" data-add=\"${kind}\" data-scope-source=\"flow-scope-${kind}\">+ Add ${kind} step</button>
+      </div>`;
+
+    return `${groups.length
+      ? groups.map((g) => `
       <div class=\"flow-group\">
         <div class=\"flow-group-head\">
           <span class=\"fg-name\">${esc(g.label)}</span>
           <span class=\"fg-note\">${esc(g.note)} · ${g.list.length} step${g.list.length === 1 ? "" : "s"}</span>
         </div>
-        ${g.list.map(renderRuleNode).join("")}
+        ${g.list.map((r, i) => renderRuleNode(r, i, g.list.length)).join("")}
         <div class=\"flow-add\"><button type=\"button\" data-add=\"${kind}\" data-scope=\"${esc(g.scope)}\">+ Add ${kind} step</button></div>
-      </div>`).join("");
+      </div>`).join("")
+      : `<div class=\"flow-empty-hint\">No ${kind} steps yet — nothing runs, so every message is left for a person. Add the first one below.</div>`}
+      ${addBar}`;
   };
 
   const flowchartHtml = `
@@ -3011,28 +3130,29 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     <aside class="flow-panel" id="flow-panel">
       <div class="fp-placeholder" id="flow-panel-empty">
         <b>Select a step</b>
-        Click any coloured card on the left, or add a new step. You only fill in “if” and “then”.
+        Click any coloured card on the left, or add a new step with the <b>+ Add step</b> button. Everything a step can do is editable right here.
       </div>
       <form method="post" action="/config/workflow-rules/save" id="flow-panel-form" style="display:none">
         <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
         <input type="hidden" name="id" id="fp-id" value="">
         <input type="hidden" name="kind" id="fp-kind" value="intake">
-        <input type="hidden" name="position" id="fp-position" value="">
         <input type="hidden" name="enabled" id="fp-enabled" value="1">
-        <input type="hidden" name="conditions_json" id="fp-conditions-json" value="">
-        ${/* BUG-05: mirrors for every field this panel does not surface. sla_hours and
-              attachment_set are deliberately absent — both have visible inputs above, and a
-              second input sharing a name would make req.body an array. */
-          ["priority", "assign", "request_info", "followup", "followup_action", "audit_code", "fallback", "map_green", "map_empty", "map_missing"]
-          .map((k) => `<input type="hidden" name="${k}" id="fp-x-${k}" value="">`).join("\n        ")}
         <h3 id="fp-heading">Edit step</h3>
         <p class="fp-sub" id="fp-sub">If this matches, do that. First match wins.</p>
         <label>Name</label>
         <input name="name" id="fp-name" required placeholder="e.g. Known contact continues case">
-        <label>Applies to</label>
-        <select name="case_type_id" id="fp-case-type">
-          ${caseTypeOptions.map((o) => `<option value="${o.id == null ? "" : o.id}">${esc(o.name)}</option>`).join("")}
-        </select>
+        <div class="fp-row">
+          <div>
+            <label>Applies to</label>
+            <select name="case_type_id" id="fp-case-type">
+              ${caseTypeOptions.map((o) => `<option value="${o.id == null ? "" : o.id}">${esc(o.name)}</option>`).join("")}
+            </select>
+          </div>
+          <div>
+            <label>Position (order)</label>
+            <input type="number" name="position" id="fp-position" placeholder="auto" title="Lower runs first. The arrows on the card reorder a step without typing a number.">
+          </div>
+        </div>
         <label>If (conditions)</label>
         <div id="fp-conds"></div>
         <div class="fp-cond-actions">
@@ -3040,6 +3160,11 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
           <button type="button" id="fp-cond-remove">− Remove condition</button>
         </div>
         <p class="small muted" style="margin:6px 0 0">Examples: sender → <code>known</code> or <code>unknown</code>; attachments → <code>yes</code>/<code>no</code>; documents → <code>complete</code>, <code>empty</code>, <code>missing</code>, <code>dirty</code>. Up to ${FLOW_MAX_CONDITIONS} conditions, all must match.</p>
+        <details id="fp-json-wrap" style="margin-top:8px">
+          <summary class="small muted" style="cursor:pointer">Conditions as raw JSON (for anything the rows cannot express)</summary>
+          <p class="small muted" style="margin:6px 0 0">Filled in, this replaces the rows above when you save. It is the exact structure the engine stores, so a step with more than ${FLOW_MAX_CONDITIONS} conditions opens straight into this box instead of being refused.</p>
+          <textarea name="conditions_json" id="fp-conditions-json" rows="5" style="width:100%;font-family:monospace" spellcheck="false" placeholder='[{"field":"text","op":"contains_any","values":["invoice"]}]'></textarea>
+        </details>
         <label>Then — intake decision</label>
         <select name="decision" id="fp-decision">
           <option value="">(none — for response-only steps)</option>
@@ -3073,14 +3198,75 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
         </div>
         <div class="fp-row">
           <div>
+            <label>Priority</label>
+            <select name="priority" id="fp-priority">
+              <option value="">normal</option>
+              <option value="high">high</option>
+            </select>
+          </div>
+          <div>
+            <label>Assign to</label>
+            <select name="assign" id="fp-assign">
+              <option value="">nobody</option>
+              ${staff.map((s) => `<option value="${s.id}">${esc(s.display_name)}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+        <div class="fp-row">
+          <div>
             <label>SLA hours (optional)</label>
-            <input name="sla_hours" id="fp-sla" placeholder="e.g. 48">
+            <input type="number" min="1" name="sla_hours" id="fp-sla" placeholder="e.g. 48">
           </div>
           <div>
             <label>Attachment set (optional)</label>
             <input name="attachment_set" id="fp-attachset" placeholder="named set">
           </div>
         </div>
+        <div class="fp-row">
+          <div>
+            <label>Reminder ladder</label>
+            <select name="followup" id="fp-followup">
+              <option value="">none</option>
+              <option value="ladder">reminder ladder (${esc(c.repo.getSetting("followup_ladder_days", "3,7,10"))} days)</option>
+            </select>
+          </div>
+          <div>
+            <label>Each reminder</label>
+            <select name="followup_action" id="fp-followup-action">
+              <option value="hold">hold for staff</option>
+              <option value="draft">draft for staff</option>
+              <option value="approve">draft for approval</option>
+              <option value="send">request send (gates still apply)</option>
+              <option value="none">do nothing (cancel ladder)</option>
+            </select>
+          </div>
+        </div>
+        <details style="margin-top:12px">
+          <summary class="small muted" style="cursor:pointer">Template by document state &amp; housekeeping</summary>
+          <label>…when the file is complete</label>
+          <select name="map_green" id="fp-map-green">
+            <option value="">(no template)</option>
+            ${templateOptions.map((t) => `<option value="${esc(t.key)}">${esc(t.name)}</option>`).join("")}
+          </select>
+          <label>…when no documents have arrived</label>
+          <select name="map_empty" id="fp-map-empty">
+            <option value="">(no template)</option>
+            ${templateOptions.map((t) => `<option value="${esc(t.key)}">${esc(t.name)}</option>`).join("")}
+          </select>
+          <label>…when the checklist is incomplete</label>
+          <select name="map_missing" id="fp-map-missing">
+            <option value="">(no template)</option>
+            ${templateOptions.map((t) => `<option value="${esc(t.key)}">${esc(t.name)}</option>`).join("")}
+          </select>
+          <label>If no template resolves</label>
+          <select name="fallback" id="fp-fallback">
+            <option value="human_draft">human draft (internal note)</option>
+            <option value="none">do nothing</option>
+          </select>
+          <label>Audit code (optional)</label>
+          <input name="audit_code" id="fp-audit" placeholder="e.g. rule_volunteer_intake">
+          <label class="fp-check"><input type="checkbox" name="request_info" id="fp-request-info" value="1" style="width:auto"> List the missing documents in the reply</label>
+        </details>
         <div class="fp-preserve" id="fp-preserve"></div>
         <div class="fp-actions">
           <button class="btn" type="submit">Save step</button>
@@ -3128,6 +3314,8 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     body: "comma-separated words"
   };
 
+  var NEGATABLE = { text: 1, subject: 1, body: 1, category: 1 };
+
   function condRow(i) {
     var wrap = document.createElement("div");
     wrap.className = "fp-row fp-cond-row";
@@ -3140,15 +3328,26 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
       var o = document.createElement("option");
       o.value = k; o.textContent = LABELS[k]; sel.appendChild(o);
     });
+    var op = document.createElement("select");
+    op.name = "cond_op_" + i;
+    op.id = "fp-cond-op-" + i;
+    [{ v: "", t: "matches" }, { v: "not", t: "does NOT match" }].forEach(function (o2) {
+      var o = document.createElement("option");
+      o.value = o2.v; o.textContent = o2.t; op.appendChild(o);
+    });
     var inp = document.createElement("input");
     inp.name = "cond_value_" + i;
     inp.id = "fp-cond-value-" + i;
     inp.placeholder = "e.g. known · or words, comma-separated";
     wrap.appendChild(sel);
+    wrap.appendChild(op);
     wrap.appendChild(inp);
     sel.addEventListener("change", function () {
       inp.placeholder = HINTS[sel.value] || "e.g. known · or words, comma-separated";
-      syncNever();
+      // Negation only means something for word and category lists.
+      op.style.display = NEGATABLE[sel.value] ? "" : "none";
+      if (!NEGATABLE[sel.value]) op.value = "";
+      sync();
     });
     conds.appendChild(wrap);
     return wrap;
@@ -3157,11 +3356,13 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
   function clearRow(i) {
     var sel = document.getElementById("fp-cond-field-" + i);
     var inp = document.getElementById("fp-cond-value-" + i);
+    var op = document.getElementById("fp-cond-op-" + i);
     if (!sel) return;
     // A hidden input still submits, so clear it as well as hiding it —
     // parseRuleConditions skips a row whose field is empty.
     sel.value = "";
     inp.value = "";
+    if (op) op.value = "";
     sel.parentNode.style.display = "none";
   }
 
@@ -3174,20 +3375,44 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     return n;
   }
 
-  function syncNever() {
+  /**
+   * Two editing modes for conditions, and only one is ever submitted:
+   *  - rows:  up to MAX condition rows (what almost every step needs);
+   *  - json:  the raw array, for a step the rows cannot express (more than
+   *           MAX conditions, or an operator the rows do not offer).
+   * "never" is a third state that submits an empty array, so a step with no
+   * conditions stays unable to match instead of becoming a catch-all (BUG-08).
+   */
+  function jsonMode() {
+    var json = document.getElementById("fp-conditions-json");
+    var wrap = document.getElementById("fp-json-wrap");
+    var rows = document.getElementById("fp-conds");
+    var add = document.getElementById("fp-cond-add");
+    var remove = document.getElementById("fp-cond-remove");
     var first = document.getElementById("fp-cond-field-0");
-    var firstVal = document.getElementById("fp-cond-value-0");
     var isNever = first && first.value === "never";
-    document.getElementById("fp-conditions-json").value = isNever ? "[]" : "";
-    if (firstVal) { firstVal.style.display = isNever ? "none" : ""; if (isNever) firstVal.value = ""; }
+    var isJson = !isNever && json.value.trim() !== "";
+    if (wrap) wrap.open = isJson;
+    if (rows) rows.style.display = isNever || isJson ? "none" : "";
+    if (add) add.style.display = isNever || isJson ? "none" : "";
+    if (remove) remove.style.display = isNever || isJson ? "none" : "";
+    if (isNever) json.value = "[]";
+    return { never: isNever, json: isJson };
+  }
+
+  function sync() {
+    var state = jsonMode();
+    var firstVal = document.getElementById("fp-cond-value-0");
+    if (firstVal) {
+      firstVal.style.display = state.never ? "none" : "";
+      if (state.never) firstVal.value = "";
+    }
     for (var i = 1; i < MAX; i++) {
       var w = conds.querySelector('[data-cond-index="' + i + '"]');
       if (!w) continue;
-      if (isNever) { clearRow(i); }
+      if (state.never || state.json) { clearRow(i); }
       else if (w.style.display === "none" && document.getElementById("fp-cond-field-" + i).value) w.style.display = "";
     }
-    document.getElementById("fp-cond-add").style.display = isNever ? "none" : "";
-    document.getElementById("fp-cond-remove").style.display = isNever ? "none" : "";
   }
 
   function showForm(rule, kind, scope) {
@@ -3213,14 +3438,19 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     // Conditions: every stored condition gets its own row, so nothing is
     // dropped on save (BUG-04). An empty condition list is preserved as
     // "never matches" (BUG-08) instead of being upgraded to "any message".
+    // A step the rows cannot express opens in the raw-JSON box instead of
+    // being refused — flagging it and walking away left it uneditable here.
     var stored = (rule && rule.conditions) || [];
+    var rowAble = stored.length <= MAX && stored.every(function (c) { return FIELDS.includes(String(c.field)); });
+    if (stored.length && !rowAble) {
+      document.getElementById("fp-conditions-json").value = JSON.stringify(stored, null, 2);
+    }
     for (var i = 0; i < MAX; i++) {
       var row = condRow(i);
-      var cond = stored[i];
+      var cond = rowAble ? stored[i] : undefined;
       if (cond) {
         var sel = document.getElementById("fp-cond-field-" + i);
-        // Guarded upstream (unsupported rules never reach this form). If it ever
-        // happens, blank the row rather than silently dropping the condition.
+        var opSel = document.getElementById("fp-cond-op-" + i);
         if (!FIELDS.includes(String(cond.field))) { clearRow(i); continue; }
         sel.value = String(cond.field);
         var val = "";
@@ -3229,8 +3459,13 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
         else if (cond.values) val = (cond.values || []).join(", ");
         else if (cond.value != null && cond.field !== "always") val = String(cond.value);
         document.getElementById("fp-cond-value-" + i).value = val;
+        if (opSel) {
+          var neg = cond.op === "not_contains" || cond.op === "not_in";
+          opSel.value = neg ? "not" : "";
+          opSel.style.display = NEGATABLE[cond.field] ? "" : "none";
+        }
         row.style.display = "";
-      } else if (i === 0 && stored.length === 0) {
+      } else if (i === 0 && !stored.length) {
         document.getElementById("fp-cond-field-0").value = "never";
         row.style.display = "";
       } else {
@@ -3238,45 +3473,41 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
       }
     }
     if (!stored.length) document.getElementById("fp-cond-field-0").value = "never";
-    syncNever();
+    sync();
 
+    // Actions: every field the engine understands has a real input here, so
+    // a save from this panel can neither reset nor silently preserve a
+    // setting the administrator never saw.
     var act = (rule && rule.action) || {};
-    document.getElementById("fp-decision").value = act.decision || "";
-    document.getElementById("fp-reply").value = act.reply_action || "";
-    document.getElementById("fp-template").value = act.template_key || "";
-    document.getElementById("fp-stage").value = act.stage || "";
-    document.getElementById("fp-queue").value = act.queue || "";
-    document.getElementById("fp-sla").value = act.sla_hours == null ? "" : String(act.sla_hours);
-    document.getElementById("fp-attachset").value = act.attachment_set || "";
+    var set = function (id, value) { var el = document.getElementById(id); if (el) el.value = value == null ? "" : String(value); };
+    set("fp-decision", act.decision || "");
+    set("fp-reply", act.reply_action || "");
+    set("fp-template", act.template_key || "");
+    set("fp-stage", act.stage || "");
+    set("fp-queue", act.queue || "");
+    set("fp-sla", act.sla_hours == null ? "" : act.sla_hours);
+    set("fp-attachset", act.attachment_set || "");
+    set("fp-priority", act.priority || "");
+    set("fp-assign", act.assign == null || act.assign === "none" ? "" : act.assign);
+    set("fp-followup", act.followup || "");
+    set("fp-followup-action", act.followup_action || "hold");
+    set("fp-fallback", act.fallback || "human_draft");
+    set("fp-audit", act.audit_code || "");
+    set("fp-map-green", (act.template_map && act.template_map.green) || "");
+    set("fp-map-empty", (act.template_map && act.template_map.empty) || "");
+    set("fp-map-missing", (act.template_map && act.template_map.missing) || "");
+    var reqInfo = document.getElementById("fp-request-info");
+    if (reqInfo) reqInfo.checked = act.request_info === true;
 
-    // BUG-05: everything the panel does not surface travels as a hidden field
-    // carrying its current value, so parseRuleAction cannot reset it.
-    var hidden = {
-      priority: act.priority || "",
-      assign: act.assign == null || act.assign === "none" ? "" : String(act.assign),
-      request_info: act.request_info ? "1" : "",
-      followup: act.followup || "",
-      followup_action: act.followup_action || "",
-      audit_code: act.audit_code || "",
-      fallback: act.fallback || "",
-      map_green: (act.template_map && act.template_map.green) || "",
-      map_empty: (act.template_map && act.template_map.empty) || "",
-      map_missing: (act.template_map && act.template_map.missing) || ""
-    };
-    Object.keys(hidden).forEach(function (k) {
-      var el = document.getElementById("fp-x-" + k);
-      if (el) el.value = hidden[k];
-    });
-    // sla_hours and attachment_set have visible inputs in this panel, so keep
-    // their hidden mirrors empty and let the visible ones win.
     var noted = [];
+    if (stored.length && !rowAble) noted.push("its conditions are shown as raw JSON below");
     if (act.sla_hours != null) noted.push("SLA " + act.sla_hours + "h");
     if (act.attachment_set) noted.push("attachment set “" + act.attachment_set + "”");
-    if (act.followup === "ladder") noted.push("follow-up ladder");
+    if (act.followup === "ladder") noted.push("reminder ladder");
     if (act.template_map) noted.push("green/empty/missing template map");
     if (act.audit_code) noted.push("audit code " + act.audit_code);
     preserve.innerHTML = noted.length
-      ? '<p class="small muted" style="margin:10px 0 0">Also kept on save: ' + noted.map(function (s) { return document.createTextNode(s).nodeValue; }).join(" · ") + '.</p>'
+      ? '<p class="small muted" style="margin:10px 0 0">This step has: ' + noted.map(function (s) { return document.createTextNode(s).nodeValue; }).join(" · ") + '.</p>'
       : "";
 
     document.getElementById("fp-delete").style.display = rule && rule.id ? "inline-flex" : "none";
@@ -3284,6 +3515,7 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
       n.classList.toggle("selected", rule && rule.id && n.getAttribute("data-rule-id") === String(rule.id));
     });
     document.getElementById("fp-name").focus();
+  }
   }
 
   function hideForm() {
@@ -3295,7 +3527,15 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
   editor.addEventListener("click", function (e) {
     var addBtn = e.target.closest("[data-add]");
     if (addBtn) {
-      showForm(null, addBtn.getAttribute("data-add"), addBtn.getAttribute("data-scope") || "");
+      // The add bar under each chain carries its own scope picker, so the very
+      // first step in a scope is creatable from the diagram — a group only
+      // exists once it owns a rule, which used to leave an empty workspace
+      // with an instruction pointing at a button that was never rendered.
+      var source = addBtn.getAttribute("data-scope-source");
+      var scope = source
+        ? (document.getElementById(source) || {}).value || ""
+        : addBtn.getAttribute("data-scope") || "";
+      showForm(null, addBtn.getAttribute("data-add"), scope);
       return;
     }
     var node = e.target.closest(".flow-node.editable");
@@ -3303,13 +3543,6 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
     var id = Number(node.getAttribute("data-rule-id"));
     var rule = rules.find(function (r) { return r.id === id; });
     if (!rule) return;
-    if (rule.unsupported) {
-      // Refuse rather than truncate: send the editor to the form that can
-      // express the rule (BUG-04).
-      var adv = document.querySelector("details.card");
-      if (adv) { adv.open = true; adv.scrollIntoView({ behavior: "smooth", block: "start" }); }
-      return;
-    }
     showForm(rule, rule.kind, "");
   });
 
@@ -3330,12 +3563,19 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
         w.style.display = "";
         document.getElementById("fp-cond-field-" + i).value = "";
         document.getElementById("fp-cond-value-" + i).value = "";
+        var op = document.getElementById("fp-cond-op-" + i);
+        if (op) { op.value = ""; op.style.display = "none"; }
         document.getElementById("fp-cond-value-" + i).focus();
+        this.disabled = false;
         return;
       }
     }
     this.disabled = true;
   });
+
+  // Typing in the raw-JSON box switches the panel to JSON mode (and emptying
+  // it switches back), so the two editors can never both be submitted.
+  document.getElementById("fp-conditions-json").addEventListener("input", function () { sync(); });
 
   document.getElementById("fp-cond-remove").addEventListener("click", function () {
     if (visibleCount() <= 1) return;
@@ -3409,6 +3649,87 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
   // Round 11: the pack files have their OWN tab (they were hiding inside
   // "Reply configuration", which is why staff thought they couldn't be
   // changed).
+  // ── Reply behaviour ────────────────────────────────────────────────────
+  // These are the four dials that decide what a reply looks like, who it
+  // comes from, how fast it is due and whether it may leave without a human.
+  // They used to live only under Settings, which left "Reply configuration"
+  // with a signature box and a link — the most-asked-about screen in the
+  // product with almost nothing on it. Same endpoints, so there is still one
+  // source of truth for each value.
+  const org = c.repo.getOrganization(settingsOrgId);
+  const automation = c.repo.getSetting("automation_mode", "draft");
+  const replyBehaviourHtml = `
+<div class="card" id="reply-identity">
+  <h2>Who the reply is from</h2>
+  <p class="small muted" style="margin-top:-6px">Applied to every message this workspace sends — automated replies, reminders, approved drafts and manual replies alike. Also editable under <a href="/settings#letters">Settings → Letters &amp; identity</a>.</p>
+  <form method="post" action="/settings/organization">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <input type="hidden" name="organization_name" value="${esc(org?.name ?? c.institution)}">
+    <input type="hidden" name="primary_color" value="${esc(org ? organizationTheme(c.repo, settingsOrgId).primary : "#3b1d5f")}">
+    <input type="hidden" name="accent_color" value="${esc(org ? organizationTheme(c.repo, settingsOrgId).accent : "#9a78c7")}">
+    <input type="hidden" name="ref_prefix" value="${esc(org?.ref_prefix ?? c.repo.organizationRefPrefix(settingsOrgId))}">
+    <input type="hidden" name="locale" value="${esc(org?.locale ?? "")}">
+    <input type="hidden" name="timezone" value="${esc(org?.timezone ?? "")}">
+    <div class="formrow">
+      <div><label>From name on outgoing mail</label><input name="from_name" value="${esc(org?.from_name ?? "")}" placeholder="${esc(org?.name ?? c.institution)}"></div>
+      <div><label>Reply-to address</label><input name="reply_to" value="${esc(org?.reply_to ?? "")}" placeholder="replies land in the sending mailbox"></div>
+      <div style="flex:0"><label>&nbsp;</label><button class="btn small">Save sender identity</button></div>
+    </div>
+  </form>
+  <p class="small muted" style="margin-bottom:0">Leave the From name empty to keep the sending mailbox's own name; leave Reply-to empty to keep replies on the sending mailbox. The name signed at the bottom of a message is <b>${esc(c.repo.getSetting("institution_name", org?.name ?? c.institution))}</b> — change it under <a href="/settings#letters">Settings → Letters &amp; identity</a>.</p>
+</div>
+
+<div class="card" id="reply-targets">
+  <h2>How fast a reply is due</h2>
+  <p class="small muted" style="margin-top:-6px">The SLA clock on every queued case, when a slow case is escalated, and the reminder ladder for missing documents. Also editable under <a href="/settings#sla">Settings → Response targets</a>.</p>
+  <form method="post" action="/settings/general">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      <div><label>SLA target (hours to first response)</label><input name="sla_target_hours" value="${esc(c.repo.getSetting("sla_target_hours", "4"))}"></div>
+      <div><label>Escalation (hours before escalation)</label><input name="escalation_hours" value="${esc(c.repo.getSetting("escalation_hours", "8"))}"></div>
+      <div><label>Unanswered target (hours)</label><input name="unanswered_target_hours" value="${esc(c.repo.getSetting("unanswered_target_hours", "4"))}"></div>
+      <div><label>Reminder sequence (days, e.g. 3,7,10)</label><input name="followup_ladder_days" value="${esc(c.repo.getSetting("followup_ladder_days", "3,7,10"))}"></div>
+      <div style="flex:0"><label>&nbsp;</label><button class="btn small">Save response targets</button></div>
+    </div>
+  </form>
+</div>
+
+<div class="card" id="reply-automation">
+  <h2>Automatic sending</h2>
+  <p class="small muted" style="margin-top:-6px">Two switches, both safe by default. The global dial starts on <b>draft</b> — nothing leaves without a person — and releasing it is not enough on its own: a category must also be on the allow-list below. A case that is not fully qualified <b>never</b> gets an automatic reply, whatever these say.</p>
+  <form method="post" action="/settings/automation/global" class="formrow" style="align-items:end">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div><label>Global mode</label><select name="mode">
+      <option value="auto" ${automation === "auto" ? "selected" : ""}>auto — only the categories allow-listed below may send</option>
+      <option value="draft" ${automation === "draft" ? "selected" : ""}>draft — hold EVERY automated reply for approval</option>
+    </select></div>
+    <div style="flex:0"><label>&nbsp;</label><button class="btn small">Apply global mode</button></div>
+  </form>
+  <table style="margin-top:14px"><tr><th>Message category</th><th>Mode</th><th></th></tr>
+    ${EMAIL_CATEGORIES.map((cat) => {
+      const mode = c.repo.automationMode(cat);
+      return `<tr><td>${esc(cat.replace(/_/g, " "))}</td>
+      <td><span class="badge ${mode === "auto" ? "b-green" : "b-orange"}">${mode === "auto" ? "automatic sending" : "draft for approval"}</span></td>
+      <td><form method="post" action="/settings/automation/category" style="margin:0">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <input type="hidden" name="category" value="${esc(cat)}">
+        <button class="btn small ghost" name="mode" value="${mode === "auto" ? "draft" : "auto"}">switch to ${mode === "auto" ? "draft" : "auto"}</button>
+      </form></td></tr>`;
+    }).join("")}
+  </table>
+  <p class="small muted" style="margin-bottom:0">With the global mode on draft, the per-category switches take effect once it returns to auto.</p>
+</div>
+
+<div class="card" id="reply-sources">
+  <h2>Where the wording and the routing come from</h2>
+  <p class="small muted" style="margin-top:-6px">A reply is a template chosen by a workflow rule. Both are configured elsewhere; these are the two doors.</p>
+  <p style="display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 0">
+    <a class="btn ghost small" href="/templates">Templates — the words</a>
+    <a class="btn ghost small" href="/config?tab=rules">Workflow rules — which template, when</a>
+    <a class="btn ghost small" href="/settings#categories">Message categories</a>
+  </p>
+</div>`;
+
   const replyHtml = `
 <div class="card" id="templates-home">
   <h2>Email templates</h2>
@@ -3496,7 +3817,7 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
 ${flash ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(flash)}</div>` : ""}
 ${configurationChecklist(c)}
 ${tabBar}
-${tab === "rules" ? workflowRulesTab(c, editRuleId) : tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? attachmentSetsCard(c) + documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsWorkspace) : replyHtml}
+${tab === "rules" ? workflowRulesTab(c, editRuleId) : tab === "case-types" ? caseTypesTab(c, caseTypesOrganizationId) : tab === "pack" ? attachmentSetsCard(c) + documentsPackCard(c) : tab === "requirements" ? requirementsTab(c, reqsTarget, reqsWorkspace) : replyBehaviourHtml + replyHtml}
 `
   );
 }

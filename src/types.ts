@@ -280,6 +280,13 @@ export interface DocumentDefinition {
   required: boolean;
   blocking: boolean;
   position?: number;
+  /**
+   * Organization-defined axis this slot depends on, and the values of that
+   * axis for which the slot applies. Both null (the default) means the slot
+   * always applies — an organization that never defines an axis is unaffected.
+   */
+  axis?: string | null;
+  axis_values?: string[] | null;
 }
 
 export interface ExtractedFields {
@@ -496,6 +503,8 @@ export interface ApplicantRow {
   followup_base_at: string | null;
   /** PPR P0-3: frozen profile configuration (JSON CaseConfigFrozen). */
   case_config_frozen?: string | null;
+  /** Axis values this case is assessed against (JSON Record<string, string>). */
+  axis_selections?: string | null;
   config_version_frozen?: number | null;
   config_version_frozen_at?: string | null;
   /** PPR P0-4/P1-2: rule-assigned queue id (generic workflows). */
