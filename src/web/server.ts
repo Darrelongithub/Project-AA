@@ -2609,6 +2609,11 @@ export function createApp(deps: WebDeps): Express {
     const staffId = Number(req.body.staff_id);
     const member = repo.staffInOrganization(staffId, organizationId(req));
     if (!member) return res.redirect("/staff?msg=" + encodeURIComponent("Unknown staff member — nothing saved."));
+    // An administrator who cannot see every case type cannot reach the
+    // configuration that would give it back — refuse rather than lock out.
+    if (member.role === "admin") {
+      return res.redirect(`/staff?msg=${encodeURIComponent("Administrators always see every case type — nothing saved.")}#scopes`);
+    }
     const raw = req.body.case_types;
     const requested = (Array.isArray(raw) ? raw : raw ? [raw] : []).map((x) => String(x).trim().toUpperCase()).filter(Boolean);
     // Only real case types of THIS organization can be scoped — a typo'd code
@@ -2618,16 +2623,23 @@ export function createApp(deps: WebDeps): Express {
     if (unknown.length) {
       return res.redirect(`/staff?msg=${encodeURIComponent(`Unknown case type(s): ${unknown.join(", ")} — nothing saved.`)}#scopes`);
     }
-    const restoreFull = String(req.body.scope_mode ?? "") === "unscoped";
+    const mode = String(req.body.scope_mode ?? "");
+    const restoreFull = mode === "unscoped";
+    // "No access" is reachable, but only by pressing the button that says so.
+    // An empty selection on a plain save must not silently empty someone's
+    // desk — that reads as "the cases disappeared".
+    if (!restoreFull && mode !== "none" && !requested.length) {
+      return res.redirect(`/staff?msg=${encodeURIComponent(`Tick at least one case type, or choose “every case type” — ${member.display_name}'s scope was left alone.`)}#scopes`);
+    }
     if (restoreFull) repo.clearCaseTypeScopes(staffId);
-    else repo.setCaseTypeScopes(staffId, requested);
+    else repo.setCaseTypeScopes(staffId, mode === "none" ? [] : requested);
     repo.audit(null, req.staff!.username, "scope_changed",
       `${member.username}: ${restoreFull ? "scope cleared (full visibility)" : requested.length ? requested.join(", ") : "no access"}`);
     res.redirect(`/staff?msg=${encodeURIComponent(restoreFull
-      ? `${member.display_name}'s scope cleared — they see every case type again.`
+      ? `${member.display_name} now sees every case type again.`
       : requested.length
-        ? `${member.display_name} now sees: ${requested.join(", ")}.`
-        : `${member.display_name} now has no case access until an administrator assigns a case type.`)}#scopes`);
+        ? `${member.display_name} now sees ${requested.length} case type${requested.length === 1 ? "" : "s"}: ${requested.join(", ")}.`
+        : `${member.display_name} now sees no case types — the queues stay empty until a scope is set.`)}#scopes`);
   });
 
   app.get("/staff", requireLogin, requireRole("admin"), (req, res) =>
@@ -2647,44 +2659,6 @@ export function createApp(deps: WebDeps): Express {
     }
     repo.audit(null, req.staff!.username, "staff_permissions_saved", "automation permissions updated");
     res.redirect("/staff?msg=" + encodeURIComponent("Automation permissions saved."));
-  });
-
-  /**
-   * Narrow which case types a person sees.
-   *
-   * The scoping table and the row-level filter that enforces it have always
-   * existed; what was missing was any way to set it, so a reviewer could never
-   * be limited to the streams they actually handle — and a member left with an
-   * accidental "no case types" scope had no way back.
-   */
-  app.post("/staff/case-type-scopes", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
-    const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
-    const orgId = organizationId(req);
-    const target = repo.listStaff(orgId).find((st) => st.id === Number(req.body.id));
-    if (!target) return res.redirect(staffMsg("Unknown staff member — nothing changed."));
-    // Administrators see every case type by definition; scoping one would be a
-    // lock-out with no visible cause, so refuse it instead.
-    if (target.role === "admin") return res.redirect(staffMsg("Administrators always see every case type — nothing changed."));
-
-    const mode = String(req.body.mode ?? "");
-    if (mode === "unscoped") {
-      repo.clearCaseTypeScopes(target.id);
-      repo.audit(null, req.staff!.username, "staff_case_type_scope_cleared", `${target.username} sees every case type`);
-      return res.redirect(staffMsg(`${target.display_name} now sees every case type.`));
-    }
-    if (mode === "none") {
-      repo.setCaseTypeScopes(target.id, []);
-      repo.audit(null, req.staff!.username, "staff_case_type_scope_saved", `${target.username} scoped to no case types`);
-      return res.redirect(staffMsg(`${target.display_name} now sees no case types — the queues stay empty until a scope is set.`));
-    }
-    // Otherwise the ticks decide. Only this organization's own live case types
-    // count, so a forged code for another tenant is simply ignored.
-    const known = repo.listCaseTypes(orgId).map((t) => t.code.toUpperCase());
-    const chosen = known.filter((code) => String((req.body as Record<string, string>)[`scope_${code}`] ?? "") === "1");
-    if (!chosen.length) return res.redirect(staffMsg(`Tick at least one case type, or choose “every case type” — ${target.display_name}'s scope was left alone.`));
-    repo.setCaseTypeScopes(target.id, chosen);
-    repo.audit(null, req.staff!.username, "staff_case_type_scope_saved", `${target.username} scoped to ${chosen.join(", ")}`);
-    res.redirect(staffMsg(`${target.display_name} now sees ${chosen.length} case type${chosen.length === 1 ? "" : "s"}: ${chosen.join(", ")}.`));
   });
 
   // H-2: the new account belongs to the ACTING admin's organization — never

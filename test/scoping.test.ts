@@ -210,19 +210,34 @@ describe("one matrix page, one action", () => {
     expect(repo.caseTypeScopeModeFor(floId)).toBe("unscoped");
   });
 
-  it("an empty saved selection is explicit no access, and full visibility is a separate action", async () => {
+  it("no access is its own button, never an accidental empty save", async () => {
     const { base } = await startServer();
     const admin = await loginAs(base, "admin", "admin123");
     const floId = repo.getStaffByUsername("flo")!.id;
-    const noAccess = await fetch(`${base}/staff/scopes`, {
+
+    // Saving with nothing ticked used to mean "no access". It is far too easy
+    // to do by accident — unchecking the last box reads as "clear the scope" —
+    // and it empties someone's desk with no confirmation. It is now refused.
+    const empty = await fetch(`${base}/staff/scopes`, {
       method: "POST", headers: { cookie: admin.cookie, "content-type": "application/x-www-form-urlencoded" },
       body: `_csrf=${admin.csrf}&staff_id=${floId}`,
+      redirect: "manual",
+    });
+    expect(empty.status).toBe(302);
+    expect(decodeURIComponent(empty.headers.get("location") ?? "")).toContain("Tick at least one case type");
+    expect(repo.caseTypeScopeModeFor(floId)).toBe("unscoped");
+
+    // Removing access takes its own, explicitly named action.
+    const noAccess = await fetch(`${base}/staff/scopes`, {
+      method: "POST", headers: { cookie: admin.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${admin.csrf}&staff_id=${floId}&scope_mode=none`,
       redirect: "manual",
     });
     expect(noAccess.status).toBe(302);
     expect(repo.visibleCaseTypesFor(repo.getStaff(floId)!)).toEqual([]);
     expect(repo.mailFolderCounts({ caseTypes: [] }).all).toBe(0);
 
+    // …which is reversible, exactly as before.
     const restore = await fetch(`${base}/staff/scopes`, {
       method: "POST", headers: { cookie: admin.cookie, "content-type": "application/x-www-form-urlencoded" },
       body: `_csrf=${admin.csrf}&staff_id=${floId}&scope_mode=unscoped`,
@@ -231,8 +246,22 @@ describe("one matrix page, one action", () => {
     expect(restore.status).toBe(302);
     expect(repo.visibleCaseTypesFor(repo.getStaff(floId)!)).toBeNull();
     const page = await (await fetch(`${base}/staff`, { headers: { cookie: admin.cookie } })).text();
-    expect(page).toContain("Saving an empty selection gives");
+    expect(page).toContain("No case access");
     expect(page).toContain("Restore full visibility");
+  });
+
+  it("an administrator cannot be scoped out of their own configuration", async () => {
+    const { base } = await startServer();
+    const admin = await loginAs(base, "admin", "admin123");
+    const adminId = repo.getStaffByUsername("admin")!.id;
+    const res = await fetch(`${base}/staff/scopes`, {
+      method: "POST", headers: { cookie: admin.cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: `_csrf=${admin.csrf}&staff_id=${adminId}&case_types=ADMISSIONS`,
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(decodeURIComponent(res.headers.get("location") ?? "")).toContain("Administrators always see every case type");
+    expect(repo.visibleCaseTypesFor(repo.getStaff(adminId)!)).toBeNull();
   });
 
   it("no other page hosts scope editing", async () => {

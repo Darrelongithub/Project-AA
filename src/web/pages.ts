@@ -4030,6 +4030,7 @@ function scopeMatrix(c: Ctx): string {
           ${caseTypes.map((t) => `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="case_types" value="${esc(t.code)}" style="width:auto" ${current.has(t.code.toUpperCase()) ? "checked" : ""}> ${esc(t.name)}</label>`).join("")}
           <button class="btn small ghost">Save assigned case types</button>
           <button class="btn small ghost" name="scope_mode" value="unscoped">Restore full visibility</button>
+          <button class="btn small ghost" name="scope_mode" value="none" onclick="return confirm('Give ${esc(m.username)} no case access? Their queues will be empty until a case type is assigned.')">No case access</button>
           <span class="muted small">${esc(state)}</span>
         </div>
       </td></form>
@@ -4037,7 +4038,7 @@ function scopeMatrix(c: Ctx): string {
   }).join("");
   return `<section class="card nopad" id="scopes">
     <div class="card-head"><h2>Visibility scope</h2></div>
-    <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the case types each officer handles and press <b>Save assigned case types</b> — one action per person. From then on they see only cases of those types, everywhere: queues, levels, search, direct links and the API. Saving an empty selection gives <b>no case access</b>; use <b>Restore full visibility</b> when that is intentional. Case types are managed in <a href="/config?tab=case-types">Configuration</a>.</p>
+    <p class="small muted" style="padding:0 24px;margin:8px 0 0">Tick the case types each officer handles and press <b>Save assigned case types</b> — one action per person. From then on they see only cases of those types, everywhere: queues, levels, search, direct links and the API. <b>Restore full visibility</b> undoes that; <b>No case access</b> empties their queues until a case type is assigned, and is the only way to reach that state. Case types are managed in <a href="/config?tab=case-types">Configuration</a>.</p>
     ${caseTypes.length ? `<table><tr><th>Member of staff</th><th>Case types they may see</th></tr>${rows}</table>` : `<div class="empty"><p>Create a case type in Configuration first | scopes are case types.</p></div>`}
   </section>`;
 }
@@ -4090,45 +4091,6 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
     </table>
     <div style="margin-top:10px"><button class="btn">Save permissions</button></div>
   </form>
-</section>
-<section class="card">
-  <h2>Which case types each person sees</h2>
-  <p class="small muted" style="margin-top:-6px">By default everyone sees every case type in this organization. Narrow a person to the types they actually handle — a reviewer who only reads one stream should not have the rest on their desk. Administrators always see everything.</p>
-  ${(() => {
-    // listCaseTypes() is the active set; retired profiles have their own list.
-    const types = repo.listCaseTypes(orgId);
-    if (!types.length) return `<p class="small muted" style="margin-bottom:0">No case types yet — add one under <a href="/config?tab=case-types">Configuration → CaseTypes</a> and scoping becomes available here.</p>`;
-    const members = repo.listStaff(orgId).filter((st) => st.role !== "admin");
-    if (!members.length) return `<p class="small muted" style="margin-bottom:0">Only administrators exist so far, and they always see everything. Add a user account below to scope it.</p>`;
-    const modeOf = (id: number) => repo.caseTypeScopeModeFor(id);
-    const scopesOf = (id: number) => repo.caseTypeScopesFor(id);
-    return `<table>
-      <tr><th>Person</th><th>Sees</th><th>Case types</th><th></th></tr>
-      ${members.map((st) => {
-        const mode = modeOf(st.id);
-        const scopes = scopesOf(st.id);
-        return `<tr>
-        <td><b>${esc(st.display_name)}</b><br><span class="muted small">@${esc(st.username)}</span></td>
-        <td>${mode === "unscoped"
-          ? `<span class="badge b-green">all case types</span>`
-          : mode === "none"
-            ? `<span class="badge b-red">no case types</span>`
-            : `<span class="badge b-purple">${scopes.length} of ${types.length}</span>`}</td>
-        <td><details><summary style="cursor:pointer">Choose case types</summary>
-          <div style="padding:8px 0 0">
-            <label class="small" style="display:block;margin-bottom:6px"><input type="radio" name="mode" value="unscoped" form="scopes-${st.id}" ${mode === "unscoped" ? "checked" : ""} style="width:auto"> Every case type (the default)</label>
-            ${types.map((t) => `<label class="small" style="display:block;margin-bottom:4px"><input type="checkbox" name="scope_${esc(t.code)}" value="1" form="scopes-${st.id}" ${scopes.includes(t.code.toUpperCase()) ? "checked" : ""} style="width:auto"> ${esc(t.name)} <span class="mono muted">${esc(t.code)}</span></label>`).join("")}
-            <label class="small" style="display:block;margin-top:6px"><input type="radio" name="mode" value="none" form="scopes-${st.id}" ${mode === "none" ? "checked" : ""} style="width:auto"> No case types (sees the queues but no cases)</label>
-          </div>
-        </details></td>
-        <td><form method="post" action="/staff/case-type-scopes" id="scopes-${st.id}" style="margin:0">
-          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}">
-          <button class="btn small ghost">Save scope</button></form></td>
-      </tr>`;
-      }).join("")}
-    </table>
-    <p class="small muted" style="margin:10px 0 0">Choosing “every case type” or “no case types” overrides the ticks; ticking any box switches that person to the selected case types only. A retired case type stops counting as soon as it is retired.</p>`;
-  })()}
 </section>
 <section class="card nopad">
   <div class="card-head"><h2>Accounts</h2></div>

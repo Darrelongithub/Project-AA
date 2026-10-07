@@ -416,20 +416,21 @@ describe("settings controls that posted into the wrong form", () => {
 
 describe("a person's case-type scope is settable, not just enforced", () => {
   it("narrows what a reviewer sees, and can be given back", async () => {
-    // The scoping table and the row-level filter that hides cases have always
-    // existed; what was missing was any way to SET a scope. A reviewer could
-    // never be limited to the streams they handle, and anyone left with a
-    // "no case types" scope had no way back from the console.
+    // The visibility matrix, the route and the row-level filter that hides
+    // cases all existed; what was missing was the guard rails. Scoping an
+    // administrator was possible (they would lose the configuration screen
+    // that gives it back), and saving an empty selection silently emptied a
+    // desk with no confirmation that it was deliberate.
     repo.createCaseType(orgId, { code: "SWEEP_GRANT", name: "Grant review" });
     const reviewer = repo.createStaffAndReturn("sweeper", "Sweeper One", hashPassword("sweeperpass123"), "user", orgId);
 
     const page = await get("/staff");
-    expect(page).toContain('action="/staff/case-type-scopes"');
-    expect(page).toContain('name="scope_SWEEP_GRANT"');
-    expect(page).toContain('name="mode"');
+    expect(page).toContain('action="/staff/scopes"');
+    expect(page).toContain('name="case_types"');
+    expect(page).toContain('value="SWEEP_GRANT"');
 
     // Ticking one case type narrows the scope to it.
-    const scoped = await post("/staff/case-type-scopes", { id: String(reviewer.id), mode: "scoped", scope_SWEEP_GRANT: "1" });
+    const scoped = await post("/staff/scopes", { staff_id: String(reviewer.id), case_types: "SWEEP_GRANT" });
     expect(msg(scoped.location)).toMatch(/now sees 1 case type/i);
     expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("scoped");
     expect(repo.caseTypeScopesFor(reviewer.id)).toEqual(["SWEEP_GRANT"]);
@@ -441,34 +442,42 @@ describe("a person's case-type scope is settable, not just enforced", () => {
     const shown = repo.createCase({ emailAddress: "shown@example.org", threadId: "shown-1", organizationId: orgId, caseTypeCode: "SWEEP_GRANT" });
     expect(repo.caseTypeVisibleTo({ id: reviewer.id, role: "user", organization_id: orgId }, shown)).toBe(true);
 
-    // "Every case type" is the way back — the ticks are overridden, not merged.
-    const cleared = await post("/staff/case-type-scopes", { id: String(reviewer.id), mode: "unscoped", scope_SWEEP_GRANT: "1" });
-    expect(msg(cleared.location)).toMatch(/every case type/i);
+    // "No case access" is deliberate only: it takes its own button, so an
+    // empty save can never be mistaken for it.
+    const none = await post("/staff/scopes", { staff_id: String(reviewer.id), scope_mode: "none" });
+    expect(msg(none.location)).toMatch(/sees no case types/i);
+    expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("none");
+    expect(repo.caseTypeVisibleTo({ id: reviewer.id, role: "user", organization_id: orgId }, shown)).toBe(false);
+
+    // "Restore full visibility" is the way back.
+    const cleared = await post("/staff/scopes", { staff_id: String(reviewer.id), scope_mode: "unscoped", case_types: "SWEEP_GRANT" });
+    expect(msg(cleared.location)).toMatch(/every case type again/i);
     expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("unscoped");
     expect(repo.caseTypeVisibleTo({ id: reviewer.id, role: "user", organization_id: orgId }, hidden)).toBe(true);
   });
 
   it("refuses a scope that would lock someone out by accident", async () => {
     const reviewer = repo.createStaffAndReturn("sweeper2", "Sweeper Two", hashPassword("sweeperpass123"), "user", orgId);
-    // No ticks and no explicit mode: the scope is left alone rather than
-    // silently emptying their desk.
-    const blank = await post("/staff/case-type-scopes", { id: String(reviewer.id), mode: "scoped" });
+    // An empty selection with no explicit mode leaves the scope alone rather
+    // than silently emptying their desk — "no access" has to be chosen.
+    const blank = await post("/staff/scopes", { staff_id: String(reviewer.id) });
     expect(msg(blank.location)).toMatch(/Tick at least one case type/i);
     expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("unscoped");
 
-    // An administrator cannot be scoped: they would lose configuration access
-    // with no visible cause.
+    // An administrator cannot be scoped: they would lose the configuration
+    // screen that restores it, with no visible cause.
     const adminId = repo.getStaffByUsername("sweepadmin")!.id;
-    const refused = await post("/staff/case-type-scopes", { id: String(adminId), mode: "none" });
+    const refused = await post("/staff/scopes", { staff_id: String(adminId), case_types: "SWEEP_GRANT" });
     expect(msg(refused.location)).toMatch(/Administrators always see every case type/i);
     expect(repo.caseTypeScopeModeFor(adminId)).toBe("unscoped");
 
-    // A code belonging to another organization's case type is ignored, not
+    // A code belonging to another organization's case type is rejected, not
     // honoured — otherwise a forged POST could smuggle in a foreign stream.
     const otherOrg = repo.createOrganization({ name: "Outsider Ltd", refPrefix: "OUT" });
     repo.createCaseType(otherOrg.id, { code: "FOREIGN", name: "Foreign stream" });
-    await post("/staff/case-type-scopes", { id: String(reviewer.id), mode: "scoped", scope_FOREIGN: "1" });
-    expect(repo.caseTypeScopesFor(reviewer.id)).toEqual([]);
+    const foreign = await post("/staff/scopes", { staff_id: String(reviewer.id), case_types: "FOREIGN" });
+    expect(msg(foreign.location)).toMatch(/Unknown case type/i);
+    expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("unscoped");
   });
 });
 
