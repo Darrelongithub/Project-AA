@@ -1522,11 +1522,38 @@ export function createApp(deps: WebDeps): Express {
   });
 
   // PPR P0-4: workflow rules — first-email and response behaviour as data.
+  /**
+   * A condition a hand-written JSON box will not match (wrong field name,
+   * missing value, unknown field) must be refused AT SAVE time, not accepted
+   * and then silently ignored at runtime. Without this, an administrator who
+   * wrote `{fact: "category"}` instead of `{field: "category"}` gets a green
+   * "saved and enabled" message and then wonders why the rule never fires.
+   */
+  const KNOWN_FIELDS = new Set(["always", "sender_state", "subject", "body", "text", "has_attachments", "category", "body_is_ref", "docs_state", "signals"]);
+  const requireList = (v: unknown): string[] => {
+    const raw = Array.isArray(v) ? v : typeof v === "string" || typeof v === "number" ? [v] : [];
+    return raw.map((x) => String(x)).filter((x) => x !== "");
+  };
   const parseRuleConditions = (body: Record<string, unknown>): RuleCondition[] => {
     const raw = String(body.conditions_json ?? "").trim();
     if (raw) {
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) throw new Error("conditions JSON must be an array");
+      if (!parsed.length) throw new Error("a rule with no conditions would match everything — add at least one condition, or leave the box empty to clear it");
+      for (let i = 0; i < parsed.length; i++) {
+        const c = parsed[i] as Record<string, unknown>;
+        if (!c || typeof c !== "object") throw new Error(`condition #${i + 1}: must be an object`);
+        const field = c.field;
+        if (typeof field !== "string" || !KNOWN_FIELDS.has(field)) {
+          throw new Error(`condition #${i + 1}: unknown field “${String(field ?? "(missing)")}” — valid fields are ${[...KNOWN_FIELDS].join(", ")}`);
+        }
+        // Conditions that require a string list must actually have one.
+        if (field === "subject" || field === "body" || field === "text" || field === "category" || field === "docs_state") {
+          if (!requireList(c.values ?? c.value).length) {
+            throw new Error(`condition #${i + 1}: ${field} needs at least one value`);
+          }
+        }
+      }
       return parsed as RuleCondition[];
     }
     const out: RuleCondition[] = [];

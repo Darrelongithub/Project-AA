@@ -550,6 +550,42 @@ describe("a rule that cannot be evaluated never takes the pipeline down", () => 
   });
 });
 
+describe("a rule with a malformed condition is refused at save time", () => {
+  it("a mistyped field name is refused with a specific message", async () => {
+    // A rule whose conditions JSON names a field the engine does not read
+    // used to save with a green "saved and enabled" message and then never
+    // fire — leaving an administrator wondering why their automation did
+    // nothing. Refuse it instead.
+    const res = await post("/config/workflow-rules/save", {
+      kind: "intake",
+      name: "broken rule",
+      conditions_json: '[{"fact":"category","op":"eq","value":"fee_enquiry"}]',
+    });
+    expect(msg(res.location)).toMatch(/unknown field/i);
+    expect(repo.listWorkflowRules(orgId).some((r) => r.name === "broken rule")).toBe(false);
+  });
+
+  it("a list-typed condition with no values is refused", async () => {
+    const res = await post("/config/workflow-rules/save", {
+      kind: "intake",
+      name: "empty list rule",
+      conditions_json: '[{"field":"category","op":"in","values":[]}]',
+    });
+    expect(msg(res.location)).toMatch(/needs at least one value/i);
+    expect(repo.listWorkflowRules(orgId).some((r) => r.name === "empty list rule")).toBe(false);
+  });
+
+  it("a rule with no conditions is refused rather than matching everything", async () => {
+    const res = await post("/config/workflow-rules/save", {
+      kind: "intake",
+      name: "always rule",
+      conditions_json: "[]",
+    });
+    expect(msg(res.location)).toMatch(/no conditions/i);
+    expect(repo.listWorkflowRules(orgId).some((r) => r.name === "always rule")).toBe(false);
+  });
+});
+
 describe("a new organization does not inherit a placeholder identity", () => {
   it("setup names the organization and the mail signature starts the same", () => {
     // The second field used to stay "Organization" until someone found it
