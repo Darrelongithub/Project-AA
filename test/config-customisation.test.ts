@@ -1,0 +1,596 @@
+/**
+ * The configuration sweep: every surface an administrator is offered has to be
+ * usable, and usable means three things at once —
+ *
+ *   1. REACHABLE   — a control exists for it on a page an admin can open;
+ *   2. EFFECTIVE   — submitting that control changes the stored value;
+ *   3. LOSSLESS    — saving one thing does not silently reset another.
+ *
+ * Each test below failed against the console before this file existed. They are
+ * grouped by the surface they pin, and they deliberately drive the app over
+ * HTTP with the same shaped POST the rendered form produces rather than calling
+ * repository methods directly, so a form that lost a field name is caught here.
+ */
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { Server } from "http";
+import { openDb } from "../src/db/db";
+import { Repo } from "../src/db/repo";
+import { seedDefaults } from "../src/db/seed";
+import { createApp } from "../src/web/server";
+import { hashPassword } from "../src/util/password";
+import { webLogin } from "./helpers";
+import { firstMatchingRule, ruleMatches } from "../src/rules/workflow";
+
+let repo: Repo;
+let server: Server;
+let base = "";
+let admin: { cookie: string; csrf: string };
+let orgId = 1;
+
+async function get(path: string): Promise<string> {
+  return (await fetch(`${base}${path}`, { headers: { cookie: admin.cookie } })).text();
+}
+
+async function post(path: string, fields: Record<string, string>): Promise<{ status: number; location: string; html: string }> {
+  const res = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", cookie: admin.cookie },
+    body: new URLSearchParams({ _csrf: admin.csrf, ...fields }).toString(),
+    redirect: "manual",
+  });
+  const location = res.headers.get("location") ?? "";
+  const html = location && location.startsWith("/") ? await get(location) : await res.text();
+  return { status: res.status, location, html };
+}
+
+/** The `?msg=` a redirect carries is the authoritative outcome text. */
+function msg(location: string): string {
+  try { return new URL(location, base).searchParams.get("msg") ?? ""; } catch { return ""; }
+}
+
+beforeAll(async () => {
+  repo = new Repo(openDb(":memory:"));
+  seedDefaults(repo);
+  // Start from a genuinely blank organization: the point of these tests is
+  // that the first thing an administrator tries to do is possible.
+  const organization = repo.createOrganization({ name: "Sweep Cooperative", refPrefix: "SWP" });
+  orgId = organization.id;
+  repo.createStaff("sweepadmin", "Sweep Admin", hashPassword("sweeppass123"), "admin", false, orgId);
+  const app = createApp({ repo, ctx: { repo, adapters: {} as never } });
+  await new Promise<void>((resolve) => { server = app.listen(0, "127.0.0.1", () => resolve()); });
+  base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const login = await webLogin(base, "sweepadmin", "sweeppass123");
+  expect(login.status).toBe(302);
+  admin = { cookie: login.cookie, csrf: login.csrf };
+});
+
+afterAll(() => { server?.close(); });
+
+describe("the flowchart is usable from an empty workspace", () => {
+  it("offers an add control for both chains before any rule exists", async () => {
+    // The empty-state hint used to say "use + Add step in a group below" while
+    // no group — and therefore no button — was rendered at all, so the very
+    // first rule could not be created from the diagram.
+    const page = await get("/config?tab=rules");
+    expect(page).toContain('data-scope-source="flow-scope-intake"');
+    expect(page).toContain('data-scope-source="flow-scope-response"');
+    expect(page).toContain('id="flow-scope-intake"');
+    expect(page).toContain('id="flow-scope-response"');
+  });
+
+  it("the add bar lets a scope be chosen, including the organization-wide bucket", async () => {
+    const type = repo.createCaseType(orgId, { code: "SWEEP_ONE", name: "Sweep one" });
+    const page = await get("/config?tab=rules");
+    const scopeSelect = new RegExp(`<select id="flow-scope-intake">([\\s\\S]*?)</select>`).exec(page)?.[1] ?? "";
+    expect(scopeSelect).toContain(`value="${type.id}"`);
+    expect(scopeSelect).toContain('value=""');
+  });
+
+  it("creates the first rule of a chain through the panel's own submit shape", async () => {
+    const before = repo.listWorkflowRules(orgId).length;
+    const res = await post("/config/workflow-rules/save", {
+      name: "Sweep first intake rule", kind: "intake", case_type_id: "", position: "", enabled: "1",
+      cond_field_0: "always", cond_value_0: "",
+      decision: "create", reply_action: "draft",
+    });
+    expect(res.status).toBe(302);
+    expect(msg(res.location)).toMatch(/saved/i);
+    expect(repo.listWorkflowRules(orgId).length).toBe(before + 1);
+    // With a rule present the group and its own add button appear too.
+    expect(await get("/config?tab=rules")).toContain("data-add=\"intake\"");
+  });
+});
+
+describe("the flowchart can reorder a step", () => {
+  it("moving a rule up puts it earlier in the chain and the diagram agrees", async () => {
+    const type = repo.createCaseType(orgId, { code: "SWEEP_ORDER", name: "Sweep order" });
+    const first = repo.saveWorkflowRule({
+      organizationId: orgId, caseTypeId: type.id, kind: "response", name: "Sweep A", position: 0,
+      conditions: [{ field: "always", value: true }], action: { reply_action: "draft" },
+    });
+    const second = repo.saveWorkflowRule({
+      organizationId: orgId, caseTypeId: type.id, kind: "response", name: "Sweep B", position: 10,
+      conditions: [{ field: "always", value: true }], action: { reply_action: "hold" },
+    });
+
+    const drawn = (page: string) => [...page.matchAll(/data-rule-id="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(drawn(await get("/config?tab=rules")).indexOf(first.id)).toBeLessThan(drawn(await get("/config?tab=rules")).indexOf(second.id));
+
+    const res = await post("/config/workflow-rules/move", { id: String(second.id), dir: "up" });
+    expect(msg(res.location)).toMatch(/moved up/i);
+    const page = await get("/config?tab=rules");
+    expect(drawn(page).indexOf(second.id)).toBeLessThan(drawn(page).indexOf(first.id));
+    expect(repo.getWorkflowRule(second.id)!.position).toBeLessThan(repo.getWorkflowRule(first.id)!.position);
+  });
+
+  it("the first and last steps of a chain are rendered as disabled, not silent", async () => {
+    const page = await get("/config?tab=rules");
+    expect(page).toContain('title="Already first in this chain"');
+    expect(page).toContain('title="Already last in this chain"');
+  });
+
+  it("refuses to move a rule belonging to another organization", async () => {
+    const other = repo.createOrganization({ name: "Other Sweep", refPrefix: "OTH" });
+    const foreign = repo.saveWorkflowRule({
+      organizationId: other.id, caseTypeId: null, kind: "intake", name: "Foreign rule", position: 0,
+      conditions: [{ field: "always", value: true }], action: { decision: "create" },
+    });
+    const res = await post("/config/workflow-rules/move", { id: String(foreign.id), dir: "down" });
+    expect(repo.getWorkflowRule(foreign.id)!.position).toBe(0);
+    expect(res.status).toBe(302);
+  });
+});
+
+describe("a case type can be renamed, re-coded and retired", () => {
+  it("renames a case type and keeps its documents and rules", async () => {
+    const type = repo.createCaseType(orgId, { code: "SWEEP_RENAME", name: "Typoed name" });
+    repo.upsertDocumentDefinition(type.id, { key: "form", label: "Form", required: true, blocking: true });
+    const res = await post("/config/case-types/update", {
+      organization_id: String(orgId), case_type_id: String(type.id),
+      name: "Corrected name", code: "SWEEP_RENAMED", category: "services",
+    });
+    expect(msg(res.location)).toMatch(/updated/i);
+    const saved = repo.caseTypeById(type.id)!;
+    expect(saved.name).toBe("Corrected name");
+    expect(saved.code).toBe("SWEEP_RENAMED");
+    expect(saved.category).toBe("services");
+    expect(repo.listDocumentDefinitions(type.id)).toHaveLength(1);
+  });
+
+  it("refuses a code another active case type already holds", async () => {
+    repo.createCaseType(orgId, { code: "SWEEP_TAKEN", name: "Taken" });
+    const type = repo.createCaseType(orgId, { code: "SWEEP_CLASH", name: "Clash" });
+    const res = await post("/config/case-types/update", {
+      organization_id: String(orgId), case_type_id: String(type.id),
+      name: "Clash", code: "SWEEP_TAKEN", category: "general",
+    });
+    expect(msg(res.location)).toMatch(/not updated|already/i);
+    expect(repo.caseTypeById(type.id)!.code).toBe("SWEEP_CLASH");
+  });
+
+  it("retiring removes it from the picker, stops its aliases and rules, and is reversible", async () => {
+    const type = repo.createCaseType(orgId, { code: "SWEEP_RETIRE", name: "Retire me" });
+    const alias = repo.addCaseTypeAlias(orgId, type.id, "retire-me@example.org");
+    expect(alias.ok).toBe(true);
+    repo.saveWorkflowRule({
+      organizationId: orgId, caseTypeId: type.id, kind: "intake", name: "Retired rule", position: 0,
+      conditions: [{ field: "always", value: true }], action: { decision: "create" },
+    });
+
+    const res = await post("/config/case-types/retire", {
+      organization_id: String(orgId), case_type_id: String(type.id),
+    });
+    expect(msg(res.location)).toMatch(/retired/i);
+    expect(repo.listCaseTypes(orgId).map((t) => t.id)).not.toContain(type.id);
+    expect(repo.listRetiredCaseTypes(orgId).map((t) => t.id)).toContain(type.id);
+    expect(repo.listCaseTypeAliases(orgId).every((a) => a.address !== "retire-me@example.org" || !a.active)).toBe(true);
+    expect(repo.listWorkflowRules(orgId).filter((r) => r.case_type_id === type.id).every((r) => !r.enabled)).toBe(true);
+
+    // And it comes back from the page that lists retired types.
+    const page = await get("/config?tab=case-types");
+    expect(page).toContain("Retired case types");
+    const restore = await post("/config/case-types/reactivate", {
+      organization_id: String(orgId), case_type_id: String(type.id),
+    });
+    expect(msg(restore.location)).toMatch(/active again/i);
+    expect(repo.listCaseTypes(orgId).map((t) => t.id)).toContain(type.id);
+  });
+});
+
+describe("the document matrix is editable, not write-once", () => {
+  it("a document slot carries a display-order control that is actually submitted", async () => {
+    const type = repo.createCaseType(orgId, { code: "SWEEP_DOCS", name: "Sweep docs" });
+    repo.upsertDocumentDefinition(type.id, { key: "second", label: "Second", required: true, blocking: true, position: 0 });
+    repo.upsertDocumentDefinition(type.id, { key: "first", label: "First", required: true, blocking: true, position: 5 });
+
+    // The row form must expose position, not just key/label/required/blocking.
+    const page = await get(`/config?tab=case-types`);
+    const rowForm = new RegExp(`<form[^>]*action="/config/case-types/document"[^>]*>[\\s\\S]*?value="second"[\\s\\S]*?</form>`).exec(page);
+    expect(rowForm, "a document row must be an editable form").toBeTruthy();
+    expect(rowForm![0]).toContain('name="position"');
+    expect(rowForm![0]).toContain('name="required"');
+    expect(rowForm![0]).toContain('name="blocking"');
+
+    // And saving it reorders the checklist.
+    await post("/config/case-types/document", {
+      organization_id: String(orgId), case_type_id: String(type.id),
+      key: "first", label: "First", required: "1", blocking: "1", position: "0",
+    });
+    await post("/config/case-types/document", {
+      organization_id: String(orgId), case_type_id: String(type.id),
+      key: "second", label: "Second", required: "0", blocking: "0", position: "9",
+    });
+    const saved = repo.listDocumentDefinitions(type.id);
+    expect(saved.map((d) => d.key)).toEqual(["first", "second"]);
+    expect(saved[1].required).toBe(false);
+    expect(saved[1].blocking).toBe(false);
+  });
+});
+
+describe("settings controls that could never be saved", () => {
+  it("the webhook request budget input has a name, so the form can submit a value", async () => {
+    const page = await get("/settings");
+    const budget = /<form[^>]*id="aa-webhook-budget"[\s\S]*?<\/form>/.exec(page)?.[0] ?? "";
+    expect(budget).toBeTruthy();
+    // The input lives outside the form and is attached with the `form` attribute,
+    // so a missing name silently posted nothing at all.
+    const input = /<input type="number"[^>]*form="aa-webhook-budget"[^>]*>/.exec(page)?.[0] ?? "";
+    expect(input).toBeTruthy();
+    expect(input).toContain('name="webhook_rate_limit_per_minute"');
+
+    const res = await post("/settings/webhook", { action: "limit", webhook_rate_limit_per_minute: "77" });
+    expect(msg(res.location)).toMatch(/Rate limit saved/i);
+    expect(repo.webhookRateLimitPerMinute(orgId)).toBe(77);
+  });
+
+  it("retention has a control, instead of existing only as a seeded setting", async () => {
+    const page = await get("/settings");
+    expect(page).toContain('name="retention_days"');
+    const res = await post("/settings/general", { retention_days: "365", sla_target_hours: "4" });
+    expect(msg(res.location)).toMatch(/saved/i);
+    expect(repo.getSetting("retention_days", "")).toBe("365");
+    // An invalid value keeps the stored one rather than storing garbage.
+    await post("/settings/general", { retention_days: "soon" });
+    expect(repo.getSetting("retention_days", "")).toBe("365");
+  });
+});
+
+describe("Reply configuration configures replies", () => {
+  it("carries the sender identity, the response targets and the auto-send dial", async () => {
+    const page = await get("/config?tab=replies");
+    for (const name of ["from_name", "reply_to", "sla_target_hours", "escalation_hours", "followup_ladder_days", "mode"]) {
+      expect(page, `reply configuration must expose ${name}`).toContain(`name="${name}"`);
+    }
+    expect(page).toContain('action="/settings/automation/global"');
+    expect(page).toContain('action="/settings/automation/category"');
+  });
+
+  it("saving the sender identity from that page changes what mail is sent as", async () => {
+    const res = await post("/settings/organization", {
+      organization_name: "Sweep Cooperative", ref_prefix: "SWP",
+      primary_color: "#3b1d5f", accent_color: "#9a78c7",
+      from_name: "Sweep Intake Desk", reply_to: "desk@example.org",
+      locale: "en-GB", timezone: "UTC",
+    });
+    expect(msg(res.location)).toMatch(/saved/i);
+    const saved = repo.getOrganization(orgId)!;
+    expect(saved.from_name).toBe("Sweep Intake Desk");
+    expect(saved.reply_to).toBe("desk@example.org");
+  });
+
+  it("saving the response targets from that page moves the SLA clock", async () => {
+    const res = await post("/settings/general", {
+      sla_target_hours: "2", escalation_hours: "6", unanswered_target_hours: "3", followup_ladder_days: "2,5,9",
+    });
+    expect(msg(res.location)).toMatch(/saved/i);
+    expect(repo.getSetting("sla_target_hours", "")).toBe("2");
+    expect(repo.getSetting("followup_ladder_days", "")).toBe("2,5,9");
+  });
+});
+
+describe("organization axes actually change a checklist", () => {
+  it("a document slot can be pinned to values of an axis, and the case page offers the matching control", async () => {
+    // Axes were a write-only JSON textarea: they could be saved, but nothing in
+    // the product ever read them back, so a slot could not be made conditional
+    // and setting axes changed no checklist anywhere.
+    const type = repo.createCaseType(orgId, { code: "SWEEP_AXES", name: "Sweep axes" });
+    repo.upsertDocumentDefinition(type.id, { key: "id_form", label: "ID form", required: true, blocking: true, position: 0 });
+    repo.replaceOrganizationDocumentAxes(orgId, [{ key: "country", label: "Applicant country", values: ["Kenya", "Ghana"] }]);
+
+    // The row form now offers the axis, not just key/label/required/blocking.
+    const page = await get("/config?tab=case-types");
+    const rowForm = new RegExp(`<form[^>]*action="/config/case-types/document"[^>]*>[\\s\\S]*?value="id_form"[\\s\\S]*?</form>`).exec(page);
+    expect(rowForm, "a document row must be an editable form").toBeTruthy();
+    expect(rowForm![0]).toContain('name="axis"');
+    expect(rowForm![0]).toContain('name="axis_values"');
+
+    const res = await post("/config/case-types/document", {
+      organization_id: String(orgId), case_type_id: String(type.id),
+      key: "kra_pin", label: "KRA PIN", required: "1", blocking: "1", position: "1",
+      axis: "country", axis_values: "Kenya",
+    });
+    expect(msg(res.location), "a valid axis slot must save").not.toMatch(/not saved/i);
+    const saved = repo.listDocumentDefinitions(type.id).find((d) => d.key === "kra_pin")!;
+    expect(saved.axis).toBe("country");
+    expect(saved.axis_values).toEqual(["Kenya"]);
+
+    // And the checklist honours it — with no selection the slot still applies,
+    // but a Ghanaian case is not asked for a Kenyan tax number.
+    const keys = (selections?: Record<string, string>) => repo.documentRequirementsForCase(type.id, selections).map((d) => d.key);
+    expect(keys()).toEqual(["id_form", "kra_pin"]);
+    expect(keys({ country: "Kenya" })).toEqual(["id_form", "kra_pin"]);
+    expect(keys({ country: "Ghana" })).toEqual(["id_form"]);
+  });
+
+  it("refuses an axis that would silently disable a slot", async () => {
+    const type = repo.createCaseType(orgId, { code: "SWEEP_AXES2", name: "Sweep axes 2" });
+    // An axis with no values would never match, so the slot would look
+    // configured and never appear. Better to say so than to hide it.
+    const blank = await post("/config/case-types/document", {
+      organization_id: String(orgId), case_type_id: String(type.id),
+      key: "ghost", label: "Ghost", required: "1", blocking: "1", position: "0",
+      axis: "country", axis_values: "  ",
+    });
+    expect(msg(blank.location)).toMatch(/Pick at least one value/i);
+    expect(repo.listDocumentDefinitions(type.id).some((d) => d.key === "ghost")).toBe(false);
+
+    // An axis that does not exist is rejected too, rather than stored as a
+    // condition that can never be met.
+    const unknown = await post("/config/case-types/document", {
+      organization_id: String(orgId), case_type_id: String(type.id),
+      key: "ghost", label: "Ghost", required: "1", blocking: "1", position: "0",
+      axis: "campus", axis_values: "Main",
+    });
+    expect(msg(unknown.location)).toMatch(/not one of this organization's axes/i);
+    expect(repo.listDocumentDefinitions(type.id).some((d) => d.key === "ghost")).toBe(false);
+  });
+
+  it("setting axes on a case re-freezes its checklist and leaves the verdict alone", async () => {
+    const type = repo.createCaseType(orgId, { code: "SWEEP_AXCASE", name: "Sweep axis case" });
+    repo.upsertDocumentDefinition(type.id, { key: "id_form", label: "ID form", required: true, blocking: true, position: 0 });
+    repo.upsertDocumentDefinition(type.id, { key: "kra_pin", label: "KRA PIN", required: true, blocking: true, position: 1, axis: "country", values: ["Kenya"] });
+    const a = repo.createCase({ emailAddress: "axis@example.org", threadId: "axis-thread", organizationId: orgId, caseTypeCode: "SWEEP_AXCASE", fullName: "Axis Person" });
+    repo.freezeCaseConfig(a);
+
+    const page = await get(`/case/${a.id}`);
+    expect(page).toContain(`action="/case/${a.id}/axes"`);
+    expect(page).toContain('name="axis_country"');
+
+    const res = await post(`/case/${a.id}/axes`, { axis_country: "Ghana" });
+    expect(msg(res.location)).toMatch(/checklist now shows only the slots/i);
+    expect(repo.axisSelections(repo.getApplicant(a.id)!)).toEqual({ country: "Ghana" });
+
+    const frozen = repo.caseConfigFrozen(repo.getApplicant(a.id)!)!;
+    expect((frozen.documents ?? []).map((d) => d.key)).toEqual(["id_form"]);
+    // The recorded outcome is untouched: only Re-evaluate re-checks evidence.
+    expect(repo.getApplicant(a.id)!.outcome).toBe(a.outcome);
+
+    // Clearing the value brings the slot back — the choice is reversible.
+    await post(`/case/${a.id}/axes`, { axis_country: "" });
+    expect(repo.axisSelections(repo.getApplicant(a.id)!)).toEqual({});
+    const refrozen = repo.caseConfigFrozen(repo.getApplicant(a.id)!)!;
+    expect((refrozen.documents ?? []).map((d) => d.key)).toEqual(["id_form", "kra_pin"]);
+  });
+});
+
+describe("settings controls that posted into the wrong form", () => {
+  it("the inbound mailbox address is saved by the form that renders it", async () => {
+    // The address that decides which organization an incoming message belongs
+    // to was rendered inside the "response settings" form, whose handler never
+    // read it — so an administrator could set their routing address and have it
+    // silently discarded, with mail falling back to the head office.
+    const page = await get("/settings");
+    const general = /<form[^>]*action="\/settings\/general"[^>]*>[\s\S]*?<\/form>/.exec(page)?.[0] ?? "";
+    const identity = /<form[^>]*action="\/settings\/organization"[^>]*>[\s\S]*?<\/form>/.exec(page)?.[0] ?? "";
+    expect(identity).toContain('name="inbound_address"');
+    expect(general, "the address must not sit in a form that ignores it").not.toContain('name="inbound_address"');
+
+    const res = await post("/settings/organization", {
+      organization_name: "Sweep Cooperative", ref_prefix: "SWP",
+      primary_color: "#3b1d5f", accent_color: "#9a78c7",
+      from_name: "Sweep Intake Desk", reply_to: "desk@example.org",
+      locale: "en-GB", timezone: "UTC", inbound_address: "Intake@Sweep.example",
+    });
+    expect(msg(res.location)).toMatch(/saved/i);
+    expect(repo.getOrganization(orgId)!.inbound_address).toBe("intake@sweep.example");
+    // Lower-cased and matched back to this organization, not just stored.
+    expect(repo.organizationForInboundAddress("intake@SWEEP.example")).toMatchObject({ organizationId: orgId, matched: true });
+  });
+
+  it("refuses an inbound address another organization already answers to", async () => {
+    const other = repo.createOrganization({ name: "Other Co", refPrefix: "OTH" });
+    repo.updateOrganization(other.id, { inboundAddress: "shared@example.org" });
+
+    const res = await post("/settings/organization", {
+      organization_name: "Sweep Cooperative", ref_prefix: "SWP",
+      primary_color: "#3b1d5f", accent_color: "#9a78c7",
+      from_name: "Sweep Intake Desk", reply_to: "desk@example.org",
+      locale: "en-GB", timezone: "UTC", inbound_address: "shared@example.org",
+    });
+    expect(msg(res.location)).toMatch(/already belongs to another organization/i);
+    // The whole identity save is withheld — a half-applied identity would be
+    // worse than an unchanged one.
+    expect(repo.getOrganization(orgId)!.inbound_address).not.toBe("shared@example.org");
+    expect(repo.getOrganization(other.id)!.inbound_address).toBe("shared@example.org");
+  });
+});
+
+describe("a person's case-type scope is settable, not just enforced", () => {
+  it("narrows what a reviewer sees, and can be given back", async () => {
+    // The visibility matrix, the route and the row-level filter that hides
+    // cases all existed; what was missing was the guard rails. Scoping an
+    // administrator was possible (they would lose the configuration screen
+    // that gives it back), and saving an empty selection silently emptied a
+    // desk with no confirmation that it was deliberate.
+    repo.createCaseType(orgId, { code: "SWEEP_GRANT", name: "Grant review" });
+    const reviewer = repo.createStaffAndReturn("sweeper", "Sweeper One", hashPassword("sweeperpass123"), "user", orgId);
+
+    const page = await get("/staff");
+    expect(page).toContain('action="/staff/scopes"');
+    expect(page).toContain('name="case_types"');
+    expect(page).toContain('value="SWEEP_GRANT"');
+
+    // Ticking one case type narrows the scope to it.
+    const scoped = await post("/staff/scopes", { staff_id: String(reviewer.id), case_types: "SWEEP_GRANT" });
+    expect(msg(scoped.location)).toMatch(/now sees 1 case type/i);
+    expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("scoped");
+    expect(repo.caseTypeScopesFor(reviewer.id)).toEqual(["SWEEP_GRANT"]);
+
+    // And it is enforced: a case of another type is not on their desk.
+    repo.createCaseType(orgId, { code: "SWEEP_OTHER", name: "Other stream" });
+    const hidden = repo.createCase({ emailAddress: "hidden@example.org", threadId: "hidden-1", organizationId: orgId, caseTypeCode: "SWEEP_OTHER" });
+    expect(repo.caseTypeVisibleTo({ id: reviewer.id, role: "user", organization_id: orgId }, hidden)).toBe(false);
+    const shown = repo.createCase({ emailAddress: "shown@example.org", threadId: "shown-1", organizationId: orgId, caseTypeCode: "SWEEP_GRANT" });
+    expect(repo.caseTypeVisibleTo({ id: reviewer.id, role: "user", organization_id: orgId }, shown)).toBe(true);
+
+    // "No case access" is deliberate only: it takes its own button, so an
+    // empty save can never be mistaken for it.
+    const none = await post("/staff/scopes", { staff_id: String(reviewer.id), scope_mode: "none" });
+    expect(msg(none.location)).toMatch(/sees no case types/i);
+    expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("none");
+    expect(repo.caseTypeVisibleTo({ id: reviewer.id, role: "user", organization_id: orgId }, shown)).toBe(false);
+
+    // "Restore full visibility" is the way back.
+    const cleared = await post("/staff/scopes", { staff_id: String(reviewer.id), scope_mode: "unscoped", case_types: "SWEEP_GRANT" });
+    expect(msg(cleared.location)).toMatch(/every case type again/i);
+    expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("unscoped");
+    expect(repo.caseTypeVisibleTo({ id: reviewer.id, role: "user", organization_id: orgId }, hidden)).toBe(true);
+  });
+
+  it("refuses a scope that would lock someone out by accident", async () => {
+    const reviewer = repo.createStaffAndReturn("sweeper2", "Sweeper Two", hashPassword("sweeperpass123"), "user", orgId);
+    // An empty selection with no explicit mode leaves the scope alone rather
+    // than silently emptying their desk — "no access" has to be chosen.
+    const blank = await post("/staff/scopes", { staff_id: String(reviewer.id) });
+    expect(msg(blank.location)).toMatch(/Tick at least one case type/i);
+    expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("unscoped");
+
+    // An administrator cannot be scoped: they would lose the configuration
+    // screen that restores it, with no visible cause.
+    const adminId = repo.getStaffByUsername("sweepadmin")!.id;
+    const refused = await post("/staff/scopes", { staff_id: String(adminId), case_types: "SWEEP_GRANT" });
+    expect(msg(refused.location)).toMatch(/Administrators always see every case type/i);
+    expect(repo.caseTypeScopeModeFor(adminId)).toBe("unscoped");
+
+    // A code belonging to another organization's case type is rejected, not
+    // honoured — otherwise a forged POST could smuggle in a foreign stream.
+    const otherOrg = repo.createOrganization({ name: "Outsider Ltd", refPrefix: "OUT" });
+    repo.createCaseType(otherOrg.id, { code: "FOREIGN", name: "Foreign stream" });
+    const foreign = await post("/staff/scopes", { staff_id: String(reviewer.id), case_types: "FOREIGN" });
+    expect(msg(foreign.location)).toMatch(/Unknown case type/i);
+    expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("unscoped");
+  });
+});
+
+describe("a name can be corrected after the account exists", () => {
+  it("a person can change the name colleagues see, and an administrator can rename anyone", async () => {
+    // The display name was written once at account creation and then frozen:
+    // not editable by its owner, not by an administrator. A typo followed
+    // someone through every queue, report and audit entry for good.
+    const page = await get("/account");
+    const profile = /<form[^>]*action="\/account\/display-name"[^>]*>[\s\S]*?<\/form>/.exec(page)?.[0] ?? "";
+    expect(profile, "the account page must let a person set their own name").toContain('name="display_name"');
+
+    const res = await post("/account/display-name", { display_name: "  Sweep   Administrator  " });
+    expect(msg(res.location)).toMatch(/Your name is now/i);
+    // Collapsed, not stored with stray whitespace.
+    expect(repo.getStaffByUsername("sweepadmin")!.display_name).toBe("Sweep Administrator");
+
+    // Too short is refused rather than stored.
+    await post("/account/display-name", { display_name: "X" });
+    expect(repo.getStaffByUsername("sweepadmin")!.display_name).toBe("Sweep Administrator");
+
+    // And an administrator can correct someone else's name.
+    const member = repo.createStaffAndReturn("typo", "Swpper Two", hashPassword("typospass123"), "user", orgId);
+    const staffPage = await get("/staff");
+    expect(staffPage).toContain('action="/staff/display-name"');
+    const renamed = await post("/staff/display-name", { id: String(member.id), display_name: "Sweeper Two" });
+    expect(msg(renamed.location)).toMatch(/is now shown as/i);
+    expect(repo.getStaff(member.id)!.display_name).toBe("Sweeper Two");
+
+    // A forged id from another organization is indistinguishable from an
+    // unknown one — no cross-tenant rename.
+    const outsider = repo.createStaffAndReturn("outsider", "Outsider", hashPassword("outsiderpass123"), "user", repo.createOrganization({ name: "Outsider Ltd", refPrefix: "OUT" }).id);
+    await post("/staff/display-name", { id: String(outsider.id), display_name: "Hijacked" });
+    expect(repo.getStaff(outsider.id)!.display_name).toBe("Outsider");
+  });
+});
+
+describe("a rule that cannot be evaluated never takes the pipeline down", () => {
+  it("accepts either shape of a condition's expected values", () => {
+    // `values` is the documented shape, but the raw JSON box an administrator
+    // may edit by hand invites `value`. Reading cond.values.map() on that
+    // throws a TypeError inside firstMatchingRule — which the ingestion
+    // pipeline calls unguarded, so one badly shaped rule parked the mail
+    // instead of anyone being told why.
+    const input = {
+      senderState: "known" as const, subject: "Question", body: "How much are your fees?",
+      hasAttachments: false, category: "fee_enquiry" as never, bodyIsRef: false,
+      intakeSignals: "open" as const, docsState: "missing" as const, docsOnFile: 3,
+    };
+    const rule = (conditions: unknown[]): Parameters<typeof ruleMatches>[0] =>
+      ({ id: 1, organization_id: 1, case_type_id: null, name: "t", kind: "intake", enabled: 1, position: 0, conditions: conditions as never, action: {} });
+
+    // The documented array form.
+    expect(ruleMatches(rule([{ field: "category", op: "in", values: ["fee_enquiry"] }]), input)).toBe(true);
+    expect(ruleMatches(rule([{ field: "category", op: "not_in", values: ["fee_enquiry"] }]), input)).toBe(false);
+    // The same condition written with a single scalar — no longer a crash.
+    expect(ruleMatches(rule([{ field: "category", op: "in", value: "fee_enquiry" }]), input)).toBe(true);
+    // Text conditions take the same two shapes.
+    expect(ruleMatches(rule([{ field: "subject", op: "contains_any", values: ["question"] }]), input)).toBe(true);
+    expect(ruleMatches(rule([{ field: "subject", op: "contains_any", value: "question" }]), input)).toBe(true);
+    // A field this build does not know simply does not match — it does not throw.
+    expect(ruleMatches(rule([{ field: "nonexistent_fact" }]), input)).toBe(false);
+    // And firstMatchingRule survives a rule set containing one.
+    const winner = firstMatchingRule([
+      { ...rule([{ field: "category", value: "fee_enquiry" }]), name: "broken" },
+      { ...rule([{ field: "always", value: true }]), id: 2, name: "good", position: 1 },
+    ], input);
+    expect(winner?.name).toBe("broken");
+  });
+});
+
+describe("a rule with a malformed condition is refused at save time", () => {
+  it("a mistyped field name is refused with a specific message", async () => {
+    // A rule whose conditions JSON names a field the engine does not read
+    // used to save with a green "saved and enabled" message and then never
+    // fire — leaving an administrator wondering why their automation did
+    // nothing. Refuse it instead.
+    const res = await post("/config/workflow-rules/save", {
+      kind: "intake",
+      name: "broken rule",
+      conditions_json: '[{"fact":"category","op":"eq","value":"fee_enquiry"}]',
+    });
+    expect(msg(res.location)).toMatch(/unknown field/i);
+    expect(repo.listWorkflowRules(orgId).some((r) => r.name === "broken rule")).toBe(false);
+  });
+
+  it("a list-typed condition with no values is refused", async () => {
+    const res = await post("/config/workflow-rules/save", {
+      kind: "intake",
+      name: "empty list rule",
+      conditions_json: '[{"field":"category","op":"in","values":[]}]',
+    });
+    expect(msg(res.location)).toMatch(/needs at least one value/i);
+    expect(repo.listWorkflowRules(orgId).some((r) => r.name === "empty list rule")).toBe(false);
+  });
+
+  it("a rule with no conditions is refused rather than matching everything", async () => {
+    const res = await post("/config/workflow-rules/save", {
+      kind: "intake",
+      name: "always rule",
+      conditions_json: "[]",
+    });
+    expect(msg(res.location)).toMatch(/no conditions/i);
+    expect(repo.listWorkflowRules(orgId).some((r) => r.name === "always rule")).toBe(false);
+  });
+});
+
+describe("a new organization does not inherit a placeholder identity", () => {
+  it("setup names the organization and the mail signature starts the same", () => {
+    // The second field used to stay "Organization" until someone found it
+    // buried under Letters & identity, so outgoing mail went out unsigned by
+    // the real name.
+    expect(repo.getSetting("institution_name", "")).toBe("Sweep Cooperative");
+  });
+});

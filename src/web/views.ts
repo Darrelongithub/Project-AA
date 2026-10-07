@@ -1348,7 +1348,24 @@ body { font-size: 14px; line-height: 1.55; }
   cursor:pointer; transition:background .15s, border-color .15s;
 }
 .flow-add button:hover { background:var(--plum-wash); border-color:var(--plum-mid); }
+.flow-add button[disabled] { opacity:.4; cursor:default; }
+/* The always-present add bar: a scope picker plus the button, so the first
+   step of a chain is creatable even when no group exists yet. */
+.flow-add-bar {
+  display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap;
+  max-width:480px; margin:10px auto 2px; padding:10px 14px; width:100%;
+  border:1px dashed var(--line); border-radius:12px; background:var(--card2);
+}
+.flow-add-bar label { margin:0; font-size:11.5px; text-transform:none; letter-spacing:0; font-weight:700; color:var(--muted); }
+.flow-add-bar select { width:auto; min-width:170px; padding:5px 8px; font-size:12.5px; }
 .flow-empty-hint { text-align:center; padding:18px 14px; color:var(--muted); font-size:13.5px; max-width:480px; margin:0 auto; border:1px dashed var(--line); border-radius:12px; background:var(--card2); }
+/* Up/down reordering, always visible on touch — the panel that used to be
+   hover-only hid the only control that could reprioritise a rule. */
+.flow-node .fn-actions button[disabled] { opacity:.35; cursor:default; }
+@media (hover: none), (pointer: coarse) {
+  .flow-node.editable .fn-actions { opacity:1; }
+}
+.flow-panel .fp-check { display:flex; gap:8px; align-items:center; font-size:11.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); margin:10px 0 4px; }
 .flow-panel {
   position:sticky; top:18px; background:var(--card); border:1px solid var(--line); border-radius:16px;
   box-shadow:var(--shadow-lg); padding:20px 20px 18px; min-height:200px;

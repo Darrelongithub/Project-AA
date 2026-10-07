@@ -210,24 +210,75 @@ describe("BUG-04 — the panel round-trips every condition", () => {
     expect(rule(r.id).conditions).toHaveLength(3);
   });
 
-  it("a rule with more conditions than the panel can show is flagged, not truncated", async () => {
+  it("a rule with more conditions than the rows can show is flagged and opens as JSON, not truncated", async () => {
+    // More conditions than the panel renders as rows (FLOW_MAX_CONDITIONS).
+    const many = [
+      { field: "sender_state", value: "known" },
+      { field: "has_attachments", value: true },
+      { field: "body_is_ref", value: true },
+      { field: "signals", value: "configured_intake" },
+      { field: "subject", op: "contains_any", values: ["a"] },
+      { field: "body", op: "contains_any", values: ["b"] },
+      { field: "text", op: "contains_any", values: ["c"] },
+      { field: "category", op: "in", values: ["application"] },
+      { field: "docs_state", values: ["complete"] },
+    ] as WorkflowRule["conditions"];
     const r = repo.saveWorkflowRule({
       organizationId: orgId, caseTypeId, kind: "intake", name: "FC too many conditions",
-      position: 41,
-      conditions: [
-        { field: "sender_state", value: "known" },
-        { field: "has_attachments", value: true },
-        { field: "body_is_ref", value: true },
-        { field: "signals", value: "configured_intake" },
-      ],
-      action: { decision: "create" },
+      position: 41, conditions: many, action: { decision: "create" },
     });
     const page = await rulesPage();
     const payload = /var rules = (\[.*?\]);\s*\n/.exec(page)?.[1] ?? "";
     const parsed = JSON.parse(payload) as Array<{ id: number; unsupported: string }>;
-    // Marked unsupported so the editor refuses to open it and silently shrink it.
-    expect(parsed.find((x) => x.id === r.id)?.unsupported).toMatch(/4 conditions/);
+    // Still flagged on the card, so nobody is surprised when it opens as JSON…
+    expect(parsed.find((x) => x.id === r.id)?.unsupported).toMatch(/9 conditions/);
     expect(page).toContain("flow-node editable");
+    // …but the panel carries the whole condition list, so it opens into the
+    // raw-JSON editor instead of refusing and silently shrinking the rule.
+    const mine = parsed.find((x) => x.id === r.id) as { conditions: unknown[] } | undefined;
+    expect(mine?.conditions).toHaveLength(9);
+    expect(page).toContain('id="fp-conditions-json"');
+  });
+
+  it("a condition beyond the row limit round-trips through the JSON box untouched", async () => {
+    const many = [
+      { field: "sender_state", value: "known" },
+      { field: "body_is_ref", value: true },
+      { field: "signals", value: "configured_intake" },
+      { field: "subject", op: "contains_any", values: ["a"] },
+      { field: "body", op: "contains_any", values: ["b"] },
+      { field: "text", op: "contains_any", values: ["c"] },
+      { field: "category", op: "in", values: ["application"] },
+      { field: "docs_state", values: ["complete"] },
+      { field: "has_attachments", value: true },
+    ] as WorkflowRule["conditions"];
+    const r = repo.saveWorkflowRule({
+      organizationId: orgId, caseTypeId, kind: "intake", name: "FC json round trip",
+      position: 44, conditions: many, action: { decision: "create" },
+    });
+    await post({
+      id: String(r.id), kind: "intake", name: "FC json round trip", position: "44",
+      case_type_id: String(caseTypeId), enabled: "1",
+      conditions_json: JSON.stringify(many),
+    });
+    expect(rule(r.id).conditions).toEqual(many);
+  });
+
+  it("a negated condition row round-trips as 'does not contain' / 'not in'", async () => {
+    const r = repo.saveWorkflowRule({
+      organizationId: orgId, caseTypeId, kind: "intake", name: "FC negated",
+      position: 45, conditions: [{ field: "always", value: true }], action: { decision: "create" },
+    });
+    await post({
+      id: String(r.id), kind: "intake", name: "FC negated", position: "45",
+      case_type_id: String(caseTypeId), enabled: "1",
+      cond_field_0: "subject", cond_value_0: "invoice", cond_op_0: "not",
+      cond_field_1: "category", cond_value_1: "complaint", cond_op_1: "not",
+    });
+    expect(rule(r.id).conditions).toEqual([
+      { field: "subject", op: "not_contains", values: ["invoice"] },
+      { field: "category", op: "not_in", values: ["complaint"] },
+    ]);
   });
 });
 
@@ -283,16 +334,27 @@ describe("BUG-05 — the panel round-trips every action setting", () => {
     expect(rule(r.id).conditions).toHaveLength(1);
   });
 
-  it("the page embeds those settings so the panel can put them back", async () => {
+  it("the panel gives every action setting a real input — nothing is only preserved", async () => {
     const page = await rulesPage();
-    // Hidden mirrors for every field the panel does not show.
-    for (const name of ["priority", "assign", "request_info", "followup", "followup_action", "audit_code", "fallback", "map_green", "map_empty", "map_missing"]) {
-      expect(page).toContain(`name="${name}" id="fp-x-${name}"`);
+    // The flowchart's own edit panel (not the advanced form further down).
+    const panel = /<form[^>]*id="flow-panel-form"[\s\S]*?<\/form>/.exec(page)?.[0] ?? "";
+    expect(panel).toBeTruthy();
+    // Every field the engine understands is editable in the panel, so a save
+    // from here can neither reset a setting nor silently keep one the
+    // administrator never saw. No field may appear twice either: a duplicated
+    // name would make req.body an array.
+    const surfaced = [
+      "decision", "reply_action", "template_key", "stage", "queue", "priority", "assign",
+      "sla_hours", "attachment_set", "followup", "followup_action", "audit_code", "fallback",
+      "map_green", "map_empty", "map_missing", "request_info", "position", "enabled",
+      "conditions_json", "name", "case_type_id", "kind",
+    ];
+    for (const name of surfaced) {
+      const inputs = [...panel.matchAll(new RegExp(`<(?:input|select|textarea)\\b[^>]*\\sname="${name}"(?=[\\s>])`, "g"))];
+      expect(inputs.length, `${name} must appear exactly once in the panel`).toBe(1);
     }
-    // sla_hours and attachment_set are visible inputs, so they must NOT also
-    // have a hidden twin — a duplicated name would make req.body an array.
-    expect(page).not.toContain('id="fp-x-sla_hours"');
-    expect(page).not.toContain('id="fp-x-attachment_set"');
+    // Nothing travels as an invisible mirror any more.
+    expect(page).not.toContain('id="fp-x-');
     // And the payload carries the values the script writes into them.
     expect(page).toContain('"sla_hours":48');
   });

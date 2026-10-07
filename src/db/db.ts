@@ -491,7 +491,14 @@ const ADDITIONS: Array<[string, string, string]> = [["applicants", "requirements
   ["documents", "is_duplicate", "INTEGER NOT NULL DEFAULT 0"],
   ["status_history", "reason", "TEXT NOT NULL DEFAULT ''"],
   ["applicants", "triage", "TEXT"],
-  ["applicants", "phone", "TEXT"]];
+  ["applicants", "phone", "TEXT"],
+  // Organization-defined axes: a document slot can declare that it applies
+  // only for certain values of an axis, and a case carries the values that
+  // apply to it. Both are nullable — an unset axis or an unset selection means
+  // "every slot applies", which is exactly the behaviour before axes existed.
+  ["document_definitions", "axis", "TEXT"],
+  ["document_definitions", "axis_values", "TEXT"],
+  ["applicants", "axis_selections", "TEXT"]];
 
 /**
  * SCHEMA carries tables and indexes in one string, and an index may reference
