@@ -2630,7 +2630,7 @@ function caseTypesTab(c: Ctx, selectedOrganizationId?: number): string {
         <textarea name="axes_json" style="min-height:80px;font-family:monospace" spellcheck="false">${esc(JSON.stringify(c.repo.listOrganizationDocumentAxes(organizationId), null, 2))}</textarea>
         <button class="btn small" style="margin-top:8px">Save axes</button>
       </form>
-      <p class="small muted">Once an axis exists, each document slot gains an <b>Applies</b> dropdown: a slot can be pinned to some values of an axis instead of applying to everyone. On a case, set the axes under <b>Evidence</b> and the checklist narrows to the slots that apply — and re-freezing is an explicit, audited action, never a surprise.</p>
+      <p class="small muted">Once an axis exists, each document slot gains an <b>Applies</b> dropdown: a slot can be pinned to some values of an axis instead of applying to everyone. On a case, set them under <b>What applies to this case</b> and the checklist narrows to the slots that apply — and re-freezing is an explicit, audited action, never a surprise.</p>
       <p class="small muted" style="margin-bottom:0">Configure the selected organization, then create a CaseType such as <b>HR_ONBOARDING</b>. Empty rule trees remain undecided and are sent to a human.</p>
     </section>
     ${caseTypes.length ? `<div class="type-groups">${caseTypeGroups}</div>` : `<div class="empty"><p>No CaseTypes yet for ${esc(organization?.name ?? "this organization")}.</p></div>`}

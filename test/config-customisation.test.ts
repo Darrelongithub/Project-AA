@@ -19,6 +19,7 @@ import { seedDefaults } from "../src/db/seed";
 import { createApp } from "../src/web/server";
 import { hashPassword } from "../src/util/password";
 import { webLogin } from "./helpers";
+import { firstMatchingRule, ruleMatches } from "../src/rules/workflow";
 
 let repo: Repo;
 let server: Server;
@@ -512,6 +513,40 @@ describe("a name can be corrected after the account exists", () => {
     const outsider = repo.createStaffAndReturn("outsider", "Outsider", hashPassword("outsiderpass123"), "user", repo.createOrganization({ name: "Outsider Ltd", refPrefix: "OUT" }).id);
     await post("/staff/display-name", { id: String(outsider.id), display_name: "Hijacked" });
     expect(repo.getStaff(outsider.id)!.display_name).toBe("Outsider");
+  });
+});
+
+describe("a rule that cannot be evaluated never takes the pipeline down", () => {
+  it("accepts either shape of a condition's expected values", () => {
+    // `values` is the documented shape, but the raw JSON box an administrator
+    // may edit by hand invites `value`. Reading cond.values.map() on that
+    // throws a TypeError inside firstMatchingRule — which the ingestion
+    // pipeline calls unguarded, so one badly shaped rule parked the mail
+    // instead of anyone being told why.
+    const input = {
+      senderState: "known" as const, subject: "Question", body: "How much are your fees?",
+      hasAttachments: false, category: "fee_enquiry" as never, bodyIsRef: false,
+      intakeSignals: "open" as const, docsState: "missing" as const, docsOnFile: 3,
+    };
+    const rule = (conditions: unknown[]): Parameters<typeof ruleMatches>[0] =>
+      ({ id: 1, organization_id: 1, case_type_id: null, name: "t", kind: "intake", enabled: 1, position: 0, conditions: conditions as never, action: {} });
+
+    // The documented array form.
+    expect(ruleMatches(rule([{ field: "category", op: "in", values: ["fee_enquiry"] }]), input)).toBe(true);
+    expect(ruleMatches(rule([{ field: "category", op: "not_in", values: ["fee_enquiry"] }]), input)).toBe(false);
+    // The same condition written with a single scalar — no longer a crash.
+    expect(ruleMatches(rule([{ field: "category", op: "in", value: "fee_enquiry" }]), input)).toBe(true);
+    // Text conditions take the same two shapes.
+    expect(ruleMatches(rule([{ field: "subject", op: "contains_any", values: ["question"] }]), input)).toBe(true);
+    expect(ruleMatches(rule([{ field: "subject", op: "contains_any", value: "question" }]), input)).toBe(true);
+    // A field this build does not know simply does not match — it does not throw.
+    expect(ruleMatches(rule([{ field: "nonexistent_fact" }]), input)).toBe(false);
+    // And firstMatchingRule survives a rule set containing one.
+    const winner = firstMatchingRule([
+      { ...rule([{ field: "category", value: "fee_enquiry" }]), name: "broken" },
+      { ...rule([{ field: "always", value: true }]), id: 2, name: "good", position: 1 },
+    ], input);
+    expect(winner?.name).toBe("broken");
   });
 });
 

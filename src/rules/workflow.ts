@@ -115,6 +115,23 @@ function includesAny(haystack: string, values: string[]): boolean {
   return values.some((v) => haystack.includes(v.toLowerCase()));
 }
 
+/**
+ * Read a condition's expected string list, whichever shape it was written in.
+ *
+ * Conditions reach here from three places — the flowchart panel, the raw JSON
+ * box an administrator may edit by hand, and rows already stored in the
+ * database. `values` is the documented shape, but a hand-written `value` is an
+ * easy mistake to make, and reading `cond.values.map(...)` on it throws a
+ * TypeError *inside the ingestion pipeline*, parking the message rather than
+ * telling anyone why. Accepting both is cheaper than being right.
+ */
+function stringList(cond: { values?: unknown; value?: unknown }): string[] {
+  const raw = cond.values ?? cond.value;
+  if (Array.isArray(raw)) return raw.map((v) => String(v)).filter((v) => v !== "");
+  if (typeof raw === "string" || typeof raw === "number") return [String(raw)];
+  return [];
+}
+
 export function conditionMatches(cond: RuleCondition, input: RuleMatchInput): boolean {
   switch (cond.field) {
     case "always":
@@ -123,29 +140,30 @@ export function conditionMatches(cond: RuleCondition, input: RuleMatchInput): bo
       return input.senderState === cond.value;
     case "subject": {
       const hay = input.subject.toLowerCase();
-      return cond.op === "not_contains" ? !includesAny(hay, cond.values) : cond.op === "contains_all" ? cond.values.every((v) => hay.includes(v.toLowerCase())) : includesAny(hay, cond.values);
+      const values = stringList(cond);
+      return cond.op === "not_contains" ? !includesAny(hay, values) : cond.op === "contains_all" ? values.every((v) => hay.includes(v.toLowerCase())) : includesAny(hay, values);
     }
     case "body": {
       const hay = input.body.toLowerCase();
-      return cond.op === "not_contains" ? !includesAny(hay, cond.values) : cond.op === "contains_all" ? cond.values.every((v) => hay.includes(v.toLowerCase())) : includesAny(hay, cond.values);
+      const values = stringList(cond);
+      return cond.op === "not_contains" ? !includesAny(hay, values) : cond.op === "contains_all" ? values.every((v) => hay.includes(v.toLowerCase())) : includesAny(hay, values);
     }
     case "text": {
       const hay = `${input.subject}\n${input.body}`.toLowerCase();
-      return cond.op === "not_contains" ? !includesAny(hay, cond.values) : cond.op === "contains_all" ? cond.values.every((v) => hay.includes(v.toLowerCase())) : includesAny(hay, cond.values);
+      const values = stringList(cond);
+      return cond.op === "not_contains" ? !includesAny(hay, values) : cond.op === "contains_all" ? values.every((v) => hay.includes(v.toLowerCase())) : includesAny(hay, values);
     }
     case "has_attachments":
       return input.hasAttachments === cond.value;
     case "category": {
-      const hit = cond.values.map((v) => v.toLowerCase()).includes(input.category.toLowerCase());
+      const hit = stringList(cond).map((v) => v.toLowerCase()).includes(input.category.toLowerCase());
       return cond.op === "not_in" ? !hit : hit;
     }
     case "body_is_ref":
       return input.bodyIsRef;
     case "docs_state": {
-      const wanted = (cond.values ?? (cond.value ? [cond.value] : [])) as string[];
-      return wanted.some((w) =>
-        w === "any" ? input.docsOnFile > 0 : w === input.docsState
-      );
+      const wanted = stringList(cond);
+      return wanted.some((w) => w === "any" ? input.docsOnFile > 0 : w === input.docsState);
     }
     case "signals":
       return cond.value === "configured_intake" && input.intakeSignals === "open";
@@ -157,7 +175,13 @@ export function conditionMatches(cond: RuleCondition, input: RuleMatchInput): bo
 export function ruleMatches(rule: WorkflowRule, input: RuleMatchInput): boolean {
   if (rule.enabled !== 1) return false;
   if (rule.conditions.length === 0) return false;
-  return rule.conditions.every((c) => conditionMatches(c, input));
+  try {
+    return rule.conditions.every((c) => conditionMatches(c, input));
+  } catch {
+    // A condition this build cannot evaluate does not match — the pipeline
+    // must never be brought down by one badly shaped rule.
+    return false;
+  }
 }
 
 /**
@@ -212,11 +236,11 @@ export function describeRule(rule: WorkflowRule): string {
     else if (c.field === "sender_state") bits.push(c.value === "known" ? "known contact" : "unknown sender");
     else if (c.field === "text" || c.field === "subject" || c.field === "body") {
       const where = c.field === "subject" ? "subject" : c.field === "body" ? "body" : "text";
-      bits.push(`${where} ${c.op.replace(/_/g, " ")} “${(c.values ?? []).join("”, “")}”`);
+      bits.push(`${where} ${c.op.replace(/_/g, " ")} “${stringList(c).join("”, “")}”`);
     } else if (c.field === "has_attachments") bits.push(c.value ? "has attachments" : "no attachments");
-    else if (c.field === "category") bits.push(`category ${c.op.replace(/_/g, " ")} ${(c.values ?? []).join(", ")}`);
+    else if (c.field === "category") bits.push(`category ${c.op.replace(/_/g, " ")} ${stringList(c).join(", ")}`);
     else if (c.field === "body_is_ref") bits.push("body is just the case reference");
-    else if (c.field === "docs_state") bits.push(`documents ${((c.values ?? (c.value ? [c.value] : [])) as string[]).join("|")}`);
+    else if (c.field === "docs_state") bits.push(`documents ${stringList(c).join("|")}`);
     else if (c.field === "signals") bits.push("built-in configured intake signals");
   }
   const a = rule.action;
