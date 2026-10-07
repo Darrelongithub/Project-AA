@@ -481,6 +481,40 @@ describe("a person's case-type scope is settable, not just enforced", () => {
   });
 });
 
+describe("a name can be corrected after the account exists", () => {
+  it("a person can change the name colleagues see, and an administrator can rename anyone", async () => {
+    // The display name was written once at account creation and then frozen:
+    // not editable by its owner, not by an administrator. A typo followed
+    // someone through every queue, report and audit entry for good.
+    const page = await get("/account");
+    const profile = /<form[^>]*action="\/account\/display-name"[^>]*>[\s\S]*?<\/form>/.exec(page)?.[0] ?? "";
+    expect(profile, "the account page must let a person set their own name").toContain('name="display_name"');
+
+    const res = await post("/account/display-name", { display_name: "  Sweep   Administrator  " });
+    expect(msg(res.location)).toMatch(/Your name is now/i);
+    // Collapsed, not stored with stray whitespace.
+    expect(repo.getStaffByUsername("sweepadmin")!.display_name).toBe("Sweep Administrator");
+
+    // Too short is refused rather than stored.
+    await post("/account/display-name", { display_name: "X" });
+    expect(repo.getStaffByUsername("sweepadmin")!.display_name).toBe("Sweep Administrator");
+
+    // And an administrator can correct someone else's name.
+    const member = repo.createStaffAndReturn("typo", "Swpper Two", hashPassword("typospass123"), "user", orgId);
+    const staffPage = await get("/staff");
+    expect(staffPage).toContain('action="/staff/display-name"');
+    const renamed = await post("/staff/display-name", { id: String(member.id), display_name: "Sweeper Two" });
+    expect(msg(renamed.location)).toMatch(/is now shown as/i);
+    expect(repo.getStaff(member.id)!.display_name).toBe("Sweeper Two");
+
+    // A forged id from another organization is indistinguishable from an
+    // unknown one — no cross-tenant rename.
+    const outsider = repo.createStaffAndReturn("outsider", "Outsider", hashPassword("outsiderpass123"), "user", repo.createOrganization({ name: "Outsider Ltd", refPrefix: "OUT" }).id);
+    await post("/staff/display-name", { id: String(outsider.id), display_name: "Hijacked" });
+    expect(repo.getStaff(outsider.id)!.display_name).toBe("Outsider");
+  });
+});
+
 describe("a new organization does not inherit a placeholder identity", () => {
   it("setup names the organization and the mail signature starts the same", () => {
     // The second field used to stay "Organization" until someone found it

@@ -2267,6 +2267,16 @@ export function accountPage(c: Ctx, msg?: string): string {
 ${msg ? `<div class="flash ok" style="position:static;margin-bottom:16px">${esc(msg)}</div>` : ""}
 
 <div class="card" id="profile">
+  <h2>Your name</h2>
+  <form method="post" action="/account/display-name" class="formrow" style="align-items:end">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div><label>Display name</label><input name="display_name" value="${esc(u.display_name)}" required maxlength="80" autocomplete="name" placeholder="e.g. Darrel"></div>
+    <div style="flex:0"><button class="btn">Update name</button></div>
+  </form>
+  <p class="small muted" style="margin-top:6px">This is the name colleagues see — on cases they hand you, in the team report and on audit entries.</p>
+</div>
+
+<div class="card" id="username">
   <h2>Username</h2>
   <form method="post" action="/account/username" class="formrow" style="align-items:end">
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
@@ -4099,7 +4109,10 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
     ${repo.listStaff(orgId)
       .map((st) => `<tr>
         <td class="mono">${esc(st.username)}</td>
-        <td>${esc(st.display_name)}</td>
+        <td><form method="post" action="/staff/display-name" style="display:flex;gap:6px;align-items:center;margin:0">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}">
+          <input name="display_name" value="${esc(st.display_name)}" required maxlength="80" aria-label="Display name for ${esc(st.username)}" style="width:190px">
+          <button class="btn small ghost">Rename</button></form></td>
         <td><span class="badge b-gray">${esc(capFirst(st.role))}</span></td>
         <td>${st.active ? `<span class="badge b-green">active</span>` : `<span class="badge b-red">disabled</span>`}</td>
         <td>

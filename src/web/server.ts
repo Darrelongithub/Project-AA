@@ -1421,6 +1421,23 @@ export function createApp(deps: WebDeps): Express {
     res.redirect(accountMsg("Username updated."));
   });
 
+  /**
+   * Let a person correct the name colleagues see.
+   *
+   * The display name was set once at account creation and could never be
+   * changed again — not by its owner, not by an administrator — so a typo
+   * followed someone through every queue, report and audit entry for good.
+   */
+  app.post("/account/display-name", requireLogin, csrfCheck, (req, res) => {
+    const name = String(req.body.display_name ?? "").trim().replace(/\s+/g, " ");
+    if (name.length < 2 || name.length > 80) return res.redirect(accountMsg("Your name must be 2–80 characters — nothing changed."));
+    const before = req.staff!.display_name;
+    if (name === before) return res.redirect(accountMsg("That is already your name."));
+    repo.setStaffDisplayName(req.staff!.id, name);
+    repo.audit(null, req.staff!.username, "account_display_name_changed", `“${before}” → “${name}”`);
+    res.redirect(accountMsg(`Your name is now “${name}”.`));
+  });
+
   app.post("/account/password", requireLogin, csrfCheck, (req, res) => {
     const me = repo.getStaffByUsername(req.staff!.username);
     if (!me) return res.redirect(accountMsg("Account not found."));
@@ -2687,6 +2704,19 @@ export function createApp(deps: WebDeps): Express {
     repo.setStaffActive(s.id, s.active !== 1);
     repo.audit(null, req.staff!.username, "staff_toggled", `${s.username} → ${s.active !== 1 ? "active" : "disabled"}`);
     res.redirect(staffMsg(`${s.display_name} is now ${s.active !== 1 ? "active" : "disabled"}.`));
+  });
+
+  app.post("/staff/display-name", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
+    const member = repo.listStaff(organizationId(req)).find((st) => st.id === Number(req.body.id));
+    if (!member) return res.redirect(staffMsg("Unknown staff member — nothing changed."));
+    const name = String(req.body.display_name ?? "").trim().replace(/\s+/g, " ");
+    if (name.length < 2 || name.length > 80) return res.redirect(staffMsg("A display name must be 2–80 characters — nothing changed."));
+    if (name === member.display_name) return res.redirect(staffMsg(`${member.display_name}'s name is unchanged.`));
+    const before = member.display_name;
+    repo.setStaffDisplayName(member.id, name);
+    repo.audit(null, req.staff!.username, "staff_display_name_changed", `${member.username}: “${before}” → “${name}”`);
+    res.redirect(staffMsg(`${before} is now shown as “${name}”.`));
   });
 
   app.post("/staff/password", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
