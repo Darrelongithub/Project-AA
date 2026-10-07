@@ -1866,6 +1866,11 @@ ${categoriesCard(c)}
       ${organizationInput("locale", "Locale (dates & numbers)", organization?.locale ?? "en-KE")}
       ${organizationInput("timezone", "Timezone (IANA name)", organization?.timezone ?? "")}
     </div>
+    <div class="formrow">
+      <div class="field"><span class="lbl">Inbound mailbox address for this organization</span>
+        <input name="inbound_address" type="email" value="${esc(organization?.inbound_address ?? "")}" placeholder="intake@yourorganization.example" autocomplete="off">
+        <span class="small muted">Mail delivered to this address belongs to this organization. One shared mailbox can serve several organizations — without an address here, incoming mail falls back to the head office and the audit trail says so.</span></div>
+    </div>
     <p class="small muted">The From name and Reply address are applied to every message the system sends. Empty From name keeps the sending mailbox's own name; empty Reply address keeps replies on the sending mailbox.</p>
     <p><button class="btn">Save identity &amp; colours</button></p>
   </form>
@@ -1882,12 +1887,6 @@ ${categoriesCard(c)}
     <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
     <div class="formrow">
       ${settingInput("institution_name", "Name signed on outgoing mail &amp; documents", settings["institution_name"] ?? organization?.name ?? c.institution)}
-      ${(() => {
-        const org = c.repo.getOrganization(c.user.organization_id ?? 1);
-        return `<div class="field"><span class="lbl">Inbound mailbox address for this organization</span>
-          <input name="inbound_address" type="email" value="${esc(org?.inbound_address ?? "")}" placeholder="intake@yourorganization.example" autocomplete="off">
-          <span class="small muted">Mail delivered to this address belongs to this organization. One shared mailbox can serve several tenants — without an address here, incoming mail falls back to the head office and the audit trail says so.</span></div>`;
-      })()}
     </div>
     <p class="small muted">This is the name that closes an email and heads a generated document. It can read differently from the workspace name above — “Riverdale College” in the console, “Riverdale Admissions Office” on letters — and both start out the same.</p>
     <p><button class="btn ghost">Save response settings</button></p>
@@ -2454,7 +2453,7 @@ function requirementsTab(c: Ctx, _target?: string, _system?: string): string {
     <div><label>Closes</label><input type="date" name="deadline"></div>
     <div style="flex:0"><label>&nbsp;</label><button class="btn small">Add window</button></div>
   </form>`;
-  return `<section class="card"><h2>Configured requirements</h2><p>Required documents and scalar AND / OR / NOT rules belong to each case type. Existing cases keep their frozen configuration until someone runs an explicit re-evaluation.</p>${types.length ? types.map((type) => '<h3>' + esc(type.name) + '</h3><p>' + esc(ruleTreeText(c.repo.caseTypeRules(type))) + '</p><p class="small">' + c.repo.listDocumentDefinitions(type.id).map((definition) => esc(definition.label) + (definition.required && definition.blocking ? ' (required)' : ' (optional)')).join(', ') + '</p>').join('') : '<p class="small muted">No case types configured.</p>'}<a class="btn ghost" href="/config?tab=case-types">Configure case types</a></section><section class="card" id="rules-ops"><h2>Rule operations</h2><form method="post" action="/config/reevaluate-open">${csrf}<button class="btn ghost">Review all open cases</button></form></section><section class="card" id="categories-pointer"><h2>Message categories</h2><p class="small muted">Categories live in Settings: the labels an incoming message may be given | and the allowed list a Gemini key may choose from | are managed <a href="/settings#categories">there</a>.</p></section><section class="card" id="intakes"><h2>Submission windows</h2><p class="small muted">A window named in an incoming message is attached to its case. A deadline here turns an arrival after that date into a <span class="mono">late_submission</span> flag | a person decides whether to accept it; nothing is rejected automatically. Windows are inferred from real mail or added below.</p>${windows}${addWindow}</section><section class="card" id="deadletters"><h2>Parked mail</h2>${c.repo.listDeadLetters().map((letter) => '<p>' + esc(letter.subject) + ' | ' + esc(letter.error.slice(0,140)) + '</p><form method="post" action="/config/dead-letter/retry">' + csrf + '<input type="hidden" name="id" value="' + letter.id + '"><button class="btn small">Retry</button></form>').join('') || '<p>Nothing parked.</p>'}</section>`;
+  return `<section class="card"><h2>Configured requirements</h2><p>Required documents and scalar AND / OR / NOT rules belong to each case type. Existing cases keep their frozen configuration until someone runs an explicit re-evaluation.</p>${types.length ? types.map((type) => '<h3>' + esc(type.name) + '</h3><p>' + esc(ruleTreeText(c.repo.caseTypeRules(type))) + '</p><p class="small">' + c.repo.listDocumentDefinitions(type.id).map((definition) => esc(definition.label) + (definition.required && definition.blocking ? ' (required)' : ' (optional)')).join(', ') + '</p>').join('') : '<p class="small muted">No case types configured.</p>'}<a class="btn ghost" href="/config?tab=case-types">Configure case types</a></section><section class="card" id="rules-ops"><h2>Rule operations</h2><form method="post" action="/config/reevaluate-open">${csrf}<button class="btn ghost">Review all open cases</button></form></section><section class="card" id="categories-pointer"><h2>Message categories</h2><p class="small muted">Categories live in Settings: the labels an incoming message may be given | and the allowed list a Gemini key may choose from | are managed <a href="/settings#categories">there</a>.</p></section><section class="card" id="intakes"><h2>Submission windows</h2><p class="small muted">A window named in an incoming message is attached to its case. A deadline here turns an arrival after that date into a <span class="mono">late_submission</span> flag | a person decides whether to accept it; nothing is rejected automatically. Windows are inferred from real mail or added below.</p>${windows}${addWindow}</section><section class="card" id="deadletters"><h2>Parked mail</h2>${c.repo.listDeadLetters().map((letter) => '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;border-top:1px solid var(--line2);padding:10px 0"><div style="flex:1;min-width:240px"><b>' + esc(letter.subject || letter.message_id) + '</b><br><span class="small muted">' + esc(letter.error.slice(0,220)) + '</span></div><div style="display:flex;gap:6px"><form method="post" action="/config/dead-letter/retry" style="margin:0">' + csrf + '<input type="hidden" name="id" value="' + letter.id + '"><button class="btn small">Retry</button></form><form method="post" action="/config/dead-letter/delete" style="margin:0">' + csrf + '<input type="hidden" name="id" value="' + letter.id + '"><button class="btn small ghost" onclick="return confirm(\'Drop this parked message for good? It will not be retried.\')">Drop</button></form></div></div>').join('') || '<p>Nothing parked.</p>'}<p class="small muted" style="margin:10px 0 0">Retry re-queues the message for the next sync. Drop discards it — for mail that can never be ingested, such as an attachment no reader can open.</p></section>`;
 }
 
 
@@ -4091,6 +4090,45 @@ export function staffPage(c: Ctx, flash?: string, resetCode?: string): string {
     </table>
     <div style="margin-top:10px"><button class="btn">Save permissions</button></div>
   </form>
+</section>
+<section class="card">
+  <h2>Which case types each person sees</h2>
+  <p class="small muted" style="margin-top:-6px">By default everyone sees every case type in this organization. Narrow a person to the types they actually handle — a reviewer who only reads one stream should not have the rest on their desk. Administrators always see everything.</p>
+  ${(() => {
+    // listCaseTypes() is the active set; retired profiles have their own list.
+    const types = repo.listCaseTypes(orgId);
+    if (!types.length) return `<p class="small muted" style="margin-bottom:0">No case types yet — add one under <a href="/config?tab=case-types">Configuration → CaseTypes</a> and scoping becomes available here.</p>`;
+    const members = repo.listStaff(orgId).filter((st) => st.role !== "admin");
+    if (!members.length) return `<p class="small muted" style="margin-bottom:0">Only administrators exist so far, and they always see everything. Add a user account below to scope it.</p>`;
+    const modeOf = (id: number) => repo.caseTypeScopeModeFor(id);
+    const scopesOf = (id: number) => repo.caseTypeScopesFor(id);
+    return `<table>
+      <tr><th>Person</th><th>Sees</th><th>Case types</th><th></th></tr>
+      ${members.map((st) => {
+        const mode = modeOf(st.id);
+        const scopes = scopesOf(st.id);
+        return `<tr>
+        <td><b>${esc(st.display_name)}</b><br><span class="muted small">@${esc(st.username)}</span></td>
+        <td>${mode === "unscoped"
+          ? `<span class="badge b-green">all case types</span>`
+          : mode === "none"
+            ? `<span class="badge b-red">no case types</span>`
+            : `<span class="badge b-purple">${scopes.length} of ${types.length}</span>`}</td>
+        <td><details><summary style="cursor:pointer">Choose case types</summary>
+          <div style="padding:8px 0 0">
+            <label class="small" style="display:block;margin-bottom:6px"><input type="radio" name="mode" value="unscoped" form="scopes-${st.id}" ${mode === "unscoped" ? "checked" : ""} style="width:auto"> Every case type (the default)</label>
+            ${types.map((t) => `<label class="small" style="display:block;margin-bottom:4px"><input type="checkbox" name="scope_${esc(t.code)}" value="1" form="scopes-${st.id}" ${scopes.includes(t.code.toUpperCase()) ? "checked" : ""} style="width:auto"> ${esc(t.name)} <span class="mono muted">${esc(t.code)}</span></label>`).join("")}
+            <label class="small" style="display:block;margin-top:6px"><input type="radio" name="mode" value="none" form="scopes-${st.id}" ${mode === "none" ? "checked" : ""} style="width:auto"> No case types (sees the queues but no cases)</label>
+          </div>
+        </details></td>
+        <td><form method="post" action="/staff/case-type-scopes" id="scopes-${st.id}" style="margin:0">
+          <input type="hidden" name="_csrf" value="${esc(c.csrf)}"><input type="hidden" name="id" value="${st.id}">
+          <button class="btn small ghost">Save scope</button></form></td>
+      </tr>`;
+      }).join("")}
+    </table>
+    <p class="small muted" style="margin:10px 0 0">Choosing “every case type” or “no case types” overrides the ticks; ticking any box switches that person to the selected case types only. A retired case type stops counting as soon as it is retired.</p>`;
+  })()}
 </section>
 <section class="card nopad">
   <div class="card-head"><h2>Accounts</h2></div>

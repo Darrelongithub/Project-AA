@@ -2285,9 +2285,17 @@ export function createApp(deps: WebDeps): Express {
     }
     // PPR P1-5: sender identity + locale are organization-owned and now
     // actually applied to outgoing mail (From display name / Reply-To).
-    const inboundAddress = String(req.body.inbound_address ?? "").trim();
+    const inboundAddress = String(req.body.inbound_address ?? "").trim().toLowerCase();
     if (inboundAddress && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(inboundAddress)) {
       return res.redirect(`/settings?msg=${encodeURIComponent("The inbound address must be a valid email address.")}#letters`);
+    }
+    // Two organizations claiming one address would make routing a coin toss,
+    // because the first match wins. Refuse it while it is still obvious which
+    // organization is which — the whole identity save is withheld, not just
+    // the address, so a half-applied identity can never exist.
+    const claimant = inboundAddress ? repo.organizationForInboundAddress(inboundAddress) : null;
+    if (claimant?.matched && claimant.organizationId !== organizationId(req)) {
+      return res.redirect(`/settings?msg=${encodeURIComponent(`That inbound address already belongs to another organization — nothing was saved.`)}#letters`);
     }
     repo.updateOrganization(organizationId(req), {
       name, refPrefix, theme: { primary, accent },
@@ -2639,6 +2647,44 @@ export function createApp(deps: WebDeps): Express {
     }
     repo.audit(null, req.staff!.username, "staff_permissions_saved", "automation permissions updated");
     res.redirect("/staff?msg=" + encodeURIComponent("Automation permissions saved."));
+  });
+
+  /**
+   * Narrow which case types a person sees.
+   *
+   * The scoping table and the row-level filter that enforces it have always
+   * existed; what was missing was any way to set it, so a reviewer could never
+   * be limited to the streams they actually handle — and a member left with an
+   * accidental "no case types" scope had no way back.
+   */
+  app.post("/staff/case-type-scopes", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const staffMsg = (m: string) => `/staff?msg=${encodeURIComponent(m)}`;
+    const orgId = organizationId(req);
+    const target = repo.listStaff(orgId).find((st) => st.id === Number(req.body.id));
+    if (!target) return res.redirect(staffMsg("Unknown staff member — nothing changed."));
+    // Administrators see every case type by definition; scoping one would be a
+    // lock-out with no visible cause, so refuse it instead.
+    if (target.role === "admin") return res.redirect(staffMsg("Administrators always see every case type — nothing changed."));
+
+    const mode = String(req.body.mode ?? "");
+    if (mode === "unscoped") {
+      repo.clearCaseTypeScopes(target.id);
+      repo.audit(null, req.staff!.username, "staff_case_type_scope_cleared", `${target.username} sees every case type`);
+      return res.redirect(staffMsg(`${target.display_name} now sees every case type.`));
+    }
+    if (mode === "none") {
+      repo.setCaseTypeScopes(target.id, []);
+      repo.audit(null, req.staff!.username, "staff_case_type_scope_saved", `${target.username} scoped to no case types`);
+      return res.redirect(staffMsg(`${target.display_name} now sees no case types — the queues stay empty until a scope is set.`));
+    }
+    // Otherwise the ticks decide. Only this organization's own live case types
+    // count, so a forged code for another tenant is simply ignored.
+    const known = repo.listCaseTypes(orgId).map((t) => t.code.toUpperCase());
+    const chosen = known.filter((code) => String((req.body as Record<string, string>)[`scope_${code}`] ?? "") === "1");
+    if (!chosen.length) return res.redirect(staffMsg(`Tick at least one case type, or choose “every case type” — ${target.display_name}'s scope was left alone.`));
+    repo.setCaseTypeScopes(target.id, chosen);
+    repo.audit(null, req.staff!.username, "staff_case_type_scope_saved", `${target.username} scoped to ${chosen.join(", ")}`);
+    res.redirect(staffMsg(`${target.display_name} now sees ${chosen.length} case type${chosen.length === 1 ? "" : "s"}: ${chosen.join(", ")}.`));
   });
 
   // H-2: the new account belongs to the ACTING admin's organization — never

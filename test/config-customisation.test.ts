@@ -372,6 +372,106 @@ describe("organization axes actually change a checklist", () => {
   });
 });
 
+describe("settings controls that posted into the wrong form", () => {
+  it("the inbound mailbox address is saved by the form that renders it", async () => {
+    // The address that decides which organization an incoming message belongs
+    // to was rendered inside the "response settings" form, whose handler never
+    // read it — so an administrator could set their routing address and have it
+    // silently discarded, with mail falling back to the head office.
+    const page = await get("/settings");
+    const general = /<form[^>]*action="\/settings\/general"[^>]*>[\s\S]*?<\/form>/.exec(page)?.[0] ?? "";
+    const identity = /<form[^>]*action="\/settings\/organization"[^>]*>[\s\S]*?<\/form>/.exec(page)?.[0] ?? "";
+    expect(identity).toContain('name="inbound_address"');
+    expect(general, "the address must not sit in a form that ignores it").not.toContain('name="inbound_address"');
+
+    const res = await post("/settings/organization", {
+      organization_name: "Sweep Cooperative", ref_prefix: "SWP",
+      primary_color: "#3b1d5f", accent_color: "#9a78c7",
+      from_name: "Sweep Intake Desk", reply_to: "desk@example.org",
+      locale: "en-GB", timezone: "UTC", inbound_address: "Intake@Sweep.example",
+    });
+    expect(msg(res.location)).toMatch(/saved/i);
+    expect(repo.getOrganization(orgId)!.inbound_address).toBe("intake@sweep.example");
+    // Lower-cased and matched back to this organization, not just stored.
+    expect(repo.organizationForInboundAddress("intake@SWEEP.example")).toMatchObject({ organizationId: orgId, matched: true });
+  });
+
+  it("refuses an inbound address another organization already answers to", async () => {
+    const other = repo.createOrganization({ name: "Other Co", refPrefix: "OTH" });
+    repo.updateOrganization(other.id, { inboundAddress: "shared@example.org" });
+
+    const res = await post("/settings/organization", {
+      organization_name: "Sweep Cooperative", ref_prefix: "SWP",
+      primary_color: "#3b1d5f", accent_color: "#9a78c7",
+      from_name: "Sweep Intake Desk", reply_to: "desk@example.org",
+      locale: "en-GB", timezone: "UTC", inbound_address: "shared@example.org",
+    });
+    expect(msg(res.location)).toMatch(/already belongs to another organization/i);
+    // The whole identity save is withheld — a half-applied identity would be
+    // worse than an unchanged one.
+    expect(repo.getOrganization(orgId)!.inbound_address).not.toBe("shared@example.org");
+    expect(repo.getOrganization(other.id)!.inbound_address).toBe("shared@example.org");
+  });
+});
+
+describe("a person's case-type scope is settable, not just enforced", () => {
+  it("narrows what a reviewer sees, and can be given back", async () => {
+    // The scoping table and the row-level filter that hides cases have always
+    // existed; what was missing was any way to SET a scope. A reviewer could
+    // never be limited to the streams they handle, and anyone left with a
+    // "no case types" scope had no way back from the console.
+    repo.createCaseType(orgId, { code: "SWEEP_GRANT", name: "Grant review" });
+    const reviewer = repo.createStaffAndReturn("sweeper", "Sweeper One", hashPassword("sweeperpass123"), "user", orgId);
+
+    const page = await get("/staff");
+    expect(page).toContain('action="/staff/case-type-scopes"');
+    expect(page).toContain('name="scope_SWEEP_GRANT"');
+    expect(page).toContain('name="mode"');
+
+    // Ticking one case type narrows the scope to it.
+    const scoped = await post("/staff/case-type-scopes", { id: String(reviewer.id), mode: "scoped", scope_SWEEP_GRANT: "1" });
+    expect(msg(scoped.location)).toMatch(/now sees 1 case type/i);
+    expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("scoped");
+    expect(repo.caseTypeScopesFor(reviewer.id)).toEqual(["SWEEP_GRANT"]);
+
+    // And it is enforced: a case of another type is not on their desk.
+    repo.createCaseType(orgId, { code: "SWEEP_OTHER", name: "Other stream" });
+    const hidden = repo.createCase({ emailAddress: "hidden@example.org", threadId: "hidden-1", organizationId: orgId, caseTypeCode: "SWEEP_OTHER" });
+    expect(repo.caseTypeVisibleTo({ id: reviewer.id, role: "user", organization_id: orgId }, hidden)).toBe(false);
+    const shown = repo.createCase({ emailAddress: "shown@example.org", threadId: "shown-1", organizationId: orgId, caseTypeCode: "SWEEP_GRANT" });
+    expect(repo.caseTypeVisibleTo({ id: reviewer.id, role: "user", organization_id: orgId }, shown)).toBe(true);
+
+    // "Every case type" is the way back — the ticks are overridden, not merged.
+    const cleared = await post("/staff/case-type-scopes", { id: String(reviewer.id), mode: "unscoped", scope_SWEEP_GRANT: "1" });
+    expect(msg(cleared.location)).toMatch(/every case type/i);
+    expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("unscoped");
+    expect(repo.caseTypeVisibleTo({ id: reviewer.id, role: "user", organization_id: orgId }, hidden)).toBe(true);
+  });
+
+  it("refuses a scope that would lock someone out by accident", async () => {
+    const reviewer = repo.createStaffAndReturn("sweeper2", "Sweeper Two", hashPassword("sweeperpass123"), "user", orgId);
+    // No ticks and no explicit mode: the scope is left alone rather than
+    // silently emptying their desk.
+    const blank = await post("/staff/case-type-scopes", { id: String(reviewer.id), mode: "scoped" });
+    expect(msg(blank.location)).toMatch(/Tick at least one case type/i);
+    expect(repo.caseTypeScopeModeFor(reviewer.id)).toBe("unscoped");
+
+    // An administrator cannot be scoped: they would lose configuration access
+    // with no visible cause.
+    const adminId = repo.getStaffByUsername("sweepadmin")!.id;
+    const refused = await post("/staff/case-type-scopes", { id: String(adminId), mode: "none" });
+    expect(msg(refused.location)).toMatch(/Administrators always see every case type/i);
+    expect(repo.caseTypeScopeModeFor(adminId)).toBe("unscoped");
+
+    // A code belonging to another organization's case type is ignored, not
+    // honoured — otherwise a forged POST could smuggle in a foreign stream.
+    const otherOrg = repo.createOrganization({ name: "Outsider Ltd", refPrefix: "OUT" });
+    repo.createCaseType(otherOrg.id, { code: "FOREIGN", name: "Foreign stream" });
+    await post("/staff/case-type-scopes", { id: String(reviewer.id), mode: "scoped", scope_FOREIGN: "1" });
+    expect(repo.caseTypeScopesFor(reviewer.id)).toEqual([]);
+  });
+});
+
 describe("a new organization does not inherit a placeholder identity", () => {
   it("setup names the organization and the mail signature starts the same", () => {
     // The second field used to stay "Organization" until someone found it
