@@ -43,6 +43,7 @@ Every fixable finding is closed below and pinned by a regression test.
 | BUG-14 | Low | Dead Instrument Serif WOFF2 blobs and routes still shipped (~58 KB) | **FIXED** — removed |
 | BUG-15 | Low | Trailing whitespace at `src/web/pages.ts:2830` | **FIXED** |
 | BUG-16 | Low | The two MIME paths disagreed about "already signed"; a body mentioning the signer suppressed the signature | **FIXED** — one shared rule |
+| BUG-17 | High (security) | `sharp < 0.35.5` — CVE-2026-96889 (librsvg), high severity. Found by CI's production audit gate, not by any local run | **FIXED** — bumped to `^0.35.5`; `npm audit --omit=dev` clean |
 
 **Coverage added:** `test/flowchart.test.ts` (17 tests — the two invariants
 *what is drawn is what runs* and *what is not shown is not lost*),
@@ -56,8 +57,21 @@ environment pre-flight. Runbook and decision flowchart: [`TROUBLESHOOTING.md`](T
 **Verified on `arena/e9eb1057-project-aa` (Node 22.22.3):** `npm run typecheck`
 clean · `npm test` 99 files / 828 passed / 1 skipped (the Playwright
 environment skip, ENV-1) · `npm run simulate` 409/409 across 26 scenarios ·
-`npm run build` clean. `canvas` could not be built here, so raster-only paths
-exercise the documented fallback (ENV-2) — this is not the same as green on CI.
+`npm run build` clean · `npm audit --omit=dev` clean. `canvas` could not be
+built here, so raster-only paths exercise the documented fallback (ENV-2) —
+this is not the same as green on CI.
+
+**Verified by CI on the pull request** (`.github/workflows/ci.yml`,
+ubuntu-latest with the Cairo/Pango toolchain): every step green — install,
+typecheck, tests, simulate, stress, build, compiled-server boot, production
+audit, domain-identity grep, whitespace. BUG-17 below is the one thing CI found
+that the local run could not.
+
+> A note on the local-vs-CI gap: the first CI run on this branch **failed**, and
+> only at the `Audit (production)` step. Every functional gate was green. It is
+> worth saying plainly that this pass did not re-run `npm audit --omit=dev`
+> locally — the scan's own environment notes say so — and the advisory is newer
+> than the lockfile. A green local run is not a green CI run.
 
 ## Regression checks performed
 
@@ -122,7 +136,7 @@ No live Gmail/Gemini endpoint, real test message, real tenant database, real arc
 | PROD-3 | **ACCEPTED / DEFERRED** | Legacy catalogue tables/columns and internal identifiers remain for storage compatibility (including old `programmes`/`applicants.intake`-family names). They are not defaults for new organizations. The owner chose to stop cosmetic legacy-name cleanup; do not reinterpret old values or remove migration compatibility without a separate decision. |
 | PROD-4 | **ACCEPTED** | `/queue` and `/team` remain compatibility redirects for older bookmarks. Retiring them is optional and should wait until external links are known to be unused. |
 | PROD-5 | **NOT A BUG** | Automated replies count as answered in `unansweredCases`. This behavior is explicitly pinned by `test/v3.test.ts`; the performance fix was kept while the intended count semantics were restored. |
-| PROD-6 | **ACCEPTED / DOCUMENTED** | `npm audit` exits non-zero for five development-tool advisories (one critical, one high, three moderate) in the Vitest/Vite toolchain. They are intentionally left unfixed rather than forcing a breaking major upgrade; `npm audit --omit=dev` is clean. Revisit in a separately gated tooling migration, especially because the Vitest configuration is load-bearing for PDF.js 6's ESM bridge. |
+| PROD-6 | **ACCEPTED / DOCUMENTED** | `npm audit` exits non-zero for five development-tool advisories (one critical, one high, three moderate) in the Vitest/Vite toolchain. They are intentionally left unfixed rather than forcing a breaking major upgrade; `npm audit --omit=dev` is clean. **Updated 2026-10-07:** the `Audit (production)` step in `.github/workflows/ci.yml` caught one **high-severity production advisory** that no local run had surfaced — `sharp < 0.35.5`, CVE-2026-96889 in its bundled librsvg (GHSA-wq5f-xc86-pv6w). Closed by bumping `sharp` to `^0.35.5` (0.35.5 plus its `@img/sharp-libvips-*` binaries 1.3.3 → 1.3.4); `npm audit --omit=dev` is clean again. Recorded here rather than as a regression: the advisory post-dates the lockfile, and it is the production audit gate doing its job. Revisit in a separately gated tooling migration, especially because the Vitest configuration is load-bearing for PDF.js 6's ESM bridge. |
 | PROD-7 | **ACCEPTED / DOCUMENTED** | Database backups and downloaded CSV exports can contain personal data. Archive encryption protects new retention archives only; it is not a general database/export encryption layer. Follow the access, storage, and deletion procedures above and in the README. |
 | PROD-8 | **ACCEPTED / HUMAN-SAFE FALSE POSITIVE** | The watcher’s duplicate-content heuristic compares a normalized 400-character prefix; distinct documents that share long letterhead boilerplate can be treated as duplicates. The failure mode is conservative (human review), not silent acceptance. Monitor during the pilot; adjust only with a regression case that retains the safety behavior. |
 | PROD-9 | **ACCEPTED / DOCUMENTED** | `organizations.locale` and `organizations.timezone` are saved, round-tripped through the Settings form and carried on the organization row, but no formatter reads them: console dates go through `fmtDate`/`fmtTime` in `src/web/views.ts`, which pin the `en-KE` locale. The Settings labels ("Locale (dates & numbers)", "Timezone (IANA name)") therefore promise an effect that does not happen yet. Either thread the tenant locale into the two helpers or narrow the labels; both are presentation-layer changes and were left for an owner decision rather than half-applied. |

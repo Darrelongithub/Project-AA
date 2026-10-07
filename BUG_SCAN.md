@@ -274,8 +274,15 @@ typecheck step, and the archive did not even ship the config to run it.
   `/usr/local/include/node`. This is a sandbox limitation, not a repository defect.
 - `canvas` was installed without a build (no Cairo/Pango toolchain in this image). Raster-only
   PDF paths exercise the safe fallback — already recorded as **BUGS.md ENV-2**.
-- `npm audit --omit=dev` was not re-run; **BUGS.md PROD-6** still describes the five
-  development-toolchain advisories left in place deliberately.
+- `npm audit --omit=dev` was **not** run as part of this scan — that is a gap in
+  the scan, not a clean result, and **BUGS.md PROD-6** (which asserted the
+  production audit was clean) was stale. CI's `Audit (production)` step caught
+  what the scan did not: `sharp < 0.35.5`, CVE-2026-96889 (librsvg), high
+  severity, closed by bumping to `^0.35.5`.
+
+  This is the one finding not in the table above, because it was not found here.
+  It is recorded as **BUG-17** in BUGS.md. The lesson is worth stating: a green
+  local run is not a green CI run, and "I did not run it" is not evidence.
 
 ---
 
@@ -299,4 +306,5 @@ typecheck step, and the archive did not even ship the config to run it.
 | BUG-14 | Low | assets | dead Instrument Serif fonts and routes still ship | **Fixed** — removed (~58 KB) |
 | BUG-15 | Low | hygiene | trailing whitespace at `src/web/pages.ts:2830` | **Fixed** |
 | BUG-16 | Low | mail | signature de-duplication differs between MIME paths | **Fixed** — one shared rule |
+| BUG-17 | High (security) | dependency | `sharp < 0.35.5` — CVE-2026-96889 (librsvg). Found by CI, not by the scan | **Fixed** — bumped to `^0.35.5` |
 | — | — | coverage | no tests for process templates, signature, classifier prompt or flowchart | **Closed** — 57 new tests |
