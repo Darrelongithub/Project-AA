@@ -144,19 +144,19 @@ npm run serve
 
 Recommended first run path:
 
-1. Log in as admin  
-2. Choose a process template (e.g. Job applications)  
-3. Set organization name + optional signature + banner  
-4. Open **Config → Workflow rules** and review the Live path  
-5. Optional: add classifier guidance and connect Gmail  
+1. Log in as admin
+2. Choose a process template (e.g. Job applications)
+3. Set organization name + optional signature + banner
+4. Open **Config → Workflow rules** and review the Live path
+5. Optional: add classifier guidance and connect Gmail
 
 ---
 
 ## Intentionally unchanged
 
-- Core pipeline, rules engine, SQLite schema compatibility  
-- Human-only outcomes (no machine approval/rejection)  
-- Tenant isolation and audit logging  
+- Core pipeline, rules engine, SQLite schema compatibility
+- Human-only outcomes (no machine approval/rejection)
+- Tenant isolation and audit logging
 - Advanced case-type / document matrix editors (still available for power users)
 
 ---
