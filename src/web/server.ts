@@ -8,7 +8,7 @@
  */
 import * as crypto from "crypto";
 import { FAVICON_BASE64, LOGO_BASE64, LOGO_WHITE_BASE64 } from "./logo";
-import { FONT_INSTRUMENT_SERIF_ITALIC_WOFF2, FONT_INSTRUMENT_SERIF_WOFF2, FONT_MANROPE_WOFF2 } from "./fonts";
+import { FONT_MANROPE_WOFF2 } from "./fonts";
 import express, { type Express, type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import { Repo } from "../db/repo";
 import { DEFAULT_GEMINI_MODEL } from "../extraction/gemini";
@@ -22,14 +22,14 @@ import { fillSlots } from "../documents/matrix";
 import { validateRuleTree } from "../rules/caseType";
 import { evaluateStoredCase } from "../rules/evaluate";
 import type { RuleAction, RuleCondition, WorkflowRule } from "../rules/workflow";
-import { describeRule, firstMatchingRule, rulesForCaseScope, ruleMatches } from "../rules/workflow";
+import { compareRuleOrder, describeRule, firstMatchingRule, rulesForCaseScope, ruleMatches } from "../rules/workflow";
 import { categorizeEmail, geminiCategoryLabeler } from "../categorize";
 
 import {
   accountPage, casesPage, applicantsPage, casePage, composePage, composeWindowPage, configPage, dashboardPage, loginPage, mailPage, mailThreadPage, resetPasswordPage, setupPage,
   replayPage, securityConsolePage, settingsPage, staffPage, templatesPage, intakeTestPage,
 } from "./pages";
-import { TEMPLATE_DEFAULTS, seedStarterTemplates } from "../db/seed";
+import { TEMPLATE_DEFAULTS, seedStarterTemplates, seedProcessTemplate, PROCESS_TEMPLATES, type ProcessTemplateId } from "../db/seed";
 import { processEmail } from "../pipeline";
 import { makeTextPdf } from "../simulation/pdfFactory";
 import { avatar, layout } from "./views";
@@ -45,7 +45,7 @@ import { gmailRedirectUri, publicOrigin } from "./oauth";
 import { LoginThrottle, RateWindow, SendGuard } from "./throttle";
 import { WEBHOOK_PATH_PREFIX, ingestWebhook, redactIngestKey } from "./webhook";
 import { envInt } from "../util/envnum";
-import { emailBanner, organizationName, organizationSender, organizationTheme } from "../branding";
+import { emailBanner, organizationName, organizationSender, organizationTheme, organizationSignature, formatSignatureHtml, formatSignatureText, bodyAlreadySigned, setOrgSetting } from "../branding";
 import type { PackFile } from "../pack";
 
 class MailDeliveryUnavailableError extends Error {
@@ -85,9 +85,24 @@ export function createApp(deps: WebDeps): Express {
     extras: { banner?: { mime: string; base64: string } | null; attachments?: Array<{ filename: string; mimeType: string; content: Buffer }> }
   ): Promise<void> => {
     if (ctx.adapters.sender.delivers !== true) throw new MailDeliveryUnavailableError();
-    return ctx.adapters.sender.send(a.email_address, subject, body, a.thread_id, {
-      ...organizationSender(repo, a.organization_id ?? 1),
+    const orgId = a.organization_id ?? 1;
+    const sig = organizationSignature(repo, orgId);
+    const inst = organizationName(repo, orgId);
+    const signatureText = formatSignatureText(sig, inst);
+    const signatureHtml = formatSignatureHtml(sig, inst);
+    // Avoid double-appending if the template already ends with a signature-like block.
+    // BUG-16: one shared rule for "already signed", so both MIME paths agree
+    // and a body that merely mentions the signer no longer suppresses it.
+    const alreadySigned = bodyAlreadySigned(body, signatureText);
+    // When a banner is present the MIME path is HTML+plain; put the pretty signature
+    // only in HTML (signatureHtml) and keep plain body clean for the text part via extras.
+    const useHtmlBanner = extras.banner != null && extras.banner !== undefined;
+    const bodyWithSig = signatureText && !alreadySigned && !useHtmlBanner ? body + signatureText : body;
+    return ctx.adapters.sender.send(a.email_address, subject, bodyWithSig, a.thread_id, {
+      ...organizationSender(repo, orgId),
       ...extras,
+      ...(signatureHtml && !alreadySigned ? { signatureHtml } : {}),
+      ...(signatureText && !alreadySigned ? { signatureText } : {}),
     });
   };
   const authName = (): string => repo.getOrganization(1)?.name?.trim() || organizationName(repo, 1);
@@ -184,10 +199,11 @@ export function createApp(deps: WebDeps): Express {
   });
 
   // Self-hosted typefaces (no CDN): Manrope variable font for the full interface.
+  // BUG-14: the Instrument Serif faces were removed with the redesign; their
+  // @font-face rules are gone, so shipping the blobs and answering two routes
+  // nobody can reach any more was dead weight.
   const fontRoutes: Array<[string, string]> = [
     ["/assets/fonts/manrope.woff2", FONT_MANROPE_WOFF2],
-    ["/assets/fonts/instrument-serif.woff2", FONT_INSTRUMENT_SERIF_WOFF2],
-    ["/assets/fonts/instrument-serif-italic.woff2", FONT_INSTRUMENT_SERIF_ITALIC_WOFF2],
   ];
   for (const [path, b64] of fontRoutes) {
     app.get(path, (_req, res) => {
@@ -223,12 +239,33 @@ export function createApp(deps: WebDeps): Express {
       const isPng = buf.length > 8 && buf.readUInt32BE(0) === 0x89504e47 && buf.subarray(4, 8).toString("hex") === "0d0a1a0a";
       if (!isJpeg && !isPng) return res.redirect(back("That file is not a JPEG or PNG image — banner unchanged."));
       const mime = isPng ? "image/png" : "image/jpeg";
-      repo.setSetting("email_banner", buf.toString("base64"));
-      repo.setSetting("email_banner_mime", mime);
+      // Scoped to the acting organization: an installation-global banner would
+      // end up on every other tenant's mail (BUG-10).
+      const bannerOrg = ownOrganizationId(req);
+      setOrgSetting(repo, "email_banner", bannerOrg, buf.toString("base64"));
+      setOrgSetting(repo, "email_banner_mime", bannerOrg, mime);
       repo.audit(null, req.staff!.username, "email_banner_changed", `${(buf.length / 1024).toFixed(0)} KB ${mime}`);
       res.redirect(back("Email banner updated — every outgoing email now carries it."));
     }
   );
+
+  app.post("/config/branding/signature", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const fields = ["signature_name", "signature_title", "signature_phone", "signature_line"] as const;
+    const signatureOrg = ownOrganizationId(req);
+    for (const key of fields) {
+      const val = String(req.body[key] ?? "").trim().slice(0, 200);
+      setOrgSetting(repo, key, signatureOrg, val);
+    }
+    repo.audit(null, req.staff!.username, "email_signature_changed", "signature fields updated");
+    res.redirect(`/config?msg=${encodeURIComponent("Email signature saved.")}#signature`);
+  });
+
+  app.post("/config/classifier-prompt", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const prompt = String(req.body.classifier_prompt ?? "").trim().slice(0, 4000);
+    setOrgSetting(repo, "classifier_prompt", ownOrganizationId(req), prompt);
+    repo.audit(null, req.staff!.username, "classifier_prompt_changed", prompt ? `${prompt.length} chars` : "cleared");
+    res.redirect(`/config?msg=${encodeURIComponent(prompt ? "Classifier guidance saved." : "Classifier guidance cleared.")}#classifier`);
+  });
 
   /** Organization-owned logo upload; the bytes are stored in the tenant row,
    * never read from a bundled institution asset. */
@@ -1512,7 +1549,11 @@ export function createApp(deps: WebDeps): Express {
         kind,
         name,
         position: req.body.position !== "" && req.body.position !== undefined ? Number(req.body.position) : undefined,
-        enabled: true,
+        // BUG-06: the flowchart submits the rule's current on/off state, so
+        // editing a parked rule leaves it parked. The advanced form carries no
+        // `enabled` field at all and keeps its historical behaviour of
+        // enabling whatever it saves.
+        enabled: String(req.body.enabled ?? "1") !== "0",
         conditions,
         action,
       });
@@ -1566,7 +1607,10 @@ export function createApp(deps: WebDeps): Express {
       const scopeRules = rulesForCaseScope(
         repo.listWorkflowRules(orgId, { kind }), caseTypeId, caseTypeId === null,
       );
-      const ordered = [...scopeRules, proposed].sort((a, b) => a.position - b.position || a.id - b.id);
+      // Same comparator the pipeline uses, so "who would win" here is the same
+      // answer the pipeline would give (BUG-07: it used to sort on position
+      // alone and could disagree with firstMatchingRule).
+      const ordered = [...scopeRules, proposed].sort(compareRuleOrder);
       const winner = firstMatchingRule(ordered, input);
       const proposedMatches = ruleMatches(proposed, input);
       const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]!));
@@ -2360,6 +2404,33 @@ export function createApp(deps: WebDeps): Express {
     return res.redirect(`/templates?msg=${encodeURIComponent(added
       ? `Added ${added} starter template(s) — edit the wording before anything goes out.`
       : "Every starter template is already present — nothing was overwritten.")}`);
+  });
+
+  // One-click process templates (applications / hiring / generic). Safe defaults, human review first.
+  app.post("/setup/process-template", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {
+    const orgId = ownOrganizationId(req);
+    if (!repo.getOrganization(orgId)) {
+      return res.redirect(`/?msg=${encodeURIComponent("Unknown organization — complete setup first.")}`);
+    }
+    // Validated against the catalogue itself, so a fourth template cannot be
+    // added to seed.ts and silently rejected here.
+    const raw = String(req.body.template ?? "applications").trim().toLowerCase();
+    const allowed = new Set<string>(PROCESS_TEMPLATES.map((t) => t.id));
+    const templateId = (allowed.has(raw) ? raw : "applications") as ProcessTemplateId;
+    try {
+      const result = seedProcessTemplate(repo, orgId, templateId);
+      repo.audit(null, req.staff!.username, "process_template_seeded",
+        result.created
+          ? `Created process template "${result.templateName}" (${result.caseTypeCode}) with documents and reply templates`
+          : `Process template already present (${result.caseTypeCode}) — templates refreshed`);
+      const msg = result.created
+        ? `“${result.templateName}” is ready. Cases can now be received and reviewed.`
+        : `“${result.templateName}” was already set up. Nothing was overwritten.`;
+      return res.redirect(`/?msg=${encodeURIComponent(msg)}`);
+    } catch (e) {
+      const err = e instanceof Error ? e.message : String(e);
+      return res.redirect(`/?msg=${encodeURIComponent("Could not set up process template: " + err)}`);
+    }
   });
 
   app.post("/templates/reset", requireLogin, requireRole("admin"), csrfCheck, (req, res) => {

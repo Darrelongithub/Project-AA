@@ -46,10 +46,11 @@ import { extractPhone, inferIntake } from "../enrich";
 import { extractGenericFacts } from "../extraction/fields";
 import { checklistText, pickQueuedDraft, renderTemplate, type Draft, type DraftContext } from "../drafting";
 import { writeDecisionLog } from "../logs";
-import { emailBanner, organizationName, organizationSender } from "../branding";
+import { emailBanner, organizationName, organizationSender, orgSetting } from "../branding";
 import type { SendExtras } from "./adapters";
 import { LIFECYCLE_LABELS } from "../types";
 import { log, logField } from "../util/log";
+import { intakeHotwordsFor } from "../config";
 import type { PipelineContext } from "./adapters";
 
 export interface PipelineOptions {
@@ -128,11 +129,15 @@ async function processEmailInner(
   let categoryLabelDetail: string;
   let classifierHold: string | null = null;
   if (configuredKeys.length > 0) {
+    // Scoped to the organization being processed: one tenant's guidance must
+    // not steer another tenant's classifier (BUG-12).
+    const classifierPrompt = (orgSetting(repo, "classifier_prompt", intakeOrganizationId) || "").trim();
     const label = await classifyWithConfiguredCategories(
       {
         subject: email.subject,
         body: email.body,
         hasAttachments: email.attachments.length > 0,
+        ...(classifierPrompt ? { extraInstructions: classifierPrompt } : {}),
       },
       configuredKeys,
       adapters.categorizer,
@@ -167,7 +172,7 @@ async function processEmailInner(
   // it targets a contact we already know (conversation continuity).
   // Everything else is parked in the Mail window WITHOUT a case: kept,
   // visible, labelable — but no case number, no queue entry, no reply.
-  const hotwords = repo.getSetting("intake_hotwords", DEFAULT_INTAKE_HOTWORDS);
+  const hotwords = intakeHotwordsFor(repo, intakeOrganizationId) || DEFAULT_INTAKE_HOTWORDS;
   const verdict = classifyIntakeEmail({
     subject: email.subject,
     body: email.body,

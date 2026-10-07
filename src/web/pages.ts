@@ -8,12 +8,13 @@ import { missingGmailCredentials, resolveLookbackDays } from "../ingestion/sync"
 import type { Repo } from "../db/repo";
 import type { ApplicantRow, CaseType, DocType, EmailRecord, RuleNode, StaffUser } from "../types";
 import { EMAIL_CATEGORIES, EMAIL_CATEGORY_LABELS, LIFECYCLE_LABELS, LIFECYCLE_ORDER, PERMISSIONS, PERMISSION_LABELS } from "../types";
-import { describeRule } from "../rules/workflow";
+import { compareRuleOrder, describeRule } from "../rules/workflow";
 import { QUEUES, SUB_LABELS, queueOf, type QueueKey } from "../rules/queues";
 import { docLabel } from "../rules";
 import { TEMPLATE_PARTIAL_DOCS, inspectTemplate, renderTemplate } from "../drafting";
-import { organizationName, organizationTheme } from "../branding";
+import { organizationName, organizationTheme, orgSetting } from "../branding";
 import { WEBHOOK_PATH_PREFIX } from "./webhook";
+import { PROCESS_TEMPLATES } from "../db/seed";
 import {
   avatar, categoryBadge, crest, esc, flagLabel, flowLine, fmtDate, gaugeRow,
   heroClock, icon, layout, lifecycleBadge, lifecycleStepper, priorityBadge, readabilityScore, slaText, triageBadge, type Theme,
@@ -182,6 +183,24 @@ function greeting(): string {
   return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 }
 
+/**
+ * The one-click starter cards, rendered from `PROCESS_TEMPLATES` rather than
+ * hand-written at each call site. The dashboard and the empty-queues page used
+ * to carry their own copies of these labels, which is how the constant ended
+ * up imported-but-unused and would have let the two lists drift apart.
+ */
+function processTemplatePicker(c: Ctx, opts: { blurb?: boolean; firstPrimary?: boolean } = {}): string {
+  return PROCESS_TEMPLATES.map((t, i) => {
+    const primary = opts.firstPrimary === false ? "ghost" : i === 0 ? "" : "ghost";
+    const label = opts.blurb ? `${esc(t.name)} — ${esc(t.blurb)}` : esc(t.name);
+    return `<form method="post" action="/setup/process-template" style="margin:0${opts.blurb ? " 0 8px" : ""}">
+      <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+      <input type="hidden" name="template" value="${esc(t.id)}">
+      <button class="btn ${primary}"${opts.blurb ? "" : " style=\"width:100%;text-align:left;justify-content:flex-start\""}>${label}</button>
+    </form>`;
+  }).join("\n    ");
+}
+
 function adminDashboard(c: Ctx): string {
   const { repo } = c;
   const realm = c.user.demo; // live admins see only live data; demo accounts only mock data.
@@ -250,6 +269,18 @@ function adminDashboard(c: Ctx): string {
     </div>`)
     .join("");
 
+  const hasCaseTypes = repo.listCaseTypes(orgId).length > 0;
+  const setupCard = !hasCaseTypes ? `
+<section class="card" style="max-width:640px;margin:0 0 28px;padding:28px 32px">
+  <div class="kicker">First step</div>
+  <h2 style="margin-bottom:8px">Choose how this workspace starts</h2>
+  <p class="small muted" style="margin:0 0 16px">Pick a ready process template, or build your own. Everything stays in human review until you decide otherwise. You can change any of this later.</p>
+  <div style="display:grid;gap:12px;margin-bottom:16px">
+    ${processTemplatePicker(c)}
+  </div>
+  <p class="small muted" style="margin:0"><a href="/config?tab=case-types">Or build a custom process from scratch</a> · <a href="/config?tab=rules">Configure if/then workflow rules</a></p>
+</section>` : "";
+
   return head(
     c,
     `Overview — ${c.institution}`,
@@ -267,6 +298,8 @@ function adminDashboard(c: Ctx): string {
 CASEWORK
 NO. 01</span>
 </header>
+
+${setupCard}
 
 <section class="overview-flow">
   <div class="flow-heading"><span class="flow-index">01</span><div><div class="kicker">THE REGISTER</div><h2>Cases presently unfolding</h2><p>${applications} cases · Choose a measure to enter its queue</p></div><a class="flow-link" href="/cases">OPEN THE REGISTER <b>↗</b></a></div>
@@ -704,14 +737,27 @@ export function applicantsPage(
   // OR-1: a completely fresh installation gets the next concrete step, not a
   // silent dead end. (Any filter/search in play means "nothing matched".)
   if (rows.length === 0 && !q.search && !q.caseType && !q.intake && !q.queue && !q.sub) {
+    const hasCaseTypes = repo.listCaseTypes(c.user.organization_id ?? 1).length > 0;
+    const isAdmin = c.user.role === "admin";
+    const simpleSetup = isAdmin && !hasCaseTypes ? `
+      <div class="card" style="max-width:560px;margin:0 auto 28px;text-align:left;padding:28px 32px">
+        <div class="kicker">Start here</div>
+        <h2 style="margin-bottom:8px">Choose a process template</h2>
+        <p class="small muted" style="margin:0 0 14px">Ready-made starting points. Human review stays on. Change anything later.</p>
+        ${processTemplatePicker(c, { blurb: false })}
+        <p class="small muted" style="margin:14px 0 0;text-align:center">Or <a href="/config?tab=case-types">build your own</a> · <a href="/config?tab=rules">if/then workflow rules</a></p>
+      </div>` : "";
     return head(
       c,
       "Queues",
       "applicants",
-      `<div class="empty" style="padding:56px 24px;text-align:center">
-        <p style="font-size:17px;font-weight:700;margin-bottom:6px">No cases have entered the register yet.</p>
-        <p class="small muted">Configure a <a href="/config?tab=case-types">case type</a>, document checklist and routing before connecting mail.</p>
-        ${c.user.role === "admin" && repo.listCaseTypes(c.user.organization_id ?? 1).length ? `<p style="margin-top:14px"><a class="btn" href="/intake/test">Submit a test message</a></p>` : ""}
+      `<div class="empty" style="padding:48px 24px;text-align:center">
+        ${simpleSetup}
+        <p style="font-size:17px;font-weight:700;margin-bottom:6px">${hasCaseTypes ? "No cases have entered the register yet." : "Your workspace is ready for its first process."}</p>
+        <p class="small muted">${hasCaseTypes
+          ? "Cases appear here once applications arrive by email or a test message is submitted."
+          : "Choose a process template above, or configure a custom case type."}</p>
+        ${isAdmin && hasCaseTypes ? `<p style="margin-top:14px"><a class="btn" href="/intake/test">Submit a test message</a></p>` : ""}
       </div>`
     );
   }
@@ -1837,7 +1883,9 @@ ${categoriesCard(c)}
       .catch(function () { msg.textContent = "Upload failed — network error."; });
   });
 })();
-</script>`
+</script>
+
+`
   );
 }
 
@@ -2770,18 +2818,551 @@ function workflowRulesTab(c: Ctx, editRuleId?: number): string {
   </table>
 </div>`;
 
-  return `<div class=\"card\">
-  <h2>Workflow rules</h2>
-  <p class=\"small muted\" style=\"margin-top:-6px\">Initial email and response behaviour lives here as <b>data</b> | create/attach/ignore/review, send/draft/hold, templates, follow up and audit codes are all configurable. The migrated generic profile's rules reproduce the behaviour staff already know; edit freely.</p>
+
+
+  // ── Interactive flowchart editor (centrepiece) ─────────────────────────
+  //
+  // Two rules govern this block. Both exist because earlier versions broke
+  // them (BUG-04 … BUG-09), and both are assertions the tests pin:
+  //
+  //   1. WHAT IS DRAWN IS WHAT RUNS. The chain is grouped and sorted with the
+  //      engine's own comparator — `compareRuleOrder`, the same function
+  //      `firstMatchingRule` sorts with — and split into the same scopes
+  //      `rulesForCaseScope` uses. A plain `ORDER BY position` picture used to
+  //      disagree with the engine whenever a case-type rule and an
+  //      organization-wide rule coexisted.
+  //
+  //   2. WHAT IS NOT SHOWN IS NOT LOST. Every condition row and every action
+  //      field this panel does not surface is submitted as a hidden input
+  //      carrying its current value, so a save from here can no longer reset
+  //      an SLA, an attachment set, a follow-up ladder or a template map —
+  //      and it can no longer re-enable a rule that was switched off.
+  const FLOW_MAX_CONDITIONS = 3; // parseRuleConditions reads cond_field_0..2
+  const FLOW_COND_FIELDS = ["always", "sender_state", "text", "subject", "body", "has_attachments", "docs_state", "category", "body_is_ref", "signals"];
+  /** Empty when the flowchart can faithfully round-trip a rule; otherwise why not. */
+  const flowUnsupported = (r: (typeof rules)[0]): string => {
+    const conds = r.conditions || [];
+    if (conds.length > FLOW_MAX_CONDITIONS) return `this rule has ${conds.length} conditions and the flowchart edits up to ${FLOW_MAX_CONDITIONS}`;
+    const bad = conds.find((cc) => !FLOW_COND_FIELDS.includes((cc as { field: string }).field));
+    if (bad) return `this rule uses a “${(bad as { field: string }).field}” condition the flowchart cannot edit`;
+    return "";
+  };
+  /** Settings the panel preserves but does not surface — shown as a chip so staff know they exist. */
+  const hiddenExtras = (r: (typeof rules)[0]): string[] => {
+    const a = r.action || {};
+    const out: string[] = [];
+    if (a.sla_hours != null) out.push(`SLA ${a.sla_hours}h`);
+    if (a.attachment_set) out.push(`attachments: ${a.attachment_set}`);
+    if (a.followup === "ladder") out.push("follow-up ladder");
+    if (a.template_map) out.push("template map");
+    if (a.priority === "high") out.push("high priority");
+    if (a.audit_code) out.push(`audit ${a.audit_code}`);
+    return out;
+  };
+  const describeCond = (c: any): string => {
+    if (!c || !c.field) return "";
+    if (c.field === "always") return "Any message";
+    if (c.field === "sender_state") return `Sender is ${c.value ?? "?"}`;
+    if (c.field === "has_attachments") return c.value ? "Has attachments" : "No attachments";
+    if (c.field === "docs_state") {
+      const v = c.values || c.value;
+      return `Documents: ${Array.isArray(v) ? v.join(", ") : v}`;
+    }
+    if (c.field === "category") return `Category ${(c.values || []).join(", ")}`;
+    if (c.field === "text" || c.field === "subject" || c.field === "body")
+      return `${c.field} contains “${(c.values || []).slice(0, 3).join(", ")}”`;
+    if (c.field === "body_is_ref") return "Body is only a case reference";
+    if (c.field === "signals") return "Built-in intake signals match";
+    return String(c.field);
+  };
+  const describeAction = (r: (typeof rules)[0]): string => {
+    const a = r.action || {};
+    const bits: string[] = [];
+    if (a.decision) bits.push(({ create: "Open a case", attach: "Continue case", ignore: "Park (no case)", review: "Human review" } as Record<string, string>)[String(a.decision)] || String(a.decision));
+    if (a.reply_action) bits.push(({ send: "Send reply", draft: "Draft for staff", approve: "Draft for approval", hold: "Hold for staff" } as Record<string, string>)[String(a.reply_action)] || String(a.reply_action));
+    if (a.template_key) bits.push(`Template: ${a.template_key}`);
+    if (a.stage) bits.push(`Stage → ${a.stage}`);
+    return bits.join(" · ") || "No actions yet — click to set";
+  };
+  const nodeClass = (r: (typeof rules)[0]): string => {
+    const a = r.action || {};
+    if (a.decision === "ignore") return "park";
+    if (a.decision === "review" || a.reply_action === "hold" || a.reply_action === "draft") return "review";
+    if (a.reply_action === "send") return "send";
+    return "action";
+  };
+  const rulesPayload = JSON.stringify(rules.map((r) => ({
+    id: r.id,
+    name: r.name,
+    kind: r.kind,
+    enabled: !!r.enabled,
+    case_type_id: r.case_type_id,
+    position: r.position,
+    conditions: r.conditions,
+    action: r.action,
+    unsupported: flowUnsupported(r),
+  }))).replace(/</g, "\\u003c");
+  const templateOptions = templates.map((t) => ({ key: t.key, name: t.name }));
+  const caseTypeOptions = [{ id: null as number | null, name: "All case types" }, ...caseTypes.map((t) => ({ id: t.id, name: t.name }))];
+
+  /**
+   * One node. `conditions: []` never matches (see `ruleMatches`), so it is
+   * labelled as parked rather than as "Any message" — the label that used to
+   * make a click on Save turn a dead rule into a catch-all (BUG-08).
+   */
+  const renderRuleNode = (r: (typeof rules)[0], i: number): string => {
+    const conds = (r.conditions || []).map(describeCond).filter(Boolean);
+    const ifText = (r.conditions || []).length === 0
+      ? "Never matches — no conditions yet"
+      : (conds.length ? conds.join(" AND ") : "Any message");
+    const off = r.enabled ? "" : " style=\"opacity:.55\"";
+    const extras = hiddenExtras(r);
+    const unsupported = flowUnsupported(r);
+    return `${i ? `<div class=\"flow-connector\" aria-hidden=\"true\"></div>` : ""}
+      <div class=\"flow-node editable ${nodeClass(r)}${unsupported ? " advanced" : ""}\" data-rule-id=\"${r.id}\" tabindex=\"0\" role=\"button\" aria-label=\"Edit rule ${esc(r.name)}\"${off}>
+        <div class=\"fn-actions\">
+          <form method=\"post\" action=\"/config/workflow-rules/toggle\" style=\"margin:0\" onclick=\"event.stopPropagation()\">
+            <input type=\"hidden\" name=\"_csrf\" value=\"${esc(c.csrf)}\"><input type=\"hidden\" name=\"id\" value=\"${r.id}\">
+            <button type=\"submit\" title=\"Toggle on/off\">${r.enabled ? "On" : "Off"}</button>
+          </form>
+        </div>
+        <div class=\"fn-kicker\">#${r.position}${r.enabled ? "" : " · off"}</div>
+        <div class=\"fn-title\">${esc(r.name)}</div>
+        <div class=\"fn-if\"><b>If</b> ${esc(ifText)}</div>
+        <div class=\"fn-then\"><b>Then</b> ${esc(describeAction(r))}</div>
+        ${extras.length ? `<div class=\"fn-extras\">${esc(extras.join(" · "))}</div>` : ""}
+        ${unsupported ? `<div class=\"fn-warn\">${esc(unsupported)} — edit it in “Advanced — rule table &amp; full form” below.</div>` : ""}
+      </div>`;
+  };
+
+  /**
+   * The whole chain for one kind, drawn in evaluation order: every CaseType
+   * that owns rules (alphabetical, so the picture is stable), then the
+   * organization-wide bucket last — because `compareRuleOrder` sorts
+   * `case_type_id IS NULL` rules after case-type rules whatever their position.
+   */
+  const renderRuleChain = (kind: "intake" | "response") => {
+    const ofKind = rules.filter((r) => r.kind === kind);
+    if (!ofKind.length) {
+      return `<div class=\"flow-empty-hint\">No ${kind} steps yet. Use <b>+ Add step</b> in a group below.</div>`;
+    }
+    const groups: Array<{ scope: string; label: string; note: string; list: typeof ofKind }> = [];
+    const seen = new Set<number>();
+    for (const ct of [...caseTypes].sort((a, b) => a.name.localeCompare(b.name))) {
+      const list = ofKind.filter((r) => r.case_type_id === ct.id).sort(compareRuleOrder);
+      seen.add(ct.id);
+      if (list.length) groups.push({ scope: String(ct.id), label: ct.name, note: "this case type only", list });
+    }
+    // Rules pinned to a case type this tenant no longer lists: keep them
+    // visible rather than dropping them from the picture.
+    const orphanIds = [...new Set(ofKind.map((r) => r.case_type_id).filter((id): id is number => id != null && !seen.has(id)))];
+    for (const id of orphanIds.sort((a, b) => a - b)) {
+      const list = ofKind.filter((r) => r.case_type_id === id).sort(compareRuleOrder);
+      groups.push({ scope: String(id), label: `Case type #${id}`, note: "no longer listed", list });
+    }
+    const wide = ofKind.filter((r) => r.case_type_id === null).sort(compareRuleOrder);
+    if (wide.length) groups.push({ scope: "", label: "All case types", note: "organization-wide", list: wide });
+
+    return groups.map((g) => `
+      <div class=\"flow-group\">
+        <div class=\"flow-group-head\">
+          <span class=\"fg-name\">${esc(g.label)}</span>
+          <span class=\"fg-note\">${esc(g.note)} · ${g.list.length} step${g.list.length === 1 ? "" : "s"}</span>
+        </div>
+        ${g.list.map(renderRuleNode).join("")}
+        <div class=\"flow-add\"><button type=\"button\" data-add=\"${kind}\" data-scope=\"${esc(g.scope)}\">+ Add ${kind} step</button></div>
+      </div>`).join("");
+  };
+
+  const flowchartHtml = `
+<div class="card" style="padding-bottom:8px">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap">
+    <div>
+      <h2 style="margin-bottom:4px">Flowchart editor</h2>
+      <p class="small muted" style="margin:0">Click a step to edit it. A case runs its <b>own case type's</b> chain first, then the <b>organization-wide</b> chain. Inside a group, top to bottom — <b>first match wins</b>.</p>
+    </div>
+    <div class="flow-legend">
+      <span><i class="lg-action"></i> Open / continue</span>
+      <span><i class="lg-review"></i> Human review</span>
+      <span><i class="lg-send"></i> Send</span>
+      <span><i class="lg-park"></i> Park</span>
+    </div>
+  </div>
+  <div class="flow-editor" id="flow-editor" data-csrf="${esc(c.csrf)}">
+    <div class="flow-canvas">
+      <div class="flow-node start">
+        <div class="fn-kicker">Start</div>
+        <div class="fn-title">Email received</div>
+        <div class="fn-meta">Subject, body, attachments, and sender are read.</div>
+      </div>
+      <div class="flow-connector" aria-hidden="true"></div>
+      <div class="flow-section-label">Intake — does this become a case?</div>
+      ${renderRuleChain("intake")}
+      <div class="flow-connector" aria-hidden="true"></div>
+      <div class="flow-node start">
+        <div class="fn-kicker">Next</div>
+        <div class="fn-title">Documents &amp; facts checked</div>
+        <div class="fn-meta">Extraction and checklists run. Response steps choose the reply.</div>
+      </div>
+      <div class="flow-connector" aria-hidden="true"></div>
+      <div class="flow-section-label">Response — how do we reply?</div>
+      ${renderRuleChain("response")}
+    </div>
+    <aside class="flow-panel" id="flow-panel">
+      <div class="fp-placeholder" id="flow-panel-empty">
+        <b>Select a step</b>
+        Click any coloured card on the left, or add a new step. You only fill in “if” and “then”.
+      </div>
+      <form method="post" action="/config/workflow-rules/save" id="flow-panel-form" style="display:none">
+        <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+        <input type="hidden" name="id" id="fp-id" value="">
+        <input type="hidden" name="kind" id="fp-kind" value="intake">
+        <input type="hidden" name="position" id="fp-position" value="">
+        <input type="hidden" name="enabled" id="fp-enabled" value="1">
+        <input type="hidden" name="conditions_json" id="fp-conditions-json" value="">
+        ${/* BUG-05: mirrors for every field this panel does not surface. sla_hours and
+              attachment_set are deliberately absent — both have visible inputs above, and a
+              second input sharing a name would make req.body an array. */
+          ["priority", "assign", "request_info", "followup", "followup_action", "audit_code", "fallback", "map_green", "map_empty", "map_missing"]
+          .map((k) => `<input type="hidden" name="${k}" id="fp-x-${k}" value="">`).join("\n        ")}
+        <h3 id="fp-heading">Edit step</h3>
+        <p class="fp-sub" id="fp-sub">If this matches, do that. First match wins.</p>
+        <label>Name</label>
+        <input name="name" id="fp-name" required placeholder="e.g. Known contact continues case">
+        <label>Applies to</label>
+        <select name="case_type_id" id="fp-case-type">
+          ${caseTypeOptions.map((o) => `<option value="${o.id == null ? "" : o.id}">${esc(o.name)}</option>`).join("")}
+        </select>
+        <label>If (conditions)</label>
+        <div id="fp-conds"></div>
+        <div class="fp-cond-actions">
+          <button type="button" id="fp-cond-add">+ Add condition</button>
+          <button type="button" id="fp-cond-remove">− Remove condition</button>
+        </div>
+        <p class="small muted" style="margin:6px 0 0">Examples: sender → <code>known</code> or <code>unknown</code>; attachments → <code>yes</code>/<code>no</code>; documents → <code>complete</code>, <code>empty</code>, <code>missing</code>, <code>dirty</code>. Up to ${FLOW_MAX_CONDITIONS} conditions, all must match.</p>
+        <label>Then — intake decision</label>
+        <select name="decision" id="fp-decision">
+          <option value="">(none — for response-only steps)</option>
+          <option value="create">Open a new case</option>
+          <option value="attach">Continue existing case</option>
+          <option value="review">Send to human review</option>
+          <option value="ignore">Park (no case)</option>
+        </select>
+        <label>Then — reply action</label>
+        <select name="reply_action" id="fp-reply">
+          <option value="">(none)</option>
+          <option value="draft">Draft for staff</option>
+          <option value="hold">Hold for staff</option>
+          <option value="approve">Draft for approval</option>
+          <option value="send">Send (subject to gates)</option>
+        </select>
+        <label>Template</label>
+        <select name="template_key" id="fp-template">
+          <option value="">(no template)</option>
+          ${templateOptions.map((t) => `<option value="${esc(t.key)}">${esc(t.name)}</option>`).join("")}
+        </select>
+        <div class="fp-row">
+          <div>
+            <label>Stage (optional)</label>
+            <input name="stage" id="fp-stage" placeholder="e.g. awaiting_review">
+          </div>
+          <div>
+            <label>Queue (optional)</label>
+            <input name="queue" id="fp-queue" placeholder="e.g. human_review">
+          </div>
+        </div>
+        <div class="fp-row">
+          <div>
+            <label>SLA hours (optional)</label>
+            <input name="sla_hours" id="fp-sla" placeholder="e.g. 48">
+          </div>
+          <div>
+            <label>Attachment set (optional)</label>
+            <input name="attachment_set" id="fp-attachset" placeholder="named set">
+          </div>
+        </div>
+        <div class="fp-preserve" id="fp-preserve"></div>
+        <div class="fp-actions">
+          <button class="btn" type="submit">Save step</button>
+          <button class="btn ghost" type="button" id="fp-cancel">Cancel</button>
+          <button class="btn ghost" type="submit" formaction="/config/workflow-rules/delete" formmethod="post" id="fp-delete" style="margin-left:auto;color:var(--red)">Delete</button>
+        </div>
+      </form>
+    </aside>
+  </div>
 </div>
+<script>
+(function () {
+  var MAX = ${FLOW_MAX_CONDITIONS};
+  var rules = ${rulesPayload};
+  var editor = document.getElementById("flow-editor");
+  if (!editor) return;
+  var form = document.getElementById("flow-panel-form");
+  var empty = document.getElementById("flow-panel-empty");
+  var conds = document.getElementById("fp-conds");
+  var preserve = document.getElementById("fp-preserve");
+  var csrf = editor.getAttribute("data-csrf") || "";
+
+  var FIELDS = ["always","sender_state","text","subject","body","has_attachments","docs_state","category","body_is_ref","signals"];
+  var LABELS = {
+    "": "(no condition)",
+    always: "Any message",
+    sender_state: "Sender is known / unknown",
+    text: "Text contains words",
+    subject: "Subject contains words",
+    body: "Body contains words",
+    has_attachments: "Has attachments",
+    docs_state: "Documents state",
+    category: "Category in list",
+    body_is_ref: "Body is only a case reference",
+    signals: "Built-in intake signals",
+    never: "Never matches (park this rule)"
+  };
+  var HINTS = {
+    sender_state: "known or unknown",
+    has_attachments: "yes / no",
+    docs_state: "complete, empty, missing, any, dirty",
+    category: "comma-separated categories",
+    text: "comma-separated words",
+    subject: "comma-separated words",
+    body: "comma-separated words"
+  };
+
+  function condRow(i) {
+    var wrap = document.createElement("div");
+    wrap.className = "fp-row fp-cond-row";
+    wrap.setAttribute("data-cond-index", String(i));
+    var sel = document.createElement("select");
+    sel.name = "cond_field_" + i;
+    sel.id = "fp-cond-field-" + i;
+    Object.keys(LABELS).forEach(function (k) {
+      if (i > 0 && k === "never") return; // "never" only makes sense as the sole condition
+      var o = document.createElement("option");
+      o.value = k; o.textContent = LABELS[k]; sel.appendChild(o);
+    });
+    var inp = document.createElement("input");
+    inp.name = "cond_value_" + i;
+    inp.id = "fp-cond-value-" + i;
+    inp.placeholder = "e.g. known · or words, comma-separated";
+    wrap.appendChild(sel);
+    wrap.appendChild(inp);
+    sel.addEventListener("change", function () {
+      inp.placeholder = HINTS[sel.value] || "e.g. known · or words, comma-separated";
+      syncNever();
+    });
+    conds.appendChild(wrap);
+    return wrap;
+  }
+
+  function clearRow(i) {
+    var sel = document.getElementById("fp-cond-field-" + i);
+    var inp = document.getElementById("fp-cond-value-" + i);
+    if (!sel) return;
+    // A hidden input still submits, so clear it as well as hiding it —
+    // parseRuleConditions skips a row whose field is empty.
+    sel.value = "";
+    inp.value = "";
+    sel.parentNode.style.display = "none";
+  }
+
+  function visibleCount() {
+    var n = 0;
+    for (var i = 0; i < MAX; i++) {
+      var w = conds.querySelector('[data-cond-index="' + i + '"]');
+      if (w && w.style.display !== "none") n++;
+    }
+    return n;
+  }
+
+  function syncNever() {
+    var first = document.getElementById("fp-cond-field-0");
+    var firstVal = document.getElementById("fp-cond-value-0");
+    var isNever = first && first.value === "never";
+    document.getElementById("fp-conditions-json").value = isNever ? "[]" : "";
+    if (firstVal) { firstVal.style.display = isNever ? "none" : ""; if (isNever) firstVal.value = ""; }
+    for (var i = 1; i < MAX; i++) {
+      var w = conds.querySelector('[data-cond-index="' + i + '"]');
+      if (!w) continue;
+      if (isNever) { clearRow(i); }
+      else if (w.style.display === "none" && document.getElementById("fp-cond-field-" + i).value) w.style.display = "";
+    }
+    document.getElementById("fp-cond-add").style.display = isNever ? "none" : "";
+    document.getElementById("fp-cond-remove").style.display = isNever ? "none" : "";
+  }
+
+  function showForm(rule, kind, scope) {
+    empty.style.display = "none";
+    form.style.display = "block";
+    conds.innerHTML = "";
+    document.getElementById("fp-id").value = rule && rule.id ? rule.id : "";
+    document.getElementById("fp-kind").value = (rule && rule.kind) || kind || "intake";
+    document.getElementById("fp-position").value = rule && rule.position != null ? rule.position : "";
+    // BUG-06: a rule that is switched off stays switched off.
+    document.getElementById("fp-enabled").value = rule ? (rule.enabled ? "1" : "0") : "1";
+    document.getElementById("fp-conditions-json").value = "";
+    document.getElementById("fp-name").value = rule && rule.name ? rule.name : (kind === "response" ? "New response step" : "New intake step");
+    document.getElementById("fp-heading").textContent = rule && rule.id ? "Edit step" : "New step";
+    document.getElementById("fp-sub").textContent = ((rule && rule.kind) || kind) === "response"
+      ? "After documents are checked — choose how to reply."
+      : "When mail arrives — decide if it becomes a case.";
+    var ct = document.getElementById("fp-case-type");
+    var wantScope = rule && rule.case_type_id != null ? String(rule.case_type_id) : (scope || "");
+    ct.value = wantScope;
+    if (ct.value !== wantScope) ct.value = "";
+
+    // Conditions: every stored condition gets its own row, so nothing is
+    // dropped on save (BUG-04). An empty condition list is preserved as
+    // "never matches" (BUG-08) instead of being upgraded to "any message".
+    var stored = (rule && rule.conditions) || [];
+    for (var i = 0; i < MAX; i++) {
+      var row = condRow(i);
+      var cond = stored[i];
+      if (cond) {
+        var sel = document.getElementById("fp-cond-field-" + i);
+        // Guarded upstream (unsupported rules never reach this form). If it ever
+        // happens, blank the row rather than silently dropping the condition.
+        if (!FIELDS.includes(String(cond.field))) { clearRow(i); continue; }
+        sel.value = String(cond.field);
+        var val = "";
+        if (cond.field === "sender_state") val = cond.value || "unknown";
+        else if (cond.field === "has_attachments") val = cond.value ? "yes" : "no";
+        else if (cond.values) val = (cond.values || []).join(", ");
+        else if (cond.value != null && cond.field !== "always") val = String(cond.value);
+        document.getElementById("fp-cond-value-" + i).value = val;
+        row.style.display = "";
+      } else if (i === 0 && stored.length === 0) {
+        document.getElementById("fp-cond-field-0").value = "never";
+        row.style.display = "";
+      } else {
+        row.style.display = "none";
+      }
+    }
+    if (!stored.length) document.getElementById("fp-cond-field-0").value = "never";
+    syncNever();
+
+    var act = (rule && rule.action) || {};
+    document.getElementById("fp-decision").value = act.decision || "";
+    document.getElementById("fp-reply").value = act.reply_action || "";
+    document.getElementById("fp-template").value = act.template_key || "";
+    document.getElementById("fp-stage").value = act.stage || "";
+    document.getElementById("fp-queue").value = act.queue || "";
+    document.getElementById("fp-sla").value = act.sla_hours == null ? "" : String(act.sla_hours);
+    document.getElementById("fp-attachset").value = act.attachment_set || "";
+
+    // BUG-05: everything the panel does not surface travels as a hidden field
+    // carrying its current value, so parseRuleAction cannot reset it.
+    var hidden = {
+      priority: act.priority || "",
+      assign: act.assign == null || act.assign === "none" ? "" : String(act.assign),
+      request_info: act.request_info ? "1" : "",
+      followup: act.followup || "",
+      followup_action: act.followup_action || "",
+      audit_code: act.audit_code || "",
+      fallback: act.fallback || "",
+      map_green: (act.template_map && act.template_map.green) || "",
+      map_empty: (act.template_map && act.template_map.empty) || "",
+      map_missing: (act.template_map && act.template_map.missing) || ""
+    };
+    Object.keys(hidden).forEach(function (k) {
+      var el = document.getElementById("fp-x-" + k);
+      if (el) el.value = hidden[k];
+    });
+    // sla_hours and attachment_set have visible inputs in this panel, so keep
+    // their hidden mirrors empty and let the visible ones win.
+    var noted = [];
+    if (act.sla_hours != null) noted.push("SLA " + act.sla_hours + "h");
+    if (act.attachment_set) noted.push("attachment set “" + act.attachment_set + "”");
+    if (act.followup === "ladder") noted.push("follow-up ladder");
+    if (act.template_map) noted.push("green/empty/missing template map");
+    if (act.audit_code) noted.push("audit code " + act.audit_code);
+    preserve.innerHTML = noted.length
+      ? '<p class="small muted" style="margin:10px 0 0">Also kept on save: ' + noted.map(function (s) { return document.createTextNode(s).nodeValue; }).join(" · ") + '.</p>'
+      : "";
+
+    document.getElementById("fp-delete").style.display = rule && rule.id ? "inline-flex" : "none";
+    document.querySelectorAll(".flow-node.editable").forEach(function (n) {
+      n.classList.toggle("selected", rule && rule.id && n.getAttribute("data-rule-id") === String(rule.id));
+    });
+    document.getElementById("fp-name").focus();
+  }
+
+  function hideForm() {
+    form.style.display = "none";
+    empty.style.display = "block";
+    document.querySelectorAll(".flow-node.selected").forEach(function (n) { n.classList.remove("selected"); });
+  }
+
+  editor.addEventListener("click", function (e) {
+    var addBtn = e.target.closest("[data-add]");
+    if (addBtn) {
+      showForm(null, addBtn.getAttribute("data-add"), addBtn.getAttribute("data-scope") || "");
+      return;
+    }
+    var node = e.target.closest(".flow-node.editable");
+    if (!node) return;
+    var id = Number(node.getAttribute("data-rule-id"));
+    var rule = rules.find(function (r) { return r.id === id; });
+    if (!rule) return;
+    if (rule.unsupported) {
+      // Refuse rather than truncate: send the editor to the form that can
+      // express the rule (BUG-04).
+      var adv = document.querySelector("details.card");
+      if (adv) { adv.open = true; adv.scrollIntoView({ behavior: "smooth", block: "start" }); }
+      return;
+    }
+    showForm(rule, rule.kind, "");
+  });
+
+  // BUG-09: the nodes claim to be buttons (role="button", tabindex="0"), so
+  // they have to respond to the keyboard as well as the mouse.
+  editor.addEventListener("keydown", function (e) {
+    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+    var node = e.target.closest && e.target.closest(".flow-node.editable");
+    if (!node) return;
+    e.preventDefault();
+    node.click();
+  });
+
+  document.getElementById("fp-cond-add").addEventListener("click", function () {
+    for (var i = 0; i < MAX; i++) {
+      var w = conds.querySelector('[data-cond-index="' + i + '"]');
+      if (w && w.style.display === "none") {
+        w.style.display = "";
+        document.getElementById("fp-cond-field-" + i).value = "";
+        document.getElementById("fp-cond-value-" + i).value = "";
+        document.getElementById("fp-cond-value-" + i).focus();
+        return;
+      }
+    }
+    this.disabled = true;
+  });
+
+  document.getElementById("fp-cond-remove").addEventListener("click", function () {
+    if (visibleCount() <= 1) return;
+    for (var i = MAX - 1; i >= 0; i--) {
+      var w = conds.querySelector('[data-cond-index="' + i + '"]');
+      if (w && w.style.display !== "none") { clearRow(i); return; }
+    }
+  });
+
+  document.getElementById("fp-cancel").addEventListener("click", function (e) {
+    e.preventDefault();
+    hideForm();
+  });
+})();
+</script>
+`;
+  return `${flowchartHtml}
 ${profileCard}
-<div class=\"card\">
-  <h2>Intake rules — which mail becomes a case</h2>
+<details class=\"card\" style=\"padding:16px 20px\">
+  <summary style=\"cursor:pointer;font-weight:750\">Advanced — rule table &amp; full form</summary>
+  <p class=\"small muted\">Use the flowchart above for everyday edits. This table and form are for power users (JSON conditions, SLA, attachment sets, preview).</p>
+  <h2>Intake rules</h2>
   ${ruleTable("intake")}
-  <h2 style=\"margin-top:22px\">Response rules — how the case replies</h2>
+  <h2 style=\"margin-top:22px\">Response rules</h2>
   ${ruleTable("response")}
-</div>
-${form}`;
+  ${form}
+</details>`;
 }
 
 function configurationChecklist(c: Ctx): string {
@@ -2794,9 +3375,9 @@ function configurationChecklist(c: Ctx): string {
     Boolean(c.repo.getSetting("gmail_address", "").trim() && c.repo.getSetting("gmail_client_id", "").trim() && c.repo.hasSecret("gmail_client_secret") && c.repo.hasSecret("gmail_refresh_token"));
   const hasGemini = c.repo.hasSecret("gemini_api_key");
   const checks: Array<{ label: string; detail: string; href: string; done: boolean }> = [
-    { label: "Name the institution", detail: "Give the workspace its identity", href: "/settings#organization", done: Boolean(c.institution && c.institution !== "Organization") },
-    { label: "Create a case type", detail: "For example, Undergraduate application", href: "/config?tab=case-types", done: types.length > 0 },
-    { label: "Add the document checklist", detail: "Define what applicants must provide", href: "/config?tab=case-types", done: docs > 0 },
+    { label: "Name the organization", detail: "Give the workspace its identity", href: "/settings#organization", done: Boolean(c.institution && c.institution !== "Organization") },
+    { label: "Create a case type", detail: "For example, Job application or Registration", href: "/config?tab=case-types", done: types.length > 0 },
+    { label: "Add the document checklist", detail: "Define what contacts must provide", href: "/config?tab=case-types", done: docs > 0 },
     { label: "Define the requirements rules", detail: "Rules stay deterministic; uncertain cases go to staff", href: "/config?tab=case-types", done: rules > 0 },
     { label: "Review response templates", detail: `${templates} template${templates === 1 ? "" : "s"} available`, href: "/templates", done: templates > 0 },
     { label: "Connect Gmail", detail: "Use Gmail as an intake channel", href: "/settings#connections", done: hasGmail },
@@ -2804,7 +3385,7 @@ function configurationChecklist(c: Ctx): string {
   ];
   const complete = checks.filter((item) => item.done).length;
   return `<section class="readiness-card" aria-label="Configuration checklist">
-    <div class="readiness-head"><div><span class="kicker">READY WHEN YOU ARE</span><h2>Configuration checklist</h2><p class="small muted">Complete these in order. AA will not reject an applicant automatically; incomplete or uncertain cases stay with a human.</p></div><div class="readiness-progress"><strong>${complete}/${checks.length}</strong><span>ready</span></div></div>
+    <div class="readiness-head"><div><span class="kicker">READY WHEN YOU ARE</span><h2>Configuration checklist</h2><p class="small muted">Complete these in order. The console will not reject a contact automatically; incomplete or uncertain cases stay with a human.</p></div><div class="readiness-progress"><strong>${complete}/${checks.length}</strong><span>ready</span></div></div>
     <div class="readiness-list">${checks.map((item, index) => `<a href="${item.href}" class="readiness-item ${item.done ? "done" : ""}"><span class="readiness-number">${item.done ? "✓" : index + 1}</span><span><strong>${item.label}</strong><small>${item.detail}</small></span><span class="readiness-arrow">→</span></a>`).join("")}</div>
   </section>`;
 }
@@ -2813,6 +3394,9 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
 
   // Round 3: the legacy courses tab is gone — case types are configured under
   // Configuration; /config?tab=courses redirects to the staff area.
+  // Branding on this page (signature, banner) belongs to the signed-in
+  // administrator's organization, so it is read and written per tenant.
+  const settingsOrgId = c.user.organization_id ?? 1;
   const tab = tabChoice === "replies" || tabChoice === "pack" || tabChoice === "requirements" || tabChoice === "rules" ? tabChoice : "case-types";
   const tabBar = `<div class="tabs" style="margin:0 0 20px">
     <a href="/config?tab=case-types" class="${tab === "case-types" ? "on" : ""}">CaseTypes</a>
@@ -2864,6 +3448,34 @@ export function configPage(c: Ctx, _selectedTemplate?: string, flash?: string, r
   });
 })();
 </script>
+
+<div class="card" id="signature">
+  <h2>Email signature</h2>
+  <p class="small muted" style="margin-top:-6px">Shown under every outgoing reply (name, title, phone, extra line). Leave blank to use the organization name only.</p>
+  <form method="post" action="/config/branding/signature">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <div class="formrow">
+      <div><label>Name</label><input name="signature_name" value="${esc(orgSetting(c.repo, "signature_name", settingsOrgId))}" placeholder="e.g. Jane Wanjiku"></div>
+      <div><label>Title</label><input name="signature_title" value="${esc(orgSetting(c.repo, "signature_title", settingsOrgId))}" placeholder="e.g. Operations lead"></div>
+    </div>
+    <div class="formrow">
+      <div><label>Phone</label><input name="signature_phone" value="${esc(orgSetting(c.repo, "signature_phone", settingsOrgId))}" placeholder="+254 …"></div>
+      <div><label>Extra line</label><input name="signature_line" value="${esc(orgSetting(c.repo, "signature_line", settingsOrgId))}" placeholder="Optional"></div>
+    </div>
+    <p style="margin-top:12px"><button class="btn">Save signature</button></p>
+  </form>
+</div>
+
+<div class="card" id="classifier">
+  <h2>Classifier guidance (Gemini)</h2>
+  <p class="small muted" style="margin-top:-6px">Optional free-text instructions for what Gemini should look for when labelling incoming mail. Categories still come from Settings; this only steers the model. Leave blank for default behaviour.</p>
+  <form method="post" action="/config/classifier-prompt">
+    <input type="hidden" name="_csrf" value="${esc(c.csrf)}">
+    <label>Prompt / guidance</label>
+    <textarea name="classifier_prompt" rows="4" style="width:100%" placeholder="e.g. Prefer document_submission when PDFs are attached. Treat short status questions as follow_up.">${esc(c.repo.getSetting("classifier_prompt", ""))}</textarea>
+    <p style="margin-top:12px"><button class="btn">Save classifier guidance</button></p>
+  </form>
+</div>
 
 <div class="card" id="export">
   <h2>Export (CSV)</h2>

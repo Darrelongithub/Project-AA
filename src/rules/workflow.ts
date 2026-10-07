@@ -160,9 +160,23 @@ export function ruleMatches(rule: WorkflowRule, input: RuleMatchInput): boolean 
   return rule.conditions.every((c) => conditionMatches(c, input));
 }
 
-/** First matching rule in position order (then id for stability). */
+/**
+ * The one ordering rules are evaluated in: a rule pinned to a CaseType always
+ * outranks an organization-wide rule (`case_type_id` NULL), whatever their
+ * positions say; ties break on position, then id.
+ *
+ * Exported so the configuration UI draws the chain in *this* order rather than
+ * re-deriving it (the flowchart used to render plain `ORDER BY position`, which
+ * silently disagreed with the engine whenever a case-type rule and an
+ * organization-wide rule coexisted — BUG-07).
+ */
+export function compareRuleOrder(a: WorkflowRule, b: WorkflowRule): number {
+  return Number(a.case_type_id === null) - Number(b.case_type_id === null) || a.position - b.position || a.id - b.id;
+}
+
+/** First matching rule in evaluation order. */
 export function firstMatchingRule(rules: WorkflowRule[], input: RuleMatchInput): WorkflowRule | null {
-  const ordered = [...rules].sort((a, b) => Number(a.case_type_id === null) - Number(b.case_type_id === null) || a.position - b.position || a.id - b.id);
+  const ordered = [...rules].sort(compareRuleOrder);
   for (const rule of ordered) {
     if (ruleMatches(rule, input)) return rule;
   }

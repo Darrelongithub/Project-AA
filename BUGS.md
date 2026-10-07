@@ -1,3 +1,95 @@
+# Break-test findings (2026-10-06 redesign pass)
+
+Bugs found while stress-checking the redesign / flowchart / email work. Status is **fixed** unless noted.
+
+| ID | Severity | Area | Finding | Fix |
+| --- | --- | --- | --- | --- |
+| BT-1 | High | `src/db/seed.ts` | `import type { RuleNode }` appeared mid-file after other statements — invalid TypeScript module order; would fail `tsc`. | Moved import to the top of the file with the other imports. |
+| BT-2 | Medium | `src/web/pages.ts` | Unused `firstCond` helper in the flowchart editor — breaks builds with `noUnusedLocals`. | Removed. |
+| BT-3 | High | `src/ingestion/gmailClient.ts` + outbound path | Email **banner** was `Content-Disposition: inline` with a CID but the body was **plain text only**, so clients showed a loose image instead of a header. | HTML alternative embeds `<img src="cid:organization-banner">`. |
+| BT-4 | Medium | `src/web/server.ts` + `gmailClient.ts` | With banner + signature, HTML could show **two signatures** (plain `--` block already in body, plus HTML signature block). | Text signature is not pre-appended when a banner (HTML path) is used; plain MIME part still receives `signatureText`; HTML uses `signatureHtml` only once. |
+| BT-5 | Medium | `src/branding.ts` `emailBanner` | Custom uploaded banner was only applied when `organizationId === 1`; other tenants always fell through to logo/default. | Any org can use the uploaded banner setting (settings keys remain installation-global by schema). |
+| BT-6 | Low | Product copy | University / “admissions desk” framing reintroduced by an early one-click starter. | Purged from `src/`; replaced with neutral process templates. |
+| BT-7 | Info | Flowchart editor | Full drag-and-drop canvas is not required for correctness; interactive click-to-edit panel is wired to existing save/toggle/delete endpoints. | Shipped as centrepiece editor. |
+| BT-8 | Info | Multi-tenant settings | `email_banner`, `signature_*`, `classifier_prompt` use the global settings table (not per-organization rows). Fine for single-tenant pilots; multi-tenant isolation of these keys is a known follow-up. | Documented; not silently cross-writing case data. |
+
+## Phase 20 — redesign correctness pass (2026-10-07) — delivered
+
+The UI/flowchart redesign (see [`WHAT_CHANGED.md`](WHAT_CHANGED.md)) reached this
+branch as `Project-AA-full-fixed.zip`. It had never been typechecked or tested:
+the archive omitted `tsconfig.json`, `vitest.config.ts`, `src/logs/index.ts`,
+`tessdata/eng.traineddata.gz` and 22 test files, and the tree it produced failed
+`npm run typecheck` and `npm test`.
+
+A read-only scan was run first and is recorded in **[`BUG_SCAN.md`](BUG_SCAN.md)**
+(16 findings; a content-and-mode snapshot proved no file changed during it).
+Every fixable finding is closed below and pinned by a regression test.
+
+| ID | Severity | Finding | Status |
+| --- | --- | --- | --- |
+| BUG-01 | Critical | The archive is 28 files short: no compiler config, no test config, `src/logs/index.ts` absent, 22 suites missing | **CLOSED** — paths restored from git; the three obsolete ZIPs deleted |
+| BUG-02 | Critical | Unused `PROCESS_TEMPLATES` import broke typecheck, build and CI (`noUnusedLocals`) | **FIXED** — cards now rendered from the constant; route validates against it |
+| BUG-03 | Critical | `test/web.test.ts` still asserted the removed Instrument Serif font | **FIXED** — asserts Manrope throughout |
+| BUG-04 | High | Flowchart save dropped conditions 2 and 3 | **FIXED** — one row per condition; over-long rules refused, not truncated |
+| BUG-05 | High | Flowchart save reset SLA, attachment set, follow-up ladder, template map, audit code, fallback, priority, assign, request-info | **FIXED** — hidden mirrors carry the untouched values |
+| BUG-06 | High | Flowchart save re-enabled a deliberately parked rule | **FIXED** — `enabled` round-trips; the advanced form keeps its old default |
+| BUG-07 | High | The diagram ordered by `position`; the engine sorts case-type rules first and scopes per case type — the picture and `firstMatchingRule` disagreed. The preview route had the same drift | **FIXED** — page and preview both use `compareRuleOrder` / `rulesForCaseScope` |
+| BUG-08 | High | A rule with no conditions (which can never fire) was shown as "Any message" and saved as a catch-all | **FIXED** — labelled "Never matches", round-trips as `[]` |
+| BUG-09 | Medium | Flowchart nodes unreachable by keyboard; On/Off control hidden behind `:hover` | **FIXED** — keydown handler; `:focus-within` reveals the control |
+| BUG-10 | Medium | `emailBanner` applied organization 1's upload to every tenant | **FIXED** — branding settings scoped per organization |
+| BUG-11 | Medium | Seeding a process template appended to the shared `intake_hotwords`, widening every tenant's intake | **FIXED** — per-organization hotwords, merged at read time |
+| BUG-12 | Medium | Classifier guidance was global and was injected after the JSON output contract | **FIXED** — scoped per organization, placed before the contract |
+| BUG-13 | Low | Inline banner lost its file extension, degrading to a generic attachment | **FIXED** — extension derived from the MIME type |
+| BUG-14 | Low | Dead Instrument Serif WOFF2 blobs and routes still shipped (~58 KB) | **FIXED** — removed |
+| BUG-15 | Low | Trailing whitespace at `src/web/pages.ts:2830` | **FIXED** |
+| BUG-16 | Low | The two MIME paths disagreed about "already signed"; a body mentioning the signer suppressed the signature | **FIXED** — one shared rule |
+| BUG-17 | High (security) | `sharp < 0.35.5` — CVE-2026-96889 (librsvg), high severity. Found by CI's production audit gate, not by any local run | **FIXED** — bumped to `^0.35.5`; `npm audit --omit=dev` clean |
+
+**Coverage added:** `test/flowchart.test.ts` (17 tests — the two invariants
+*what is drawn is what runs* and *what is not shown is not lost*),
+`test/process-templates.test.ts` (21 tests), `test/troubleshooter.test.ts`
+(19 tests).
+
+**New operational surface:** `npm test` now ends with a classified diagnosis of
+every failure, and `npm run test:troubleshoot` runs a deeper pass with
+environment pre-flight. Runbook and decision flowchart: [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
+
+**Verified on `arena/e9eb1057-project-aa` (Node 22.22.3):** `npm run typecheck`
+clean · `npm test` 99 files / 828 passed / 1 skipped (the Playwright
+environment skip, ENV-1) · `npm run simulate` 409/409 across 26 scenarios ·
+`npm run build` clean · `npm audit --omit=dev` clean. `canvas` could not be
+built here, so raster-only paths exercise the documented fallback (ENV-2) —
+this is not the same as green on CI.
+
+**Verified by CI on the pull request** (`.github/workflows/ci.yml`,
+ubuntu-latest with the Cairo/Pango toolchain): every step green — install,
+typecheck, tests, simulate, stress, build, compiled-server boot, production
+audit, domain-identity grep, whitespace. BUG-17 below is the one thing CI found
+that the local run could not.
+
+> A note on the local-vs-CI gap: the first CI run on this branch **failed**, and
+> only at the `Audit (production)` step. Every functional gate was green. It is
+> worth saying plainly that this pass did not re-run `npm audit --omit=dev`
+> locally — the scan's own environment notes say so — and the advisory is newer
+> than the lockfile. A green local run is not a green CI run.
+
+## Regression checks performed
+
+- Import order / module structure on `seed.ts`
+- Flowchart editor save/toggle/delete still posts to existing CSRF-protected routes
+- Admin role still implies `publish_rules` via `hasPermission`
+- Empty rule trees remain valid (`validateRuleTree([])`)
+- Banner MIME structure (multipart/related + alternative)
+- Signature append guards (template already signed / banner HTML path)
+
+## Still open (not introduced by this pass)
+
+- Live Gmail + Gemini end-to-end still pilot-dependent (`MODE=mock` default)
+- Settings keys for banner/signature/classifier are not org-scoped in the schema
+- No pixel-perfect drag-and-drop node reordering yet (order uses existing `position` field via advanced form)
+
+---
+
 # BUGS — issue register, decisions, and historical fixes
 
 **Canonical issue/status record.** Updated for the Phase 16 Markdown consolidation (2026-10-03). Status labels mean: **OPEN** = action still required; **UNVERIFIED** = no evidence from the available environment; **ACCEPTED** = known limitation/risk consciously left in place; **FIXED** = corrected and covered by regression evidence; **RETIRED** = the old feature/path was removed by the later general-purpose redesign; **NOT A BUG** = investigated behavior retained by the specification.
@@ -44,7 +136,7 @@ No live Gmail/Gemini endpoint, real test message, real tenant database, real arc
 | PROD-3 | **ACCEPTED / DEFERRED** | Legacy catalogue tables/columns and internal identifiers remain for storage compatibility (including old `programmes`/`applicants.intake`-family names). They are not defaults for new organizations. The owner chose to stop cosmetic legacy-name cleanup; do not reinterpret old values or remove migration compatibility without a separate decision. |
 | PROD-4 | **ACCEPTED** | `/queue` and `/team` remain compatibility redirects for older bookmarks. Retiring them is optional and should wait until external links are known to be unused. |
 | PROD-5 | **NOT A BUG** | Automated replies count as answered in `unansweredCases`. This behavior is explicitly pinned by `test/v3.test.ts`; the performance fix was kept while the intended count semantics were restored. |
-| PROD-6 | **ACCEPTED / DOCUMENTED** | `npm audit` exits non-zero for five development-tool advisories (one critical, one high, three moderate) in the Vitest/Vite toolchain. They are intentionally left unfixed rather than forcing a breaking major upgrade; `npm audit --omit=dev` is clean. Revisit in a separately gated tooling migration, especially because the Vitest configuration is load-bearing for PDF.js 6's ESM bridge. |
+| PROD-6 | **ACCEPTED / DOCUMENTED** | `npm audit` exits non-zero for five development-tool advisories (one critical, one high, three moderate) in the Vitest/Vite toolchain. They are intentionally left unfixed rather than forcing a breaking major upgrade; `npm audit --omit=dev` is clean. **Updated 2026-10-07:** the `Audit (production)` step in `.github/workflows/ci.yml` caught one **high-severity production advisory** that no local run had surfaced — `sharp < 0.35.5`, CVE-2026-96889 in its bundled librsvg (GHSA-wq5f-xc86-pv6w). Closed by bumping `sharp` to `^0.35.5` (0.35.5 plus its `@img/sharp-libvips-*` binaries 1.3.3 → 1.3.4); `npm audit --omit=dev` is clean again. Recorded here rather than as a regression: the advisory post-dates the lockfile, and it is the production audit gate doing its job. Revisit in a separately gated tooling migration, especially because the Vitest configuration is load-bearing for PDF.js 6's ESM bridge. |
 | PROD-7 | **ACCEPTED / DOCUMENTED** | Database backups and downloaded CSV exports can contain personal data. Archive encryption protects new retention archives only; it is not a general database/export encryption layer. Follow the access, storage, and deletion procedures above and in the README. |
 | PROD-8 | **ACCEPTED / HUMAN-SAFE FALSE POSITIVE** | The watcher’s duplicate-content heuristic compares a normalized 400-character prefix; distinct documents that share long letterhead boilerplate can be treated as duplicates. The failure mode is conservative (human review), not silent acceptance. Monitor during the pilot; adjust only with a regression case that retains the safety behavior. |
 | PROD-9 | **ACCEPTED / DOCUMENTED** | `organizations.locale` and `organizations.timezone` are saved, round-tripped through the Settings form and carried on the organization row, but no formatter reads them: console dates go through `fmtDate`/`fmtTime` in `src/web/views.ts`, which pin the `en-KE` locale. The Settings labels ("Locale (dates & numbers)", "Timezone (IANA name)") therefore promise an effect that does not happen yet. Either thread the tenant locale into the two helpers or narrow the labels; both are presentation-layer changes and were left for an owner decision rather than half-applied. |

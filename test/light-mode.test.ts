@@ -1,13 +1,10 @@
 /**
  * Light mode — nothing may stay dark-on-dark or vanish light-on-paper.
  *
- * History: the register-flow band (`.flow-link`, `.band-label`) was drawn
- * against the dark masthead palette — bone-white text (#eadfe2) and pale-pink
- * links sat directly on the light page background (invisible), with near-black
- * rules (#40101a / #29151b) cutting across paper. The beveled-slab card
- * shadows also baked in hard `rgba(0,0,0,.52)` inner lines that stayed dark in
- * light mode. Everything now routes through theme variables with explicit
- * `[data-theme="light"]` overrides; this suite pins that structure.
+ * v5: light is the default. Cards use clean soft shadows (no heavy bevel).
+ * Dark mode remains fully supported via [data-theme="dark"].
+ * This suite pins the structure so light text never becomes invisible
+ * and theme variables stay the single source of truth.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -17,16 +14,17 @@ const source = readFileSync(path.join(__dirname, "..", "src", "web", "views.ts")
 const css = source.match(/const CSS = `([\s\S]*?)`;/)?.[1] ?? "";
 
 describe("light mode theme coverage", () => {
-  it("slab shadows are variable-driven — no hard near-black inner lines remain", () => {
+  it("no hard near-black inset shadows remain in the design system", () => {
     expect(css).not.toMatch(/inset 0 -2px 0 rgba\(0,0,0/);
-    expect((css.match(/var\(--slab-inner\)/g) || []).length).toBeGreaterThanOrEqual(3);
   });
 
-  it("the light theme redefines the slab shadows with paper values", () => {
-    const light = css.match(/\[data-theme="light"\]\s*\{([\s\S]*?)\}/)?.[1] ?? "";
-    expect(light).toContain("--slab-inner: rgba(74,53,98,");
-    expect(light).toContain("--slab-lip: rgba(255,255,255,");
-    expect(light).not.toContain("rgba(0,0,0,.52)");
+  it("light theme (or :root default) defines paper-friendly slab tokens", () => {
+    // Either :root or the explicit light block must define soft paper values
+    const hasPaperSlab =
+      css.includes("--slab-inner: rgba(59,29,95") ||
+      css.includes("--slab-inner: rgba(74,53,98");
+    expect(hasPaperSlab).toBe(true);
+    expect(css).toContain("--slab-lip: rgba(255,255,255");
   });
 
   it("register-flow labels and rules get light-theme overrides (readable on paper)", () => {
@@ -40,14 +38,20 @@ describe("light mode theme coverage", () => {
     }
   });
 
-  it("dark mode keeps the purple-noir values", () => {
-    const root = css.match(/:root\s*\{([\s\S]*?)\}/)?.[1] ?? "";
-    expect(root).toContain("--slab-inner: rgba(0,0,0,.52)");
-    expect(root).toContain("--slab-cast: rgba(0,0,0,.58)");
-    // the dark masthead and rail are unchanged, self-consistent surfaces
+  it("dark mode keeps purple-noir values and the dark mast base", () => {
+    expect(css).toMatch(/\[data-theme="dark"\]\s*\{[^}]*--bg: #0a0810/);
     expect(css).toMatch(/\.overview-mast \{[^}]*background:#100c18/);
-    // the rail keeps its noir surface via the shell variable so the light theme can swap it
-    expect(root).toContain("--shell-bg: #070507");
-    expect(css).toMatch(/\.sitehead\.sidebar \{[^}]*background:var\(--shell-bg\)/);
+    // shell variable still exists for the sidebar
+    expect(css).toMatch(/--shell-bg:/);
+  });
+
+  it("light mode has explicit overrides for the home mast", () => {
+    expect(css).toContain('[data-theme="light"] .overview-mast');
+    expect(css).toContain('[data-theme="light"] .overview-mast h1');
+  });
+
+  it("display font is Manrope (no Instrument Serif)", () => {
+    expect(css).not.toMatch(/font-family:\s*"Instrument Serif"/);
+    expect(css).toMatch(/--font-display:\s*"Manrope"/);
   });
 });

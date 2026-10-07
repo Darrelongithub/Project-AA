@@ -15,6 +15,10 @@ import { ocrImage } from "../extraction/ocr";
 
 /** Optional extras on an outgoing email: the changeable banner and PDF packs. */
 export interface SendExtras {
+  /** Optional HTML signature block appended under the body when a banner/HTML path is used. */
+  signatureHtml?: string;
+  /** Optional plain-text signature appended to the body. */
+  signatureText?: string;
   attachments?: Array<{ filename: string; mimeType: string; content: Buffer }>;
   banner?: { mime: string; base64: string } | null;
   /** Organization sender identity (PPR P1-5) — applied to the MIME headers. */
